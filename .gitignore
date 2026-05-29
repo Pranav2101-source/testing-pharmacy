@@ -1,0 +1,38 @@
+# Dependencies
+node_modules
+
+# Environment — NEVER commit these
+.env
+.env.local
+.env.*.local
+.env.production
+.env.staging
+**/.env
+**/.env.local
+
+# Build outputs
+dist
+.next
+.turbo
+
+# Logs
+*.log
+logs/
+
+# Test coverage
+coverage
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Certs & keys
+*.pem
+*.key
+*.cert
+
+# Deployment
+.vercel
+
+# Prisma dev migrations
+prisma/migrations/dev

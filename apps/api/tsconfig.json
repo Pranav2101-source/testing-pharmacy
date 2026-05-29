@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "paths": {
+      "@pharmacy/database": ["../../packages/database/src/client.ts"],
+      "@pharmacy/types": ["../../packages/types/src/index.ts"],
+      "@pharmacy/utils": ["../../packages/utils/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -1,0 +1,41 @@
+{
+  "nav": {
+    "billing": "बिलिंग",
+    "inventory": "स्टॉक",
+    "suppliers": "सप्लायर",
+    "reports": "रिपोर्ट",
+    "staff": "स्टाफ",
+    "settings": "सेटिंग्स"
+  },
+  "billing": {
+    "title": "नया बिल",
+    "searchMedicine": "दवाई खोजें...",
+    "customer": "ग्राहक",
+    "doctor": "डॉक्टर का नाम",
+    "payment": "भुगतान का तरीका",
+    "total": "कुल",
+    "gst": "GST",
+    "discount": "छूट",
+    "print": "बिल प्रिंट करें",
+    "save": "बिल सेव करें"
+  },
+  "inventory": {
+    "title": "स्टॉक",
+    "addStock": "स्टॉक जोड़ें",
+    "lowStock": "कम स्टॉक",
+    "expiringSoon": "जल्द एक्सपायर होने वाला",
+    "batch": "बैच नंबर",
+    "expiry": "समाप्ति तिथि",
+    "quantity": "मात्रा",
+    "mrp": "MRP"
+  },
+  "common": {
+    "save": "सेव करें",
+    "cancel": "रद्द करें",
+    "delete": "हटाएं",
+    "edit": "संपादित करें",
+    "search": "खोजें",
+    "loading": "लोड हो रहा है...",
+    "noData": "कोई डेटा नहीं मिला"
+  }
+}

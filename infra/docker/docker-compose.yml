@@ -1,0 +1,27 @@
+# Local dev only — requires Docker Desktop.
+# For cloud dev (no Docker): use Upstash Redis + Meilisearch Cloud instead.
+# See .env.example for the required env vars.
+
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.10
+    ports:
+      - "7700:7700"
+    environment:
+      MEILI_MASTER_KEY: ${MEILISEARCH_API_KEY}
+      MEILI_ENV: development
+    volumes:
+      - meili_data:/meili_data
+
+volumes:
+  redis_data:
+  meili_data:

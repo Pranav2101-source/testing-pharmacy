@@ -1,0 +1,41 @@
+{
+  "nav": {
+    "billing": "Billing",
+    "inventory": "Inventory",
+    "suppliers": "Suppliers",
+    "reports": "Reports",
+    "staff": "Staff",
+    "settings": "Settings"
+  },
+  "billing": {
+    "title": "New Invoice",
+    "searchMedicine": "Search medicine...",
+    "customer": "Customer",
+    "doctor": "Doctor Name",
+    "payment": "Payment Mode",
+    "total": "Total",
+    "gst": "GST",
+    "discount": "Discount",
+    "print": "Print Invoice",
+    "save": "Save Invoice"
+  },
+  "inventory": {
+    "title": "Inventory",
+    "addStock": "Add Stock",
+    "lowStock": "Low Stock",
+    "expiringSoon": "Expiring Soon",
+    "batch": "Batch No.",
+    "expiry": "Expiry",
+    "quantity": "Qty",
+    "mrp": "MRP"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "search": "Search",
+    "loading": "Loading...",
+    "noData": "No data found"
+  }
+}

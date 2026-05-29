@@ -1,0 +1,408 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Tenant (One per Pharmacy) ───────────────────────────────────────────────
+
+model Tenant {
+  id            String  @id @default(cuid())
+  name          String
+  slug          String  @unique
+  gstin         String?
+  drugLicense   String?
+  phone         String?
+  email         String?
+  address       String?
+  city          String?
+  state         String?
+  pincode       String?
+  isActive      Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users           User[]
+  customers       Customer[]
+  suppliers       Supplier[]
+  inventory       Inventory[]
+  purchaseOrders  PurchaseOrder[]
+  invoices        Invoice[]
+  invoiceSettings InvoiceSettings?
+  auditLogs       AuditLog[]
+  uploads         Upload[]
+  notifications   NotificationLog[]
+
+  @@map("tenants")
+}
+
+// ─── User (Staff) ────────────────────────────────────────────────────────────
+
+model User {
+  id           String    @id @default(cuid())
+  tenantId     String
+  name         String
+  email        String
+  phone        String?
+  passwordHash String
+  role         Role      @default(PHARMACIST)
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoices  Invoice[]
+  auditLogs AuditLog[]
+
+  @@unique([tenantId, email])
+  @@index([tenantId, role])
+  @@map("users")
+}
+
+enum Role {
+  OWNER
+  PHARMACIST
+}
+
+// ─── Medicine (Global — shared across all tenants) ───────────────────────────
+
+model Medicine {
+  id           String  @id @default(cuid())
+  name         String
+  genericName  String?
+  manufacturer String?
+  composition  String?
+  category     String?
+  schedule     String? // OTC, H, X, G
+  hsnCode      String?
+  gstRate      Float   @default(12)
+  form         String? // tablet, syrup, injection, cream
+  strength     String? // 500mg, 5ml
+  unit         String? // strip, bottle, vial, tube
+  packSize     String? // 10 tablets, 100ml
+  isActive     Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  inventory Inventory[]
+
+  @@index([name])
+  @@index([genericName])
+  @@index([hsnCode])
+  @@index([category])
+  @@map("medicines")
+}
+
+// ─── Inventory (per tenant, per batch) ───────────────────────────────────────
+
+model Inventory {
+  id           String   @id @default(cuid())
+  tenantId     String
+  medicineId   String
+  batchNumber  String
+  expiryDate   DateTime
+  quantity     Int
+  purchaseRate Float
+  mrp          Float
+  location     String?  // shelf / rack
+  minimumStock Int      @default(10)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  medicine    Medicine      @relation(fields: [medicineId], references: [id])
+  invoiceItems InvoiceItem[]
+  purchaseItems PurchaseOrderItem[]
+
+  @@unique([tenantId, medicineId, batchNumber])
+  @@index([tenantId, medicineId])
+  @@index([tenantId, expiryDate])
+  @@map("inventory")
+}
+
+// ─── Customer ────────────────────────────────────────────────────────────────
+
+model Customer {
+  id       String  @id @default(cuid())
+  tenantId String
+  name     String
+  phone    String?
+  email    String?
+  address  String?
+  age      Int?
+  gender   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoices Invoice[]
+
+  @@index([tenantId, phone])
+  @@map("customers")
+}
+
+// ─── Supplier ────────────────────────────────────────────────────────────────
+
+model Supplier {
+  id         String  @id @default(cuid())
+  tenantId   String
+  name       String
+  gstin      String?
+  dlNumber   String? // drug license
+  phone      String?
+  email      String?
+  address    String?
+  city       String?
+  state      String?
+  isActive   Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  purchaseOrders PurchaseOrder[]
+
+  @@index([tenantId])
+  @@map("suppliers")
+}
+
+// ─── Purchase Order ───────────────────────────────────────────────────────────
+
+model PurchaseOrder {
+  id          String         @id @default(cuid())
+  tenantId    String
+  supplierId  String
+  orderNumber String
+  invoiceNo   String?        // supplier's invoice number
+  status      PurchaseStatus @default(PENDING)
+  subtotal    Float          @default(0)
+  totalGst    Float          @default(0)
+  totalAmount Float          @default(0)
+  notes       String?
+  orderedAt   DateTime       @default(now())
+  receivedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  supplier Supplier            @relation(fields: [supplierId], references: [id])
+  items    PurchaseOrderItem[]
+
+  @@unique([tenantId, orderNumber])
+  @@index([tenantId, status])
+  @@map("purchase_orders")
+}
+
+enum PurchaseStatus {
+  PENDING
+  RECEIVED
+  PARTIAL
+  CANCELLED
+}
+
+model PurchaseOrderItem {
+  id              String   @id @default(cuid())
+  purchaseOrderId String
+  inventoryId     String?
+  medicineName    String
+  batchNumber     String
+  expiryDate      DateTime
+  quantity        Int
+  purchaseRate    Float
+  mrp             Float
+  gstRate         Float
+  cgst            Float
+  sgst            Float
+  amount          Float
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  inventory     Inventory?    @relation(fields: [inventoryId], references: [id])
+
+  @@map("purchase_order_items")
+}
+
+// ─── Invoice ─────────────────────────────────────────────────────────────────
+
+model Invoice {
+  id             String        @id @default(cuid())
+  tenantId       String
+  invoiceNumber  String
+  customerId     String?
+  userId         String
+  doctorName     String?
+  prescriptionId String?       // linked upload
+  paymentMode    PaymentMode   @default(CASH)
+  paymentStatus  PaymentStatus @default(PAID)
+  subtotal       Float
+  discountAmount Float         @default(0)
+  taxableAmount  Float
+  cgst           Float
+  sgst           Float
+  totalGst       Float
+  totalAmount    Float
+  notes          String?
+  isCancelled    Boolean       @default(false)
+  cancelledAt    DateTime?
+  cancelReason   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer?     @relation(fields: [customerId], references: [id])
+  user     User          @relation(fields: [userId], references: [id])
+  items    InvoiceItem[]
+
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, customerId])
+  @@map("invoices")
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  CARD
+  CREDIT
+}
+
+enum PaymentStatus {
+  PAID
+  PENDING
+  PARTIAL
+}
+
+model InvoiceItem {
+  id           String   @id @default(cuid())
+  invoiceId    String
+  inventoryId  String
+  medicineName String
+  hsnCode      String?
+  batchNumber  String
+  expiryDate   DateTime
+  quantity     Int
+  mrp          Float
+  rate         Float    // selling rate (may differ from MRP after discount)
+  discount     Float    @default(0) // percentage
+  gstRate      Float
+  cgst         Float
+  sgst         Float
+  taxableAmount Float
+  amount       Float    // final line total
+
+  invoice   Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  inventory Inventory @relation(fields: [inventoryId], references: [id])
+
+  @@map("invoice_items")
+}
+
+// ─── Invoice Settings (per tenant) ───────────────────────────────────────────
+
+model InvoiceSettings {
+  id       String @id @default(cuid())
+  tenantId String @unique
+  settings Json   // typed as InvoiceSettingsConfig in @pharmacy/types
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("invoice_settings")
+}
+
+// ─── Audit Log ───────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String  @id @default(cuid())
+  tenantId  String
+  userId    String
+  action    String  // CREATE | UPDATE | DELETE | LOGIN | LOGOUT | PRINT
+  entity    String  // Invoice | Inventory | User | Supplier ...
+  entityId  String?
+  oldData   Json?
+  newData   Json?
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, entity, entityId])
+  @@map("audit_logs")
+}
+
+// ─── Upload ───────────────────────────────────────────────────────────────────
+
+model Upload {
+  id        String     @id @default(cuid())
+  tenantId  String
+  type      UploadType
+  fileName  String
+  fileUrl   String
+  fileSize  Int
+  mimeType  String
+  invoiceId String?
+
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, type])
+  @@map("uploads")
+}
+
+enum UploadType {
+  PRESCRIPTION
+  INVOICE_PDF
+  PURCHASE_ORDER_PDF
+  LOGO
+  REPORT
+}
+
+// ─── Notification Log ────────────────────────────────────────────────────────
+
+model NotificationLog {
+  id        String             @id @default(cuid())
+  tenantId  String
+  type      NotificationType
+  recipient String
+  subject   String?
+  message   String
+  status    NotificationStatus @default(PENDING)
+  error     String?
+  sentAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, status])
+  @@map("notification_logs")
+}
+
+enum NotificationType {
+  SMS
+  EMAIL
+  WHATSAPP
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}

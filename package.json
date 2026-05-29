@@ -1,0 +1,28 @@
+{
+  "name": "checkup-pharmacy",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "type-check": "turbo run type-check",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\"",
+    "db:push": "turbo run db:push --filter=@pharmacy/database",
+    "db:migrate": "turbo run db:migrate --filter=@pharmacy/database",
+    "db:studio": "turbo run db:studio --filter=@pharmacy/database",
+    "db:seed": "turbo run db:seed --filter=@pharmacy/database",
+    "db:generate": "turbo run db:generate --filter=@pharmacy/database"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.0",
+    "typescript": "^5.5.0",
+    "prettier": "^3.3.0",
+    "@types/node": "^22.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.12.0"
+}
