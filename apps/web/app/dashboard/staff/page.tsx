@@ -417,13 +417,12 @@ function StaffDrawer({ member, onClose, onSave }: {
           <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors">
             Cancel
           </button>
-          <motion.button
-            whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
+          <button
             onClick={handleSubmit as any}
-            className="flex-1 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 text-sm font-semibold text-white shadow-card-md transition-colors"
+            className="flex-1 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-[0.97] text-sm font-semibold text-white shadow-card-md transition-all duration-75"
           >
             {isEdit ? "Save Changes" : "Create Staff"}
-          </motion.button>
+          </button>
         </div>
       </motion.aside>
     </>
@@ -537,12 +536,9 @@ function MembersTab({ staff, onEdit, onToggle }: {
               </tr>
             </thead>
             <tbody>
-              <AnimatePresence initial={false}>
-                {filtered.map((member, idx) => (
-                  <motion.tr
+                {filtered.map((member) => (
+                  <tr
                     key={member.id}
-                    initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                    transition={{ delay: idx * 0.03 }}
                     className={cn("border-b border-slate-50 hover:bg-slate-50/60 transition-colors", !member.isActive && "opacity-55")}
                   >
                     {/* Member */}
@@ -575,9 +571,8 @@ function MembersTab({ staff, onEdit, onToggle }: {
                     <td className="px-5 py-3.5 text-right">
                       <RowActions member={member} onEdit={() => onEdit(member)} onToggle={() => onToggle(member)} />
                     </td>
-                  </motion.tr>
+                  </tr>
                 ))}
-              </AnimatePresence>
             </tbody>
           </table>
         )}
@@ -714,14 +709,13 @@ export default function StaffPage() {
             <h1 className="text-lg font-bold text-slate-800">Staff Management</h1>
             <p className="text-sm text-slate-400 mt-0.5">Manage your pharmacy team and their access levels</p>
           </div>
-          <motion.button
-            whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }}
+          <button
             onClick={() => { setEditTarget(null); setDrawerOpen(true); }}
-            className="flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-sm font-bold text-white rounded-xl shadow-card-md transition-colors"
+            className="flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 active:scale-[0.97] text-sm font-bold text-white rounded-xl shadow-card-md transition-all duration-75"
           >
             <Plus className="w-3.5 h-3.5" />
             Add Staff
-          </motion.button>
+          </button>
         </div>
 
         {/* Stats row */}

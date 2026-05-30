@@ -25,6 +25,19 @@ const meilisearchPlugin: FastifyPluginAsync = async (fastify) => {
   });
 
   fastify.decorate("meilisearch", client);
+
+  // Auto-sync all medicines from Postgres to Meilisearch on startup
+  fastify.addHook("onReady", async () => {
+    try {
+      const medicines = await fastify.prisma.medicine.findMany();
+      if (medicines.length > 0) {
+        await index.addDocuments(medicines);
+        fastify.log.info(`Meilisearch: indexed ${medicines.length} medicines`);
+      }
+    } catch (err) {
+      fastify.log.warn({ err }, "Meilisearch auto-sync failed — search may be empty");
+    }
+  });
 };
 
 export default fp(meilisearchPlugin, { name: "meilisearch" });

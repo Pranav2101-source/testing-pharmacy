@@ -142,11 +142,9 @@ function PlanCard({ plan, cycle }: { plan: Plan; cycle: BillingCycle }) {
   const Icon = plan.icon;
 
   return (
-    <motion.div
-      whileHover={{ y: -2 }}
-      transition={{ duration: 0.18 }}
+    <div
       className={cn(
-        "relative flex flex-col rounded-2xl border p-6 transition-shadow",
+        "relative flex flex-col rounded-2xl border p-6 transition-all duration-150 hover:-translate-y-0.5",
         plan.popular
           ? "border-brand-300 shadow-card-glow bg-white"
           : plan.current
@@ -223,7 +221,7 @@ function PlanCard({ plan, cycle }: { plan: Plan; cycle: BillingCycle }) {
         {!plan.current && <ArrowRight className="w-3.5 h-3.5" />}
         {plan.cta}
       </button>
-    </motion.div>
+    </div>
   );
 }
 

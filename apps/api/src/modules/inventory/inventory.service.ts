@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { InventoryRepo } from "./inventory.repo.js";
-import type { AddStockInput } from "./inventory.schema.js";
+import type { AddStockInput, AdjustStockInput, ReserveStockInput } from "./inventory.schema.js";
 
 export class InventoryService {
   private repo: InventoryRepo;
@@ -40,5 +40,29 @@ export class InventoryService {
 
   async getLowStockAlerts(tenantId: string) {
     return this.repo.getLowStockAlerts(tenantId);
+  }
+
+  async adjustStock(
+    id:       string,
+    tenantId: string,
+    userId:   string,
+    input:    AdjustStockInput
+  ) {
+    return this.repo.adjustStock({
+      id,
+      tenantId,
+      userId,
+      delta:  input.delta,
+      reason: input.reason,
+      type:   input.type,
+    });
+  }
+
+  async upsertReservations(tenantId: string, input: ReserveStockInput) {
+    return this.repo.upsertReservations({ tenantId, sessionId: input.sessionId, items: input.items });
+  }
+
+  async releaseReservations(tenantId: string, sessionId: string) {
+    return this.repo.releaseReservations({ tenantId, sessionId });
   }
 }

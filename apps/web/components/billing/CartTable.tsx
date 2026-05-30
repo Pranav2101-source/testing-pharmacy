@@ -3,7 +3,7 @@
 import { useCallback, memo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
-import { X, Info, Pencil } from "lucide-react";
+import { X, Info, Pencil, AlertTriangle } from "lucide-react";
 import { useBillingStore, type CartItem } from "./useBillingStore";
 import { EmptyBillState } from "./EmptyBillState";
 import { cn } from "@/lib/utils";
@@ -128,20 +128,30 @@ function SkeletonRow({ idx }: { idx: number }) {
 const CartRow = memo(function CartRow({
   item,
   idx,
+  hasConflict,
   onKeyNav,
   onRemove,
   onQtyChange,
   onDiscountChange,
 }: {
-  item: CartItem;
-  idx: number;
-  onKeyNav: (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => void;
-  onRemove: (id: string) => void;
-  onQtyChange: (id: string, qty: number) => void;
+  item:             CartItem;
+  idx:              number;
+  hasConflict:      boolean;
+  onKeyNav:         (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => void;
+  onRemove:         (id: string) => void;
+  onQtyChange:      (id: string, qty: number) => void;
   onDiscountChange: (id: string, discount: number) => void;
 }) {
   const isExpired      = new Date(item.expiryDate) < new Date();
   const isExpiringSoon = !isExpired && new Date(item.expiryDate) < new Date(Date.now() + 90 * 86400000);
+
+  // Stock indicator derived from availableStock captured at add-time
+  const stockStatus: "ok" | "low" | "over" | null = (() => {
+    if (item.availableStock == null) return null;
+    if (item.quantity > item.availableStock) return "over";
+    if (item.quantity >= item.availableStock * 0.8) return "low";
+    return "ok";
+  })();
 
   return (
     <motion.div
@@ -153,18 +163,41 @@ const CartRow = memo(function CartRow({
       className={cn(
         "grid items-center border-b border-slate-100 group",
         "transition-colors duration-100",
-        "hover:bg-blue-50/40 hover:shadow-[inset_3px_0_0_0_#2563eb]",
+        hasConflict
+          ? "bg-red-50/60 shadow-[inset_3px_0_0_0_#ef4444]"
+          : "hover:bg-blue-50/40 hover:shadow-[inset_3px_0_0_0_#2563eb]",
         COL,
-        idx % 2 === 1 ? "bg-slate-50/30" : "bg-white"
+        !hasConflict && (idx % 2 === 1 ? "bg-slate-50/30" : "bg-white")
       )}
     >
       {/* Item Name */}
       <div className="px-3 py-3 min-w-0">
-        <p className="text-[15px] font-semibold text-slate-800 truncate leading-snug">
-          {item.medicineName}
-        </p>
+        <div className="flex items-center gap-1.5 min-w-0">
+          {hasConflict && (
+            <AlertTriangle className="w-3.5 h-3.5 text-red-500 flex-shrink-0" />
+          )}
+          <p className={cn(
+            "text-[15px] font-semibold truncate leading-snug",
+            hasConflict ? "text-red-700" : "text-slate-800"
+          )}>
+            {item.medicineName}
+          </p>
+        </div>
         {item.hsnCode && (
           <p className="text-[11px] text-slate-400 font-mono truncate mt-0.5">HSN {item.hsnCode}</p>
+        )}
+        {/* Stock availability indicator */}
+        {stockStatus !== null && item.availableStock != null && (
+          <p className={cn(
+            "text-[10px] font-semibold mt-0.5",
+            stockStatus === "over" ? "text-red-500" :
+            stockStatus === "low"  ? "text-amber-500" : "text-slate-400"
+          )}>
+            {stockStatus === "over"
+              ? `⚠ Only ${item.availableStock} in stock`
+              : `${item.availableStock - item.quantity} of ${item.availableStock} remaining`
+            }
+          </p>
         )}
       </div>
 
@@ -286,7 +319,13 @@ const CartRow = memo(function CartRow({
 // ─────────────────────────────────────────────────────────────────
 // CartTableRows
 // ─────────────────────────────────────────────────────────────────
-export function CartTableRows({ showSkeleton = false }: { showSkeleton?: boolean }) {
+export function CartTableRows({
+  showSkeleton = false,
+  conflictInventoryIds = new Set<string>(),
+}: {
+  showSkeleton?: boolean;
+  conflictInventoryIds?: Set<string>;
+}) {
   const { items, removeItem, updateQty, updateDiscount } = useBillingStore();
 
   const handleKeyNav = useCallback(
@@ -337,6 +376,7 @@ export function CartTableRows({ showSkeleton = false }: { showSkeleton?: boolean
               key={item.inventoryId}
               item={item}
               idx={idx}
+              hasConflict={conflictInventoryIds.has(item.inventoryId)}
               onKeyNav={handleKeyNav}
               onRemove={removeItem}
               onQtyChange={updateQty}

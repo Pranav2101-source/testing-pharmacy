@@ -2,16 +2,15 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { motion, AnimatePresence } from "framer-motion";
 import { z } from "zod";
 import {
   Building2, User, Phone, Mail, Lock, Eye, EyeOff,
   ArrowRight, ArrowLeft, CheckCircle2, AlertCircle,
-  MapPin, Hash, ChevronDown,
+  MapPin, Hash, ChevronDown, Shield,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-// ─── Validation schemas per step ──────────────────────────────
+// ─── Schemas ──────────────────────────────────────────────────
 const step1Schema = z.object({
   pharmacyName: z.string().min(2, "Pharmacy name must be at least 2 characters"),
   ownerName:    z.string().min(2, "Owner name must be at least 2 characters"),
@@ -23,208 +22,182 @@ const step2Schema = z.object({
   email:    z.string().email("Enter a valid email address"),
   password: z.string().min(8, "Password must be at least 8 characters"),
   confirm:  z.string(),
-}).refine(d => d.password === d.confirm, {
-  message: "Passwords do not match",
-  path:    ["confirm"],
-});
+}).refine(d => d.password === d.confirm, { message: "Passwords do not match", path: ["confirm"] });
 
-type Step1 = z.infer<typeof step1Schema>;
-type Step2 = z.infer<typeof step2Schema>;
 type FieldErr = Record<string, string>;
 
 // ─── Password strength ────────────────────────────────────────
 function pwStrength(pw: string) {
-  const checks = [
-    pw.length >= 8,
-    /[A-Z]/.test(pw),
-    /[a-z]/.test(pw),
-    /[0-9]/.test(pw),
-    /[^A-Za-z0-9]/.test(pw),
-  ];
-  const score = checks.filter(Boolean).length;
+  const score = [pw.length >= 8, /[A-Z]/.test(pw), /[a-z]/.test(pw), /[0-9]/.test(pw), /[^A-Za-z0-9]/.test(pw)].filter(Boolean).length;
   const labels = ["", "Weak", "Weak", "Fair", "Good", "Strong"];
   const colors = ["", "bg-red-400", "bg-red-400", "bg-amber-400", "bg-yellow-400", "bg-emerald-500"];
   return { score, label: labels[score] ?? "Strong", color: colors[score] ?? "bg-emerald-500" };
 }
 
-// ─── Input field ──────────────────────────────────────────────
-function Input({
-  icon: Icon, placeholder, value, onChange, type = "text", disabled, error,
-  right,
-}: {
-  icon:        React.ElementType;
-  placeholder: string;
-  value:       string;
-  onChange:    (v: string) => void;
-  type?:       string;
-  disabled?:   boolean;
-  error?:      boolean;
-  right?:      React.ReactNode;
+// ─── Field wrapper ────────────────────────────────────────────
+function Field({ label, error, required, children }: {
+  label: string; error?: string; required?: boolean; children: React.ReactNode;
 }) {
-  const [focused, setFocused] = useState(false);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-sm font-semibold text-slate-700">
+        {label}{required && <span className="text-red-400 ml-0.5">*</span>}
+      </label>
+      {children}
+      {error && (
+        <p className="flex items-center gap-1 text-[11px] text-red-500 font-medium">
+          <AlertCircle className="w-3 h-3 flex-shrink-0" />{error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ─── Input ────────────────────────────────────────────────────
+function Input({ icon: Icon, placeholder, value, onChange, type = "text", error, right }: {
+  icon: React.ElementType; placeholder: string; value: string;
+  onChange: (v: string) => void; type?: string; error?: boolean; right?: React.ReactNode;
+}) {
   return (
     <div className={cn(
-      "flex items-center gap-2.5 px-3 py-2.5 rounded-xl border transition-all",
-      error   ? "border-red-300 bg-white"  :
-      focused ? "border-brand-400 ring-1 ring-brand-200 bg-white" :
-                "border-slate-200 hover:border-slate-300 bg-white"
+      "flex items-center gap-2.5 px-3.5 py-3 rounded-xl border bg-white transition-all duration-150",
+      error
+        ? "border-red-300 focus-within:border-red-400"
+        : "border-slate-200 focus-within:border-blue-500 focus-within:ring-3 focus-within:ring-blue-100"
     )}>
-      <Icon className={cn("w-4 h-4 flex-shrink-0", focused && !error ? "text-brand-500" : error ? "text-red-400" : "text-slate-400")} strokeWidth={1.8} />
+      <Icon className={cn("w-4 h-4 flex-shrink-0", error ? "text-red-400" : "text-slate-400")} strokeWidth={1.8} />
       <input
         type={type} placeholder={placeholder} value={value}
         onChange={e => onChange(e.target.value)}
-        onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
-        disabled={disabled}
-        className="flex-1 text-sm text-slate-800 placeholder-slate-300 bg-transparent outline-none disabled:cursor-not-allowed"
+        className="flex-1 text-sm text-slate-800 placeholder-slate-300 bg-transparent outline-none"
       />
       {right}
     </div>
   );
 }
 
-function FieldWrap({ label, error, required, children }: {
-  label: string; error?: string; required?: boolean; children: React.ReactNode;
-}) {
+// ─── Step indicator ───────────────────────────────────────────
+function Stepper({ current }: { current: 1 | 2 }) {
   return (
-    <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-semibold text-slate-600">
-        {label}{required && <span className="text-red-400 ml-0.5">*</span>}
-      </label>
-      {children}
-      <AnimatePresence>
-        {error && (
-          <motion.p initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-            className="flex items-center gap-1 text-[11px] text-red-500 font-medium">
-            <AlertCircle className="w-3 h-3 flex-shrink-0" />{error}
-          </motion.p>
-        )}
-      </AnimatePresence>
+    <div className="flex items-center gap-0 mb-8">
+      {/* Step 1 */}
+      <div className="flex items-center gap-2">
+        <div className={cn(
+          "w-7 h-7 rounded-full flex items-center justify-center text-xs font-black transition-all duration-200",
+          current >= 1 ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-400"
+        )}>
+          {current > 1 ? <CheckCircle2 className="w-4 h-4" strokeWidth={2.5} /> : "1"}
+        </div>
+        <span className={cn("text-sm font-semibold transition-colors", current === 1 ? "text-slate-800" : "text-slate-400")}>
+          Pharmacy Details
+        </span>
+      </div>
+
+      {/* Connector */}
+      <div className="flex-1 mx-3 h-px bg-slate-200 relative" style={{ minWidth: 32 }}>
+        <div
+          className="absolute inset-y-0 left-0 bg-blue-500 transition-all duration-300"
+          style={{ width: current > 1 ? "100%" : "0%" }}
+        />
+      </div>
+
+      {/* Step 2 */}
+      <div className="flex items-center gap-2">
+        <div className={cn(
+          "w-7 h-7 rounded-full flex items-center justify-center text-xs font-black transition-all duration-200",
+          current === 2 ? "bg-blue-600 text-white ring-4 ring-blue-100" : "bg-slate-100 text-slate-400"
+        )}>
+          2
+        </div>
+        <span className={cn("text-sm font-semibold transition-colors", current === 2 ? "text-slate-800" : "text-slate-400")}>
+          Account Setup
+        </span>
+      </div>
     </div>
   );
 }
 
 // ─── Indian states ────────────────────────────────────────────
 const STATES = [
-  "Andhra Pradesh","Assam","Bihar","Chhattisgarh","Delhi","Goa","Gujarat",
-  "Haryana","Himachal Pradesh","Jharkhand","Karnataka","Kerala","Madhya Pradesh",
-  "Maharashtra","Manipur","Meghalaya","Mizoram","Nagaland","Odisha","Punjab",
-  "Rajasthan","Sikkim","Tamil Nadu","Telangana","Tripura","Uttar Pradesh",
-  "Uttarakhand","West Bengal",
+  "Andhra Pradesh","Assam","Bihar","Chhattisgarh","Delhi","Goa","Gujarat","Haryana",
+  "Himachal Pradesh","Jharkhand","Karnataka","Kerala","Madhya Pradesh","Maharashtra",
+  "Manipur","Meghalaya","Mizoram","Nagaland","Odisha","Punjab","Rajasthan","Sikkim",
+  "Tamil Nadu","Telangana","Tripura","Uttar Pradesh","Uttarakhand","West Bengal",
 ];
-
-// ─── Step indicator ───────────────────────────────────────────
-function Steps({ current }: { current: 1 | 2 }) {
-  return (
-    <div className="flex items-center gap-2 mb-7">
-      {([1, 2] as const).map((n) => (
-        <div key={n} className="flex items-center gap-2">
-          <div className={cn(
-            "w-7 h-7 rounded-full flex items-center justify-center text-xs font-black transition-all",
-            n < current  ? "bg-brand-600 text-white"          :
-            n === current? "bg-brand-600 text-white ring-4 ring-brand-100" :
-                           "bg-slate-100 text-slate-400"
-          )}>
-            {n < current ? <CheckCircle2 className="w-4 h-4" strokeWidth={2.5} /> : n}
-          </div>
-          <span className={cn("text-xs font-semibold", n === current ? "text-slate-700" : "text-slate-400")}>
-            {n === 1 ? "Pharmacy Details" : "Account Setup"}
-          </span>
-          {n < 2 && <div className={cn("w-8 h-0.5 rounded-full mx-1", n < current ? "bg-brand-500" : "bg-slate-200")} />}
-        </div>
-      ))}
-    </div>
-  );
-}
 
 // ─── Page ─────────────────────────────────────────────────────
 export default function RegisterPage() {
-  const [step, setStep] = useState<1 | 2>(1);
+  const [step,        setStep]        = useState<1 | 2>(1);
 
-  // Step 1 state
+  // Step 1
   const [pharmacyName, setPharmacyName] = useState("");
   const [ownerName,    setOwnerName]    = useState("");
   const [phone,        setPhone]        = useState("");
   const [city,         setCity]         = useState("");
 
-  // Step 2 state
+  // Step 2
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
   const [confirm,  setConfirm]  = useState("");
   const [showPw,   setShowPw]   = useState(false);
   const [showCf,   setShowCf]   = useState(false);
 
-  // Optional extras (step 2)
+  // Optional
   const [showExtra,   setShowExtra]   = useState(false);
   const [gstin,       setGstin]       = useState("");
   const [drugLicense, setDrugLicense] = useState("");
   const [address,     setAddress]     = useState("");
-  const [state,       setState_]      = useState("");
+  const [stateVal,    setStateVal]    = useState("");
   const [pincode,     setPincode]     = useState("");
 
-  const [errors,      setErrors]      = useState<FieldErr>({});
-  const [apiErr,      setApiErr]      = useState<string | null>(null);
-  const [submitting,  setSubmitting]  = useState(false);
-  const [success,     setSuccess]     = useState(false);
+  const [errors,     setErrors]     = useState<FieldErr>({});
+  const [apiErr,     setApiErr]     = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [success,    setSuccess]    = useState(false);
 
   const strength = pwStrength(password);
 
-  // ── Step 1 validation ───────────────────────────────────────
-  function validateStep1(): boolean {
-    const result = step1Schema.safeParse({ pharmacyName, ownerName, phone, city });
-    if (result.success) { setErrors({}); return true; }
+  function validateStep1() {
+    const r = step1Schema.safeParse({ pharmacyName, ownerName, phone, city });
+    if (r.success) { setErrors({}); return true; }
     const e: FieldErr = {};
-    result.error.errors.forEach(err => { e[err.path[0] as string] = err.message; });
-    setErrors(e);
-    return false;
+    r.error.errors.forEach(err => { e[err.path[0] as string] = err.message; });
+    setErrors(e); return false;
   }
 
-  // ── Step 2 validation ───────────────────────────────────────
-  function validateStep2(): boolean {
-    const result = step2Schema.safeParse({ email, password, confirm });
-    if (result.success) { setErrors({}); return true; }
+  function validateStep2() {
+    const r = step2Schema.safeParse({ email, password, confirm });
+    if (r.success) { setErrors({}); return true; }
     const e: FieldErr = {};
-    result.error.errors.forEach(err => { e[err.path[0] as string] = err.message; });
-    setErrors(e);
-    return false;
+    r.error.errors.forEach(err => { e[err.path[0] as string] = err.message; });
+    setErrors(e); return false;
   }
 
-  function handleNext() {
-    if (validateStep1()) setStep(2);
-  }
+  function handleNext() { if (validateStep1()) { setErrors({}); setStep(2); } }
 
   async function handleSubmit() {
     if (!validateStep2()) return;
     setApiErr(null);
     setSubmitting(true);
     try {
-      const payload = {
-        pharmacyName, ownerName, phone, email, password,
-        ...(city         ? { city }         : {}),
-        ...(gstin        ? { gstin }        : {}),
-        ...(drugLicense  ? { drugLicense }  : {}),
-        ...(address      ? { address }      : {}),
-        ...(state        ? { state }        : {}),
-        ...(pincode      ? { pincode }      : {}),
-      };
-
       const res  = await fetch(`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000"}/api/auth/register`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify(payload),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pharmacyName, ownerName, phone, email, password,
+          ...(city        && { city }),
+          ...(gstin       && { gstin }),
+          ...(drugLicense && { drugLicense }),
+          ...(address     && { address }),
+          ...(stateVal    && { state: stateVal }),
+          ...(pincode     && { pincode }),
+        }),
       });
       const json = await res.json() as {
-        success: boolean;
-        data?:   { tokens: { accessToken: string } };
-        error?:  string;
+        success: boolean; data?: { accessToken: string }; error?: string;
       };
-
-      if (!json.success || !json.data) {
-        setApiErr(json.error ?? "Registration failed. Please try again.");
-        return;
-      }
-
-      localStorage.setItem("token", json.data.tokens.accessToken);
-      document.cookie = `auth-token=${json.data.tokens.accessToken}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
+      if (!json.success || !json.data) { setApiErr(json.error ?? "Registration failed."); return; }
+      localStorage.setItem("token", json.data.accessToken);
+      document.cookie = `auth-token=${json.data.accessToken}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
       setSuccess(true);
       setTimeout(() => { window.location.href = "/dashboard"; }, 800);
     } catch {
@@ -235,216 +208,208 @@ export default function RegisterPage() {
   }
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 16 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3 }}
-      className="w-full max-w-sm"
-    >
-      {/* Mobile logo */}
-      <div className="flex items-center justify-center gap-2.5 mb-8 lg:hidden">
-        <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: "linear-gradient(135deg,#0c1f5c,#1a3080)" }}>
-          <span className="text-white font-black text-xl leading-none">+</span>
-        </div>
-        <div className="leading-none">
-          <p className="font-extrabold text-slate-800 text-base">Checkup</p>
-          <p className="text-slate-400 text-[10px] font-semibold tracking-widest uppercase">Pharmacy</p>
-        </div>
+    <div className="flex flex-col flex-1">
+
+      {/* Status badge */}
+      <div className="flex justify-end p-5">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-white border border-slate-200 rounded-full px-3 py-1.5 shadow-sm">
+          <span className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0" />
+          All Systems Operational
+        </span>
       </div>
 
-      {/* Heading */}
-      <div className="mb-7">
-        <h2 className="text-2xl font-black text-slate-800">Create your account</h2>
-        <p className="text-sm text-slate-500 mt-1">Set up your pharmacy in under 2 minutes</p>
-      </div>
+      {/* Form */}
+      <div className="flex-1 flex items-center justify-center px-6 pb-10">
+        <div className="w-full max-w-[420px]">
 
-      {/* Step indicator */}
-      <Steps current={step} />
+          {/* Heading */}
+          <div className="mb-7">
+            <h1 className="text-2xl font-black text-slate-900">Create your account</h1>
+            <p className="text-slate-500 text-sm mt-1.5">Set up your pharmacy in under 2 minutes</p>
+          </div>
 
-      {/* Form card */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-card-md overflow-hidden">
+          {/* Stepper */}
+          <Stepper current={step} />
 
-        {/* API error */}
-        <AnimatePresence>
+          {/* API error */}
           {apiErr && (
-            <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }}
-              className="overflow-hidden">
-              <div className="flex items-start gap-2.5 px-5 py-3.5 bg-red-50 border-b border-red-100">
-                <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" strokeWidth={2} />
-                <p className="text-sm text-red-600 font-medium">{apiErr}</p>
-              </div>
-            </motion.div>
+            <div className="flex items-start gap-2.5 px-4 py-3 bg-red-50 border border-red-200 rounded-xl mb-5">
+              <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" strokeWidth={2} />
+              <p className="text-sm text-red-600 font-medium">{apiErr}</p>
+            </div>
           )}
-        </AnimatePresence>
 
-        <AnimatePresence mode="wait">
+          {/* ── STEP 1 ──────────────────────────────────────── */}
+          <div className={cn(
+            "transition-all duration-200",
+            step === 1 ? "opacity-100 translate-x-0" : "opacity-0 translate-x-4 pointer-events-none absolute"
+          )}>
+            {step === 1 && (
+              <div className="space-y-4">
 
-          {/* ── STEP 1 ─────────────────────────────────────── */}
-          {step === 1 && (
-            <motion.div key="step1" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={{ duration: 0.2 }}
-              className="p-7 space-y-4">
+                <Field label="Pharmacy Name" required error={errors.pharmacyName}>
+                  <Input icon={Building2} placeholder="e.g. Radhika Medical Hall"
+                    value={pharmacyName} onChange={setPharmacyName} error={!!errors.pharmacyName} />
+                </Field>
 
-              <FieldWrap label="Pharmacy Name" required error={errors.pharmacyName}>
-                <Input icon={Building2} placeholder="e.g. Radhika Medical Hall" value={pharmacyName} onChange={setPharmacyName} error={!!errors.pharmacyName} />
-              </FieldWrap>
+                <Field label="Owner / Manager Name" required error={errors.ownerName}>
+                  <Input icon={User} placeholder="Full name"
+                    value={ownerName} onChange={setOwnerName} error={!!errors.ownerName} />
+                </Field>
 
-              <FieldWrap label="Owner / Manager Name" required error={errors.ownerName}>
-                <Input icon={User} placeholder="Full name" value={ownerName} onChange={setOwnerName} error={!!errors.ownerName} />
-              </FieldWrap>
-
-              <FieldWrap label="Mobile Number" required error={errors.phone}>
-                <div className={cn(
-                  "flex items-center rounded-xl border transition-all overflow-hidden",
-                  errors.phone ? "border-red-300" : "border-slate-200 focus-within:border-brand-400 focus-within:ring-1 focus-within:ring-brand-200"
-                )}>
-                  <span className="flex items-center gap-1.5 px-3 py-2.5 border-r border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 flex-shrink-0">
-                    🇮🇳 +91
-                  </span>
-                  <div className="flex items-center gap-2 px-3 flex-1">
-                    <Phone className="w-4 h-4 text-slate-400 flex-shrink-0" strokeWidth={1.8} />
-                    <input
-                      type="tel" placeholder="98765 43210" value={phone} maxLength={10}
-                      onChange={e => setPhone(e.target.value.replace(/\D/g, ""))}
-                      className="flex-1 text-sm text-slate-800 placeholder-slate-300 bg-transparent outline-none py-2.5"
-                    />
+                <Field label="Mobile Number" required error={errors.phone}>
+                  <div className={cn(
+                    "flex items-center rounded-xl border overflow-hidden transition-all duration-150 bg-white",
+                    errors.phone
+                      ? "border-red-300"
+                      : "border-slate-200 focus-within:border-blue-500 focus-within:ring-3 focus-within:ring-blue-100"
+                  )}>
+                    <span className="flex items-center gap-1 px-3 py-3 border-r border-slate-200 bg-slate-50 text-xs font-bold text-slate-600 flex-shrink-0 select-none">
+                      🇮🇳 +91
+                    </span>
+                    <div className="flex items-center gap-2 px-3 flex-1">
+                      <Phone className="w-4 h-4 text-slate-400 flex-shrink-0" strokeWidth={1.8} />
+                      <input
+                        type="tel" placeholder="98765 43210" value={phone} maxLength={10}
+                        onChange={e => setPhone(e.target.value.replace(/\D/g, ""))}
+                        className="flex-1 text-sm text-slate-800 placeholder-slate-300 bg-transparent outline-none py-0"
+                      />
+                    </div>
                   </div>
-                </div>
-              </FieldWrap>
+                </Field>
 
-              <FieldWrap label="City" error={errors.city}>
-                <Input icon={MapPin} placeholder="e.g. Ranchi" value={city} onChange={setCity} />
-              </FieldWrap>
+                <Field label="City" error={errors.city}>
+                  <Input icon={MapPin} placeholder="e.g. Ranchi" value={city} onChange={setCity} />
+                </Field>
 
-              <button
-                type="button" onClick={handleNext}
-                className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-brand-600 hover:bg-brand-700 text-sm font-bold text-white shadow-card-md transition-all mt-2"
-              >
-                Continue <ArrowRight className="w-4 h-4" />
-              </button>
-            </motion.div>
-          )}
+                <button
+                  type="button" onClick={handleNext}
+                  className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-sm font-bold transition-colors duration-150 shadow-md shadow-blue-200 mt-2"
+                >
+                  Continue <ArrowRight className="w-4 h-4" />
+                </button>
 
-          {/* ── STEP 2 ─────────────────────────────────────── */}
+                <p className="text-center text-sm text-slate-400 mt-4">
+                  Already have an account?{" "}
+                  <Link href="/login" className="text-blue-600 hover:text-blue-700 font-semibold transition-colors">
+                    Sign in
+                  </Link>
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* ── STEP 2 ──────────────────────────────────────── */}
           {step === 2 && (
-            <motion.div key="step2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} transition={{ duration: 0.2 }}
-              className="p-7 space-y-4">
+            <div className="space-y-4">
 
-              <FieldWrap label="Email Address" required error={errors.email}>
-                <Input icon={Mail} placeholder="you@pharmacy.com" value={email} onChange={setEmail} type="email" error={!!errors.email} />
-              </FieldWrap>
+              <Field label="Email Address" required error={errors.email}>
+                <Input icon={Mail} placeholder="you@pharmacy.com"
+                  value={email} onChange={setEmail} type="email" error={!!errors.email} />
+              </Field>
 
-              <FieldWrap label="Password" required error={errors.password}>
+              <Field label="Password" required error={errors.password}>
                 <Input
-                  icon={Lock} placeholder="Min. 8 characters" value={password} onChange={setPassword}
+                  icon={Lock} placeholder="Min. 8 characters"
+                  value={password} onChange={setPassword}
                   type={showPw ? "text" : "password"} error={!!errors.password}
                   right={
-                    <button type="button" onClick={() => setShowPw(v => !v)} className="text-slate-400 hover:text-slate-600 transition-colors">
+                    <button type="button" onClick={() => setShowPw(v => !v)}
+                      className="text-slate-400 hover:text-slate-600 transition-colors">
                       {showPw ? <EyeOff className="w-4 h-4" strokeWidth={1.8} /> : <Eye className="w-4 h-4" strokeWidth={1.8} />}
                     </button>
                   }
                 />
-                {/* Strength bar */}
                 {password.length > 0 && (
-                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-2 mt-1">
+                  <div className="flex items-center gap-2 mt-1">
                     <div className="flex gap-1 flex-1">
                       {[0,1,2,3,4].map(i => (
-                        <div key={i} className="flex-1 h-1 rounded-full overflow-hidden bg-slate-100">
-                          <motion.div animate={{ width: i < strength.score ? "100%" : "0%" }} transition={{ duration: 0.2 }}
-                            className={cn("h-full rounded-full", strength.color)} />
+                        <div key={i} className="flex-1 h-1 rounded-full bg-slate-100 overflow-hidden">
+                          <div className={cn("h-full rounded-full transition-all duration-200", i < strength.score ? strength.color : "")}
+                            style={{ width: i < strength.score ? "100%" : "0%" }} />
                         </div>
                       ))}
                     </div>
-                    <span className={cn("text-[10px] font-bold", strength.score >= 4 ? "text-emerald-600" : strength.score >= 3 ? "text-yellow-600" : "text-red-500")}>
+                    <span className={cn("text-[10px] font-bold",
+                      strength.score >= 4 ? "text-emerald-600" : strength.score >= 3 ? "text-yellow-600" : "text-red-500"
+                    )}>
                       {strength.label}
                     </span>
-                  </motion.div>
+                  </div>
                 )}
-              </FieldWrap>
+              </Field>
 
-              <FieldWrap label="Confirm Password" required error={errors.confirm}>
+              <Field label="Confirm Password" required error={errors.confirm}>
                 <Input
-                  icon={Lock} placeholder="Re-enter password" value={confirm} onChange={setConfirm}
+                  icon={Lock} placeholder="Re-enter password"
+                  value={confirm} onChange={setConfirm}
                   type={showCf ? "text" : "password"} error={!!errors.confirm}
                   right={
-                    <button type="button" onClick={() => setShowCf(v => !v)} className="text-slate-400 hover:text-slate-600 transition-colors">
+                    <button type="button" onClick={() => setShowCf(v => !v)}
+                      className="text-slate-400 hover:text-slate-600 transition-colors">
                       {showCf ? <EyeOff className="w-4 h-4" strokeWidth={1.8} /> : <Eye className="w-4 h-4" strokeWidth={1.8} />}
                     </button>
                   }
                 />
-              </FieldWrap>
+              </Field>
 
-              {/* Optional details accordion */}
+              {/* Optional accordion */}
               <div className="border border-slate-200 rounded-xl overflow-hidden">
                 <button
-                  type="button"
-                  onClick={() => setShowExtra(v => !v)}
-                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+                  type="button" onClick={() => setShowExtra(v => !v)}
+                  className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors duration-150"
                 >
                   <span>Optional: GST, Drug License, Address</span>
-                  <ChevronDown className={cn("w-4 h-4 text-slate-400 transition-transform", showExtra && "rotate-180")} />
+                  <ChevronDown className={cn("w-4 h-4 text-slate-400 transition-transform duration-200", showExtra && "rotate-180")} />
                 </button>
-                <AnimatePresence>
-                  {showExtra && (
-                    <motion.div
-                      initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }}
-                      transition={{ duration: 0.2 }}
-                      className="overflow-hidden border-t border-slate-200"
-                    >
-                      <div className="p-4 space-y-3">
-                        <FieldWrap label="GSTIN">
-                          <Input icon={Hash} placeholder="22AAAAA0000A1Z5" value={gstin} onChange={setGstin} />
-                        </FieldWrap>
-                        <FieldWrap label="Drug License No.">
-                          <Input icon={Hash} placeholder="DL-XX-123456" value={drugLicense} onChange={setDrugLicense} />
-                        </FieldWrap>
-                        <FieldWrap label="Address">
-                          <Input icon={MapPin} placeholder="Street, Area" value={address} onChange={setAddress} />
-                        </FieldWrap>
-                        <div className="grid grid-cols-2 gap-3">
-                          <FieldWrap label="State">
-                            <div className="relative">
-                              <select
-                                value={state} onChange={e => setState_(e.target.value)}
-                                className="w-full appearance-none pl-3 pr-7 py-2.5 text-sm text-slate-700 bg-white border border-slate-200 rounded-xl focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none"
-                              >
-                                <option value="">Select</option>
-                                {STATES.map(s => <option key={s} value={s}>{s}</option>)}
-                              </select>
-                              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-                            </div>
-                          </FieldWrap>
-                          <FieldWrap label="Pincode">
-                            <input
-                              type="text" maxLength={6} placeholder="834001" value={pincode}
-                              onChange={e => setPincode(e.target.value.replace(/\D/g, ""))}
-                              className="px-3 py-2.5 text-sm text-slate-700 bg-white border border-slate-200 rounded-xl focus:border-brand-400 focus:ring-1 focus:ring-brand-200 outline-none w-full"
-                            />
-                          </FieldWrap>
+                {showExtra && (
+                  <div className="border-t border-slate-200 p-4 space-y-3">
+                    <Field label="GSTIN">
+                      <Input icon={Hash} placeholder="22AAAAA0000A1Z5" value={gstin} onChange={setGstin} />
+                    </Field>
+                    <Field label="Drug License No.">
+                      <Input icon={Hash} placeholder="DL-XX-123456" value={drugLicense} onChange={setDrugLicense} />
+                    </Field>
+                    <Field label="Address">
+                      <Input icon={MapPin} placeholder="Street, Area" value={address} onChange={setAddress} />
+                    </Field>
+                    <div className="grid grid-cols-2 gap-3">
+                      <Field label="State">
+                        <div className="relative">
+                          <select value={stateVal} onChange={e => setStateVal(e.target.value)}
+                            className="w-full appearance-none pl-3 pr-7 py-3 text-sm text-slate-700 bg-white border border-slate-200 rounded-xl focus:border-blue-500 focus:ring-3 focus:ring-blue-100 outline-none transition-all">
+                            <option value="">Select</option>
+                            {STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                          <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
                         </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                      </Field>
+                      <Field label="Pincode">
+                        <input type="text" maxLength={6} placeholder="834001" value={pincode}
+                          onChange={e => setPincode(e.target.value.replace(/\D/g, ""))}
+                          className="px-3.5 py-3 text-sm text-slate-700 bg-white border border-slate-200 rounded-xl focus:border-blue-500 focus:ring-3 focus:ring-blue-100 outline-none w-full transition-all" />
+                      </Field>
+                    </div>
+                  </div>
+                )}
               </div>
 
-              {/* Footer buttons */}
+              {/* Buttons */}
               <div className="flex gap-3 pt-1">
                 <button
                   type="button" onClick={() => { setStep(1); setErrors({}); setApiErr(null); }}
-                  className="flex items-center gap-1.5 px-4 py-3 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+                  className="flex items-center gap-1.5 px-4 py-3.5 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600 hover:bg-slate-50 active:bg-slate-100 transition-colors duration-150"
                 >
                   <ArrowLeft className="w-3.5 h-3.5" /> Back
                 </button>
-                <motion.button
+                <button
                   type="button" onClick={handleSubmit}
                   disabled={submitting || success}
-                  whileHover={!submitting && !success ? { scale: 1.01 } : undefined}
-                  whileTap={!submitting && !success ? { scale: 0.98 } : undefined}
                   className={cn(
-                    "flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold transition-all",
-                    success    ? "bg-emerald-500 text-white"                        :
-                    submitting ? "bg-brand-400 text-white cursor-not-allowed"       :
-                                 "bg-brand-600 hover:bg-brand-700 text-white shadow-card-md"
+                    "flex-1 flex items-center justify-center gap-2 py-3.5 rounded-xl text-sm font-bold transition-colors duration-150",
+                    success    ? "bg-emerald-500 text-white"                         :
+                    submitting ? "bg-blue-400 text-white cursor-not-allowed"         :
+                                 "bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-md shadow-blue-200"
                   )}
                 >
                   {success ? (
@@ -454,21 +419,31 @@ export default function RegisterPage() {
                   ) : (
                     <>Create Account <ArrowRight className="w-4 h-4" /></>
                   )}
-                </motion.button>
+                </button>
               </div>
-            </motion.div>
+
+              {/* Security note */}
+              <div className="flex items-start gap-3 mt-2 p-4 bg-slate-50 rounded-xl border border-slate-100">
+                <Shield className="w-5 h-5 text-emerald-500 flex-shrink-0 mt-0.5" strokeWidth={1.8} />
+                <div>
+                  <p className="text-sm font-bold text-slate-700">Your data is safe with us</p>
+                  <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
+                    We follow industry best practices to keep your business information secure.
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-center text-sm text-slate-400">
+                Already have an account?{" "}
+                <Link href="/login" className="text-blue-600 hover:text-blue-700 font-semibold transition-colors">
+                  Sign in
+                </Link>
+              </p>
+            </div>
           )}
 
-        </AnimatePresence>
+        </div>
       </div>
-
-      {/* Login link */}
-      <p className="text-center text-sm text-slate-500 mt-6">
-        Already have an account?{" "}
-        <Link href="/login" className="text-brand-600 hover:text-brand-700 font-bold transition-colors">
-          Sign in
-        </Link>
-      </p>
-    </motion.div>
+    </div>
   );
 }

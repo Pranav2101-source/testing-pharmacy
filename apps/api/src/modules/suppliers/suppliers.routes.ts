@@ -21,6 +21,12 @@ const suppliersRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: result });
   });
 
+  app.get("/purchase-orders", { preHandler }, async (req, reply) => {
+    const { page = "1", limit = "20", status } = req.query as Record<string, string>;
+    const result = await service.listPurchaseOrders(req.tenantId, Number(page), Number(limit), status);
+    return reply.send({ success: true, data: result });
+  });
+
   app.post("/purchase-orders", { preHandler }, async (req, reply) => {
     const input = createPurchaseOrderSchema.parse(req.body);
     const order = await service.receivePurchaseOrder(req.tenantId, input);

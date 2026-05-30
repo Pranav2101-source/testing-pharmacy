@@ -21,6 +21,10 @@ export class SuppliersService {
     return this.repo.list(tenantId, page, limit);
   }
 
+  async listPurchaseOrders(tenantId: string, page: number, limit: number, status?: string) {
+    return this.repo.listPurchaseOrders(tenantId, page, limit, status);
+  }
+
   async receivePurchaseOrder(tenantId: string, input: CreatePurchaseOrderInput) {
     let subtotal = 0;
     let totalGst = 0;

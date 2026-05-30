@@ -1,0 +1,6 @@
+name,genericName,manufacturer,composition,category,schedule,hsnCode,gstRate,form,strength,unit,packSize
+Dolo 650,Paracetamol,Micro Labs,Paracetamol 650mg,Analgesic,OTC,30049099,12,tablet,650mg,strip,15 tablets
+Azithromycin 500mg,Azithromycin,Cipla,Azithromycin 500mg,Antibiotic,H,30041090,12,tablet,500mg,strip,3 tablets
+Metformin 500mg,Metformin HCL,Sun Pharma,Metformin HCL 500mg,Antidiabetic,H,30049099,5,tablet,500mg,strip,10 tablets
+Cough Syrup 100ml,Dextromethorphan + Chlorpheniramine,Pfizer,Dextromethorphan 10mg + Chlorpheniramine 4mg per 5ml,Cough & Cold,OTC,30049099,12,syrup,10mg/5ml,bottle,100ml
+Betamethasone Cream 0.1%,Betamethasone,GSK,Betamethasone Valerate 0.1%,Corticosteroid,H,30049099,12,cream,0.1%,tube,20g

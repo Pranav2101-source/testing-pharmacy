@@ -5,6 +5,7 @@ import jwt from "@fastify/jwt";
 import rateLimit from "@fastify/rate-limit";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
+import { ZodError } from "zod";
 
 import prismaPlugin from "./plugins/prisma.js";
 import redisPlugin from "./plugins/redis.js";
@@ -20,6 +21,7 @@ import staffRoutes from "./modules/staff/staff.routes.js";
 import auditRoutes from "./modules/audit/audit.routes.js";
 import uploadsRoutes from "./modules/uploads/uploads.routes.js";
 import notificationsRoutes from "./modules/notifications/notifications.routes.js";
+import customersRoutes from "./modules/customers/customers.routes.js";
 
 import { env } from "./config/env.js";
 
@@ -83,9 +85,34 @@ export async function buildApp() {
   await app.register(auditRoutes, { prefix: "/api/audit" });
   await app.register(uploadsRoutes, { prefix: "/api/uploads" });
   await app.register(notificationsRoutes, { prefix: "/api/notifications" });
+  await app.register(customersRoutes,     { prefix: "/api/customers" });
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/health", async () => ({ status: "ok", ts: new Date().toISOString() }));
+
+  // ── Global error handler ──────────────────────────────────────────────────
+  app.setErrorHandler((error, _request, reply) => {
+    // Zod validation errors thrown by schema.parse() in route handlers
+    if (error instanceof ZodError) {
+      return reply.status(400).send({
+        success: false,
+        error: "Validation failed",
+        details: error.flatten().fieldErrors,
+      });
+    }
+
+    const status: number =
+      typeof (error as any).statusCode === "number" ? (error as any).statusCode : 500;
+
+    if (status >= 500) {
+      app.log.error(error);
+    }
+
+    return reply.status(status).send({
+      success: false,
+      error: status >= 500 ? "Internal server error" : error.message,
+    });
+  });
 
   return app;
 }

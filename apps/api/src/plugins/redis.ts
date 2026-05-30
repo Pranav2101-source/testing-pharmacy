@@ -1,6 +1,6 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync } from "fastify";
-import Redis from "ioredis";
+import { Redis } from "ioredis";
 import { env } from "../config/env.js";
 
 declare module "fastify" {

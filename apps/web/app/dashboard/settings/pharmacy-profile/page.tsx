@@ -146,12 +146,10 @@ export default function PharmacyProfilePage() {
           <h1 className="text-lg font-bold text-slate-800">Pharmacy Profile</h1>
           <p className="text-sm text-slate-400 mt-0.5">Basic details about your pharmacy and owner</p>
         </div>
-        <motion.button
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.97 }}
+        <button
           onClick={handleSave}
           className={cn(
-            "flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200",
+            "flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-75 active:scale-[0.97]",
             saved
               ? "bg-emerald-500 text-white"
               : "bg-brand-600 hover:bg-brand-700 text-white shadow-card-md"
@@ -159,7 +157,7 @@ export default function PharmacyProfilePage() {
         >
           <Save className="w-3.5 h-3.5" />
           {saved ? "Saved!" : "Save Changes"}
-        </motion.button>
+        </button>
       </div>
 
       {/* Logo upload */}

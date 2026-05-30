@@ -259,17 +259,15 @@ export default function ChangePasswordPage() {
             <ShieldCheck className="w-3.5 h-3.5 text-slate-400" strokeWidth={1.8} />
             You'll be signed out of all other devices
           </p>
-          <motion.button
+          <button
             type="submit"
             disabled={!canSubmit || state === "loading"}
-            whileHover={canSubmit ? { scale: 1.02 } : undefined}
-            whileTap={canSubmit ? { scale: 0.97 } : undefined}
             className={cn(
-              "flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all duration-200 min-w-[150px] justify-center",
+              "flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all duration-75 min-w-[150px] justify-center",
               state === "success"
                 ? "bg-emerald-500 text-white"
                 : canSubmit
-                ? "bg-brand-600 hover:bg-brand-700 text-white shadow-card-md"
+                ? "bg-brand-600 hover:bg-brand-700 active:scale-[0.97] text-white shadow-card-md"
                 : "bg-slate-200 text-slate-400 cursor-not-allowed"
             )}
           >
@@ -286,7 +284,7 @@ export default function ChangePasswordPage() {
             ) : (
               "Update Password"
             )}
-          </motion.button>
+          </button>
         </div>
 
         {/* Error message */}

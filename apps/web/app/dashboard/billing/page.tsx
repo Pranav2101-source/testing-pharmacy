@@ -1,474 +1,679 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
-import dynamic from "next/dynamic";
-import { motion, AnimatePresence } from "framer-motion";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { AnimatePresence, motion } from "framer-motion";
 import {
-  ChevronRight, Lightbulb, ChevronDown, ChevronUp,
-  Bell, Truck, Settings, Calculator, Loader2,
-  UserCircle2, Wallet, XCircle,
+  Plus, Lightbulb, RefreshCw, ChevronRight, Search, Calendar,
+  ChevronDown, SlidersHorizontal, Loader2, ArrowUpDown,
+  ArrowUp, ArrowDown, FileX, AlertCircle, TrendingUp, RotateCcw,
+  BadgeIndianRupee, CreditCard,
 } from "lucide-react";
-import { BillHeader } from "@/components/billing/BillHeader";
-import { CartTableHeader, CartTableRows } from "@/components/billing/CartTable";
-import { MedicineSearchCombobox } from "@/components/billing/MedicineSearchCombobox";
-import { useBillingStore } from "@/components/billing/useBillingStore";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
-import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
 
-const InvoicePrintView = dynamic(
-  () => import("@/components/billing/InvoicePrintView").then((m) => ({ default: m.InvoicePrintView })),
-  { ssr: false }
-);
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-const PAY_LABELS: Record<string, string> = { CASH: "Cash", UPI: "UPI", CARD: "Card", CREDIT: "Credit" };
+type DashboardStats = {
+  todaySales:      number;
+  todayCount:      number;
+  todayCancelled:  number;
+  todayReturns:    number;
+  weekSales:       number;
+  weekCount:       number;
+  monthSales:      number;
+  monthCount:      number;
+  pendingCredit:   number;
+  lowStockCount:   number;
+  nearExpiryCount: number;
+};
 
-// ─── Sub-navigation bar ─────────────────────────────────────────
-function BillingSubNav({
-  onSave,
-  submitting,
-  hasItems,
-  paymentMode,
-  onPaymentMode,
-}: {
-  onSave: () => void;
-  submitting: boolean;
-  hasItems: boolean;
-  paymentMode: "CASH" | "UPI" | "CARD" | "CREDIT";
-  onPaymentMode: (m: "CASH" | "UPI" | "CARD" | "CREDIT") => void;
-}) {
-  const [showPayDrop, setShowPayDrop] = useState(false);
+type PaymentStatus = "PAID" | "PENDING" | "PARTIAL";
+type PaymentMode   = "CASH" | "UPI" | "CARD" | "CREDIT";
 
+type Invoice = {
+  id: string;
+  invoiceNumber: string;
+  createdAt: string;
+  paymentMode: PaymentMode;
+  paymentStatus: PaymentStatus;
+  totalAmount: number;
+  isCancelled: boolean;
+  customer: { name: string; phone: string | null } | null;
+  user: { name: string };
+};
+
+type SortCol = "invoiceNumber" | "createdAt" | "customerName" | "totalAmount" | "paymentStatus";
+type SortDir = "asc" | "desc";
+type AmountFilter = "all" | "lte500" | "501-2000" | "2001-5000" | "gt5000";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString("en-IN", {
+    day: "2-digit", month: "short", year: "2-digit",
+  });
+}
+
+function fmtCurrency(n: number) {
+  return "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtDateInput(iso: string) {
+  const d = new Date(iso);
+  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+}
+
+function getCurrentFY() {
+  const now = new Date();
+  const yr = now.getFullYear();
+  const start = now.getMonth() >= 3 ? yr : yr - 1;
+  return {
+    from:  `${start}-04-01`,
+    to:    `${start + 1}-03-31`,
+    label: `01/04/${start} - 31/03/${start + 1}`,
+  };
+}
+
+// ─── Status badge ─────────────────────────────────────────────────────────────
+
+const STATUS_CFG: Record<string, { label: string; cls: string }> = {
+  PAID:      { label: "Paid",      cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+  PENDING:   { label: "Pending",   cls: "bg-amber-50   text-amber-700   border-amber-200"   },
+  PARTIAL:   { label: "Partial",   cls: "bg-orange-50  text-orange-700  border-orange-200"  },
+  CANCELLED: { label: "Cancelled", cls: "bg-red-50     text-red-600     border-red-200"     },
+};
+
+function StatusBadge({ isCancelled, paymentStatus }: { isCancelled: boolean; paymentStatus: string }) {
+  const key = isCancelled ? "CANCELLED" : paymentStatus;
+  const { label, cls } = STATUS_CFG[key] ?? { label: paymentStatus, cls: "bg-slate-50 text-slate-600 border-slate-200" };
   return (
-    <div className="flex items-center justify-between px-5 h-14 border-b border-slate-200 bg-white flex-shrink-0">
-      {/* Breadcrumb */}
-      <div className="flex items-center gap-1.5">
-        <button className="text-blue-600 text-[15px] font-medium hover:underline">Sales</button>
-        <ChevronRight className="w-4 h-4 text-slate-400" />
-        <span className="text-blue-600 text-[15px] font-semibold">New</span>
-        <div className="w-6 h-6 rounded-full bg-yellow-400 flex items-center justify-center ml-1 shadow-sm">
-          <Lightbulb className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
-        </div>
-      </div>
-
-      {/* Controls */}
-      <div className="flex items-center gap-2">
-        {/* Owner */}
-        <button className="flex items-center gap-1.5 text-[14px] text-slate-700 font-medium border border-slate-200 rounded-md px-3 py-2 hover:bg-slate-50 transition-colors">
-          <UserCircle2 className="w-[18px] h-[18px] text-slate-500" />
-          Owner
-          <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-        </button>
-
-        {/* Payment Method — functional dropdown */}
-        <div
-          className="relative"
-          onBlur={(e) => {
-            if (!e.currentTarget.contains(e.relatedTarget as Node)) setShowPayDrop(false);
-          }}
-        >
-          <button
-            onClick={() => setShowPayDrop((v) => !v)}
-            className="flex items-center gap-1.5 text-[14px] text-slate-700 font-medium border border-slate-200 rounded-md px-3 py-2 hover:bg-slate-50 transition-colors"
-          >
-            <Wallet className="w-[18px] h-[18px] text-slate-500" />
-            {PAY_LABELS[paymentMode] ?? "Cash"}
-            <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-          </button>
-          {showPayDrop && (
-            <div className="absolute top-full mt-1 left-0 bg-white border border-slate-200 rounded-lg shadow-lg z-20 py-1 min-w-[110px]">
-              {(["CASH", "UPI", "CARD", "CREDIT"] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => { onPaymentMode(m); setShowPayDrop(false); }}
-                  className={cn(
-                    "w-full text-left px-3 py-2 text-[13px] hover:bg-blue-50 transition-colors",
-                    paymentMode === m && "text-blue-600 font-semibold bg-blue-50/50"
-                  )}
-                >
-                  {PAY_LABELS[m]}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Set Reminder */}
-        <button className="flex items-center gap-1.5 text-[14px] text-slate-600 font-medium border border-slate-200 rounded-md px-3 py-2 hover:bg-slate-50 transition-colors">
-          <Bell className="w-[18px] h-[18px] text-slate-500" />
-          Set Reminder
-        </button>
-
-        {/* Pickup */}
-        <button className="flex items-center gap-1.5 text-[14px] text-slate-700 font-medium border border-slate-200 rounded-md px-3 py-2 hover:bg-slate-50 transition-colors">
-          <Truck className="w-[18px] h-[18px] text-slate-500" />
-          Pickup
-          <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-        </button>
-
-        <div className="h-5 w-px bg-slate-200" />
-
-        {/* Save / Proceed split button */}
-        <div className="flex items-stretch">
-          <motion.button
-            whileHover={hasItems ? { scale: 1.01 } : {}}
-            whileTap={hasItems ? { scale: 0.98 } : {}}
-            onClick={onSave}
-            disabled={submitting || !hasItems}
-            className={cn(
-              "flex items-center gap-1.5 text-[15px] font-bold px-5 py-2 rounded-l-md transition-colors",
-              hasItems
-                ? "bg-blue-600 hover:bg-blue-700 text-white"
-                : "bg-blue-300 text-white cursor-not-allowed"
-            )}
-          >
-            {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
-            Save
-          </motion.button>
-          <button
-            className={cn(
-              "flex items-center justify-center px-2 rounded-r-md border-l transition-colors",
-              hasItems
-                ? "bg-blue-600 hover:bg-blue-700 text-white border-blue-500"
-                : "bg-blue-300 text-white border-blue-200 cursor-not-allowed"
-            )}
-          >
-            <ChevronDown className="w-4 h-4" />
-          </button>
-        </div>
-
-        {/* Settings */}
-        <button className="w-9 h-9 rounded-md border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition-colors">
-          <Settings className="w-5 h-5 text-slate-600" />
-        </button>
-      </div>
-    </div>
+    <span className={cn("inline-flex items-center text-[11px] font-semibold border rounded-full px-2 py-0.5 whitespace-nowrap", cls)}>
+      {label}
+    </span>
   );
 }
 
-// ─── Main page ───────────────────────────────────────────────────
-export default function BillingPage() {
-  const { items, meta, clear, getTotals, setMeta } = useBillingStore();
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [invoice, setInvoice] = useState<PrintInvoiceData | null>(null);
-  const [showPrint, setShowPrint] = useState(false);
-  const [lifa, setLifa] = useState(true);
-  const [savedInvoiceId, setSavedInvoiceId] = useState<string | null>(null);
-  const [cancelConfirm, setCancelConfirm] = useState(false);
-  const [cancelReason, setCancelReason] = useState("");
-  const [cancelling, setCancelling] = useState(false);
+// ─── Sort icon ────────────────────────────────────────────────────────────────
 
-  const totals       = useMemo(() => getTotals(), [getTotals, items]);
-  const totalQty     = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
-  const roundedTotal = Math.round(totals.totalAmount);
+function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
+  if (!active) return <ArrowUpDown className="w-3 h-3 text-slate-300 group-hover:text-blue-400 transition-colors" />;
+  return dir === "asc"
+    ? <ArrowUp   className="w-3 h-3 text-blue-600" />
+    : <ArrowDown className="w-3 h-3 text-blue-600" />;
+}
 
-  const handleSave = useCallback(async () => {
-    if (items.length === 0) return;
-    setSubmitting(true);
+// ─── Amount filter labels ─────────────────────────────────────────────────────
+
+const AMOUNT_OPTIONS: [AmountFilter, string][] = [
+  ["all",      "All"],
+  ["lte500",   "Up to ₹500"],
+  ["501-2000", "₹501 – ₹2,000"],
+  ["2001-5000","₹2,001 – ₹5,000"],
+  ["gt5000",   "Above ₹5,000"],
+];
+
+const AMOUNT_SHORT: Record<AmountFilter, string> = {
+  "all":       "All",
+  "lte500":    "≤ ₹500",
+  "501-2000":  "₹501–2K",
+  "2001-5000": "₹2K–5K",
+  "gt5000":    "> ₹5K",
+};
+
+function applyAmountFilter(inv: Invoice, filter: AmountFilter) {
+  const a = inv.totalAmount;
+  if (filter === "lte500")    return a <= 500;
+  if (filter === "501-2000")  return a > 500  && a <= 2000;
+  if (filter === "2001-5000") return a > 2000 && a <= 5000;
+  if (filter === "gt5000")    return a > 5000;
+  return true;
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+
+export default function BillingDashboardPage() {
+  const router = useRouter();
+  const fy = getCurrentFY();
+
+  // ── Stats state ───────────────────────────────────────────────
+  const [stats,        setStats]        = useState<DashboardStats | null>(null);
+  const [statsLoading, setStatsLoading] = useState(true);
+
+  useEffect(() => {
+    api.get("/billing/dashboard/stats")
+      .then(({ data }) => setStats(data.data))
+      .catch(() => {/* non-critical */})
+      .finally(() => setStatsLoading(false));
+  }, []);
+
+  // ── Data state ────────────────────────────────────────────────
+  const [invoices,   setInvoices]   = useState<Invoice[]>([]);
+  const [total,      setTotal]      = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [page,       setPage]       = useState(1);
+  const [loading,    setLoading]    = useState(true);
+  const [error,      setError]      = useState<string | null>(null);
+
+  // ── Filter state ──────────────────────────────────────────────
+  const [billSearch,    setBillSearch]    = useState("");
+  const [nameSearch,    setNameSearch]    = useState("");
+  const [dateFrom,      setDateFrom]      = useState(fy.from);
+  const [dateTo,        setDateTo]        = useState(fy.to);
+  const [dateLabel,     setDateLabel]     = useState(fy.label);
+  const [amountFilter,  setAmountFilter]  = useState<AmountFilter>("all");
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showAmountDrop, setShowAmountDrop] = useState(false);
+  const [draftFrom,     setDraftFrom]     = useState(fy.from);
+  const [draftTo,       setDraftTo]       = useState(fy.to);
+
+  // ── Sort state ────────────────────────────────────────────────
+  const [sortCol, setSortCol] = useState<SortCol>("createdAt");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  // ── Refs for outside-click ────────────────────────────────────
+  const dateRef   = useRef<HTMLDivElement>(null);
+  const amountRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onOutside(e: MouseEvent) {
+      if (dateRef.current   && !dateRef.current.contains(e.target as Node))   setShowDatePicker(false);
+      if (amountRef.current && !amountRef.current.contains(e.target as Node)) setShowAmountDrop(false);
+    }
+    document.addEventListener("mousedown", onOutside);
+    return () => document.removeEventListener("mousedown", onOutside);
+  }, []);
+
+  // ── Fetch ─────────────────────────────────────────────────────
+  const fetchInvoices = useCallback(async () => {
+    setLoading(true);
     setError(null);
     try {
-      const { data } = await api.post<{ data: { id: string; invoiceNumber: string; createdAt: string } }>("/billing", {
-        doctorName:    meta.doctorName    || undefined,
-        paymentMode:   meta.paymentMode,
-        paymentStatus: meta.paymentStatus,
-        notes:         meta.notes         || undefined,
-        items: items.map((i) => ({
-          inventoryId: i.inventoryId,
-          quantity:    i.quantity,
-          discount:    i.discount,
-        })),
+      const search = billSearch.trim() || nameSearch.trim() || undefined;
+      const { data } = await api.get("/billing", {
+        params: {
+          page,
+          limit: 20,
+          ...(search ? { search } : {}),
+          from: dateFrom,
+          to:   dateTo,
+          includeCancelled: true,
+        },
       });
-      const printData: PrintInvoiceData = {
-        invoiceNumber: data.data.invoiceNumber,
-        createdAt:     data.data.createdAt,
-        customerName:  meta.customerName  || undefined,
-        customerPhone: meta.customerPhone || undefined,
-        doctorName:    meta.doctorName    || undefined,
-        paymentMode:   meta.paymentMode,
-        paymentStatus: meta.paymentStatus,
-        items:         items.map((i) => ({ ...i })),
-        subtotal:      totals.subtotal,
-        discountAmount: totals.discountAmount,
-        taxableAmount: totals.taxableAmount,
-        cgst:          totals.cgst,
-        sgst:          totals.sgst,
-        totalGst:      totals.totalGst,
-        totalAmount:   roundedTotal,
-      };
-      setSavedInvoiceId(data.data.id);
-      setInvoice(printData);
-      setShowPrint(true);
-      clear();
-    } catch (err) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? "Failed to save invoice. Please try again.");
+      setInvoices(data.data.items);
+      setTotal(data.data.total);
+      setTotalPages(data.data.totalPages);
+    } catch {
+      setError("Failed to load invoices. Check your connection and try again.");
     } finally {
-      setSubmitting(false);
+      setLoading(false);
     }
-  }, [items, meta, totals, roundedTotal, clear]);
+  }, [page, billSearch, nameSearch, dateFrom, dateTo]);
 
-  const handleCancel = useCallback(async () => {
-    if (!savedInvoiceId || !cancelReason.trim()) return;
-    setCancelling(true);
-    try {
-      await api.patch(`/billing/${savedInvoiceId}/cancel`, { reason: cancelReason });
-      setShowPrint(false);
-      setInvoice(null);
-      setSavedInvoiceId(null);
-      setCancelConfirm(false);
-      setCancelReason("");
-    } catch (err) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message;
-      setError(msg ?? "Failed to cancel invoice.");
-    } finally {
-      setCancelling(false);
-    }
-  }, [savedInvoiceId, cancelReason]);
+  // Debounce search; fetch immediately on non-text param change
+  useEffect(() => {
+    const delay = billSearch || nameSearch ? 380 : 0;
+    const t = setTimeout(fetchInvoices, delay);
+    return () => clearTimeout(t);
+  }, [fetchInvoices]);
 
-  function closePrint() {
-    setShowPrint(false);
-    setInvoice(null);
-    setSavedInvoiceId(null);
-    setCancelConfirm(false);
-    setCancelReason("");
+  // ── Client-side sort + amount filter ─────────────────────────
+  const displayedInvoices = useMemo(() => {
+    const filtered = invoices.filter((inv) => applyAmountFilter(inv, amountFilter));
+
+    return [...filtered].sort((a, b) => {
+      let va: string | number;
+      let vb: string | number;
+
+      switch (sortCol) {
+        case "invoiceNumber":
+          va = a.invoiceNumber; vb = b.invoiceNumber; break;
+        case "createdAt":
+          va = a.createdAt; vb = b.createdAt; break;
+        case "customerName":
+          va = a.customer?.name ?? ""; vb = b.customer?.name ?? ""; break;
+        case "totalAmount":
+          va = a.totalAmount; vb = b.totalAmount; break;
+        case "paymentStatus":
+          va = a.isCancelled ? "CANCELLED" : a.paymentStatus;
+          vb = b.isCancelled ? "CANCELLED" : b.paymentStatus;
+          break;
+        default:
+          return 0;
+      }
+
+      if (va < vb) return sortDir === "asc" ? -1 :  1;
+      if (va > vb) return sortDir === "asc" ?  1 : -1;
+      return 0;
+    });
+  }, [invoices, amountFilter, sortCol, sortDir]);
+
+  function handleSort(col: SortCol) {
+    setSortDir((d) => col === sortCol ? (d === "asc" ? "desc" : "asc") : "desc");
+    setSortCol(col);
   }
 
-  return (
-    <>
-      {/* Print-only layer */}
-      {invoice && (
-        <div className="hidden print:block">
-          <InvoicePrintView invoice={invoice} />
-        </div>
-      )}
+  function applyDateRange() {
+    const fmt = (iso: string) => {
+      const d = new Date(iso);
+      return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+    };
+    setDateFrom(draftFrom);
+    setDateTo(draftTo);
+    setDateLabel(`${fmt(draftFrom)} - ${fmt(draftTo)}`);
+    setPage(1);
+    setShowDatePicker(false);
+  }
 
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.18 }}
-        className="print:hidden flex flex-col h-full overflow-hidden bg-white"
-      >
-        {/* ── Zone 1: Sub-nav ───────────────────────────────────── */}
-        <BillingSubNav
-          onSave={handleSave}
-          submitting={submitting}
-          hasItems={items.length > 0}
-          paymentMode={meta.paymentMode}
-          onPaymentMode={(m) => setMeta({ paymentMode: m })}
-        />
+  function resetDateToFY() {
+    setDraftFrom(fy.from);
+    setDraftTo(fy.to);
+    setDateFrom(fy.from);
+    setDateTo(fy.to);
+    setDateLabel(fy.label);
+    setPage(1);
+    setShowDatePicker(false);
+  }
 
-        {/* ── Zone 2: Bill Form ─────────────────────────────────── */}
-        <BillHeader />
+  const activeFilterCount =
+    (billSearch ? 1 : 0) + (nameSearch ? 1 : 0) + (amountFilter !== "all" ? 1 : 0);
 
-        {/* ── Error Banner ──────────────────────────────────────── */}
-        <AnimatePresence>
-          {error && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.18 }}
-              className="overflow-hidden flex-shrink-0"
-            >
-              <div className="flex items-center gap-3 bg-red-50 border-b border-red-100 text-red-700 text-[13px] px-5 py-2.5">
-                <span>⚠ {error}</span>
-                <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-600 text-lg leading-none">×</button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* ── Zone 3: Table ─────────────────────────────────────── */}
-        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-
-          {/* Column header row with inline LIFA toggle */}
-          <div className="flex-shrink-0 border-b border-slate-200 bg-slate-50">
-            <CartTableHeader lifa={lifa} onLifaToggle={() => setLifa((v) => !v)} />
-          </div>
-
-          {/* Search row */}
-          <div className="flex-shrink-0 border-b border-slate-200 bg-[#eef4ff]">
-            <MedicineSearchCombobox />
-          </div>
-
-          {/* Table body */}
-          <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-            <CartTableRows />
-          </div>
-        </div>
-
-        {/* ── Zone 4: Bottom Bar — dark navy ────────────────────── */}
-        <div
-          className="flex items-center px-6 flex-shrink-0"
-          style={{
-            height: "56px",
-            background: "linear-gradient(135deg, #0c1f5c 0%, #132468 40%, #1a3080 100%)",
-          }}
+  // ── Table column header ───────────────────────────────────────
+  function ColHeader({
+    col,
+    label,
+    sortable = true,
+    className,
+  }: { col?: SortCol; label: string; sortable?: boolean; className?: string }) {
+    if (!sortable || !col) {
+      return (
+        <th className={cn("px-4 py-3 text-left text-[12px] font-semibold text-blue-600 whitespace-nowrap", className)}>
+          {label}
+        </th>
+      );
+    }
+    return (
+      <th className={cn("px-4 py-3 text-left whitespace-nowrap", className)}>
+        <button
+          onClick={() => handleSort(col)}
+          className="flex items-center gap-1 text-[12px] font-semibold text-blue-600 group hover:text-blue-700 transition-colors"
         >
+          {label}
+          <SortIcon active={sortCol === col} dir={sortDir} />
+        </button>
+      </th>
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  return (
+    <div className="flex flex-col h-full bg-white overflow-hidden">
+
+      {/* ── Header bar ─────────────────────────────────────────── */}
+      <div className="flex items-center justify-between px-5 border-b border-slate-200 flex-shrink-0" style={{ height: "52px" }}>
+        <div className="flex items-center gap-3">
+          <h1 className="text-[18px] font-bold text-slate-900 leading-none">Sales</h1>
+
+          <Link
+            href="/dashboard/billing/new"
+            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-[13px] font-semibold px-3 py-1.5 rounded-md transition-colors shadow-sm"
+          >
+            <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
+            New
+          </Link>
+
+          <button className="w-6 h-6 rounded-full bg-yellow-400 hover:bg-yellow-500 flex items-center justify-center transition-colors shadow-sm">
+            <Lightbulb className="w-3.5 h-3.5 text-white" strokeWidth={2.5} />
+          </button>
+        </div>
+
+        <Link
+          href="/dashboard/billing/returns"
+          className="flex items-center gap-1.5 text-blue-600 hover:text-blue-700 text-[13px] font-medium transition-colors"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+          Sales Return
+          <ChevronRight className="w-3.5 h-3.5" />
+        </Link>
+      </div>
+
+      {/* ── Stats banner ────────────────────────────────────────── */}
+      <div className="flex items-stretch gap-0 border-b border-slate-200 bg-slate-50 flex-shrink-0 divide-x divide-slate-200">
+        {[
+          {
+            label:   "Today's Sales",
+            icon:    <TrendingUp className="w-3.5 h-3.5 text-blue-500" />,
+            value:   stats ? fmtCurrency(stats.todaySales) : "—",
+            sub:     stats ? `${stats.todayCount} bill${stats.todayCount !== 1 ? "s" : ""}` : null,
+            loading: statsLoading,
+            accent:  "text-blue-700",
+          },
+          {
+            label:   "This Week",
+            icon:    <BadgeIndianRupee className="w-3.5 h-3.5 text-indigo-500" />,
+            value:   stats ? fmtCurrency(stats.weekSales) : "—",
+            sub:     stats ? `${stats.weekCount} bills` : null,
+            loading: statsLoading,
+            accent:  "text-indigo-700",
+          },
+          {
+            label:   "This Month",
+            icon:    <BadgeIndianRupee className="w-3.5 h-3.5 text-violet-500" />,
+            value:   stats ? fmtCurrency(stats.monthSales) : "—",
+            sub:     stats ? `${stats.monthCount} bills` : null,
+            loading: statsLoading,
+            accent:  "text-violet-700",
+          },
+          {
+            label:   "Today's Returns",
+            icon:    <RotateCcw className="w-3.5 h-3.5 text-orange-400" />,
+            value:   stats ? fmtCurrency(stats.todayReturns) : "—",
+            sub:     null,
+            loading: statsLoading,
+            accent:  "text-orange-600",
+          },
+          {
+            label:   "Credit Pending",
+            icon:    <CreditCard className="w-3.5 h-3.5 text-red-400" />,
+            value:   stats ? fmtCurrency(stats.pendingCredit) : "—",
+            sub:     null,
+            loading: statsLoading,
+            accent:  "text-red-600",
+          },
+        ].map(({ label, icon, value, sub, loading: ld, accent }) => (
+          <div key={label} className="flex-1 flex items-center gap-2 px-4 py-2.5 min-w-0">
+            <div className="flex-shrink-0">{icon}</div>
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide whitespace-nowrap">{label}</p>
+              {ld ? (
+                <div className="h-4 w-16 bg-slate-200 animate-pulse rounded mt-0.5" />
+              ) : (
+                <p className={cn("text-[15px] font-bold leading-tight whitespace-nowrap", accent)}>{value}</p>
+              )}
+              {sub && !ld && (
+                <p className="text-[10px] text-slate-400 leading-tight">{sub}</p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── Filter toolbar ──────────────────────────────────────── */}
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-100 bg-[#f7f9fc] flex-shrink-0 flex-wrap">
+
+        {/* Bill No. search */}
+        <div className="flex items-center border border-slate-200 rounded-md bg-white overflow-hidden h-[30px] text-[13px] shadow-sm">
+          <div className="flex items-center gap-0.5 px-2.5 border-r border-slate-200 text-slate-700 font-medium whitespace-nowrap h-full bg-slate-50">
+            <span>Bill No.</span>
+            <ChevronDown className="w-3 h-3 text-slate-400 ml-0.5" />
+          </div>
+          <input
+            type="text"
+            value={billSearch}
+            onChange={(e) => { setBillSearch(e.target.value); setPage(1); }}
+            placeholder="Type Here..."
+            className="px-2.5 bg-transparent text-slate-700 placeholder-slate-400 focus:outline-none w-32 h-full text-[13px]"
+          />
+          <span className="px-2 text-slate-400 flex items-center h-full">
+            <Search className="w-3.5 h-3.5" />
+          </span>
+        </div>
+
+        {/* Date range picker */}
+        <div ref={dateRef} className="relative">
+          <button
+            onClick={() => { setDraftFrom(dateFrom); setDraftTo(dateTo); setShowDatePicker((v) => !v); }}
+            className={cn(
+              "flex items-center gap-1.5 border rounded-md bg-white px-3 h-[30px] text-[13px] text-slate-700 font-medium hover:border-slate-300 transition-colors whitespace-nowrap shadow-sm",
+              showDatePicker ? "border-blue-300 ring-2 ring-blue-100" : "border-slate-200"
+            )}
+          >
+            <span>{dateLabel}</span>
+            <Calendar className="w-3.5 h-3.5 text-slate-400" />
+          </button>
+
           <AnimatePresence>
-            {items.length > 0 && (
-              <motion.button
-                initial={{ opacity: 0, x: -8 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -8 }}
-                onClick={() => { if (confirm("Clear all items?")) clear(); }}
-                className="text-[14px] text-white/40 hover:text-white/80 transition-colors mr-4 whitespace-nowrap"
+            {showDatePicker && (
+              <motion.div
+                initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0,  scale: 1    }}
+                exit={{   opacity: 0, y: -6, scale: 0.97 }}
+                transition={{ duration: 0.15 }}
+                className="absolute top-full left-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl z-20 p-4 w-[280px]"
               >
-                Clear Bill
-              </motion.button>
+                <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-3">Date Range</p>
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="text-[11px] text-slate-500 font-medium mb-1 block">From</label>
+                    <input
+                      type="date"
+                      value={draftFrom}
+                      onChange={(e) => setDraftFrom(e.target.value)}
+                      className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-[12px] focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-slate-500 font-medium mb-1 block">To</label>
+                    <input
+                      type="date"
+                      value={draftTo}
+                      onChange={(e) => setDraftTo(e.target.value)}
+                      className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-[12px] focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300"
+                    />
+                  </div>
+                </div>
+                <div className="flex gap-2 justify-end pt-1 border-t border-slate-100">
+                  <button
+                    onClick={resetDateToFY}
+                    className="text-[12px] text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors"
+                  >
+                    Reset to FY
+                  </button>
+                  <button
+                    onClick={applyDateRange}
+                    className="text-[12px] bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-1.5 rounded-lg transition-colors"
+                  >
+                    Apply
+                  </button>
+                </div>
+              </motion.div>
             )}
           </AnimatePresence>
-
-          <div className="flex-1" />
-
-          <div className="flex items-center gap-4 text-white text-[15px]">
-            <span className="text-white/70">
-              <motion.span
-                key={totalQty}
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                className="font-bold text-white inline-block"
-              >
-                {totalQty}
-              </motion.span>
-              {" "}Qty.
-            </span>
-
-            <span className="text-white/30">•</span>
-
-            <span className="text-white/70">
-              <motion.span
-                key={items.length}
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                className="font-bold text-white inline-block"
-              >
-                {items.length}
-              </motion.span>
-              {" "}Items
-            </span>
-
-            <span className="text-white/30">•</span>
-
-            <motion.span
-              key={roundedTotal}
-              initial={{ opacity: 0, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ type: "spring", stiffness: 400, damping: 25 }}
-              className="font-bold text-white tabular-nums inline-block"
-            >
-              ₹{roundedTotal.toFixed(2)}
-            </motion.span>
-
-            <div className="flex items-center gap-2 pl-2 border-l border-white/15">
-              <Calculator className="w-5 h-5 text-white/40" />
-            </div>
-
-            <span className="text-white/30">•</span>
-
-            <span className="text-white/60 font-medium">Net Payable</span>
-
-            <motion.div
-              key={`net-${roundedTotal}`}
-              initial={{ scale: 0.9 }}
-              animate={{ scale: 1 }}
-              transition={{ type: "spring", stiffness: 500, damping: 30 }}
-              className="flex items-center gap-1 bg-white/10 hover:bg-white/15 transition-colors rounded px-3 py-1.5 cursor-pointer"
-            >
-              <span className="font-bold text-white tabular-nums text-[18px]">
-                ₹{roundedTotal.toFixed(2)}
-              </span>
-              <ChevronUp className="w-4 h-4 text-white/50" />
-            </motion.div>
-          </div>
         </div>
-      </motion.div>
 
-      {/* ── Print Preview Modal ───────────────────────────────── */}
-      <AnimatePresence>
-        {showPrint && invoice && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="print:hidden fixed inset-0 z-50 bg-black/55 backdrop-blur-sm flex items-start justify-center overflow-y-auto py-8 px-4"
+        {/* Name / Mobile search */}
+        <div className="flex items-center border border-slate-200 rounded-md bg-white overflow-hidden h-[30px] text-[13px] shadow-sm">
+          <input
+            type="text"
+            value={nameSearch}
+            onChange={(e) => { setNameSearch(e.target.value); setPage(1); }}
+            placeholder="Name / Mobile"
+            className="px-2.5 bg-transparent text-slate-700 placeholder-slate-400 focus:outline-none w-36 h-full"
+          />
+          <span className="px-2 text-slate-400 flex items-center h-full">
+            <Search className="w-3.5 h-3.5" />
+          </span>
+        </div>
+
+        {/* Amount filter */}
+        <div ref={amountRef} className="relative">
+          <button
+            onClick={() => setShowAmountDrop((v) => !v)}
+            className={cn(
+              "flex items-center gap-1.5 border rounded-md bg-white px-3 h-[30px] text-[13px] font-medium transition-colors whitespace-nowrap shadow-sm",
+              amountFilter !== "all" ? "border-blue-300 text-blue-600 ring-2 ring-blue-100" : "border-slate-200 text-slate-700 hover:border-slate-300"
+            )}
           >
-            <motion.div
-              initial={{ scale: 0.94, opacity: 0, y: 16 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 8 }}
-              transition={{ type: "spring", stiffness: 350, damping: 30 }}
-              className="bg-slate-100 rounded-2xl overflow-hidden shadow-card-lg w-full max-w-5xl"
-            >
-              <div className="flex items-center justify-between px-6 py-4 bg-white border-b border-slate-100">
-                <div>
-                  <h2 className="text-base font-bold text-slate-900">Invoice #{invoice.invoiceNumber}</h2>
-                  <p className="text-xs text-emerald-600 font-semibold mt-0.5">✓ Invoice saved successfully</p>
-                </div>
-                <div className="flex gap-3 items-center flex-wrap">
-                  {/* Cancel invoice flow */}
-                  {!cancelConfirm ? (
-                    <button
-                      onClick={() => setCancelConfirm(true)}
-                      className="flex items-center gap-1.5 px-4 py-2 text-red-600 hover:bg-red-50 border border-red-200 text-[13px] font-medium rounded-lg transition-colors"
-                    >
-                      <XCircle className="w-4 h-4" />
-                      Cancel Invoice
-                    </button>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={cancelReason}
-                        onChange={(e) => setCancelReason(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") handleCancel(); if (e.key === "Escape") { setCancelConfirm(false); setCancelReason(""); } }}
-                        placeholder="Reason for cancellation..."
-                        className="text-[13px] border border-red-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-red-200 w-52"
-                        autoFocus
-                      />
-                      <button
-                        onClick={handleCancel}
-                        disabled={!cancelReason.trim() || cancelling}
-                        className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white text-[13px] font-semibold rounded-lg transition-colors"
-                      >
-                        {cancelling && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                        Confirm
-                      </button>
-                      <button
-                        onClick={() => { setCancelConfirm(false); setCancelReason(""); }}
-                        className="px-3 py-2 text-slate-500 hover:text-slate-700 text-[13px] transition-colors"
-                      >
-                        Back
-                      </button>
-                    </div>
-                  )}
+            <span className="text-slate-500 font-semibold">₹</span>
+            {AMOUNT_SHORT[amountFilter]}
+            <ChevronDown className="w-3 h-3 text-slate-400" />
+          </button>
+          <AnimatePresence>
+            {showAmountDrop && (
+              <motion.div
+                initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0,  scale: 1    }}
+                exit={{   opacity: 0, y: -6, scale: 0.97 }}
+                transition={{ duration: 0.14 }}
+                className="absolute top-full left-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl z-20 py-1 min-w-[160px]"
+              >
+                {AMOUNT_OPTIONS.map(([val, label]) => (
+                  <button
+                    key={val}
+                    onClick={() => { setAmountFilter(val); setShowAmountDrop(false); }}
+                    className={cn(
+                      "w-full text-left px-4 py-2 text-[13px] hover:bg-blue-50 transition-colors",
+                      amountFilter === val && "text-blue-600 font-semibold bg-blue-50/60"
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
 
+        {/* More filters */}
+        <button className={cn(
+          "flex items-center gap-1.5 border rounded-md bg-white px-3 h-[30px] text-[13px] font-medium hover:bg-slate-50 transition-colors whitespace-nowrap shadow-sm",
+          activeFilterCount > 0 ? "border-blue-300 text-blue-600" : "border-slate-200 text-slate-600"
+        )}>
+          <SlidersHorizontal className="w-3.5 h-3.5" />
+          More Filters
+          {activeFilterCount > 0 && (
+            <span className="text-[11px] font-bold bg-blue-100 text-blue-700 rounded-full px-1.5 leading-[18px]">
+              {activeFilterCount}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* ── Table ──────────────────────────────────────────────── */}
+      <div className="flex-1 overflow-auto min-h-0">
+        <table className="w-full border-collapse">
+          <thead className="sticky top-0 bg-white z-10">
+            <tr className="border-b border-slate-200">
+              <ColHeader col="invoiceNumber" label="Bill No."     />
+              <ColHeader col="createdAt"     label="Entry Date"   />
+              <ColHeader                     label="Bill Date"  sortable={false} />
+              <ColHeader                     label="Entry By"   sortable={false} />
+              <ColHeader col="customerName"  label="Patient"      />
+              <ColHeader                     label="Mobile"     sortable={false} />
+              <ColHeader col="totalAmount"   label="Bill Amount"  />
+              <ColHeader col="paymentStatus" label="Status"       />
+            </tr>
+          </thead>
+
+          <tbody>
+            {loading ? (
+              <tr>
+                <td colSpan={8} className="py-24 text-center">
+                  <Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" />
+                  <p className="text-slate-400 text-[13px] mt-3">Loading invoices…</p>
+                </td>
+              </tr>
+            ) : error ? (
+              <tr>
+                <td colSpan={8} className="py-24 text-center">
+                  <AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-3" />
+                  <p className="text-red-500 text-[13px] font-medium">{error}</p>
                   <button
-                    onClick={() => window.print()}
-                    className="flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold rounded-lg transition-colors"
+                    onClick={fetchInvoices}
+                    className="mt-3 text-blue-600 text-[12px] hover:underline"
                   >
-                    🖨 Print
+                    Try again
                   </button>
-                  <button
-                    onClick={closePrint}
-                    className="px-5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[13px] font-medium rounded-lg transition-colors"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-              <div className="p-8">
-                <div className="shadow-card-lg mx-auto" style={{ width: "fit-content" }}>
-                  <InvoicePrintView invoice={invoice} />
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </>
+                </td>
+              </tr>
+            ) : displayedInvoices.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="py-24 text-center">
+                  <FileX className="w-10 h-10 text-slate-200 mx-auto mb-3" />
+                  <p className="text-slate-500 text-[14px] font-medium">No invoices found</p>
+                  <p className="text-slate-400 text-[12px] mt-1">
+                    Try adjusting filters or{" "}
+                    <Link href="/dashboard/billing/new" className="text-blue-600 hover:underline font-medium">
+                      create a new bill
+                    </Link>
+                  </p>
+                </td>
+              </tr>
+            ) : (
+              displayedInvoices.map((inv) => (
+                <tr
+                  key={inv.id}
+                  onClick={() => router.push(`/dashboard/billing/${inv.id}`)}
+                  className="border-b border-slate-100 hover:bg-blue-50/40 cursor-pointer transition-colors group"
+                >
+                  <td className="px-4 py-3 text-[13px] font-semibold text-blue-600 whitespace-nowrap group-hover:text-blue-700">
+                    {inv.invoiceNumber}
+                  </td>
+                  <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap">
+                    {formatDate(inv.createdAt)}
+                  </td>
+                  <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap">
+                    {formatDate(inv.createdAt)}
+                  </td>
+                  <td className="px-4 py-3 text-[13px] text-slate-700 whitespace-nowrap">
+                    {inv.user.name}
+                  </td>
+                  <td className="px-4 py-3 text-[13px] text-slate-700 max-w-[140px] truncate">
+                    {inv.customer?.name ?? <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap tabular-nums">
+                    {inv.customer?.phone ?? <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-[13px] font-semibold text-slate-900 whitespace-nowrap tabular-nums">
+                    {fmtCurrency(inv.totalAmount)}
+                  </td>
+                  <td className="px-4 py-3">
+                    <StatusBadge isCancelled={inv.isCancelled} paymentStatus={inv.paymentStatus} />
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* ── Pagination ─────────────────────────────────────────── */}
+      {!loading && total > 0 && (
+        <div className="flex items-center justify-between px-5 py-2.5 border-t border-slate-100 bg-slate-50/60 flex-shrink-0"
+        >
+            <span className="text-[12px] text-slate-500">
+              Showing{" "}
+              <span className="font-semibold text-slate-700">
+                {Math.min((page - 1) * 20 + 1, total)}–{Math.min(page * 20, total)}
+              </span>{" "}
+              of{" "}
+              <span className="font-semibold text-slate-700">{total}</span> bills
+            </span>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="px-3 py-1 rounded-lg border border-slate-200 text-[12px] text-slate-600 font-medium hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                ‹ Prev
+              </button>
+
+              <span className="text-[12px] text-slate-500 font-medium px-3 py-1 bg-white border border-slate-200 rounded-lg">
+                {page} / {totalPages}
+              </span>
+
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page === totalPages}
+                className="px-3 py-1 rounded-lg border border-slate-200 text-[12px] text-slate-600 font-medium hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                Next ›
+              </button>
+            </div>
+        </div>
+      )}
+    </div>
   );
 }

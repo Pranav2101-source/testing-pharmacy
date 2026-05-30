@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@pharmacy/database";
+import type { PrismaClient, PurchaseStatus } from "@pharmacy/database";
 import type { CreateSupplierInput } from "./suppliers.schema.js";
 
 export class SuppliersRepo {
@@ -23,6 +23,21 @@ export class SuppliersRepo {
 
   async getById(id: string, tenantId: string) {
     return this.db.supplier.findFirst({ where: { id, tenantId } });
+  }
+
+  async listPurchaseOrders(tenantId: string, page = 1, limit = 20, status?: string) {
+    const where = { tenantId, ...(status ? { status: status as PurchaseStatus } : {}) };
+    const [items, total] = await Promise.all([
+      this.db.purchaseOrder.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip:    (page - 1) * limit,
+        take:    limit,
+        include: { supplier: { select: { name: true } }, items: { select: { quantity: true, amount: true } } },
+      }),
+      this.db.purchaseOrder.count({ where }),
+    ]);
+    return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async createPurchaseOrder(tenantId: string, data: {

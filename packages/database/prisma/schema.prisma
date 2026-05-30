@@ -26,16 +26,20 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users           User[]
-  customers       Customer[]
-  suppliers       Supplier[]
-  inventory       Inventory[]
-  purchaseOrders  PurchaseOrder[]
-  invoices        Invoice[]
-  invoiceSettings InvoiceSettings?
-  auditLogs       AuditLog[]
-  uploads         Upload[]
-  notifications   NotificationLog[]
+  users               User[]
+  customers           Customer[]
+  suppliers           Supplier[]
+  inventory           Inventory[]
+  purchaseOrders      PurchaseOrder[]
+  invoices            Invoice[]
+  invoiceSettings     InvoiceSettings?
+  auditLogs           AuditLog[]
+  uploads             Upload[]
+  notifications       NotificationLog[]
+  invoicePayments     InvoicePayment[]
+  salesReturns        SalesReturn[]
+  inventoryMovements  InventoryMovement[]
+  stockReservations   StockReservation[]
 
   @@map("tenants")
 }
@@ -56,9 +60,12 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  invoices  Invoice[]
-  auditLogs AuditLog[]
+  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoices            Invoice[]
+  auditLogs           AuditLog[]
+  invoicePayments     InvoicePayment[]
+  salesReturns        SalesReturn[]
+  inventoryMovements  InventoryMovement[]
 
   @@unique([tenantId, email])
   @@index([tenantId, role])
@@ -103,24 +110,28 @@ model Medicine {
 // ─── Inventory (per tenant, per batch) ───────────────────────────────────────
 
 model Inventory {
-  id           String   @id @default(cuid())
-  tenantId     String
-  medicineId   String
-  batchNumber  String
-  expiryDate   DateTime
-  quantity     Int
-  purchaseRate Float
-  mrp          Float
-  location     String?  // shelf / rack
-  minimumStock Int      @default(10)
+  id               String   @id @default(cuid())
+  tenantId         String
+  medicineId       String
+  batchNumber      String
+  expiryDate       DateTime
+  quantity         Int
+  reservedQuantity Int      @default(0) // stock locked in un-finalised drafts
+  purchaseRate     Float
+  mrp              Float
+  location         String?  // shelf / rack
+  minimumStock     Int      @default(10)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  medicine    Medicine      @relation(fields: [medicineId], references: [id])
-  invoiceItems InvoiceItem[]
-  purchaseItems PurchaseOrderItem[]
+  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  medicine            Medicine            @relation(fields: [medicineId], references: [id])
+  invoiceItems        InvoiceItem[]
+  purchaseItems       PurchaseOrderItem[]
+  salesReturnItems    SalesReturnItem[]
+  inventoryMovements  InventoryMovement[]
+  stockReservations   StockReservation[]
 
   @@unique([tenantId, medicineId, batchNumber])
   @@index([tenantId, medicineId])
@@ -128,26 +139,61 @@ model Inventory {
   @@map("inventory")
 }
 
+// ─── Stock Reservation ───────────────────────────────────────────────────────
+// Created when a billing session adds an item to cart; released when bill is
+// saved, cleared, or the 30-minute TTL expires. Prevents two operators from
+// selling the same last strip simultaneously.
+
+model StockReservation {
+  id          String   @id @default(cuid())
+  tenantId    String
+  inventoryId String
+  sessionId   String   // idempotency key of the billing session
+  quantity    Int
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  inventory Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, inventoryId, sessionId])
+  @@index([tenantId, sessionId])
+  @@index([expiresAt])
+  @@map("stock_reservations")
+}
+
 // ─── Customer ────────────────────────────────────────────────────────────────
 
 model Customer {
-  id       String  @id @default(cuid())
-  tenantId String
-  name     String
-  phone    String?
-  email    String?
-  address  String?
-  age      Int?
-  gender   String?
+  id           String       @id @default(cuid())
+  tenantId     String
+  name         String
+  phone        String?
+  email        String?
+  address      String?
+  age          Int?
+  gender       String?
+  customerType CustomerType @default(WALK_IN)
+  creditLimit  Float        @default(0)  // max outstanding credit allowed
+  creditUsed   Float        @default(0)  // current outstanding balance
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  invoices Invoice[]
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoices    Invoice[]
+  returns     SalesReturn[]
 
   @@index([tenantId, phone])
+  @@index([tenantId, customerType])
   @@map("customers")
+}
+
+enum CustomerType {
+  WALK_IN
+  REGISTERED
+  CORPORATE
+  CREDIT
 }
 
 // ─── Supplier ────────────────────────────────────────────────────────────────
@@ -234,39 +280,54 @@ model PurchaseOrderItem {
 // ─── Invoice ─────────────────────────────────────────────────────────────────
 
 model Invoice {
-  id             String        @id @default(cuid())
-  tenantId       String
-  invoiceNumber  String
-  customerId     String?
-  userId         String
-  doctorName     String?
-  prescriptionId String?       // linked upload
-  paymentMode    PaymentMode   @default(CASH)
-  paymentStatus  PaymentStatus @default(PAID)
-  subtotal       Float
-  discountAmount Float         @default(0)
-  taxableAmount  Float
-  cgst           Float
-  sgst           Float
-  totalGst       Float
-  totalAmount    Float
-  notes          String?
-  isCancelled    Boolean       @default(false)
-  cancelledAt    DateTime?
-  cancelReason   String?
+  id              String        @id @default(cuid())
+  tenantId        String
+  invoiceNumber   String
+  customerId      String?
+  userId          String
+  doctorName      String?
+  prescriptionId  String?       // linked upload
+  paymentMode     PaymentMode   @default(CASH)
+  paymentStatus   PaymentStatus @default(PAID)
+  status          InvoiceStatus @default(COMPLETED)
+  subtotal        Float
+  discountAmount  Float         @default(0)
+  taxableAmount   Float
+  cgst            Float
+  sgst            Float
+  totalGst        Float
+  totalAmount     Float
+  returnedAmount  Float         @default(0) // cumulative amount returned
+  notes           String?
+  isCancelled     Boolean       @default(false) // kept for backward compat — always mirrors status=CANCELLED
+  cancelledAt     DateTime?
+  cancelReason    String?
+  idempotencyKey  String?       // frontend UUID to prevent double-save
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant   Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer Customer?     @relation(fields: [customerId], references: [id])
-  user     User          @relation(fields: [userId], references: [id])
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer?        @relation(fields: [customerId], references: [id])
+  user     User             @relation(fields: [userId], references: [id])
   items    InvoiceItem[]
+  payments InvoicePayment[]
+  returns  SalesReturn[]
 
   @@unique([tenantId, invoiceNumber])
+  @@unique([tenantId, idempotencyKey]) // prevents duplicate saves from double-click
   @@index([tenantId, createdAt])
   @@index([tenantId, customerId])
+  @@index([tenantId, status])
   @@map("invoices")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  COMPLETED
+  CANCELLED
+  RETURNED
+  PARTIALLY_RETURNED
 }
 
 enum PaymentMode {
@@ -274,6 +335,7 @@ enum PaymentMode {
   UPI
   CARD
   CREDIT
+  WALLET
 }
 
 enum PaymentStatus {
@@ -283,27 +345,158 @@ enum PaymentStatus {
 }
 
 model InvoiceItem {
-  id           String   @id @default(cuid())
-  invoiceId    String
-  inventoryId  String
-  medicineName String
-  hsnCode      String?
-  batchNumber  String
-  expiryDate   DateTime
-  quantity     Int
-  mrp          Float
-  rate         Float    // selling rate (may differ from MRP after discount)
-  discount     Float    @default(0) // percentage
-  gstRate      Float
-  cgst         Float
-  sgst         Float
+  id            String   @id @default(cuid())
+  invoiceId     String
+  inventoryId   String
+  medicineName  String
+  hsnCode       String?
+  batchNumber   String
+  expiryDate    DateTime
+  quantity      Int
+  mrp           Float
+  rate          Float    // selling rate (may differ from MRP after discount)
+  discount      Float    @default(0) // percentage
+  gstRate       Float
+  cgst          Float
+  sgst          Float
   taxableAmount Float
-  amount       Float    // final line total
+  amount        Float    // final line total
 
   invoice   Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   inventory Inventory @relation(fields: [inventoryId], references: [id])
 
+  @@index([invoiceId])
   @@map("invoice_items")
+}
+
+// ─── Invoice Payments (split payment support) ────────────────────────────────
+// One invoice can have multiple payment entries (e.g. ₹500 Cash + ₹1000 UPI).
+
+model InvoicePayment {
+  id          String      @id @default(cuid())
+  tenantId    String
+  invoiceId   String
+  amount      Float
+  paymentMode PaymentMode
+  reference   String?     // UPI txn ID, card last-4, cheque number
+  notes       String?
+  paidAt      DateTime    @default(now())
+  createdBy   String      // userId
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoice      Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  createdByUser User    @relation(fields: [createdBy], references: [id])
+
+  @@index([invoiceId])
+  @@index([tenantId, paidAt])
+  @@map("invoice_payments")
+}
+
+// ─── Sales Return ─────────────────────────────────────────────────────────────
+
+model SalesReturn {
+  id             String   @id @default(cuid())
+  tenantId       String
+  invoiceId      String
+  returnNumber   String
+  reason         String?
+  userId         String
+  customerId     String?
+  subtotal       Float
+  discountAmount Float    @default(0)
+  taxableAmount  Float
+  cgst           Float
+  sgst           Float
+  totalGst       Float
+  totalAmount    Float
+  idempotencyKey String?  // frontend UUID to prevent double-submission
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoice  Invoice           @relation(fields: [invoiceId], references: [id])
+  user     User              @relation(fields: [userId], references: [id])
+  customer Customer?         @relation(fields: [customerId], references: [id])
+  items    SalesReturnItem[]
+
+  @@unique([tenantId, returnNumber])
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, invoiceId])
+  @@index([tenantId, createdAt])
+  @@map("sales_returns")
+}
+
+model SalesReturnItem {
+  id            String   @id @default(cuid())
+  returnId      String
+  invoiceItemId String?  // reference to original InvoiceItem for qty validation
+  inventoryId   String
+  medicineName  String
+  hsnCode       String?
+  batchNumber   String
+  expiryDate    DateTime
+  quantity      Int
+  mrp           Float
+  rate          Float
+  discount      Float    @default(0)
+  gstRate       Float
+  cgst          Float
+  sgst          Float
+  taxableAmount Float
+  amount        Float
+
+  return    SalesReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  inventory Inventory   @relation(fields: [inventoryId], references: [id])
+
+  @@index([returnId])
+  @@index([inventoryId])
+  @@map("sales_return_items")
+}
+
+// ─── Inventory Movement (full stock ledger) ───────────────────────────────────
+// Every stock change — sale, return, purchase, adjustment — writes a record here.
+// Never update or delete; append-only. Enables full stock reconciliation.
+
+model InventoryMovement {
+  id              String             @id @default(cuid())
+  tenantId        String
+  inventoryId     String
+  userId          String
+  type            MovementType
+  direction       MovementDirection
+  quantity        Int                // always positive; direction determines sign
+  quantityBefore  Int
+  quantityAfter   Int
+  referenceType   String?            // "invoice" | "sales_return" | "purchase_order" | "adjustment"
+  referenceId     String?            // ID of the source document
+  notes           String?
+
+  createdAt DateTime @default(now())
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  inventory Inventory @relation(fields: [inventoryId], references: [id])
+  user      User      @relation(fields: [userId], references: [id])
+
+  @@index([tenantId, inventoryId])
+  @@index([tenantId, createdAt])
+  @@index([referenceId])
+  @@map("inventory_movements")
+}
+
+enum MovementType {
+  SALE           // stock out — invoice
+  RETURN         // stock in  — sales return
+  PURCHASE       // stock in  — purchase order
+  ADJUSTMENT     // manual correction
+  OPENING        // opening stock entry
+  DAMAGE         // write-off
+  EXPIRY_REMOVAL // removing expired stock
+}
+
+enum MovementDirection {
+  IN
+  OUT
 }
 
 // ─── Invoice Settings (per tenant) ───────────────────────────────────────────

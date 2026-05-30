@@ -334,15 +334,13 @@ export default function DocumentsPage() {
             </span>
           </div>
           {/* Add custom button */}
-          <motion.button
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.97 }}
+          <button
             onClick={() => setShowModal(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-sm font-semibold text-white shadow-card-md transition-colors"
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-[0.97] text-sm font-semibold text-white shadow-card-md transition-all duration-75"
           >
             <Plus className="w-3.5 h-3.5" />
             Add Custom Doc
-          </motion.button>
+          </button>
         </div>
       </div>
 

@@ -3,23 +3,24 @@ import { create } from "zustand";
 import { calcGstFromMrp, calcInvoiceTotals } from "@pharmacy/utils";
 
 export type CartItem = {
-  inventoryId: string;
-  medicineName: string;
-  hsnCode: string | null;
-  packSize?: string;
-  location?: string;
-  batchNumber: string;
-  expiryDate: string;
-  mrp: number;
-  quantity: number;
-  discount: number;
-  gstRate: number;
+  inventoryId:    string;
+  medicineName:   string;
+  hsnCode:        string | null;
+  packSize?:      string;
+  location?:      string;
+  batchNumber:    string;
+  expiryDate:     string;
+  mrp:            number;
+  quantity:       number;
+  discount:       number;
+  gstRate:        number;
+  availableStock?: number; // stock at time of add — used for in-cart warnings
   // computed
-  rate: number;
-  taxableAmount: number;
-  cgst: number;
-  sgst: number;
-  amount: number;
+  rate:           number;
+  taxableAmount:  number;
+  cgst:           number;
+  sgst:           number;
+  amount:         number;
 };
 
 export type BillingMeta = {
@@ -41,6 +42,7 @@ type BillingStore = {
   setMeta: (patch: Partial<BillingMeta>) => void;
   clear: () => void;
   getTotals: () => ReturnType<typeof calcInvoiceTotals>;
+  loadDraft: (items: CartItem[], meta: BillingMeta) => void;
 };
 
 const DEFAULT_META: BillingMeta = {
@@ -60,22 +62,23 @@ function recompute(item: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgs
     item.gstRate
   );
   return {
-    inventoryId: item.inventoryId,
-    medicineName: item.medicineName,
-    hsnCode: item.hsnCode,
-    packSize: item.packSize,
-    location: item.location,
-    batchNumber: item.batchNumber,
-    expiryDate: item.expiryDate,
-    mrp: item.mrp,
-    quantity: item.quantity,
-    discount: item.discount,
-    gstRate: item.gstRate,
-    rate: Math.round(item.mrp * (1 - item.discount / 100) * 100) / 100,
+    inventoryId:    item.inventoryId,
+    medicineName:   item.medicineName,
+    hsnCode:        item.hsnCode,
+    packSize:       item.packSize,
+    location:       item.location,
+    batchNumber:    item.batchNumber,
+    expiryDate:     item.expiryDate,
+    mrp:            item.mrp,
+    quantity:       item.quantity,
+    discount:       item.discount,
+    gstRate:        item.gstRate,
+    availableStock: item.availableStock,
+    rate:           Math.round(item.mrp * (1 - item.discount / 100) * 100) / 100,
     taxableAmount,
     cgst,
     sgst,
-    amount: totalAmount,
+    amount:         totalAmount,
   };
 }
 
@@ -127,6 +130,10 @@ export const useBillingStore = create<BillingStore>((set, get) => ({
 
   clear() {
     set({ items: [], meta: DEFAULT_META });
+  },
+
+  loadDraft(draftItems, draftMeta) {
+    set({ items: draftItems, meta: draftMeta });
   },
 
   getTotals() {

@@ -9,6 +9,7 @@ import {
   FileText,
   ShoppingCart,
   Package2,
+  FlaskConical,
   Zap,
   Link2,
   Search,
@@ -30,6 +31,10 @@ import {
   Info,
   MapPin,
   Building2,
+  Receipt,
+  FilePlus,
+  RotateCcw,
+  BookmarkCheck,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
@@ -48,11 +53,25 @@ type NavTab = {
 // ─────────────────────────────────────────────────────────────
 const NAV_TABS: NavTab[] = [
   { href: "/dashboard",             label: "Home",        icon: Home         },
-  { href: "/dashboard/billing",     label: "Bill",        icon: FileText     },
   { href: "/dashboard/purchase",    label: "Purchase",    icon: ShoppingCart },
-  { href: "/dashboard/inventory",   label: "Inventory",   icon: Package2     },
-  { href: "/dashboard/ginni",       label: "Ginni",       icon: Zap          },
+  { href: "/dashboard/inventory",   label: "Inventory",   icon: Package2      },
+  { href: "/dashboard/medicines",   label: "Medicines",   icon: FlaskConical  },
+  { href: "/dashboard/ginni",       label: "Ginni",       icon: Zap           },
   { href: "/dashboard/integration", label: "Integration", icon: Link2        },
+];
+
+type SalesItem = {
+  href: string;
+  label: string;
+  description: string;
+  icon: React.ElementType;
+};
+
+const SALES_ITEMS: SalesItem[] = [
+  { href: "/dashboard/billing/new",     label: "New Bill",    description: "Create a new invoice",   icon: FilePlus      },
+  { href: "/dashboard/billing",         label: "All Bills",   description: "View all invoices",       icon: FileText      },
+  { href: "/dashboard/billing/drafts",  label: "Draft Bills", description: "Saved drafts",            icon: BookmarkCheck },
+  { href: "/dashboard/billing/returns", label: "Returns",     description: "Process returns",         icon: RotateCcw     },
 ];
 
 // ─────────────────────────────────────────────────────────────
@@ -481,13 +500,124 @@ function ProfileDropdown() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Sales Nav Dropdown
+// ─────────────────────────────────────────────────────────────
+function SalesNavDropdown({ pathname }: { pathname: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const salesActive = pathname.startsWith("/dashboard/billing");
+
+  useEffect(() => {
+    const onOut = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onOut);
+    return () => document.removeEventListener("mousedown", onOut);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={cn(
+          "relative flex items-center gap-1.5 px-3.5 py-2 rounded-xl",
+          "text-xs font-semibold transition-colors duration-150 outline-none",
+          "focus-visible:ring-2 focus-visible:ring-white/50 focus-visible:ring-offset-1 focus-visible:ring-offset-transparent",
+          salesActive
+            ? "text-brand-700 bg-white shadow-sm"
+            : "text-white/65 hover:text-white hover:bg-white/10"
+        )}
+      >
+        <Receipt
+          className={cn("w-3.5 h-3.5 flex-shrink-0", salesActive ? "text-brand-600" : "text-white/60")}
+          strokeWidth={salesActive ? 2.2 : 1.8}
+        />
+        <span>Sales</span>
+        <ChevronDown
+          className={cn("w-3 h-3 transition-transform duration-200", open && "rotate-180", salesActive ? "text-brand-400" : "text-white/40")}
+        />
+        {salesActive && (
+          <motion.span
+            layoutId="nav-dot"
+            className="absolute -bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full bg-brand-500"
+            transition={{ type: "spring", stiffness: 380, damping: 30 }}
+          />
+        )}
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            role="menu"
+            initial={{ opacity: 0, y: -8, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0,  scale: 1    }}
+            exit={  { opacity: 0, y: -8, scale: 0.97 }}
+            transition={{ duration: 0.14, ease: "easeOut" }}
+            className="absolute left-0 top-full mt-2 w-52 rounded-2xl shadow-2xl border border-slate-200/80 bg-white overflow-hidden z-50"
+            style={{ boxShadow: "0 20px 40px -8px rgba(0,0,0,0.20), 0 4px 12px -4px rgba(0,0,0,0.10)" }}
+          >
+            <div className="p-1.5">
+              {SALES_ITEMS.map(({ href, label, description, icon: Icon }) => {
+                const active = href === "/dashboard/billing"
+                  ? pathname === href
+                  : pathname.startsWith(href);
+                return (
+                  <Link
+                    key={href}
+                    href={href}
+                    role="menuitem"
+                    onClick={() => setOpen(false)}
+                    className={cn(
+                      "flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors",
+                      active ? "bg-blue-50 text-blue-700" : "text-slate-700 hover:bg-slate-50"
+                    )}
+                  >
+                    <span className={cn(
+                      "w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0",
+                      active ? "bg-blue-100" : "bg-slate-100"
+                    )}>
+                      <Icon
+                        className={cn("w-3.5 h-3.5", active ? "text-blue-600" : "text-slate-500")}
+                        strokeWidth={1.8}
+                      />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-[13px] leading-none">{label}</p>
+                      <p className={cn("text-[11px] mt-0.5", active ? "text-blue-500" : "text-slate-400")}>{description}</p>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
 // Mobile Menu Drawer
 // ─────────────────────────────────────────────────────────────
 function MobileMenu({ pathname }: { pathname: string }) {
   const [open, setOpen] = useState(false);
+  const [salesExpanded, setSalesExpanded] = useState(() => pathname.startsWith("/dashboard/billing"));
+  const isSalesActive = pathname.startsWith("/dashboard/billing");
 
-  // close on route change
-  useEffect(() => { setOpen(false); }, [pathname]);
+  // close on route change; auto-expand sales section when on a billing page
+  useEffect(() => {
+    setOpen(false);
+    if (pathname.startsWith("/dashboard/billing")) setSalesExpanded(true);
+  }, [pathname]);
 
   // trap focus / escape key
   useEffect(() => {
@@ -560,7 +690,10 @@ function MobileMenu({ pathname }: { pathname: string }) {
 
               {/* Tabs */}
               <div className="flex flex-col gap-1 p-3 flex-1 overflow-y-auto">
-                {NAV_TABS.map((tab) => {
+
+                {/* Home */}
+                {(() => {
+                  const tab = NAV_TABS[0];
                   const active = isActive(pathname, tab.href);
                   const Icon = tab.icon;
                   return (
@@ -570,9 +703,80 @@ function MobileMenu({ pathname }: { pathname: string }) {
                       onClick={() => setOpen(false)}
                       className={cn(
                         "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all",
-                        active
-                          ? "bg-white text-brand-700"
-                          : "text-white/65 hover:text-white hover:bg-white/10"
+                        active ? "bg-white text-brand-700" : "text-white/65 hover:text-white hover:bg-white/10"
+                      )}
+                    >
+                      <Icon className={cn("w-4 h-4", active ? "text-brand-600" : "text-white/50")} strokeWidth={1.8} />
+                      {tab.label}
+                      {active && <Dot className="ml-auto w-4 h-4 text-brand-500" />}
+                    </Link>
+                  );
+                })()}
+
+                {/* Sales — expandable section */}
+                <div>
+                  <button
+                    onClick={() => setSalesExpanded((v) => !v)}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all",
+                      isSalesActive ? "bg-white/10 text-white" : "text-white/65 hover:text-white hover:bg-white/10"
+                    )}
+                  >
+                    <Receipt className={cn("w-4 h-4", isSalesActive ? "text-white/80" : "text-white/50")} strokeWidth={1.8} />
+                    Sales
+                    <ChevronDown
+                      className={cn("w-3.5 h-3.5 ml-auto transition-transform duration-200", salesExpanded && "rotate-180", isSalesActive ? "text-white/60" : "text-white/30")}
+                    />
+                  </button>
+
+                  <AnimatePresence initial={false}>
+                    {salesExpanded && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: "auto", opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.18 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="ml-4 mt-1 mb-1 space-y-0.5 border-l border-white/10 pl-3">
+                          {SALES_ITEMS.map(({ href, label, icon: Icon }) => {
+                            const active = href === "/dashboard/billing"
+                              ? pathname === href
+                              : pathname.startsWith(href);
+                            return (
+                              <Link
+                                key={href}
+                                href={href}
+                                onClick={() => setOpen(false)}
+                                className={cn(
+                                  "flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all",
+                                  active ? "bg-white text-brand-700" : "text-white/60 hover:text-white hover:bg-white/10"
+                                )}
+                              >
+                                <Icon className={cn("w-3.5 h-3.5", active ? "text-brand-600" : "text-white/40")} strokeWidth={1.8} />
+                                {label}
+                                {active && <Dot className="ml-auto w-4 h-4 text-brand-500" />}
+                              </Link>
+                            );
+                          })}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+
+                {/* Remaining tabs (Purchase → Integration) */}
+                {NAV_TABS.slice(1).map((tab) => {
+                  const active = isActive(pathname, tab.href);
+                  const Icon = tab.icon;
+                  return (
+                    <Link
+                      key={tab.href}
+                      href={tab.href}
+                      onClick={() => setOpen(false)}
+                      className={cn(
+                        "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all",
+                        active ? "bg-white text-brand-700" : "text-white/65 hover:text-white hover:bg-white/10"
                       )}
                     >
                       <Icon className={cn("w-4 h-4", active ? "text-brand-600" : "text-white/50")} strokeWidth={1.8} />
@@ -637,7 +841,9 @@ export function TopNav() {
         aria-label="Main navigation"
         className="hidden xl:flex items-center gap-0.5"
       >
-        {NAV_TABS.map((tab) => (
+        <NavItem tab={NAV_TABS[0]} pathname={pathname} />
+        <SalesNavDropdown pathname={pathname} />
+        {NAV_TABS.slice(1).map((tab) => (
           <NavItem key={tab.href} tab={tab} pathname={pathname} />
         ))}
       </nav>

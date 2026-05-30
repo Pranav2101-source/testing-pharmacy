@@ -49,6 +49,13 @@ export class AuthRepo {
     });
   }
 
+  async findUserById(userId: string) {
+    return this.db.user.findUnique({
+      where: { id: userId },
+      include: { tenant: { select: { id: true, name: true, isActive: true } } },
+    });
+  }
+
   async updateLastLogin(userId: string) {
     return this.db.user.update({
       where: { id: userId },
