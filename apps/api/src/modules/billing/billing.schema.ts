@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { PAYMENT_MODES, PAYMENT_STATUSES } from "./billing.constants.js";
+import { randomUUID } from "node:crypto";
+import { PAYMENT_MODES, PAYMENT_STATUSES, INVOICE_STATUSES } from "./billing.constants.js";
 
 // ─── Invoice creation ─────────────────────────────────────────────────────────
 
@@ -16,7 +17,8 @@ export const createInvoiceSchema = z.object({
   paymentMode:    z.enum(PAYMENT_MODES).default("CASH"),
   paymentStatus:  z.enum(PAYMENT_STATUSES).default("PAID"),
   notes:          z.string().max(1000).optional(),
-  idempotencyKey: z.string().uuid("idempotencyKey must be a UUID").optional(),
+  // Auto-generated server-side if omitted — prevents double-save on network retry
+  idempotencyKey: z.string().uuid().default(() => randomUUID()),
   items:          z.array(invoiceItemSchema).min(1, "At least one item required"),
 });
 
@@ -29,9 +31,11 @@ export const cancelInvoiceSchema = z.object({
 export const addPaymentSchema = z.object({
   amount:      z.number().positive("Payment amount must be positive"),
   paymentMode: z.enum(PAYMENT_MODES),
-  reference:   z.string().max(100).optional(), // UPI txn, card last-4, cheque no
+  reference:   z.string().max(100).optional(),
   notes:       z.string().max(500).optional(),
-  paidAt:      z.string().datetime().optional(), // defaults to now()
+  // Must include timezone offset so the server stores the correct UTC instant
+  // e.g. "2024-04-01T14:30:00+05:30" for IST
+  paidAt:      z.string().datetime({ offset: true }).optional(),
 });
 
 // ─── Sales Return ─────────────────────────────────────────────────────────────
@@ -39,12 +43,14 @@ export const addPaymentSchema = z.object({
 export const returnItemSchema = z.object({
   invoiceItemId: z.string().min(1, "invoiceItemId required"),
   quantity:      z.number().int().positive("Return quantity must be positive"),
+  // RESTOCK adds quantity back to inventory; WRITEOFF records the return but discards the item
+  disposition:   z.enum(["RESTOCK", "WRITEOFF"]).default("RESTOCK"),
 });
 
 export const createReturnSchema = z.object({
   reason:         z.string().min(1, "Return reason required").max(500),
   items:          z.array(returnItemSchema).min(1, "At least one item required"),
-  idempotencyKey: z.string().uuid("idempotencyKey must be a UUID").optional(),
+  idempotencyKey: z.string().uuid().default(() => randomUUID()),
 });
 
 // ─── List filters ─────────────────────────────────────────────────────────────
@@ -53,8 +59,10 @@ export const listInvoicesQuerySchema = z.object({
   page:             z.coerce.number().int().positive().default(1),
   limit:            z.coerce.number().int().positive().max(100).default(20),
   search:           z.string().optional(),
-  from:             z.string().optional(),
-  to:               z.string().optional(),
+  // Dates must carry a timezone offset (e.g. +05:30) so filtering is accurate for IST pharmacies
+  from:             z.string().datetime({ offset: true }).optional(),
+  to:               z.string().datetime({ offset: true }).optional(),
+  status:           z.enum(INVOICE_STATUSES).optional(),
   includeCancelled: z.coerce.boolean().default(false),
   paymentMode:      z.enum(PAYMENT_MODES).optional(),
   paymentStatus:    z.enum(PAYMENT_STATUSES).optional(),
@@ -65,19 +73,19 @@ export const listInvoicesQuerySchema = z.object({
 });
 
 export const listReturnsQuerySchema = z.object({
-  page:     z.coerce.number().int().positive().default(1),
-  limit:    z.coerce.number().int().positive().max(100).default(20),
-  search:   z.string().optional(),
-  from:     z.string().optional(),
-  to:       z.string().optional(),
+  page:      z.coerce.number().int().positive().default(1),
+  limit:     z.coerce.number().int().positive().max(100).default(20),
+  search:    z.string().optional(),
+  from:      z.string().datetime({ offset: true }).optional(),
+  to:        z.string().datetime({ offset: true }).optional(),
   invoiceId: z.string().optional(),
 });
 
 // ─── Inferred types ───────────────────────────────────────────────────────────
 
-export type CreateInvoiceInput  = z.infer<typeof createInvoiceSchema>;
-export type InvoiceItemInput    = z.infer<typeof invoiceItemSchema>;
-export type AddPaymentInput     = z.infer<typeof addPaymentSchema>;
-export type CreateReturnInput   = z.infer<typeof createReturnSchema>;
-export type ListInvoicesQuery   = z.infer<typeof listInvoicesQuerySchema>;
-export type ListReturnsQuery    = z.infer<typeof listReturnsQuerySchema>;
+export type CreateInvoiceInput = z.infer<typeof createInvoiceSchema>;
+export type InvoiceItemInput   = z.infer<typeof invoiceItemSchema>;
+export type AddPaymentInput    = z.infer<typeof addPaymentSchema>;
+export type CreateReturnInput  = z.infer<typeof createReturnSchema>;
+export type ListInvoicesQuery  = z.infer<typeof listInvoicesQuerySchema>;
+export type ListReturnsQuery   = z.infer<typeof listReturnsQuerySchema>;

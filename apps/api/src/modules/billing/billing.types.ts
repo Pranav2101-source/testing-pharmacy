@@ -7,6 +7,7 @@ export type InvoiceLineItem = {
   batchNumber:   string;
   expiryDate:    Date;
   mrp:           number;
+  purchaseRate:  number;
   quantity:      number;
   discount:      number;
   gstRate:       number;

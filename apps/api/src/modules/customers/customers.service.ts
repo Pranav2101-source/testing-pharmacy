@@ -11,8 +11,8 @@ export class CustomersService {
     this.repo = new CustomersRepo(app.prisma);
   }
 
-  async create(tenantId: string, input: CreateCustomerInput) {
-    return this.repo.create(tenantId, {
+  async create(pharmacyId: string, input: CreateCustomerInput) {
+    return this.repo.create(pharmacyId, {
       name:         input.name,
       phone:        input.phone,
       email:        input.email,
@@ -24,12 +24,8 @@ export class CustomersService {
     });
   }
 
-  async update(id: string, tenantId: string, input: UpdateCustomerInput) {
-    const customer = await this.repo.getById(id, tenantId);
-    if (!customer) {
-      throw Object.assign(new Error("Customer not found"), { statusCode: 404 });
-    }
-    return this.repo.update(id, tenantId, {
+  async update(id: string, pharmacyId: string, input: UpdateCustomerInput) {
+    return this.repo.update(id, pharmacyId, {
       name:         input.name,
       phone:        input.phone,
       email:        input.email,
@@ -41,31 +37,30 @@ export class CustomersService {
     });
   }
 
-  async getById(id: string, tenantId: string) {
-    const customer = await this.repo.getById(id, tenantId);
+  async getById(id: string, pharmacyId: string) {
+    const customer = await this.repo.getById(id, pharmacyId);
     if (!customer) {
-      throw Object.assign(new Error("Customer not found"), { statusCode: 404 });
+      const err = new Error("Customer not found");
+      (err as any).statusCode = 404;
+      throw err;
     }
     return customer;
   }
 
-  async list(tenantId: string, query: ListCustomersQuery) {
-    const page  = Math.max(1, query.page);
-    const limit = Math.min(MAX_PAGE_LIMIT, Math.max(1, query.limit));
-
-    return this.repo.list(tenantId, {
-      page,
-      limit,
+  async list(pharmacyId: string, query: ListCustomersQuery) {
+    return this.repo.list(pharmacyId, {
+      page:         Math.max(1, query.page),
+      limit:        Math.min(MAX_PAGE_LIMIT, Math.max(1, query.limit)),
       search:       query.search?.trim() || undefined,
       customerType: query.customerType,
     });
   }
 
-  async delete(id: string, tenantId: string) {
-    return this.repo.delete(id, tenantId);
+  async delete(id: string, pharmacyId: string) {
+    return this.repo.delete(id, pharmacyId);
   }
 
-  async getCreditSummary(id: string, tenantId: string) {
-    return this.repo.getCreditSummary(id, tenantId);
+  async getCreditSummary(id: string, pharmacyId: string) {
+    return this.repo.getCreditSummary(id, pharmacyId);
   }
 }

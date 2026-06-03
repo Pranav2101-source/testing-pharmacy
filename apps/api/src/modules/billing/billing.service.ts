@@ -3,9 +3,17 @@ import { BillingRepo } from "./billing.repo.js";
 import { calcGstFromMrp, calcInvoiceTotals } from "@pharmacy/utils";
 import { generateInvoiceNumber } from "@pharmacy/utils";
 import { defaultInvoiceSettings } from "@pharmacy/types";
-import type { CreateInvoiceInput, CreateReturnInput, AddPaymentInput, ListInvoicesQuery, ListReturnsQuery } from "./billing.schema.js";
+import type {
+  CreateInvoiceInput,
+  CreateReturnInput,
+  AddPaymentInput,
+  ListInvoicesQuery,
+  ListReturnsQuery,
+} from "./billing.schema.js";
 import type { InvoiceLineItem } from "./billing.types.js";
 import { INVOICE_SEQUENCE_KEY, RETURN_SEQUENCE_KEY } from "./billing.constants.js";
+import { AppError } from "../../lib/AppError.js";
+import { notifyOwners, sendNotification } from "../../lib/notifications.js";
 
 const MAX_PAGE_LIMIT = 100;
 
@@ -19,63 +27,63 @@ export class BillingService {
   // ── Create Invoice ────────────────────────────────────────────────────────
 
   async createInvoice(
-    tenantId:       string,
-    userId:         string,
-    input:          CreateInvoiceInput,
-    auditMeta?:     { ipAddress?: string; userAgent?: string }
+    pharmacyId: string,
+    userId:     string,
+    input:      CreateInvoiceInput,
+    auditMeta?: { ipAddress?: string; userAgent?: string },
   ) {
-    // Guard: duplicate inventory IDs → would double-decrement stock
     const inventoryIds = input.items.map((i) => i.inventoryId);
     if (new Set(inventoryIds).size !== inventoryIds.length) {
-      throw Object.assign(
-        new Error("Duplicate inventory items in a single invoice are not allowed"),
-        { statusCode: 400 }
-      );
+      throw AppError.badRequest("Duplicate inventory items in a single invoice are not allowed");
     }
 
-    // Prefetch all batches in one query
-    const batches  = await this.repo.getInventoryBatches(inventoryIds, tenantId);
+    const batches  = await this.repo.getInventoryBatches(inventoryIds, pharmacyId);
     const batchMap = new Map(batches.map((b) => [b.id, b]));
     const now      = new Date();
 
-    // Validate customer credit limit before doing any DB writes
     if (input.customerId && input.paymentMode === "CREDIT") {
-      await this.validateCreditLimit(tenantId, input.customerId, input.items, batchMap);
+      await this.validateCreditLimit(pharmacyId, input.customerId, input.items, batchMap);
+    }
+
+    // Schedule H / H1 / X medicines require a prescription reference (Indian Drug Rules)
+    const CONTROLLED = new Set(["H", "H1", "X"]);
+    const controlled: string[] = [];
+    for (const item of input.items) {
+      const batch    = batchMap.get(item.inventoryId);
+      const schedule = batch?.medicine.schedule?.toUpperCase().trim();
+      if (schedule && CONTROLLED.has(schedule)) {
+        controlled.push(`${batch!.medicine.name} (Schedule ${schedule})`);
+      }
+    }
+    if (controlled.length > 0 && !input.prescriptionId) {
+      throw AppError.unprocessable(
+        `Prescription required for controlled medicine(s): ${controlled.join(", ")}. ` +
+        `Provide a valid prescriptionId to proceed.`,
+      );
     }
 
     const lineItems: InvoiceLineItem[] = [];
 
     for (const item of input.items) {
-      if (item.quantity <= 0) {
-        throw Object.assign(new Error("Item quantity must be a positive integer"), { statusCode: 400 });
-      }
-
       const batch = batchMap.get(item.inventoryId);
-      if (!batch) {
-        throw Object.assign(new Error(`Inventory item not found: ${item.inventoryId}`), { statusCode: 404 });
-      }
+      if (!batch) throw AppError.notFound(`Inventory item not found: ${item.inventoryId}`);
 
       if (!batch.medicine.isActive) {
-        throw Object.assign(
-          new Error(`Medicine "${batch.medicine.name}" is inactive and cannot be billed`),
-          { statusCode: 422 }
+        throw AppError.unprocessable(`Medicine "${batch.medicine.name}" is inactive and cannot be billed`);
+      }
+      if ((batch as any).status && (batch as any).status !== "ACTIVE") {
+        throw AppError.unprocessable(
+          `Batch "${batch.batchNumber}" of "${batch.medicine.name}" is ${(batch as any).status} and cannot be sold`,
         );
       }
-
       if (batch.expiryDate <= now) {
-        const expiredOn = batch.expiryDate.toISOString().split("T")[0];
-        throw Object.assign(
-          new Error(`Batch "${batch.batchNumber}" of "${batch.medicine.name}" expired on ${expiredOn}`),
-          { statusCode: 422 }
+        throw AppError.unprocessable(
+          `Batch "${batch.batchNumber}" of "${batch.medicine.name}" expired on ${batch.expiryDate.toISOString().split("T")[0]}`,
         );
       }
-
       if (batch.quantity < item.quantity) {
-        throw Object.assign(
-          new Error(
-            `Insufficient stock for "${batch.medicine.name}": ${batch.quantity} available, ${item.quantity} requested`
-          ),
-          { statusCode: 409 }
+        throw AppError.conflict(
+          `Insufficient stock for "${batch.medicine.name}": ${batch.quantity} available, ${item.quantity} requested`,
         );
       }
 
@@ -88,6 +96,7 @@ export class BillingService {
         batchNumber:   batch.batchNumber,
         expiryDate:    batch.expiryDate,
         mrp:           batch.mrp,
+        purchaseRate:  batch.purchaseRate,
         quantity:      item.quantity,
         discount:      item.discount,
         gstRate:       batch.medicine.gstRate,
@@ -100,38 +109,39 @@ export class BillingService {
     }
 
     const totals = calcInvoiceTotals(
-      lineItems.map((li) => ({ mrp: li.mrp, quantity: li.quantity, discount: li.discount, gstRate: li.gstRate }))
+      lineItems.map((li) => ({ mrp: li.mrp, quantity: li.quantity, discount: li.discount, gstRate: li.gstRate })),
     );
 
-    const seq           = await this.app.redis.incr(INVOICE_SEQUENCE_KEY(tenantId));
-    const settings      = await this.repo.getSettings(tenantId);
+    const seq           = await this.app.redis.incr(INVOICE_SEQUENCE_KEY(pharmacyId));
+    const settings      = await this.repo.getSettings(pharmacyId);
     const config        = (settings?.settings as typeof defaultInvoiceSettings) ?? defaultInvoiceSettings;
     const invoiceNumber = generateInvoiceNumber(
       config.numbering.prefix,
       seq,
-      config.numbering.financialYear
+      config.numbering.financialYear,
     );
 
-    return this.repo.createInvoiceTransactional({
-      tenantId,
+    const invoice = await this.repo.createInvoiceTransactional({
+      pharmacyId,
       userId,
       idempotencyKey: input.idempotencyKey,
       customerId:     input.customerId,
       totalAmount:    totals.totalAmount,
       paymentStatus:  input.paymentStatus,
+      paymentMode:    input.paymentMode,
       invoiceData: {
-        tenant:        { connect: { id: tenantId } },
+        pharmacy:      { connect: { id: pharmacyId } },
         user:          { connect: { id: userId } },
         ...(input.customerId ? { customer: { connect: { id: input.customerId } } } : {}),
         invoiceNumber,
-        doctorName:    input.doctorName,
+        doctorName:     input.doctorName,
         prescriptionId: input.prescriptionId,
-        paymentMode:   input.paymentMode,
-        paymentStatus: input.paymentStatus,
-        status:        "COMPLETED",
-        notes:         input.notes,
+        paymentMode:    input.paymentMode,
+        paymentStatus:  input.paymentStatus,
+        status:         "COMPLETED",
+        notes:          input.notes,
         idempotencyKey: input.idempotencyKey,
-        subtotal:      totals.subtotal,
+        subtotal:       totals.subtotal,
         discountAmount: totals.discountAmount,
         taxableAmount:  totals.taxableAmount,
         cgst:           totals.cgst,
@@ -147,6 +157,7 @@ export class BillingService {
             expiryDate:    li.expiryDate,
             quantity:      li.quantity,
             mrp:           li.mrp,
+            purchaseRate:  li.purchaseRate,
             rate:          li.rate,
             discount:      li.discount,
             gstRate:       li.gstRate,
@@ -164,32 +175,69 @@ export class BillingService {
       })),
       auditMeta,
     });
+
+    // ── Post-invoice notifications (fire-and-forget) ──────────────────────
+
+    // 1. Invoice copy to customer (if they have an email on file)
+    if (input.customerId) {
+      const customer = await this.app.prisma.customer.findFirst({
+        where:  { id: input.customerId, pharmacyId },
+        select: { email: true, name: true },
+      });
+      if (customer?.email) {
+        const pharmacy = await this.app.prisma.pharmacy.findUnique({
+          where:  { id: pharmacyId },
+          select: { name: true },
+        });
+        void sendNotification(this.app.prisma, {
+          pharmacyId,
+          recipient: customer.email,
+          subject:   `Your bill from ${pharmacy?.name ?? "Pharmacy"} — ₹${totals.totalAmount.toFixed(2)}`,
+          message:   `Invoice ${invoice.invoiceNumber} for ₹${totals.totalAmount.toFixed(2)}.\nPayment: ${input.paymentMode}.\nThank you for your purchase!`,
+        });
+      }
+    }
+
+    // 2. Credit limit warning to owner when usage crosses 80%
+    if (input.customerId && input.paymentMode === "CREDIT") {
+      const customer = await this.app.prisma.customer.findFirst({
+        where:  { id: input.customerId, pharmacyId },
+        select: { name: true, creditLimit: true, creditUsed: true },
+      });
+      if (customer !== null && customer.creditLimit > 0) {
+        const usedPct = (customer.creditUsed / customer.creditLimit) * 100;
+        if (usedPct >= 80) {
+          void notifyOwners(this.app.prisma, pharmacyId, {
+            subject: `⚠️ Credit limit warning — ${customer.name}`,
+            message: `${customer.name} has used ₹${customer.creditUsed.toFixed(2)} of ₹${customer.creditLimit.toFixed(2)} (${usedPct.toFixed(0)}%). Invoice: ${invoice.invoiceNumber}.`,
+          });
+        }
+      }
+    }
+
+    return invoice;
   }
 
   // ── Get Invoice ───────────────────────────────────────────────────────────
 
-  async getInvoice(id: string, tenantId: string) {
-    const invoice = await this.repo.getInvoice(id, tenantId);
-    if (!invoice) {
-      throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
-    }
+  async getInvoice(id: string, pharmacyId: string) {
+    const invoice = await this.repo.getInvoice(id, pharmacyId);
+    if (!invoice) throw AppError.notFound("Invoice not found");
     return invoice;
   }
 
   // ── List Invoices ─────────────────────────────────────────────────────────
 
-  async listInvoices(tenantId: string, query: ListInvoicesQuery) {
-    const page  = Math.max(1, query.page);
-    const limit = Math.min(MAX_PAGE_LIMIT, Math.max(1, query.limit));
-
-    const { from, to } = this.parseDateRange(query.from, query.to);
-
-    return this.repo.listInvoices(tenantId, {
-      page,
-      limit,
+  async listInvoices(pharmacyId: string, query: ListInvoicesQuery) {
+    return this.repo.listInvoices(pharmacyId, {
+      page:             Math.max(1, query.page),
+      limit:            Math.min(MAX_PAGE_LIMIT, Math.max(1, query.limit)),
       search:           query.search?.trim() || undefined,
-      from,
-      to,
+      // Dates arrive as ISO 8601 with timezone offset (validated by Zod),
+      // so new Date() parses them correctly to UTC.
+      from:             query.from  ? new Date(query.from)  : undefined,
+      to:               query.to    ? new Date(query.to)    : undefined,
+      status:           query.status,
       includeCancelled: query.includeCancelled,
       paymentMode:      query.paymentMode,
       paymentStatus:    query.paymentStatus,
@@ -203,69 +251,65 @@ export class BillingService {
   // ── Cancel Invoice ────────────────────────────────────────────────────────
 
   async cancelInvoice(
-    id:       string,
-    tenantId: string,
-    userId:   string,
-    reason:   string,
-    auditMeta?: { ipAddress?: string; userAgent?: string }
+    id:         string,
+    pharmacyId: string,
+    userId:     string,
+    reason:     string,
+    auditMeta?: { ipAddress?: string; userAgent?: string },
   ) {
-    return this.repo.cancelInvoiceTransactional({ invoiceId: id, tenantId, userId, reason, auditMeta });
+    return this.repo.cancelInvoiceTransactional({ invoiceId: id, pharmacyId, userId, reason, auditMeta });
   }
 
   // ── Create Sales Return ───────────────────────────────────────────────────
 
   async createReturn(
-    invoiceId: string,
-    tenantId:  string,
-    userId:    string,
-    input:     CreateReturnInput,
-    auditMeta?: { ipAddress?: string; userAgent?: string }
+    invoiceId:  string,
+    pharmacyId: string,
+    userId:     string,
+    input:      CreateReturnInput,
+    auditMeta?: { ipAddress?: string; userAgent?: string },
   ) {
-    const seq          = await this.app.redis.incr(RETURN_SEQUENCE_KEY(tenantId));
-    const settings     = await this.repo.getSettings(tenantId);
+    const seq          = await this.app.redis.incr(RETURN_SEQUENCE_KEY(pharmacyId));
+    const settings     = await this.repo.getSettings(pharmacyId);
     const config       = (settings?.settings as typeof defaultInvoiceSettings) ?? defaultInvoiceSettings;
     const returnNumber = generateInvoiceNumber(
       (config.numbering.prefix ?? "INV") + "-RET",
       seq,
-      config.numbering.financialYear
+      config.numbering.financialYear,
     );
+    // policy.returnWindowDays: 0 = no limit; absent in older settings rows → fall back to default 30
+    const returnWindowDays = config.policy?.returnWindowDays ?? defaultInvoiceSettings.policy!.returnWindowDays;
 
     return this.repo.createReturnTransactional({
-      tenantId,
+      pharmacyId,
       invoiceId,
       userId,
       returnNumber,
-      reason:         input.reason,
-      idempotencyKey: input.idempotencyKey,
-      returnItems:    input.items,
+      reason:            input.reason,
+      idempotencyKey:    input.idempotencyKey,
+      returnWindowDays,
+      returnItems:       input.items.map((i) => ({ ...i, disposition: i.disposition as "RESTOCK" | "WRITEOFF" })),
       auditMeta,
     });
   }
 
   // ── Get Return ────────────────────────────────────────────────────────────
 
-  async getReturn(id: string, tenantId: string) {
-    const ret = await this.repo.getReturn(id, tenantId);
-    if (!ret) {
-      throw Object.assign(new Error("Return not found"), { statusCode: 404 });
-    }
+  async getReturn(id: string, pharmacyId: string) {
+    const ret = await this.repo.getReturn(id, pharmacyId);
+    if (!ret) throw AppError.notFound("Return not found");
     return ret;
   }
 
   // ── List Returns ──────────────────────────────────────────────────────────
 
-  async listReturns(tenantId: string, query: ListReturnsQuery) {
-    const page  = Math.max(1, query.page);
-    const limit = Math.min(MAX_PAGE_LIMIT, Math.max(1, query.limit));
-
-    const { from, to } = this.parseDateRange(query.from, query.to);
-
-    return this.repo.listReturns(tenantId, {
-      page,
-      limit,
+  async listReturns(pharmacyId: string, query: ListReturnsQuery) {
+    return this.repo.listReturns(pharmacyId, {
+      page:      Math.max(1, query.page),
+      limit:     Math.min(MAX_PAGE_LIMIT, Math.max(1, query.limit)),
       search:    query.search?.trim() || undefined,
-      from,
-      to,
+      from:      query.from  ? new Date(query.from)  : undefined,
+      to:        query.to    ? new Date(query.to)    : undefined,
       invoiceId: query.invoiceId,
     });
   }
@@ -273,14 +317,14 @@ export class BillingService {
   // ── Add Payment ───────────────────────────────────────────────────────────
 
   async addPayment(
-    invoiceId: string,
-    tenantId:  string,
-    userId:    string,
-    input:     AddPaymentInput,
-    auditMeta?: { ipAddress?: string; userAgent?: string }
+    invoiceId:  string,
+    pharmacyId: string,
+    userId:     string,
+    input:      AddPaymentInput,
+    auditMeta?: { ipAddress?: string; userAgent?: string },
   ) {
-    return this.repo.addPaymentEntry({
-      tenantId,
+    const payment = await this.repo.addPaymentEntry({
+      pharmacyId,
       invoiceId,
       userId,
       amount:      input.amount,
@@ -290,68 +334,51 @@ export class BillingService {
       paidAt:      input.paidAt ? new Date(input.paidAt) : undefined,
       auditMeta,
     });
+
+    // Notify owner when a credit invoice is fully settled
+    const invoice = await this.repo.getInvoice(invoiceId, pharmacyId);
+    if (invoice?.paymentStatus === "PAID" && invoice.paymentMode === "CREDIT" && invoice.customerId) {
+      void notifyOwners(this.app.prisma, pharmacyId, {
+        subject: `✅ Credit settled — ${invoice.customer?.name ?? "Customer"}`,
+        message: `Invoice ${invoice.invoiceNumber} (₹${invoice.totalAmount.toFixed(2)}) has been fully settled by ${invoice.customer?.name ?? "customer"}.`,
+      });
+    }
+
+    return payment;
   }
 
   // ── Dashboard Stats ───────────────────────────────────────────────────────
 
-  async getDashboardStats(tenantId: string) {
-    return this.repo.getDashboardStats(tenantId);
+  async getDashboardStats(pharmacyId: string) {
+    return this.repo.getDashboardStats(pharmacyId);
   }
 
   // ── FIFO Batch ────────────────────────────────────────────────────────────
 
-  async getFifoBatch(medicineId: string, tenantId: string, quantity: number) {
-    const batch = await this.repo.getFifoBatch(medicineId, tenantId, quantity);
+  async getFifoBatch(medicineId: string, pharmacyId: string, quantity: number) {
+    const batch = await this.repo.getFifoBatch(medicineId, pharmacyId, quantity);
     if (!batch) {
-      throw Object.assign(
-        new Error(`No stock available for medicine ${medicineId} with quantity ${quantity}`),
-        { statusCode: 404 }
-      );
+      throw AppError.notFound(`No stock available for medicine ${medicineId} with quantity ${quantity}`);
     }
     return batch;
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
 
-  private parseDateRange(from?: string, to?: string) {
-    let fromDate: Date | undefined;
-    let toDate:   Date | undefined;
-
-    if (from && from !== "") {
-      fromDate = new Date(from);
-      if (isNaN(fromDate.getTime())) {
-        throw Object.assign(new Error("Invalid 'from' date — expected ISO 8601"), { statusCode: 400 });
-      }
-    }
-    if (to && to !== "") {
-      toDate = new Date(to);
-      if (isNaN(toDate.getTime())) {
-        throw Object.assign(new Error("Invalid 'to' date — expected ISO 8601"), { statusCode: 400 });
-      }
-    }
-    if (fromDate && toDate && fromDate > toDate) {
-      throw Object.assign(new Error("'from' date must not be after 'to' date"), { statusCode: 400 });
-    }
-
-    return { from: fromDate, to: toDate };
-  }
-
   private async validateCreditLimit(
-    tenantId:   string,
+    pharmacyId: string,
     customerId: string,
     items:      CreateInvoiceInput["items"],
-    batchMap:   Map<string, { mrp: number; medicine: { gstRate: number } }>
+    batchMap:   Map<string, { mrp: number; medicine: { gstRate: number } }>,
   ) {
     const customer = await this.app.prisma.customer.findFirst({
-      where:  { id: customerId, tenantId },
+      where:  { id: customerId, pharmacyId },
       select: { creditLimit: true, creditUsed: true, customerType: true },
     });
 
-    if (!customer) return; // will 404 at DB level
-
-    if (customer.customerType !== "CREDIT") return; // only CREDIT customers have limits
-
-    if (customer.creditLimit <= 0) return; // unlimited credit
+    if (!customer)                          return;
+    if (customer.customerType !== "CREDIT") return;
+    if (customer.creditLimit <= 0)          return;
 
     const estimatedTotal = items.reduce((sum, item) => {
       const batch = batchMap.get(item.inventoryId);
@@ -362,11 +389,8 @@ export class BillingService {
 
     const available = customer.creditLimit - customer.creditUsed;
     if (estimatedTotal > available + 0.01) {
-      throw Object.assign(
-        new Error(
-          `Credit limit exceeded. Available: ₹${available.toFixed(2)}, required: ₹${estimatedTotal.toFixed(2)}`
-        ),
-        { statusCode: 422 }
+      throw AppError.unprocessable(
+        `Credit limit exceeded. Available: ₹${available.toFixed(2)}, required: ₹${estimatedTotal.toFixed(2)}`,
       );
     }
   }

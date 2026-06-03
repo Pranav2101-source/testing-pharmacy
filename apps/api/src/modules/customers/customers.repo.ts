@@ -1,9 +1,10 @@
 import type { PrismaClient, Prisma, CustomerType } from "@pharmacy/database";
+import { AppError } from "../../lib/AppError.js";
 
 export class CustomersRepo {
   constructor(private db: PrismaClient) {}
 
-  async create(tenantId: string, data: {
+  async create(pharmacyId: string, data: {
     name:         string;
     phone?:       string;
     email?:       string;
@@ -13,25 +14,21 @@ export class CustomersRepo {
     customerType: string;
     creditLimit:  number;
   }) {
-    // Reject duplicate phone within same tenant
     if (data.phone) {
       const existing = await this.db.customer.findFirst({
-        where: { tenantId, phone: data.phone },
+        where: { pharmacyId, phone: data.phone },
       });
       if (existing) {
-        throw Object.assign(
-          new Error(`A customer with mobile ${data.phone} already exists`),
-          { statusCode: 409 }
-        );
+        throw AppError.conflict(`A customer with mobile ${data.phone} already exists`);
       }
     }
 
     return this.db.customer.create({
-      data: { tenantId, ...data, customerType: data.customerType as never },
+      data: { pharmacyId, ...data, customerType: data.customerType as never },
     });
   }
 
-  async update(id: string, tenantId: string, data: Partial<{
+  async update(id: string, pharmacyId: string, data: Partial<{
     name:         string;
     phone:        string;
     email:        string;
@@ -41,29 +38,25 @@ export class CustomersRepo {
     customerType: string;
     creditLimit:  number;
   }>) {
-    // If phone is changing, check for duplicate
     if (data.phone) {
       const duplicate = await this.db.customer.findFirst({
-        where: { tenantId, phone: data.phone, NOT: { id } },
+        where: { pharmacyId, phone: data.phone, NOT: { id } },
       });
       if (duplicate) {
-        throw Object.assign(
-          new Error(`Mobile ${data.phone} is already registered to another customer`),
-          { statusCode: 409 }
-        );
+        throw AppError.conflict(`Mobile ${data.phone} is already registered to another customer`);
       }
     }
 
     const { customerType, ...rest } = data;
     return this.db.customer.update({
-      where: { id },
-      data: { ...rest, ...(customerType ? { customerType: customerType as CustomerType } : {}) },
+      where: { id, pharmacyId },  // pharmacyId scopes the update — cross-tenant modification impossible
+      data:  { ...rest, ...(customerType ? { customerType: customerType as CustomerType } : {}) },
     });
   }
 
-  async getById(id: string, tenantId: string) {
+  async getById(id: string, pharmacyId: string) {
     return this.db.customer.findFirst({
-      where: { id, tenantId },
+      where:   { id, pharmacyId },
       include: {
         invoices: {
           where:   { isCancelled: false },
@@ -75,14 +68,14 @@ export class CustomersRepo {
     });
   }
 
-  async list(tenantId: string, params: {
+  async list(pharmacyId: string, params: {
     page:          number;
     limit:         number;
     search?:       string;
     customerType?: string;
   }) {
     const where: Prisma.CustomerWhereInput = {
-      tenantId,
+      pharmacyId,
       ...(params.customerType ? { customerType: params.customerType as never } : {}),
       ...(params.search
         ? {
@@ -101,33 +94,35 @@ export class CustomersRepo {
         orderBy: { name: "asc" },
         skip:    (params.page - 1) * params.limit,
         take:    params.limit,
-        include: {
-          _count: { select: { invoices: true } },
-        },
+        include: { _count: { select: { invoices: true } } },
       }),
       this.db.customer.count({ where }),
     ]);
 
-    return { items, total, page: params.page, limit: params.limit, totalPages: Math.ceil(total / params.limit) };
+    return {
+      items,
+      total,
+      page:       params.page,
+      limit:      params.limit,
+      totalPages: Math.ceil(total / params.limit),
+    };
   }
 
-  async delete(id: string, tenantId: string) {
-    // Soft-check: can still delete if invoices exist — they keep the customerId (no FK cascade delete)
-    const customer = await this.db.customer.findFirst({ where: { id, tenantId } });
-    if (!customer) {
-      throw Object.assign(new Error("Customer not found"), { statusCode: 404 });
-    }
-    return this.db.customer.delete({ where: { id } });
+  async delete(id: string, pharmacyId: string) {
+    const customer = await this.db.customer.findFirst({ where: { id, pharmacyId } });
+    if (!customer) throw AppError.notFound("Customer not found");
+
+    // pharmacyId scopes the delete — prevents cross-tenant deletion
+    return this.db.customer.delete({ where: { id, pharmacyId } });
   }
 
-  async getCreditSummary(id: string, tenantId: string) {
+  async getCreditSummary(id: string, pharmacyId: string) {
     const customer = await this.db.customer.findFirst({
-      where:  { id, tenantId },
+      where:  { id, pharmacyId },
       select: { creditLimit: true, creditUsed: true, customerType: true },
     });
-    if (!customer) {
-      throw Object.assign(new Error("Customer not found"), { statusCode: 404 });
-    }
+    if (!customer) throw AppError.notFound("Customer not found");
+
     return {
       creditLimit:     customer.creditLimit,
       creditUsed:      customer.creditUsed,

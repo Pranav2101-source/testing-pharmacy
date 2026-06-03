@@ -1,5 +1,6 @@
 import type { PrismaClient, Prisma } from "@pharmacy/database";
 import type { PendingMovement } from "./billing.types.js";
+import { AppError } from "../../lib/AppError.js";
 
 // ─── Shared include shapes ────────────────────────────────────────────────────
 
@@ -25,56 +26,58 @@ export class BillingRepo {
 
   // ── Inventory helpers ────────────────────────────────────────────────────
 
-  async getInventoryBatch(inventoryId: string, tenantId: string) {
+  async getInventoryBatch(inventoryId: string, pharmacyId: string) {
     return this.db.inventory.findFirst({
-      where: { id: inventoryId, tenantId },
+      where:   { id: inventoryId, pharmacyId },
       include: { medicine: true },
     });
   }
 
-  async getInventoryBatches(ids: string[], tenantId: string) {
+  async getInventoryBatches(ids: string[], pharmacyId: string) {
     return this.db.inventory.findMany({
-      where: { id: { in: ids }, tenantId },
+      where:   { id: { in: ids }, pharmacyId },
       include: { medicine: true },
     });
   }
 
   // ── Invoice settings ─────────────────────────────────────────────────────
 
-  async getSettings(tenantId: string) {
-    return this.db.invoiceSettings.findUnique({ where: { tenantId } });
+  async getSettings(pharmacyId: string) {
+    return this.db.invoiceSettings.findUnique({ where: { pharmacyId } });
   }
 
   // ── Create invoice (atomic) ───────────────────────────────────────────────
   //
   // Transaction order:
-  //   1. Check idempotency key — if already exists, return existing invoice.
-  //   2. For each line item: conditional UPDATE (qty >= needed) → throw on failure.
-  //   3. Collect before/after quantities for movement records.
-  //   4. Create invoice + items.
-  //   5. Write InventoryMovement rows (one per item).
-  //   6. If customer is CREDIT type, increment creditUsed.
-  //   7. Write AuditLog.
+  //   0.   Idempotency check.
+  //   0.5. Release stock reservations for this session.
+  //   1.   Atomic stock decrement (qty >= needed, scoped by pharmacyId).
+  //   2.   Create invoice + line items.
+  //   3.   Write InventoryMovement rows.
+  //   4.   Increment customer creditUsed — only for CREDIT payment mode + unsettled status.
+  //   4.5. Audit entry for credit change.
+  //   5.   Write invoice AuditLog.
 
   async createInvoiceTransactional(params: {
-    tenantId:       string;
-    userId:         string;
-    invoiceData:    Prisma.InvoiceCreateInput;
+    pharmacyId:      string;
+    userId:          string;
+    invoiceData:     Prisma.InvoiceCreateInput;
     stockDecrements: { inventoryId: string; quantity: number; medicineName: string }[];
     idempotencyKey?: string;
     customerId?:     string;
     totalAmount:     number;
     paymentStatus?:  string;
+    paymentMode?:    string;
     auditMeta?:      { ipAddress?: string; userAgent?: string };
   }) {
     return this.db.$transaction(async (tx) => {
 
-      // Step 0 — idempotency: return existing invoice if this key was already used
+      // Step 0 — idempotency
       if (params.idempotencyKey) {
         const existing = await tx.invoice.findUnique({
           where: {
-            tenantId_idempotencyKey: {
-              tenantId:       params.tenantId,
+            pharmacyId_idempotencyKey: {
+              pharmacyId:     params.pharmacyId,
               idempotencyKey: params.idempotencyKey,
             },
           },
@@ -83,17 +86,15 @@ export class BillingRepo {
         if (existing) return existing;
       }
 
-      // Step 0.5 — release stock reservations for this billing session.
-      // Runs inside the Serializable transaction so it rolls back on failure,
-      // keeping reservations intact if the stock decrement below fails.
+      // Step 0.5 — release stock reservations for this billing session
       if (params.idempotencyKey) {
         const reservations = await tx.stockReservation.findMany({
-          where:  { tenantId: params.tenantId, sessionId: params.idempotencyKey },
+          where:  { pharmacyId: params.pharmacyId, sessionId: params.idempotencyKey },
           select: { inventoryId: true, quantity: true },
         });
         if (reservations.length > 0) {
           await tx.stockReservation.deleteMany({
-            where: { tenantId: params.tenantId, sessionId: params.idempotencyKey },
+            where: { pharmacyId: params.pharmacyId, sessionId: params.idempotencyKey },
           });
           for (const r of reservations) {
             await tx.inventory.update({
@@ -104,44 +105,41 @@ export class BillingRepo {
         }
       }
 
-      // Step 1 — atomic stock decrement + collect movement data
+      // Step 1 — atomic stock decrement
       const movements: PendingMovement[] = [];
 
       for (const item of params.stockDecrements) {
         const result = await tx.inventory.updateMany({
           where: {
-            id:       item.inventoryId,
-            tenantId: params.tenantId,
-            quantity: { gte: item.quantity },
+            id:         item.inventoryId,
+            pharmacyId: params.pharmacyId,
+            quantity:   { gte: item.quantity },
           },
           data: { quantity: { decrement: item.quantity } },
         });
 
         if (result.count === 0) {
           const current = await tx.inventory.findFirst({
-            where:  { id: item.inventoryId, tenantId: params.tenantId },
+            where:  { id: item.inventoryId, pharmacyId: params.pharmacyId },
             select: { quantity: true },
           });
-          const available = current?.quantity ?? 0;
-          throw Object.assign(
-            new Error(
-              current
-                ? `Insufficient stock for "${item.medicineName}": ${available} available, ${item.quantity} requested`
-                : `Inventory item not found: ${item.inventoryId}`
-            ),
-            { statusCode: current ? 409 : 404 }
-          );
+          throw current
+            ? AppError.conflict(
+                `Insufficient stock for "${item.medicineName}": ${current.quantity} available, ${item.quantity} requested`,
+              )
+            : AppError.notFound(`Inventory item not found: ${item.inventoryId}`);
         }
 
-        // Read current (post-decrement) qty to record movement
         const after = await tx.inventory.findFirst({
           where:  { id: item.inventoryId },
           select: { quantity: true },
         });
-        const quantityAfter  = after!.quantity;
-        const quantityBefore = quantityAfter + item.quantity;
-
-        movements.push({ inventoryId: item.inventoryId, quantity: item.quantity, quantityBefore, quantityAfter });
+        movements.push({
+          inventoryId:    item.inventoryId,
+          quantity:       item.quantity,
+          quantityBefore: after!.quantity + item.quantity,
+          quantityAfter:  after!.quantity,
+        });
       }
 
       // Step 2 — create invoice + line items
@@ -154,12 +152,12 @@ export class BillingRepo {
       if (movements.length > 0) {
         await tx.inventoryMovement.createMany({
           data: movements.map((m) => ({
-            tenantId:      params.tenantId,
-            userId:        params.userId,
-            inventoryId:   m.inventoryId,
-            type:          "SALE" as const,
-            direction:     "OUT" as const,
-            quantity:      m.quantity,
+            pharmacyId:     params.pharmacyId,
+            userId:         params.userId,
+            inventoryId:    m.inventoryId,
+            type:           "SALE" as const,
+            direction:      "OUT" as const,
+            quantity:       m.quantity,
             quantityBefore: m.quantityBefore,
             quantityAfter:  m.quantityAfter,
             referenceType:  "invoice",
@@ -168,24 +166,48 @@ export class BillingRepo {
         });
       }
 
-      // Step 4 — update customer credit balance for CREDIT sales.
-      // Only increment when payment is not already settled (PAID) — otherwise
-      // creditUsed would be permanently inflated with no corresponding decrement.
-      if (params.customerId && params.totalAmount > 0 && params.paymentStatus !== "PAID") {
+      // Step 4 — increment creditUsed ONLY for CREDIT payment mode with outstanding balance.
+      // Guarded by paymentMode so CASH/UPI partial payments never pollute creditUsed.
+      const isCreditSale =
+        params.customerId &&
+        params.totalAmount > 0 &&
+        params.paymentMode === "CREDIT" &&
+        params.paymentStatus !== "PAID";
+
+      if (isCreditSale) {
         await tx.customer.updateMany({
-          where: { id: params.customerId, tenantId: params.tenantId, customerType: "CREDIT" },
+          where: { id: params.customerId!, pharmacyId: params.pharmacyId, customerType: "CREDIT" },
           data:  { creditUsed: { increment: params.totalAmount } },
+        });
+
+        // Step 4.5 — audit credit change
+        await tx.auditLog.create({
+          data: {
+            pharmacyId: params.pharmacyId,
+            userId:     params.userId,
+            action:     "UPDATE",
+            entity:     "CustomerCredit",
+            entityId:   params.customerId!,
+            newData: {
+              change:        `+${params.totalAmount}`,
+              reason:        "credit_sale",
+              invoiceId:     invoice.id,
+              invoiceNumber: invoice.invoiceNumber,
+            },
+            ipAddress: params.auditMeta?.ipAddress,
+            userAgent: params.auditMeta?.userAgent?.slice(0, 500),
+          },
         });
       }
 
-      // Step 5 — audit log
+      // Step 5 — invoice audit log
       await tx.auditLog.create({
         data: {
-          tenantId: params.tenantId,
-          userId:   params.userId,
-          action:   "CREATE",
-          entity:   "Invoice",
-          entityId: invoice.id,
+          pharmacyId: params.pharmacyId,
+          userId:     params.userId,
+          action:     "CREATE",
+          entity:     "Invoice",
+          entityId:   invoice.id,
           newData: {
             invoiceNumber: invoice.invoiceNumber,
             totalAmount:   invoice.totalAmount,
@@ -203,9 +225,8 @@ export class BillingRepo {
       timeout: 15_000,
     }).catch((err: { code?: string }) => {
       if (err.code === "P2034") {
-        throw Object.assign(
-          new Error("Another transaction updated this stock simultaneously — please try again"),
-          { statusCode: 409 }
+        throw AppError.conflict(
+          "Another transaction updated this stock simultaneously — please try again",
         );
       }
       throw err;
@@ -215,33 +236,43 @@ export class BillingRepo {
   // ── Cancel invoice (atomic) ───────────────────────────────────────────────
 
   async cancelInvoiceTransactional(params: {
-    invoiceId: string;
-    tenantId:  string;
-    userId:    string;
-    reason:    string;
+    invoiceId:  string;
+    pharmacyId: string;
+    userId:     string;
+    reason:     string;
     auditMeta?: { ipAddress?: string; userAgent?: string };
   }) {
     return this.db.$transaction(async (tx) => {
       const invoice = await tx.invoice.findFirst({
-        where:   { id: params.invoiceId, tenantId: params.tenantId },
-        include: { items: { select: { inventoryId: true, quantity: true } } },
+        where:   { id: params.invoiceId, pharmacyId: params.pharmacyId },
+        include: {
+          items:    { select: { inventoryId: true, quantity: true } },
+          payments: { select: { id: true, amount: true } },
+        },
       });
 
-      if (!invoice) {
-        throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
-      }
+      if (!invoice) throw AppError.notFound("Invoice not found");
 
       if (invoice.isCancelled || invoice.status === "CANCELLED") {
-        throw Object.assign(new Error("Invoice is already cancelled"), { statusCode: 409 });
+        throw AppError.conflict("Invoice is already cancelled");
       }
-
       if (invoice.status === "RETURNED" || invoice.status === "PARTIALLY_RETURNED") {
-        throw Object.assign(new Error("Cannot cancel a returned invoice"), { statusCode: 409 });
+        throw AppError.conflict("Cannot cancel a returned invoice — raise a sales return instead");
       }
 
-      // Atomic cancel — prevents double-cancel races
+      // Block cancellation if payments have already been collected to prevent
+      // untracked cash refunds. Owner must first raise a sales return or manually
+      // record the refund before cancelling.
+      const totalPaid = invoice.payments.reduce((s, p) => s + p.amount, 0);
+      if (totalPaid > 0.01) {
+        throw AppError.conflict(
+          `Cannot cancel an invoice with ₹${totalPaid.toFixed(2)} collected. ` +
+          `Raise a sales return to reverse the payment first.`,
+        );
+      }
+
       const result = await tx.invoice.updateMany({
-        where: { id: params.invoiceId, tenantId: params.tenantId, isCancelled: false },
+        where: { id: params.invoiceId, pharmacyId: params.pharmacyId, isCancelled: false },
         data:  {
           isCancelled:  true,
           cancelledAt:  new Date(),
@@ -250,9 +281,7 @@ export class BillingRepo {
         },
       });
 
-      if (result.count === 0) {
-        throw Object.assign(new Error("Invoice is already cancelled"), { statusCode: 409 });
-      }
+      if (result.count === 0) throw AppError.conflict("Invoice is already cancelled");
 
       // Restore stock + write movements
       const movements: PendingMovement[] = [];
@@ -265,15 +294,18 @@ export class BillingRepo {
           where:  { id: item.inventoryId },
           select: { quantity: true },
         });
-        const quantityAfter  = after!.quantity;
-        const quantityBefore = quantityAfter - item.quantity;
-        movements.push({ inventoryId: item.inventoryId, quantity: item.quantity, quantityBefore, quantityAfter });
+        movements.push({
+          inventoryId:    item.inventoryId,
+          quantity:       item.quantity,
+          quantityBefore: after!.quantity - item.quantity,
+          quantityAfter:  after!.quantity,
+        });
       }
 
       if (movements.length > 0) {
         await tx.inventoryMovement.createMany({
           data: movements.map((m) => ({
-            tenantId:       params.tenantId,
+            pharmacyId:     params.pharmacyId,
             userId:         params.userId,
             inventoryId:    m.inventoryId,
             type:           "ADJUSTMENT" as const,
@@ -288,25 +320,48 @@ export class BillingRepo {
         });
       }
 
-      // Reverse credit balance if it was a credit sale
-      if (invoice.customerId && invoice.totalAmount > 0) {
+      // Reverse credit balance only if it was a CREDIT mode sale
+      const wasCreditSale =
+        invoice.customerId &&
+        invoice.paymentMode === "CREDIT" &&
+        invoice.totalAmount > 0;
+
+      if (wasCreditSale) {
         await tx.customer.updateMany({
-          where: { id: invoice.customerId, tenantId: params.tenantId, customerType: "CREDIT" },
+          where: { id: invoice.customerId!, pharmacyId: params.pharmacyId, customerType: "CREDIT" },
           data:  { creditUsed: { decrement: invoice.totalAmount } },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            pharmacyId: params.pharmacyId,
+            userId:     params.userId,
+            action:     "UPDATE",
+            entity:     "CustomerCredit",
+            entityId:   invoice.customerId!,
+            newData: {
+              change:        `-${invoice.totalAmount}`,
+              reason:        "invoice_cancelled",
+              invoiceId:     invoice.id,
+              invoiceNumber: invoice.invoiceNumber,
+            },
+            ipAddress: params.auditMeta?.ipAddress,
+            userAgent: params.auditMeta?.userAgent?.slice(0, 500),
+          },
         });
       }
 
       await tx.auditLog.create({
         data: {
-          tenantId: params.tenantId,
-          userId:   params.userId,
-          action:   "DELETE",
-          entity:   "Invoice",
-          entityId: invoice.id,
-          oldData:  { isCancelled: false, invoiceNumber: invoice.invoiceNumber },
-          newData:  { isCancelled: true,  cancelReason:  params.reason },
-          ipAddress: params.auditMeta?.ipAddress,
-          userAgent: params.auditMeta?.userAgent?.slice(0, 500),
+          pharmacyId: params.pharmacyId,
+          userId:     params.userId,
+          action:     "DELETE",
+          entity:     "Invoice",
+          entityId:   invoice.id,
+          oldData:    { isCancelled: false, invoiceNumber: invoice.invoiceNumber },
+          newData:    { isCancelled: true,  cancelReason:  params.reason },
+          ipAddress:  params.auditMeta?.ipAddress,
+          userAgent:  params.auditMeta?.userAgent?.slice(0, 500),
         },
       });
 
@@ -315,76 +370,67 @@ export class BillingRepo {
   }
 
   // ── Sales return (atomic) ─────────────────────────────────────────────────
-  //
-  // Transaction order:
-  //   1. Lock + fetch invoice and all existing returns for it.
-  //   2. Validate: invoice must be COMPLETED or PARTIALLY_RETURNED.
-  //   3. Validate each return item: qty <= original qty - already returned qty.
-  //   4. Restore stock for returned items.
-  //   5. Write InventoryMovement rows.
-  //   6. Create SalesReturn + SalesReturnItem rows.
-  //   7. Update Invoice.returnedAmount and status.
-  //   8. Reverse customer creditUsed proportionally.
-  //   9. Audit log.
 
   async createReturnTransactional(params: {
-    tenantId:       string;
-    invoiceId:      string;
-    userId:         string;
-    returnNumber:   string;
-    reason:         string;
-    idempotencyKey?: string;
+    pharmacyId:        string;
+    invoiceId:         string;
+    userId:            string;
+    returnNumber:      string;
+    reason:            string;
+    idempotencyKey?:   string;
+    returnWindowDays?: number;
     returnItems: {
       invoiceItemId: string;
       quantity:      number;
+      disposition?:  "RESTOCK" | "WRITEOFF";
     }[];
     auditMeta?: { ipAddress?: string; userAgent?: string };
   }) {
     return this.db.$transaction(async (tx) => {
 
-      // Step 0 — idempotency: return existing return if this key was already processed
+      // Idempotency
       if (params.idempotencyKey) {
         const existing = await tx.salesReturn.findFirst({
-          where:   { tenantId: params.tenantId, idempotencyKey: params.idempotencyKey },
+          where:   { pharmacyId: params.pharmacyId, idempotencyKey: params.idempotencyKey },
           include: RETURN_INCLUDE,
         });
         if (existing) return existing;
       }
 
-      // Step 1 — fetch invoice with items and existing returns
       const invoice = await tx.invoice.findFirst({
-        where:   { id: params.invoiceId, tenantId: params.tenantId },
-        include: {
-          items:   true,
-          returns: { include: { items: true } },
-        },
+        where:   { id: params.invoiceId, pharmacyId: params.pharmacyId },
+        include: { items: true, returns: { include: { items: true } } },
       });
 
-      if (!invoice) {
-        throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+      if (!invoice)                           throw AppError.notFound("Invoice not found");
+      if (invoice.status === "CANCELLED")     throw AppError.conflict("Cannot return a cancelled invoice");
+      if (invoice.status === "DRAFT")         throw AppError.conflict("Cannot return a draft invoice");
+      if (invoice.status === "RETURNED")      throw AppError.conflict("Invoice is already fully returned");
+
+      // Return window enforcement (0 = no limit)
+      const windowDays = params.returnWindowDays ?? 30;
+      if (windowDays > 0) {
+        const invoiceAgeDays = Math.floor((Date.now() - invoice.createdAt.getTime()) / 86_400_000);
+        if (invoiceAgeDays > windowDays) {
+          throw AppError.unprocessable(
+            `Return window expired. Invoice ${invoice.invoiceNumber} is ${invoiceAgeDays} day(s) old; ` +
+            `returns are only accepted within ${windowDays} day(s) of purchase.`,
+          );
+        }
       }
 
-      if (invoice.status === "CANCELLED") {
-        throw Object.assign(new Error("Cannot return a cancelled invoice"), { statusCode: 409 });
-      }
-      if (invoice.status === "DRAFT") {
-        throw Object.assign(new Error("Cannot return a draft invoice"), { statusCode: 409 });
-      }
-      if (invoice.status === "RETURNED") {
-        throw Object.assign(new Error("Invoice is already fully returned"), { statusCode: 409 });
-      }
-
-      // Build map: invoiceItemId → sum of already-returned quantities
       const alreadyReturnedMap = new Map<string, number>();
       for (const ret of invoice.returns) {
         for (const ri of ret.items) {
           if (ri.invoiceItemId) {
-            alreadyReturnedMap.set(ri.invoiceItemId, (alreadyReturnedMap.get(ri.invoiceItemId) ?? 0) + ri.quantity);
+            alreadyReturnedMap.set(
+              ri.invoiceItemId,
+              (alreadyReturnedMap.get(ri.invoiceItemId) ?? 0) + ri.quantity,
+            );
           }
         }
       }
 
-      // Step 2 — validate each return item
       const returnLineItems: {
         invoiceItemId: string;
         inventoryId:   string;
@@ -401,33 +447,28 @@ export class BillingRepo {
         sgst:          number;
         taxableAmount: number;
         amount:        number;
+        disposition:   "RESTOCK" | "WRITEOFF";
       }[] = [];
 
       for (const ri of params.returnItems) {
         const originalItem = invoice.items.find((i) => i.id === ri.invoiceItemId);
         if (!originalItem) {
-          throw Object.assign(
-            new Error(`Item ${ri.invoiceItemId} does not belong to invoice ${invoice.invoiceNumber}`),
-            { statusCode: 400 }
+          throw AppError.badRequest(
+            `Item ${ri.invoiceItemId} does not belong to invoice ${invoice.invoiceNumber}`,
           );
         }
 
-        const alreadyReturned  = alreadyReturnedMap.get(ri.invoiceItemId) ?? 0;
-        const maxReturnable    = originalItem.quantity - alreadyReturned;
+        const alreadyReturned = alreadyReturnedMap.get(ri.invoiceItemId) ?? 0;
+        const maxReturnable   = originalItem.quantity - alreadyReturned;
 
-        if (ri.quantity <= 0) {
-          throw Object.assign(new Error(`Return quantity must be positive`), { statusCode: 400 });
-        }
+        if (ri.quantity <= 0)             throw AppError.badRequest("Return quantity must be positive");
         if (ri.quantity > maxReturnable) {
-          throw Object.assign(
-            new Error(
-              `Cannot return ${ri.quantity} of "${originalItem.medicineName}": only ${maxReturnable} returnable (${alreadyReturned} already returned)`
-            ),
-            { statusCode: 422 }
+          throw AppError.unprocessable(
+            `Cannot return ${ri.quantity} of "${originalItem.medicineName}": ` +
+            `only ${maxReturnable} returnable (${alreadyReturned} already returned)`,
           );
         }
 
-        // Scale financials proportionally to return quantity
         const ratio        = ri.quantity / originalItem.quantity;
         const cgst         = parseFloat((originalItem.cgst         * ratio).toFixed(2));
         const sgst         = parseFloat((originalItem.sgst         * ratio).toFixed(2));
@@ -450,12 +491,14 @@ export class BillingRepo {
           sgst,
           taxableAmount,
           amount,
+          disposition: (ri.disposition ?? "RESTOCK") as "RESTOCK" | "WRITEOFF",
         });
       }
 
-      // Step 3 — restore stock + write movements
+      // Restore stock — RESTOCK adds back, WRITEOFF leaves inventory unchanged
       const movements: PendingMovement[] = [];
       for (const li of returnLineItems) {
+        if (li.disposition === "WRITEOFF") continue;
         await tx.inventory.update({
           where: { id: li.inventoryId },
           data:  { quantity: { increment: li.quantity } },
@@ -464,23 +507,23 @@ export class BillingRepo {
           where:  { id: li.inventoryId },
           select: { quantity: true },
         });
-        const quantityAfter  = after!.quantity;
-        const quantityBefore = quantityAfter - li.quantity;
-        movements.push({ inventoryId: li.inventoryId, quantity: li.quantity, quantityBefore, quantityAfter });
+        movements.push({
+          inventoryId:    li.inventoryId,
+          quantity:       li.quantity,
+          quantityBefore: after!.quantity - li.quantity,
+          quantityAfter:  after!.quantity,
+        });
       }
 
-      // Step 4 — aggregate return totals
-      const totalAmount     = parseFloat(returnLineItems.reduce((s, i) => s + i.amount, 0).toFixed(2));
-      const totalCgst       = parseFloat(returnLineItems.reduce((s, i) => s + i.cgst, 0).toFixed(2));
-      const totalSgst       = parseFloat(returnLineItems.reduce((s, i) => s + i.sgst, 0).toFixed(2));
-      const totalTaxable    = parseFloat(returnLineItems.reduce((s, i) => s + i.taxableAmount, 0).toFixed(2));
-      const totalDiscount   = 0; // discounts are baked into the rate already
-      const subtotal        = parseFloat(returnLineItems.reduce((s, i) => s + i.mrp * i.quantity, 0).toFixed(2));
+      const totalAmount    = parseFloat(returnLineItems.reduce((s, i) => s + i.amount,        0).toFixed(2));
+      const totalCgst      = parseFloat(returnLineItems.reduce((s, i) => s + i.cgst,          0).toFixed(2));
+      const totalSgst      = parseFloat(returnLineItems.reduce((s, i) => s + i.sgst,          0).toFixed(2));
+      const totalTaxable   = parseFloat(returnLineItems.reduce((s, i) => s + i.taxableAmount, 0).toFixed(2));
+      const subtotal       = parseFloat(returnLineItems.reduce((s, i) => s + i.mrp * i.quantity, 0).toFixed(2));
 
-      // Step 5 — create SalesReturn
       const salesReturn = await tx.salesReturn.create({
         data: {
-          tenantId:       params.tenantId,
+          pharmacyId:     params.pharmacyId,
           invoiceId:      params.invoiceId,
           returnNumber:   params.returnNumber,
           reason:         params.reason,
@@ -488,7 +531,7 @@ export class BillingRepo {
           customerId:     invoice.customerId ?? undefined,
           idempotencyKey: params.idempotencyKey,
           subtotal,
-          discountAmount: totalDiscount,
+          discountAmount: 0,
           taxableAmount:  totalTaxable,
           cgst:           totalCgst,
           sgst:           totalSgst,
@@ -511,27 +554,28 @@ export class BillingRepo {
               sgst:          li.sgst,
               taxableAmount: li.taxableAmount,
               amount:        li.amount,
+              disposition:   li.disposition,
             })),
           },
         },
         include: RETURN_INCLUDE,
       });
 
-      // Step 6 — update Invoice returnedAmount + status
       const newReturnedAmount = parseFloat((invoice.returnedAmount + totalAmount).toFixed(2));
-      const isFullReturn      = newReturnedAmount >= invoice.totalAmount - 0.01; // tolerance for float rounding
-      const newStatus         = isFullReturn ? "RETURNED" : "PARTIALLY_RETURNED";
+      const isFullReturn      = newReturnedAmount >= invoice.totalAmount - 0.01;
 
       await tx.invoice.update({
         where: { id: params.invoiceId },
-        data:  { returnedAmount: newReturnedAmount, status: newStatus },
+        data:  {
+          returnedAmount: newReturnedAmount,
+          status:         isFullReturn ? "RETURNED" : "PARTIALLY_RETURNED",
+        },
       });
 
-      // Step 7 — inventory movements
       if (movements.length > 0) {
         await tx.inventoryMovement.createMany({
           data: movements.map((m) => ({
-            tenantId:       params.tenantId,
+            pharmacyId:     params.pharmacyId,
             userId:         params.userId,
             inventoryId:    m.inventoryId,
             type:           "RETURN" as const,
@@ -545,27 +589,45 @@ export class BillingRepo {
         });
       }
 
-      // Step 8 — reverse credit balance
-      if (invoice.customerId && totalAmount > 0) {
+      // Reverse credit balance only if original sale was CREDIT mode
+      const wasCreditSale = invoice.customerId && invoice.paymentMode === "CREDIT" && totalAmount > 0;
+      if (wasCreditSale) {
         await tx.customer.updateMany({
-          where: { id: invoice.customerId, tenantId: params.tenantId, customerType: "CREDIT" },
+          where: { id: invoice.customerId!, pharmacyId: params.pharmacyId, customerType: "CREDIT" },
           data:  { creditUsed: { decrement: totalAmount } },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            pharmacyId: params.pharmacyId,
+            userId:     params.userId,
+            action:     "UPDATE",
+            entity:     "CustomerCredit",
+            entityId:   invoice.customerId!,
+            newData: {
+              change:       `-${totalAmount}`,
+              reason:       "sales_return",
+              returnId:     salesReturn.id,
+              returnNumber: params.returnNumber,
+            },
+            ipAddress: params.auditMeta?.ipAddress,
+            userAgent: params.auditMeta?.userAgent?.slice(0, 500),
+          },
         });
       }
 
-      // Step 9 — audit log
       await tx.auditLog.create({
         data: {
-          tenantId: params.tenantId,
-          userId:   params.userId,
-          action:   "CREATE",
-          entity:   "SalesReturn",
-          entityId: salesReturn.id,
+          pharmacyId: params.pharmacyId,
+          userId:     params.userId,
+          action:     "CREATE",
+          entity:     "SalesReturn",
+          entityId:   salesReturn.id,
           newData: {
-            returnNumber:   params.returnNumber,
-            invoiceNumber:  invoice.invoiceNumber,
+            returnNumber:  params.returnNumber,
+            invoiceNumber: invoice.invoiceNumber,
             totalAmount,
-            itemCount:      returnLineItems.length,
+            itemCount:     returnLineItems.length,
           },
           ipAddress: params.auditMeta?.ipAddress,
           userAgent: params.auditMeta?.userAgent?.slice(0, 500),
@@ -579,7 +641,7 @@ export class BillingRepo {
   // ── Add payment entry ─────────────────────────────────────────────────────
 
   async addPaymentEntry(params: {
-    tenantId:    string;
+    pharmacyId:  string;
     invoiceId:   string;
     userId:      string;
     amount:      number;
@@ -591,30 +653,25 @@ export class BillingRepo {
   }) {
     return this.db.$transaction(async (tx) => {
       const invoice = await tx.invoice.findFirst({
-        where:   { id: params.invoiceId, tenantId: params.tenantId },
+        where:   { id: params.invoiceId, pharmacyId: params.pharmacyId },
         include: { payments: true },
       });
 
-      if (!invoice) {
-        throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
-      }
-      if (invoice.isCancelled) {
-        throw Object.assign(new Error("Cannot add payment to a cancelled invoice"), { statusCode: 409 });
-      }
+      if (!invoice)            throw AppError.notFound("Invoice not found");
+      if (invoice.isCancelled) throw AppError.conflict("Cannot add payment to a cancelled invoice");
 
       const totalPaid = invoice.payments.reduce((s, p) => s + p.amount, 0);
       const remaining = invoice.totalAmount - totalPaid;
 
       if (params.amount > remaining + 0.01) {
-        throw Object.assign(
-          new Error(`Payment of ₹${params.amount} exceeds outstanding balance of ₹${remaining.toFixed(2)}`),
-          { statusCode: 422 }
+        throw AppError.unprocessable(
+          `Payment of ₹${params.amount} exceeds outstanding balance of ₹${remaining.toFixed(2)}`,
         );
       }
 
       const payment = await tx.invoicePayment.create({
         data: {
-          tenantId:    params.tenantId,
+          pharmacyId:  params.pharmacyId,
           invoiceId:   params.invoiceId,
           createdBy:   params.userId,
           amount:      params.amount,
@@ -625,35 +682,54 @@ export class BillingRepo {
         },
       });
 
-      // Recompute payment status
       const newTotalPaid = totalPaid + params.amount;
       let paymentStatus: "PAID" | "PARTIAL" | "PENDING" = "PENDING";
-      if (newTotalPaid >= invoice.totalAmount - 0.01)   paymentStatus = "PAID";
-      else if (newTotalPaid > 0)                        paymentStatus = "PARTIAL";
+      if (newTotalPaid >= invoice.totalAmount - 0.01) paymentStatus = "PAID";
+      else if (newTotalPaid > 0)                      paymentStatus = "PARTIAL";
 
       await tx.invoice.update({
         where: { id: params.invoiceId },
         data:  { paymentStatus, paymentMode: params.paymentMode as never },
       });
 
-      // If fully paid, reduce credit balance
-      if (paymentStatus === "PAID" && invoice.customerId) {
+      // Reduce creditUsed ONLY when the original sale was CREDIT mode —
+      // prevents CASH/UPI payments from incorrectly mutating the credit balance.
+      const wasCreditSale = paymentStatus === "PAID" && invoice.customerId && invoice.paymentMode === "CREDIT";
+      if (wasCreditSale) {
         await tx.customer.updateMany({
-          where: { id: invoice.customerId, tenantId: params.tenantId, customerType: "CREDIT" },
+          where: { id: invoice.customerId!, pharmacyId: params.pharmacyId, customerType: "CREDIT" },
           data:  { creditUsed: { decrement: invoice.totalAmount } },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            pharmacyId: params.pharmacyId,
+            userId:     params.userId,
+            action:     "UPDATE",
+            entity:     "CustomerCredit",
+            entityId:   invoice.customerId!,
+            newData: {
+              change:        `-${invoice.totalAmount}`,
+              reason:        "credit_settled",
+              invoiceId:     invoice.id,
+              invoiceNumber: invoice.invoiceNumber,
+            },
+            ipAddress: params.auditMeta?.ipAddress,
+            userAgent: params.auditMeta?.userAgent?.slice(0, 500),
+          },
         });
       }
 
       await tx.auditLog.create({
         data: {
-          tenantId: params.tenantId,
-          userId:   params.userId,
-          action:   "UPDATE",
-          entity:   "Invoice",
-          entityId: invoice.id,
-          newData:  { payment: { amount: params.amount, mode: params.paymentMode, paymentStatus } },
-          ipAddress: params.auditMeta?.ipAddress,
-          userAgent: params.auditMeta?.userAgent?.slice(0, 500),
+          pharmacyId: params.pharmacyId,
+          userId:     params.userId,
+          action:     "UPDATE",
+          entity:     "Invoice",
+          entityId:   invoice.id,
+          newData:    { payment: { amount: params.amount, mode: params.paymentMode, paymentStatus } },
+          ipAddress:  params.auditMeta?.ipAddress,
+          userAgent:  params.auditMeta?.userAgent?.slice(0, 500),
         },
       });
 
@@ -663,42 +739,54 @@ export class BillingRepo {
 
   // ── Reads ─────────────────────────────────────────────────────────────────
 
-  async getInvoice(id: string, tenantId: string) {
+  async getInvoice(id: string, pharmacyId: string) {
     return this.db.invoice.findFirst({
-      where:   { id, tenantId },
+      where:   { id, pharmacyId },
       include: INVOICE_INCLUDE,
     });
   }
 
   async listInvoices(
-    tenantId: string,
+    pharmacyId: string,
     params: {
-      page:             number;
-      limit:            number;
-      search?:          string;
-      from?:            Date;
-      to?:              Date;
+      page:              number;
+      limit:             number;
+      search?:           string;
+      from?:             Date;
+      to?:               Date;
+      status?:           string;
       includeCancelled?: boolean;
-      paymentMode?:     string;
-      paymentStatus?:   string;
-      userId?:          string;
-      customerId?:      string;
-      minAmount?:       number;
-      maxAmount?:       number;
-    }
+      paymentMode?:      string;
+      paymentStatus?:    string;
+      userId?:           string;
+      customerId?:       string;
+      minAmount?:        number;
+      maxAmount?:        number;
+    },
   ) {
     const where: Prisma.InvoiceWhereInput = {
-      tenantId,
-      ...(params.includeCancelled ? {} : { isCancelled: false }),
+      pharmacyId,
+      // status filter takes precedence over includeCancelled shorthand
+      ...(params.status
+        ? { status: params.status as never }
+        : params.includeCancelled
+          ? {}
+          : { isCancelled: false }),
       ...(params.from || params.to
-        ? { createdAt: { ...(params.from ? { gte: params.from } : {}), ...(params.to ? { lte: params.to } : {}) } }
+        ? { createdAt: {
+            ...(params.from ? { gte: params.from } : {}),
+            ...(params.to   ? { lte: params.to   } : {}),
+          } }
         : {}),
       ...(params.paymentMode   ? { paymentMode:   params.paymentMode   as never } : {}),
       ...(params.paymentStatus ? { paymentStatus: params.paymentStatus as never } : {}),
-      ...(params.userId    ? { userId:    params.userId }    : {}),
+      ...(params.userId     ? { userId:     params.userId }     : {}),
       ...(params.customerId ? { customerId: params.customerId } : {}),
       ...(params.minAmount !== undefined || params.maxAmount !== undefined
-        ? { totalAmount: { ...(params.minAmount !== undefined ? { gte: params.minAmount } : {}), ...(params.maxAmount !== undefined ? { lte: params.maxAmount } : {}) } }
+        ? { totalAmount: {
+            ...(params.minAmount !== undefined ? { gte: params.minAmount } : {}),
+            ...(params.maxAmount !== undefined ? { lte: params.maxAmount } : {}),
+          } }
         : {}),
       ...(params.search
         ? {
@@ -731,15 +819,15 @@ export class BillingRepo {
 
   // ── Returns ───────────────────────────────────────────────────────────────
 
-  async getReturn(id: string, tenantId: string) {
+  async getReturn(id: string, pharmacyId: string) {
     return this.db.salesReturn.findFirst({
-      where:   { id, tenantId },
+      where:   { id, pharmacyId },
       include: RETURN_INCLUDE,
     });
   }
 
   async listReturns(
-    tenantId: string,
+    pharmacyId: string,
     params: {
       page:       number;
       limit:      number;
@@ -747,19 +835,22 @@ export class BillingRepo {
       from?:      Date;
       to?:        Date;
       invoiceId?: string;
-    }
+    },
   ) {
     const where: Prisma.SalesReturnWhereInput = {
-      tenantId,
+      pharmacyId,
       ...(params.invoiceId ? { invoiceId: params.invoiceId } : {}),
       ...(params.from || params.to
-        ? { createdAt: { ...(params.from ? { gte: params.from } : {}), ...(params.to ? { lte: params.to } : {}) } }
+        ? { createdAt: {
+            ...(params.from ? { gte: params.from } : {}),
+            ...(params.to   ? { lte: params.to   } : {}),
+          } }
         : {}),
       ...(params.search
         ? {
             OR: [
               { returnNumber: { contains: params.search, mode: "insensitive" } },
-              { invoice: { invoiceNumber: { contains: params.search, mode: "insensitive" } } },
+              { invoice:  { invoiceNumber: { contains: params.search, mode: "insensitive" } } },
               { customer: { name: { contains: params.search, mode: "insensitive" } } },
             ],
           }
@@ -787,15 +878,16 @@ export class BillingRepo {
 
   // ── Dashboard stats ───────────────────────────────────────────────────────
 
-  async getDashboardStats(tenantId: string) {
-    const now   = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const weekStart  = new Date(todayStart); weekStart.setDate(weekStart.getDate() - 7);
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  async getDashboardStats(pharmacyId: string) {
+    const now                 = new Date();
+    const todayStart          = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const weekStart           = new Date(todayStart); weekStart.setDate(weekStart.getDate() - 7);
+    const monthStart          = new Date(now.getFullYear(), now.getMonth(), 1);
     const nearExpiryThreshold = new Date(Date.now() + 90 * 86400000);
 
     const [
-      todayInvoices,
+      todaySalesAgg,
+      todayCancelledCount,
       weekInvoices,
       monthInvoices,
       todayReturns,
@@ -804,92 +896,94 @@ export class BillingRepo {
       lowStockCount,
       nearExpiryCount,
     ] = await Promise.all([
-      // Today's invoices
-      this.db.invoice.findMany({
-        where:  { tenantId, createdAt: { gte: todayStart }, isCancelled: false },
-        select: { totalAmount: true, status: true },
+      // Today's sales — use aggregate instead of findMany to avoid loading rows into memory
+      this.db.invoice.aggregate({
+        where:  { pharmacyId, createdAt: { gte: todayStart }, isCancelled: false },
+        _sum:   { totalAmount: true },
+        _count: { id: true },
+      }),
+      // Today's cancelled count
+      this.db.invoice.count({
+        where: { pharmacyId, createdAt: { gte: todayStart }, isCancelled: true },
       }),
       // Week invoices
       this.db.invoice.aggregate({
-        where:   { tenantId, createdAt: { gte: weekStart }, isCancelled: false },
-        _sum:    { totalAmount: true },
-        _count:  { id: true },
+        where:  { pharmacyId, createdAt: { gte: weekStart }, isCancelled: false },
+        _sum:   { totalAmount: true },
+        _count: { id: true },
       }),
       // Month invoices
       this.db.invoice.aggregate({
-        where:   { tenantId, createdAt: { gte: monthStart }, isCancelled: false },
-        _sum:    { totalAmount: true },
-        _count:  { id: true },
+        where:  { pharmacyId, createdAt: { gte: monthStart }, isCancelled: false },
+        _sum:   { totalAmount: true },
+        _count: { id: true },
       }),
       // Today's returns
       this.db.salesReturn.aggregate({
-        where:  { tenantId, createdAt: { gte: todayStart } },
+        where:  { pharmacyId, createdAt: { gte: todayStart } },
         _sum:   { totalAmount: true },
         _count: { id: true },
       }),
       // Pending credit
       this.db.invoice.aggregate({
-        where:  { tenantId, paymentStatus: "PENDING", isCancelled: false },
+        where:  { pharmacyId, paymentStatus: "PENDING", isCancelled: false },
         _sum:   { totalAmount: true },
       }),
       // Payment mode breakdown (today)
       this.db.invoice.groupBy({
         by:     ["paymentMode"],
-        where:  { tenantId, createdAt: { gte: todayStart }, isCancelled: false },
+        where:  { pharmacyId, createdAt: { gte: todayStart }, isCancelled: false },
         _sum:   { totalAmount: true },
         _count: { id: true },
       }),
-      // Low stock
+      // Low stock — raw SQL needed: compare quantity to per-row minimumStock column
       this.db.$queryRaw<[{ count: bigint }]>`
-        SELECT COUNT(*) as count FROM inventory
-        WHERE "tenantId" = ${tenantId}
+        SELECT COUNT(*) as count
+        FROM inventory
+        WHERE "pharmacyId" = ${pharmacyId}
           AND quantity > 0
           AND quantity <= "minimumStock"
       `,
       // Near expiry
       this.db.inventory.count({
-        where: { tenantId, expiryDate: { lte: nearExpiryThreshold }, quantity: { gt: 0 } },
+        where: { pharmacyId, expiryDate: { lte: nearExpiryThreshold }, quantity: { gt: 0 } },
       }),
     ]);
 
-    const todaySales     = todayInvoices.filter((i) => i.status !== "CANCELLED").reduce((s, i) => s + i.totalAmount, 0);
-    const todayCancelled = todayInvoices.filter((i) => i.status === "CANCELLED").length;
-
     return {
-      todaySales:      parseFloat(todaySales.toFixed(2)),
-      todayCount:      todayInvoices.filter((i) => i.status !== "CANCELLED").length,
-      todayCancelled,
-      todayReturns:    todayReturns._sum.totalAmount ?? 0,
-      weekSales:       weekInvoices._sum.totalAmount  ?? 0,
+      todaySales:      parseFloat((todaySalesAgg._sum.totalAmount ?? 0).toFixed(2)),
+      todayCount:      todaySalesAgg._count.id,
+      todayCancelled:  todayCancelledCount,
+      todayReturns:    todayReturns._sum.totalAmount    ?? 0,
+      weekSales:       weekInvoices._sum.totalAmount    ?? 0,
       weekCount:       weekInvoices._count.id,
-      monthSales:      monthInvoices._sum.totalAmount ?? 0,
+      monthSales:      monthInvoices._sum.totalAmount   ?? 0,
       monthCount:      monthInvoices._count.id,
-      pendingCredit:   pendingCredit._sum.totalAmount ?? 0,
+      pendingCredit:   pendingCredit._sum.totalAmount   ?? 0,
       paymentBreakdown: paymentBreakdown.map((p) => ({
         mode:  p.paymentMode,
         total: p._sum.totalAmount ?? 0,
         count: p._count.id,
       })),
-      lowStockCount:   Number(lowStockCount[0]?.count ?? 0),
+      lowStockCount:  Number(lowStockCount[0]?.count ?? 0),
       nearExpiryCount,
     };
   }
 
-  // ── FIFO batch selection ──────────────────────────────────────────────────
+  // ── FIFO / FEFO batch selection ───────────────────────────────────────────
+  // Selects the earliest-expiring batch with sufficient stock (FEFO — First
+  // Expired First Out), which is the industry standard for pharmacy.
 
-  async getFifoBatch(medicineId: string, tenantId: string, quantity: number) {
-    const now = new Date();
-    // FIFO = earliest non-expired batch with sufficient stock
-    const batch = await this.db.inventory.findFirst({
+  async getFifoBatch(medicineId: string, pharmacyId: string, quantity: number) {
+    return this.db.inventory.findFirst({
       where: {
         medicineId,
-        tenantId,
+        pharmacyId,
         quantity:   { gte: quantity },
-        expiryDate: { gt: now },
+        expiryDate: { gt: new Date() },
       },
-      orderBy: { expiryDate: "asc" }, // earliest expiry first
+      orderBy: { expiryDate: "asc" },
       include: { medicine: true },
     });
-    return batch;
   }
 }

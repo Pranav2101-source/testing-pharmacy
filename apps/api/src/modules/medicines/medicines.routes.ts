@@ -19,6 +19,14 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: hits });
   });
 
+  // ── Barcode lookup (USB scanner / QR scan) ──────────────────────────────
+  app.get("/barcode/:code", { preHandler: auth }, async (req, reply) => {
+    const { code } = req.params as { code: string };
+    const medicine = await service.findByBarcode(code);
+    if (!medicine) return reply.status(404).send({ success: false, error: "No medicine found for this barcode" });
+    return reply.send({ success: true, data: medicine });
+  });
+
   // ── Bulk create from CSV upload (owner only) ────────────────────────────
   app.post("/bulk", { preHandler: owner }, async (req, reply) => {
     const body = req.body as { rows: unknown[] };
@@ -96,6 +104,13 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
     const { id }   = req.params as { id: string };
     const medicine = await service.reactivate(id);
     return reply.send({ success: true, data: medicine });
+  });
+
+  // ── Generic substitution alternatives ────────────────────────────────────
+  app.get("/:id/alternatives", { preHandler: auth }, async (req, reply) => {
+    const { id }        = req.params as { id: string };
+    const alternatives  = await service.getAlternatives(id);
+    return reply.send({ success: true, data: alternatives });
   });
 };
 

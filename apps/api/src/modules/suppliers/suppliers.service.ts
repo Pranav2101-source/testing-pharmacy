@@ -1,80 +1,162 @@
 import type { FastifyInstance } from "fastify";
 import { SuppliersRepo } from "./suppliers.repo.js";
 import { InventoryRepo } from "../inventory/inventory.repo.js";
-import { calcGstFromMrp } from "@pharmacy/utils";
-import type { CreateSupplierInput, CreatePurchaseOrderInput } from "./suppliers.schema.js";
+import type { CreateSupplierInput, UpdateSupplierInput, ListSuppliersQuery, CreatePurchaseOrderInput } from "./suppliers.schema.js";
+import { AppError } from "../../lib/AppError.js";
 
 export class SuppliersService {
-  private repo: SuppliersRepo;
+  private repo:          SuppliersRepo;
   private inventoryRepo: InventoryRepo;
 
   constructor(app: FastifyInstance) {
-    this.repo = new SuppliersRepo(app.prisma);
+    this.repo          = new SuppliersRepo(app.prisma);
     this.inventoryRepo = new InventoryRepo(app.prisma);
   }
 
-  async createSupplier(tenantId: string, input: CreateSupplierInput) {
-    return this.repo.create(tenantId, input);
+  async createSupplier(pharmacyId: string, input: CreateSupplierInput) {
+    return this.repo.create(pharmacyId, input);
   }
 
-  async list(tenantId: string, page: number, limit: number) {
-    return this.repo.list(tenantId, page, limit);
+  async updateSupplier(id: string, pharmacyId: string, input: UpdateSupplierInput) {
+    const existing = await this.repo.getById(id, pharmacyId);
+    if (!existing) throw AppError.notFound("Supplier not found");
+    return this.repo.update(id, pharmacyId, input);
   }
 
-  async listPurchaseOrders(tenantId: string, page: number, limit: number, status?: string) {
-    return this.repo.listPurchaseOrders(tenantId, page, limit, status);
+  async getById(id: string, pharmacyId: string) {
+    const supplier = await this.repo.getById(id, pharmacyId);
+    if (!supplier) throw AppError.notFound("Supplier not found");
+    return supplier;
   }
 
-  async receivePurchaseOrder(tenantId: string, input: CreatePurchaseOrderInput) {
+  async list(pharmacyId: string, query: ListSuppliersQuery) {
+    return this.repo.list(pharmacyId, query.page, query.limit, query.search);
+  }
+
+  async listAll(pharmacyId: string) {
+    return this.repo.listAll(pharmacyId);
+  }
+
+  async getPurchaseHistory(id: string, pharmacyId: string, page: number, limit: number) {
+    const supplier = await this.repo.getById(id, pharmacyId);
+    if (!supplier) throw AppError.notFound("Supplier not found");
+    return this.repo.getPurchaseHistory(id, pharmacyId, page, limit);
+  }
+
+  // Vendor performance metrics (#23)
+  async getPerformance(id: string, pharmacyId: string, from?: string, to?: string) {
+    const supplier = await this.repo.getById(id, pharmacyId);
+    if (!supplier) throw AppError.notFound("Supplier not found");
+
+    const db          = (this as any).repo["db"] as import("@pharmacy/database").PrismaClient;
+    const dateFilter  = from && to
+      ? { gte: new Date(from), lte: new Date(to) }
+      : undefined;
+
+    const [poAgg, grnAgg, returnAgg, paymentAgg] = await Promise.all([
+      db.purchaseOrder.aggregate({
+        where: { pharmacyId, supplierId: id, ...(dateFilter ? { orderedAt: dateFilter } : {}) },
+        _count: true,
+        _sum:   { totalAmount: true },
+      }),
+      db.goodsReceiptNote.findMany({
+        where:  { pharmacyId, supplierId: id, status: "CONFIRMED", ...(dateFilter ? { confirmedAt: dateFilter } : {}) },
+        select: { id: true, confirmedAt: true, totalAmount: true, paymentDueDate: true },
+      }),
+      db.supplierReturn.aggregate({
+        where: { pharmacyId, supplierId: id, status: "CONFIRMED" },
+        _count: true,
+        _sum:   { totalAmount: true },
+      }),
+      db.supplierPayment.aggregate({
+        where: { pharmacyId, supplierId: id },
+        _sum:  { amount: true },
+      }),
+    ]);
+
+    const totalGRNs    = grnAgg.length;
+    const totalSpend   = grnAgg.reduce((s, g) => s + g.totalAmount, 0);
+    const totalPaid    = paymentAgg._sum.amount ?? 0;
+    const outstanding  = totalSpend - totalPaid;
+
+    // Overdue GRNs = payment due date in the past
+    const overdueGRNs  = grnAgg.filter((g) => g.paymentDueDate && g.paymentDueDate < new Date()).length;
+
+    // On-time payment rate (simplified: paid amount / total spend)
+    const paymentRate  = totalSpend > 0 ? Math.min((totalPaid / totalSpend) * 100, 100) : 0;
+
+    // Return rate
+    const returnRate   = totalGRNs > 0 ? ((returnAgg._count) / totalGRNs) * 100 : 0;
+
+    return {
+      supplier:       { id: supplier.id, name: (supplier as any).name },
+      period:         from && to ? { from, to } : null,
+      totalPOs:       poAgg._count,
+      totalGRNs,
+      totalSpend:     parseFloat(totalSpend.toFixed(2)),
+      totalPaid:      parseFloat(totalPaid.toFixed(2)),
+      outstanding:    parseFloat(outstanding.toFixed(2)),
+      overdueGRNs,
+      paymentRate:    parseFloat(paymentRate.toFixed(1)),
+      totalReturns:   returnAgg._count,
+      returnValue:    parseFloat((returnAgg._sum.totalAmount ?? 0).toFixed(2)),
+      returnRate:     parseFloat(returnRate.toFixed(1)),
+    };
+  }
+
+  // ── Backward-compat ───────────────────────────────────────────────────────
+
+  async listPurchaseOrders(pharmacyId: string, page: number, limit: number, status?: string) {
+    return this.repo.listPurchaseOrders(pharmacyId, page, limit, status);
+  }
+
+  async receivePurchaseOrder(pharmacyId: string, input: CreatePurchaseOrderInput) {
     let subtotal = 0;
     let totalGst = 0;
 
     const processedItems = input.items.map((item) => {
       const lineTotal = item.purchaseRate * item.quantity;
-      const gst = calcGstFromMrp(item.mrp, item.quantity, 0, item.gstRate);
-      // For purchases, use purchaseRate as base (not MRP)
-      const cgst = (lineTotal * item.gstRate) / 100 / 2;
-      const sgst = cgst;
+      const cgst      = (lineTotal * item.gstRate) / 100 / 2;
+      const sgst      = cgst;
       subtotal += lineTotal;
       totalGst += cgst + sgst;
       return {
         medicineName: item.medicineName,
-        batchNumber: item.batchNumber,
-        expiryDate: new Date(item.expiryDate),
-        quantity: item.quantity,
+        batchNumber:  item.batchNumber,
+        expiryDate:   new Date(item.expiryDate),
+        quantity:     item.quantity,
         purchaseRate: item.purchaseRate,
-        mrp: item.mrp,
-        gstRate: item.gstRate,
+        mrp:          item.mrp,
+        gstRate:      item.gstRate,
         cgst,
         sgst,
         amount: lineTotal + cgst + sgst,
       };
     });
 
-    const order = await this.repo.createPurchaseOrder(tenantId, {
-      supplierId: input.supplierId,
-      orderNumber: input.orderNumber,
-      invoiceNo: input.invoiceNo,
-      notes: input.notes,
+    const order = await this.repo.createPurchaseOrder(pharmacyId, {
+      supplierId:   input.supplierId,
+      orderNumber:  input.orderNumber,
+      invoiceNo:    input.invoiceNo,
+      notes:        input.notes,
       subtotal,
       totalGst,
-      totalAmount: subtotal + totalGst,
-      items: processedItems,
+      totalAmount:  subtotal + totalGst,
+      items:        processedItems,
     });
 
-    // Auto-add to inventory
     await Promise.all(
       input.items.map((item) =>
-        this.inventoryRepo.upsertBatch(tenantId, {
-          medicineId: item.medicineId,
-          batchNumber: item.batchNumber,
-          expiryDate: new Date(item.expiryDate),
-          quantity: item.quantity,
+        this.inventoryRepo.upsertBatch(pharmacyId, {
+          medicineId:   item.medicineId,
+          batchNumber:  item.batchNumber,
+          expiryDate:   new Date(item.expiryDate),
+          quantity:     item.quantity,
           purchaseRate: item.purchaseRate,
-          mrp: item.mrp,
+          mrp:          item.mrp,
           minimumStock: 10,
-        })
-      )
+        }),
+      ),
     );
 
     return order;

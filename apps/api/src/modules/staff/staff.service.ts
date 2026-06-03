@@ -1,43 +1,76 @@
 import bcrypt from "bcryptjs";
 import type { FastifyInstance } from "fastify";
 import type { CreateStaffInput, UpdateStaffInput } from "./staff.schema.js";
+import { AppError } from "../../lib/AppError.js";
 
 export class StaffService {
   constructor(private app: FastifyInstance) {}
 
-  async create(tenantId: string, input: CreateStaffInput) {
+  async create(pharmacyId: string, requesterId: string, input: CreateStaffInput) {
     const exists = await this.app.prisma.user.findFirst({
-      where: { tenantId, email: input.email },
+      where: { pharmacyId, email: input.email },
     });
-    if (exists) throw { statusCode: 409, message: "Email already registered" };
+    if (exists) throw AppError.conflict("Email already registered in this pharmacy");
 
     const passwordHash = await bcrypt.hash(input.password, 12);
     return this.app.prisma.user.create({
-      data: { tenantId, passwordHash, name: input.name, email: input.email, phone: input.phone, role: input.role },
+      data: {
+        pharmacyId,
+        passwordHash,
+        name:  input.name,
+        email: input.email,
+        phone: input.phone,
+        role:  input.role,
+      },
       select: { id: true, name: true, email: true, role: true, isActive: true, createdAt: true },
     });
   }
 
-  async list(tenantId: string) {
+  async list(pharmacyId: string) {
     return this.app.prisma.user.findMany({
-      where: { tenantId },
-      select: { id: true, name: true, email: true, phone: true, role: true, isActive: true, lastLoginAt: true },
+      where:   { pharmacyId },
+      select:  { id: true, name: true, email: true, phone: true, role: true, isActive: true, lastLoginAt: true },
       orderBy: { name: "asc" },
     });
   }
 
-  async update(id: string, tenantId: string, input: UpdateStaffInput) {
+  async update(id: string, pharmacyId: string, input: UpdateStaffInput) {
+    // Verify the target user belongs to this pharmacy before updating
+    const target = await this.app.prisma.user.findFirst({
+      where: { id, pharmacyId },
+    });
+    if (!target) throw AppError.notFound("Staff member not found");
+
     return this.app.prisma.user.update({
-      where: { id },
-      data: input,
+      where:  { id, pharmacyId },
+      data:   input,
       select: { id: true, name: true, email: true, role: true, isActive: true },
     });
   }
 
-  async deactivate(id: string, tenantId: string) {
+  async deactivate(id: string, pharmacyId: string, requesterId: string) {
+    if (id === requesterId) {
+      throw AppError.badRequest("You cannot deactivate your own account");
+    }
+
+    const target = await this.app.prisma.user.findFirst({
+      where: { id, pharmacyId },
+    });
+    if (!target) throw AppError.notFound("Staff member not found");
+
+    // Prevent deactivating the last active OWNER
+    if (target.role === "OWNER") {
+      const activeOwnerCount = await this.app.prisma.user.count({
+        where: { pharmacyId, role: "OWNER", isActive: true },
+      });
+      if (activeOwnerCount <= 1) {
+        throw AppError.conflict("Cannot deactivate the last active owner of this pharmacy");
+      }
+    }
+
     return this.app.prisma.user.update({
-      where: { id },
-      data: { isActive: false },
+      where: { id, pharmacyId },
+      data:  { isActive: false },
     });
   }
 }

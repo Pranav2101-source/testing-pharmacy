@@ -1,4 +1,4 @@
-import type { PrismaClient, Prisma } from "@pharmacy/database";
+import type { PrismaClient, Prisma, Medicine } from "@pharmacy/database";
 import type { CreateMedicineInput, UpdateMedicineInput } from "./medicines.schema.js";
 
 export class MedicinesRepo {
@@ -23,6 +23,35 @@ export class MedicinesRepo {
         ...(excludeId ? { id: { not: excludeId } } : {}),
       },
     });
+  }
+
+  /**
+   * Creates a chunk of medicines inside a single transaction.
+   * Rows whose name already exists are skipped (not failed).
+   * If any other error occurs the entire chunk is rolled back.
+   */
+  async createManyInTransaction(rows: CreateMedicineInput[]): Promise<{
+    created: Medicine[];
+    skipped: string[];
+  }> {
+    const created: Medicine[] = [];
+    const skipped: string[] = [];
+
+    await this.db.$transaction(async (tx) => {
+      for (const row of rows) {
+        const dup = await tx.medicine.findFirst({
+          where: { name: { equals: row.name, mode: "insensitive" } },
+        });
+        if (dup) {
+          skipped.push(row.name);
+          continue;
+        }
+        const medicine = await tx.medicine.create({ data: row });
+        created.push(medicine);
+      }
+    });
+
+    return { created, skipped };
   }
 
   async list(params: {
@@ -72,5 +101,23 @@ export class MedicinesRepo {
 
   async listAll() {
     return this.db.medicine.findMany({ orderBy: { name: "asc" } });
+  }
+
+  async findByBarcode(barcode: string) {
+    return this.db.medicine.findFirst({
+      where: { barcode: { equals: barcode, mode: "insensitive" }, isActive: true },
+    });
+  }
+
+  async findAlternatives(excludeId: string, genericName: string) {
+    return this.db.medicine.findMany({
+      where: {
+        genericName: { equals: genericName, mode: "insensitive" },
+        isActive:    true,
+        id:          { not: excludeId },
+      },
+      include: { brand: { select: { id: true, name: true } } },
+      orderBy: { name: "asc" },
+    });
   }
 }

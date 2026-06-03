@@ -7,9 +7,9 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ─── Tenant (One per Pharmacy) ───────────────────────────────────────────────
+// ─── Pharmacy (one per registered pharmacy) ──────────────────────────────────
 
-model Tenant {
+model Pharmacy {
   id            String  @id @default(cuid())
   name          String
   slug          String  @unique
@@ -40,35 +40,53 @@ model Tenant {
   salesReturns        SalesReturn[]
   inventoryMovements  InventoryMovement[]
   stockReservations   StockReservation[]
+  grns                GoodsReceiptNote[]
+  supplierReturns     SupplierReturn[]
+  supplierPayments    SupplierPayment[]
+  supplierCreditNotes SupplierCreditNote[]
+  quotations          Quotation[]
+  racks               Rack[]
+  shelves             Shelf[]
+  stockAuditSessions  StockAuditSession[]
+  calendarEvents      CalendarEvent[]
 
-  @@map("tenants")
+  @@map("pharmacies")
 }
 
 // ─── User (Staff) ────────────────────────────────────────────────────────────
 
 model User {
-  id           String    @id @default(cuid())
-  tenantId     String
-  name         String
-  email        String
-  phone        String?
-  passwordHash String
-  role         Role      @default(PHARMACIST)
-  isActive     Boolean   @default(true)
-  lastLoginAt  DateTime?
+  id                          String    @id @default(cuid())
+  pharmacyId                  String
+  name                        String
+  email                       String
+  phone                       String?
+  passwordHash                String
+  role                        Role      @default(PHARMACIST)
+  isActive                    Boolean   @default(true)
+  lastLoginAt                 DateTime?
+  // Refresh token rotation: increment on every /refresh or logout to invalidate all older tokens
+  tokenVersion                Int       @default(0)
+  // Password reset (store hashed token; send plaintext to user via email)
+  passwordResetToken          String?   @unique
+  passwordResetTokenExpiresAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pharmacy            Pharmacy             @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   invoices            Invoice[]
   auditLogs           AuditLog[]
   invoicePayments     InvoicePayment[]
   salesReturns        SalesReturn[]
   inventoryMovements  InventoryMovement[]
+  supplierPayments    SupplierPayment[]
+  supplierCreditNotes SupplierCreditNote[]
+  quotations          Quotation[]
+  calendarEvents      CalendarEvent[]     @relation("CalendarEventCreator")
 
-  @@unique([tenantId, email])
-  @@index([tenantId, role])
+  @@unique([pharmacyId, email])
+  @@index([pharmacyId, role])
   @@map("users")
 }
 
@@ -77,7 +95,7 @@ enum Role {
   PHARMACIST
 }
 
-// ─── Medicine (Global — shared across all tenants) ───────────────────────────
+// ─── Medicine (Global — shared across all pharmacies) ────────────────────────
 
 model Medicine {
   id           String  @id @default(cuid())
@@ -98,66 +116,122 @@ model Medicine {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  inventory Inventory[]
+  brandId   String?
+  brand     Brand?      @relation(fields: [brandId], references: [id])
+  barcode   String?
+  boxSize   Int?        // strips per box; used with packSize for unit conversion
+
+  inventory           Inventory[]
+  grnItems            GRNItem[]
+  supplierReturnItems SupplierReturnItem[]
+  quotationItems      QuotationItem[]
+  purchaseOrderItems  PurchaseOrderItem[]
 
   @@index([name])
   @@index([genericName])
   @@index([hsnCode])
   @@index([category])
+  @@index([barcode])
   @@map("medicines")
 }
 
-// ─── Inventory (per tenant, per batch) ───────────────────────────────────────
+// ─── Brand (global — shared across all pharmacies) ───────────────────────────
 
-model Inventory {
-  id               String   @id @default(cuid())
-  tenantId         String
-  medicineId       String
-  batchNumber      String
-  expiryDate       DateTime
-  quantity         Int
-  reservedQuantity Int      @default(0) // stock locked in un-finalised drafts
-  purchaseRate     Float
-  mrp              Float
-  location         String?  // shelf / rack
-  minimumStock     Int      @default(10)
+model Brand {
+  id           String     @id @default(cuid())
+  name         String     @unique
+  manufacturer String?
+  country      String?
+  isActive     Boolean    @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  medicines Medicine[]
+
+  @@index([name])
+  @@map("brands")
+}
+
+// ─── Product Category (global) ───────────────────────────────────────────────
+
+model ProductCategory {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  code        String?
+  description String?
+  parentId    String?
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parent   ProductCategory?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children ProductCategory[] @relation("CategoryHierarchy")
+
+  @@index([name])
+  @@map("product_categories")
+}
+
+// ─── Inventory (per pharmacy, per batch) ─────────────────────────────────────
+
+model Inventory {
+  id               String      @id @default(cuid())
+  pharmacyId       String
+  medicineId       String
+  batchNumber      String
+  expiryDate       DateTime
+  quantity         Int
+  reservedQuantity Int         @default(0)
+  purchaseRate     Float
+  mrp              Float
+  location         String?
+  shelfId          String?
+  minimumStock     Int         @default(10)
+  reorderLevel     Int         @default(5)
+  status           BatchStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy            Pharmacy            @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   medicine            Medicine            @relation(fields: [medicineId], references: [id])
+  shelf               Shelf?              @relation(fields: [shelfId], references: [id])
   invoiceItems        InvoiceItem[]
   purchaseItems       PurchaseOrderItem[]
   salesReturnItems    SalesReturnItem[]
   inventoryMovements  InventoryMovement[]
   stockReservations   StockReservation[]
+  grnItems            GRNItem[]
+  supplierReturnItems SupplierReturnItem[]
+  stockAuditItems     StockAuditItem[]
 
-  @@unique([tenantId, medicineId, batchNumber])
-  @@index([tenantId, medicineId])
-  @@index([tenantId, expiryDate])
+  @@unique([pharmacyId, medicineId, batchNumber])
+  @@index([pharmacyId, medicineId])
+  @@index([pharmacyId, expiryDate])
+  @@index([pharmacyId, status])
   @@map("inventory")
 }
 
 // ─── Stock Reservation ───────────────────────────────────────────────────────
 // Created when a billing session adds an item to cart; released when bill is
-// saved, cleared, or the 30-minute TTL expires. Prevents two operators from
-// selling the same last strip simultaneously.
+// saved, cleared, or the TTL expires. Prevents two operators from selling the
+// same last strip simultaneously.
 
 model StockReservation {
   id          String   @id @default(cuid())
-  tenantId    String
+  pharmacyId  String
   inventoryId String
   sessionId   String   // idempotency key of the billing session
   quantity    Int
   expiresAt   DateTime
   createdAt   DateTime @default(now())
 
-  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pharmacy  Pharmacy  @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   inventory Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
 
-  @@unique([tenantId, inventoryId, sessionId])
-  @@index([tenantId, sessionId])
+  @@unique([pharmacyId, inventoryId, sessionId])
+  @@index([pharmacyId, sessionId])
   @@index([expiresAt])
   @@map("stock_reservations")
 }
@@ -166,7 +240,7 @@ model StockReservation {
 
 model Customer {
   id           String       @id @default(cuid())
-  tenantId     String
+  pharmacyId   String
   name         String
   phone        String?
   email        String?
@@ -174,18 +248,18 @@ model Customer {
   age          Int?
   gender       String?
   customerType CustomerType @default(WALK_IN)
-  creditLimit  Float        @default(0)  // max outstanding credit allowed
-  creditUsed   Float        @default(0)  // current outstanding balance
+  creditLimit  Float        @default(0)
+  creditUsed   Float        @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pharmacy    Pharmacy      @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   invoices    Invoice[]
   returns     SalesReturn[]
 
-  @@index([tenantId, phone])
-  @@index([tenantId, customerType])
+  @@index([pharmacyId, phone])
+  @@index([pharmacyId, customerType])
   @@map("customers")
 }
 
@@ -199,66 +273,97 @@ enum CustomerType {
 // ─── Supplier ────────────────────────────────────────────────────────────────
 
 model Supplier {
-  id         String  @id @default(cuid())
-  tenantId   String
-  name       String
-  gstin      String?
-  dlNumber   String? // drug license
-  phone      String?
-  email      String?
-  address    String?
-  city       String?
-  state      String?
-  isActive   Boolean @default(true)
+  id           String  @id @default(cuid())
+  pharmacyId   String
+  name         String
+  gstin        String?
+  dlNumber     String?
+  phone        String?
+  email        String?
+  address      String?
+  city         String?
+  state        String?
+  creditLimit  Float   @default(0)
+  creditDays   Int     @default(30)
+  paymentTerms String?
+  isActive     Boolean @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  purchaseOrders PurchaseOrder[]
+  pharmacy        Pharmacy             @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  purchaseOrders  PurchaseOrder[]
+  grns            GoodsReceiptNote[]
+  supplierReturns SupplierReturn[]
+  payments        SupplierPayment[]
+  creditNotes     SupplierCreditNote[]
+  quotations      Quotation[]
 
-  @@index([tenantId])
+  @@index([pharmacyId])
   @@map("suppliers")
 }
 
 // ─── Purchase Order ───────────────────────────────────────────────────────────
 
 model PurchaseOrder {
-  id          String         @id @default(cuid())
-  tenantId    String
-  supplierId  String
-  orderNumber String
-  invoiceNo   String?        // supplier's invoice number
-  status      PurchaseStatus @default(PENDING)
-  subtotal    Float          @default(0)
-  totalGst    Float          @default(0)
-  totalAmount Float          @default(0)
-  notes       String?
-  orderedAt   DateTime       @default(now())
-  receivedAt  DateTime?
+  id              String         @id @default(cuid())
+  pharmacyId      String
+  supplierId      String
+  orderNumber     String
+  invoiceNo       String?
+  status          PurchaseStatus @default(DRAFT)
+  approvalStatus  ApprovalStatus @default(NOT_REQUIRED)
+  approvedBy      String?
+  approvedAt      DateTime?
+  rejectionReason String?
+  subtotal        Float          @default(0)
+  totalGst        Float          @default(0)
+  totalAmount     Float          @default(0)
+  notes           String?
+  expectedDate    DateTime?
+  orderedAt       DateTime       @default(now())
+  receivedAt      DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant   Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pharmacy Pharmacy            @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   supplier Supplier            @relation(fields: [supplierId], references: [id])
   items    PurchaseOrderItem[]
+  grns     GoodsReceiptNote[]
 
-  @@unique([tenantId, orderNumber])
-  @@index([tenantId, status])
+  @@unique([pharmacyId, orderNumber])
+  @@index([pharmacyId, status])
+  @@index([pharmacyId, supplierId])
+  @@index([pharmacyId, approvalStatus])
   @@map("purchase_orders")
 }
 
 enum PurchaseStatus {
+  DRAFT
   PENDING
   RECEIVED
   PARTIAL
   CANCELLED
 }
 
+enum BatchStatus {
+  ACTIVE
+  QUARANTINE
+  EXPIRED
+  DAMAGED
+}
+
+enum GRNStatus {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
 model PurchaseOrderItem {
   id              String   @id @default(cuid())
   purchaseOrderId String
+  medicineId      String?
   inventoryId     String?
   medicineName    String
   batchNumber     String
@@ -272,8 +377,10 @@ model PurchaseOrderItem {
   amount          Float
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  medicine      Medicine?     @relation(fields: [medicineId], references: [id])
   inventory     Inventory?    @relation(fields: [inventoryId], references: [id])
 
+  @@index([medicineId])
   @@map("purchase_order_items")
 }
 
@@ -281,12 +388,12 @@ model PurchaseOrderItem {
 
 model Invoice {
   id              String        @id @default(cuid())
-  tenantId        String
+  pharmacyId      String
   invoiceNumber   String
   customerId      String?
   userId          String
   doctorName      String?
-  prescriptionId  String?       // linked upload
+  prescriptionId  String?
   paymentMode     PaymentMode   @default(CASH)
   paymentStatus   PaymentStatus @default(PAID)
   status          InvoiceStatus @default(COMPLETED)
@@ -297,28 +404,28 @@ model Invoice {
   sgst            Float
   totalGst        Float
   totalAmount     Float
-  returnedAmount  Float         @default(0) // cumulative amount returned
+  returnedAmount  Float         @default(0)
   notes           String?
-  isCancelled     Boolean       @default(false) // kept for backward compat — always mirrors status=CANCELLED
+  isCancelled     Boolean       @default(false)
   cancelledAt     DateTime?
   cancelReason    String?
-  idempotencyKey  String?       // frontend UUID to prevent double-save
+  idempotencyKey  String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pharmacy Pharmacy         @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   customer Customer?        @relation(fields: [customerId], references: [id])
   user     User             @relation(fields: [userId], references: [id])
   items    InvoiceItem[]
   payments InvoicePayment[]
   returns  SalesReturn[]
 
-  @@unique([tenantId, invoiceNumber])
-  @@unique([tenantId, idempotencyKey]) // prevents duplicate saves from double-click
-  @@index([tenantId, createdAt])
-  @@index([tenantId, customerId])
-  @@index([tenantId, status])
+  @@unique([pharmacyId, invoiceNumber])
+  @@unique([pharmacyId, idempotencyKey])
+  @@index([pharmacyId, createdAt])
+  @@index([pharmacyId, customerId])
+  @@index([pharmacyId, status])
   @@map("invoices")
 }
 
@@ -354,13 +461,14 @@ model InvoiceItem {
   expiryDate    DateTime
   quantity      Int
   mrp           Float
-  rate          Float    // selling rate (may differ from MRP after discount)
-  discount      Float    @default(0) // percentage
+  rate          Float
+  purchaseRate  Float    @default(0)
+  discount      Float    @default(0)
   gstRate       Float
   cgst          Float
   sgst          Float
   taxableAmount Float
-  amount        Float    // final line total
+  amount        Float
 
   invoice   Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   inventory Inventory @relation(fields: [inventoryId], references: [id])
@@ -370,25 +478,24 @@ model InvoiceItem {
 }
 
 // ─── Invoice Payments (split payment support) ────────────────────────────────
-// One invoice can have multiple payment entries (e.g. ₹500 Cash + ₹1000 UPI).
 
 model InvoicePayment {
   id          String      @id @default(cuid())
-  tenantId    String
+  pharmacyId  String
   invoiceId   String
   amount      Float
   paymentMode PaymentMode
-  reference   String?     // UPI txn ID, card last-4, cheque number
+  reference   String?
   notes       String?
   paidAt      DateTime    @default(now())
-  createdBy   String      // userId
+  createdBy   String
 
-  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  invoice      Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  createdByUser User    @relation(fields: [createdBy], references: [id])
+  pharmacy      Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  invoice       Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  createdByUser User     @relation(fields: [createdBy], references: [id])
 
   @@index([invoiceId])
-  @@index([tenantId, paidAt])
+  @@index([pharmacyId, paidAt])
   @@map("invoice_payments")
 }
 
@@ -396,7 +503,7 @@ model InvoicePayment {
 
 model SalesReturn {
   id             String   @id @default(cuid())
-  tenantId       String
+  pharmacyId     String
   invoiceId      String
   returnNumber   String
   reason         String?
@@ -409,28 +516,33 @@ model SalesReturn {
   sgst           Float
   totalGst       Float
   totalAmount    Float
-  idempotencyKey String?  // frontend UUID to prevent double-submission
+  idempotencyKey String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pharmacy Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   invoice  Invoice           @relation(fields: [invoiceId], references: [id])
   user     User              @relation(fields: [userId], references: [id])
   customer Customer?         @relation(fields: [customerId], references: [id])
   items    SalesReturnItem[]
 
-  @@unique([tenantId, returnNumber])
-  @@unique([tenantId, idempotencyKey])
-  @@index([tenantId, invoiceId])
-  @@index([tenantId, createdAt])
+  @@unique([pharmacyId, returnNumber])
+  @@unique([pharmacyId, idempotencyKey])
+  @@index([pharmacyId, invoiceId])
+  @@index([pharmacyId, createdAt])
   @@map("sales_returns")
 }
 
+enum ReturnDisposition {
+  RESTOCK
+  WRITEOFF
+}
+
 model SalesReturnItem {
-  id            String   @id @default(cuid())
+  id            String            @id @default(cuid())
   returnId      String
-  invoiceItemId String?  // reference to original InvoiceItem for qty validation
+  invoiceItemId String?
   inventoryId   String
   medicineName  String
   hsnCode       String?
@@ -439,12 +551,13 @@ model SalesReturnItem {
   quantity      Int
   mrp           Float
   rate          Float
-  discount      Float    @default(0)
+  discount      Float             @default(0)
   gstRate       Float
   cgst          Float
   sgst          Float
   taxableAmount Float
   amount        Float
+  disposition   ReturnDisposition @default(RESTOCK)
 
   return    SalesReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
   inventory Inventory   @relation(fields: [inventoryId], references: [id])
@@ -455,43 +568,42 @@ model SalesReturnItem {
 }
 
 // ─── Inventory Movement (full stock ledger) ───────────────────────────────────
-// Every stock change — sale, return, purchase, adjustment — writes a record here.
-// Never update or delete; append-only. Enables full stock reconciliation.
+// Append-only. Every stock change writes one record here for full reconciliation.
 
 model InventoryMovement {
   id              String             @id @default(cuid())
-  tenantId        String
+  pharmacyId      String
   inventoryId     String
   userId          String
   type            MovementType
   direction       MovementDirection
-  quantity        Int                // always positive; direction determines sign
+  quantity        Int
   quantityBefore  Int
   quantityAfter   Int
-  referenceType   String?            // "invoice" | "sales_return" | "purchase_order" | "adjustment"
-  referenceId     String?            // ID of the source document
+  referenceType   String?
+  referenceId     String?
   notes           String?
 
   createdAt DateTime @default(now())
 
-  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pharmacy  Pharmacy  @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   inventory Inventory @relation(fields: [inventoryId], references: [id])
   user      User      @relation(fields: [userId], references: [id])
 
-  @@index([tenantId, inventoryId])
-  @@index([tenantId, createdAt])
+  @@index([pharmacyId, inventoryId])
+  @@index([pharmacyId, createdAt])
   @@index([referenceId])
   @@map("inventory_movements")
 }
 
 enum MovementType {
-  SALE           // stock out — invoice
-  RETURN         // stock in  — sales return
-  PURCHASE       // stock in  — purchase order
-  ADJUSTMENT     // manual correction
-  OPENING        // opening stock entry
-  DAMAGE         // write-off
-  EXPIRY_REMOVAL // removing expired stock
+  SALE
+  RETURN
+  PURCHASE
+  ADJUSTMENT
+  OPENING
+  DAMAGE
+  EXPIRY_REMOVAL
 }
 
 enum MovementDirection {
@@ -499,17 +611,17 @@ enum MovementDirection {
   OUT
 }
 
-// ─── Invoice Settings (per tenant) ───────────────────────────────────────────
+// ─── Invoice Settings (per pharmacy) ─────────────────────────────────────────
 
 model InvoiceSettings {
-  id       String @id @default(cuid())
-  tenantId String @unique
-  settings Json   // typed as InvoiceSettingsConfig in @pharmacy/types
+  id         String @id @default(cuid())
+  pharmacyId String @unique
+  settings   Json
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
 
   @@map("invoice_settings")
 }
@@ -517,44 +629,44 @@ model InvoiceSettings {
 // ─── Audit Log ───────────────────────────────────────────────────────────────
 
 model AuditLog {
-  id        String  @id @default(cuid())
-  tenantId  String
-  userId    String
-  action    String  // CREATE | UPDATE | DELETE | LOGIN | LOGOUT | PRINT
-  entity    String  // Invoice | Inventory | User | Supplier ...
-  entityId  String?
-  oldData   Json?
-  newData   Json?
-  ipAddress String?
-  userAgent String?
+  id         String  @id @default(cuid())
+  pharmacyId String
+  userId     String
+  action     String
+  entity     String
+  entityId   String?
+  oldData    Json?
+  newData    Json?
+  ipAddress  String?
+  userAgent  String?
 
   createdAt DateTime @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user   User   @relation(fields: [userId], references: [id])
+  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id])
 
-  @@index([tenantId, createdAt])
-  @@index([tenantId, entity, entityId])
+  @@index([pharmacyId, createdAt])
+  @@index([pharmacyId, entity, entityId])
   @@map("audit_logs")
 }
 
 // ─── Upload ───────────────────────────────────────────────────────────────────
 
 model Upload {
-  id        String     @id @default(cuid())
-  tenantId  String
-  type      UploadType
-  fileName  String
-  fileUrl   String
-  fileSize  Int
-  mimeType  String
-  invoiceId String?
+  id         String     @id @default(cuid())
+  pharmacyId String
+  type       UploadType
+  fileName   String
+  fileUrl    String
+  fileSize   Int
+  mimeType   String
+  invoiceId  String?
 
   createdAt DateTime @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
 
-  @@index([tenantId, type])
+  @@index([pharmacyId, type])
   @@map("uploads")
 }
 
@@ -569,22 +681,24 @@ enum UploadType {
 // ─── Notification Log ────────────────────────────────────────────────────────
 
 model NotificationLog {
-  id        String             @id @default(cuid())
-  tenantId  String
-  type      NotificationType
-  recipient String
-  subject   String?
-  message   String
-  status    NotificationStatus @default(PENDING)
-  error     String?
-  sentAt    DateTime?
+  id         String             @id @default(cuid())
+  pharmacyId String
+  type       NotificationType
+  recipient  String
+  subject    String?
+  message    String
+  status     NotificationStatus @default(PENDING)
+  error      String?
+  sentAt     DateTime?
+  isRead     Boolean            @default(false)
 
   createdAt DateTime @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
 
-  @@index([tenantId, createdAt])
-  @@index([tenantId, status])
+  @@index([pharmacyId, createdAt])
+  @@index([pharmacyId, status])
+  @@index([pharmacyId, isRead])
   @@map("notification_logs")
 }
 
@@ -592,10 +706,411 @@ enum NotificationType {
   SMS
   EMAIL
   WHATSAPP
+  IN_APP
 }
 
 enum NotificationStatus {
   PENDING
   SENT
   FAILED
+}
+
+// ─── Goods Receipt Note ───────────────────────────────────────────────────────
+// Created when goods physically arrive. Separate from PO — a PO may have multiple
+// GRNs (partial deliveries). Confirming a GRN atomically updates inventory stock
+// and writes InventoryMovement records (type = PURCHASE).
+
+model GoodsReceiptNote {
+  id                  String    @id @default(cuid())
+  pharmacyId          String
+  supplierId          String
+  purchaseOrderId     String?
+  grnNumber           String
+  supplierInvoiceNo   String?
+  supplierInvoiceDate DateTime?
+  status              GRNStatus @default(DRAFT)
+  notes               String?
+  subtotal            Float     @default(0)
+  totalGst            Float     @default(0)
+  totalAmount         Float     @default(0)
+  confirmedAt         DateTime?
+  paymentDueDate      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy      Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  supplier      Supplier          @relation(fields: [supplierId], references: [id])
+  purchaseOrder PurchaseOrder?    @relation(fields: [purchaseOrderId], references: [id])
+  items         GRNItem[]
+  payments      SupplierPayment[]
+
+  @@unique([pharmacyId, grnNumber])
+  @@index([pharmacyId, status])
+  @@index([pharmacyId, supplierId])
+  @@index([pharmacyId, paymentDueDate])
+  @@index([pharmacyId, createdAt])
+  @@map("goods_receipt_notes")
+}
+
+enum SupplierReturnStatus {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
+enum SupplierReturnReason {
+  DAMAGED
+  NEAR_EXPIRY
+  EXPIRED
+  WRONG_PRODUCT
+  QUALITY_ISSUE
+  SHORT_SUPPLY
+  OTHER
+}
+
+// ─── Supplier Return ──────────────────────────────────────────────────────────
+// Raised when pharmacy sends goods back to supplier. Confirming decrements
+// inventory and writes InventoryMovement (type=ADJUSTMENT direction=OUT).
+
+model SupplierReturn {
+  id           String               @id @default(cuid())
+  pharmacyId   String
+  supplierId   String
+  returnNumber String
+  debitNoteNo  String?
+  status       SupplierReturnStatus @default(DRAFT)
+  notes        String?
+  totalAmount  Float                @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy    Pharmacy             @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  supplier    Supplier             @relation(fields: [supplierId], references: [id])
+  items       SupplierReturnItem[]
+  creditNotes SupplierCreditNote[]
+
+  @@unique([pharmacyId, returnNumber])
+  @@index([pharmacyId, status])
+  @@index([pharmacyId, supplierId])
+  @@map("supplier_returns")
+}
+
+model SupplierReturnItem {
+  id           String               @id @default(cuid())
+  returnId     String
+  inventoryId  String
+  medicineId   String
+  medicineName String
+  batchNumber  String
+  expiryDate   DateTime
+  quantity     Int
+  purchaseRate Float
+  amount       Float
+  reason       SupplierReturnReason @default(DAMAGED)
+
+  createdAt DateTime @default(now())
+
+  supplierReturn SupplierReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  inventory      Inventory      @relation(fields: [inventoryId], references: [id])
+  medicine       Medicine       @relation(fields: [medicineId], references: [id])
+
+  @@index([returnId])
+  @@map("supplier_return_items")
+}
+
+model GRNItem {
+  id           String    @id @default(cuid())
+  grnId        String
+  medicineId   String
+  medicineName String
+  batchNumber  String
+  expiryDate   DateTime
+  orderedQty        Int?
+  receivedQty       Int
+  freeQty           Int       @default(0)
+  purchaseUnit      String    @default("UNIT") // BOX | STRIP | UNIT
+  conversionFactor  Int       @default(1)      // base units per purchase unit
+  purchaseRate      Float
+  mrp               Float
+  discount          Float     @default(0)
+  gstRate           Float
+  cgst              Float
+  sgst              Float
+  amount            Float
+  inventoryId       String?
+
+  createdAt DateTime @default(now())
+
+  grn       GoodsReceiptNote @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  medicine  Medicine         @relation(fields: [medicineId], references: [id])
+  inventory Inventory?       @relation(fields: [inventoryId], references: [id])
+
+  @@index([grnId])
+  @@map("grn_items")
+}
+
+// ─── Approval Workflow ────────────────────────────────────────────────────────
+
+enum ApprovalStatus {
+  NOT_REQUIRED
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+// ─── Supplier Payment ─────────────────────────────────────────────────────────
+// Records payments made to suppliers against GRNs (purchase invoices).
+// Outstanding balance = sum(GRN totalAmounts) - sum(SupplierPayments) per supplier.
+
+model SupplierPayment {
+  id            String      @id @default(cuid())
+  pharmacyId    String
+  supplierId    String
+  grnId         String?
+  paymentNumber String
+  amount        Float
+  paymentMode   PaymentMode
+  reference     String?
+  notes         String?
+  paidAt        DateTime    @default(now())
+  createdBy     String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  supplier Supplier          @relation(fields: [supplierId], references: [id])
+  grn      GoodsReceiptNote? @relation(fields: [grnId], references: [id])
+  user     User              @relation(fields: [createdBy], references: [id])
+
+  @@unique([pharmacyId, paymentNumber])
+  @@index([pharmacyId, supplierId])
+  @@index([pharmacyId, paidAt])
+  @@map("supplier_payments")
+}
+
+// ─── Supplier Credit Note ─────────────────────────────────────────────────────
+// Issued when pharmacy returns goods; tracks supplier credit balance.
+
+model SupplierCreditNote {
+  id               String           @id @default(cuid())
+  pharmacyId       String
+  supplierId       String
+  supplierReturnId String?
+  creditNoteNumber String
+  amount           Float
+  status           CreditNoteStatus @default(PENDING)
+  notes            String?
+  issuedAt         DateTime         @default(now())
+  createdBy        String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy       Pharmacy        @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  supplier       Supplier        @relation(fields: [supplierId], references: [id])
+  supplierReturn SupplierReturn? @relation(fields: [supplierReturnId], references: [id])
+  user           User            @relation(fields: [createdBy], references: [id])
+
+  @@unique([pharmacyId, creditNoteNumber])
+  @@index([pharmacyId, supplierId])
+  @@index([pharmacyId, status])
+  @@map("supplier_credit_notes")
+}
+
+enum CreditNoteStatus {
+  PENDING
+  APPLIED
+  CANCELLED
+}
+
+// ─── Quotation ────────────────────────────────────────────────────────────────
+// Request for quotation (RFQ) sent to a supplier; multiple quotations for the
+// same items across suppliers allow price comparison before raising a PO.
+
+model Quotation {
+  id              String          @id @default(cuid())
+  pharmacyId      String
+  supplierId      String
+  quotationNumber String
+  status          QuotationStatus @default(DRAFT)
+  validUntil      DateTime?
+  notes           String?
+  createdBy       String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy Pharmacy        @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  supplier Supplier        @relation(fields: [supplierId], references: [id])
+  items    QuotationItem[]
+  user     User            @relation(fields: [createdBy], references: [id])
+
+  @@unique([pharmacyId, quotationNumber])
+  @@index([pharmacyId, supplierId])
+  @@index([pharmacyId, status])
+  @@map("quotations")
+}
+
+enum QuotationStatus {
+  DRAFT
+  SENT
+  RECEIVED
+  EXPIRED
+  CONVERTED
+}
+
+model QuotationItem {
+  id           String  @id @default(cuid())
+  quotationId  String
+  medicineId   String
+  medicineName String
+  quantity     Int
+  quotedRate   Float?
+  mrp          Float?
+  gstRate      Float   @default(12)
+  discount     Float   @default(0)
+  notes        String?
+
+  quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  medicine  Medicine  @relation(fields: [medicineId], references: [id])
+
+  @@index([quotationId])
+  @@map("quotation_items")
+}
+
+// ─── Rack & Shelf Location Management ────────────────────────────────────────
+
+model Rack {
+  id         String   @id @default(cuid())
+  pharmacyId String
+  code       String   // e.g. R1, R2 — unique per pharmacy
+  name       String   // e.g. "Cold Storage", "Antibiotics Aisle"
+  aisle      String?
+  isActive   Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  shelves  Shelf[]
+
+  @@unique([pharmacyId, code])
+  @@index([pharmacyId])
+  @@map("racks")
+}
+
+model Shelf {
+  id          String  @id @default(cuid())
+  pharmacyId  String
+  rackId      String
+  code        String  // e.g. A1, A2, B3 — unique per pharmacy
+  level       Int     // 1 = bottom shelf, ascending = higher
+  description String?
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy  Pharmacy    @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  rack      Rack        @relation(fields: [rackId], references: [id])
+  inventory Inventory[]
+
+  @@unique([pharmacyId, code])
+  @@index([pharmacyId, rackId])
+  @@map("shelves")
+}
+
+// ─── Physical Stock Audit ─────────────────────────────────────────────────────
+// A session snapshots current inventory quantities. Staff enter actual counts.
+// Approving the session applies variances as ADJUSTMENT movements.
+
+model StockAuditSession {
+  id            String             @id @default(cuid())
+  pharmacyId    String
+  sessionNumber String             // e.g. AUDIT-20250603-001
+  status        AuditSessionStatus @default(DRAFT)
+  notes         String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  approvedAt    DateTime?
+  approvedBy    String?
+  createdBy     String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy Pharmacy         @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  items    StockAuditItem[]
+
+  @@unique([pharmacyId, sessionNumber])
+  @@index([pharmacyId, status])
+  @@map("stock_audit_sessions")
+}
+
+model StockAuditItem {
+  id          String  @id @default(cuid())
+  sessionId   String
+  inventoryId String
+  expectedQty Int     // snapshot of inventory.quantity at session creation
+  countedQty  Int?    // staff enters this during count
+  varianceQty Int?    // computed: countedQty - expectedQty
+  notes       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session   StockAuditSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  inventory Inventory         @relation(fields: [inventoryId], references: [id])
+
+  @@unique([sessionId, inventoryId])
+  @@index([sessionId])
+  @@map("stock_audit_items")
+}
+
+enum AuditSessionStatus {
+  DRAFT
+  IN_PROGRESS
+  COMPLETED
+  APPROVED
+  CANCELLED
+}
+
+// ─── Calendar ─────────────────────────────────────────────────────────────────
+
+enum CalendarEventType {
+  EXPIRY_ALERT
+  CREDIT_DUE
+  PO_DELIVERY
+  BILL_REMINDER
+  STOCK_AUDIT
+  LICENSE_RENEWAL
+  CUSTOM
+}
+
+model CalendarEvent {
+  id          String            @id @default(cuid())
+  pharmacyId  String
+  title       String
+  description String?
+  date        DateTime
+  endDate     DateTime?
+  allDay      Boolean           @default(true)
+  type        CalendarEventType @default(CUSTOM)
+  color       String?
+  relatedId   String?
+  relatedType String?
+  isDone      Boolean           @default(false)
+  createdById String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy  Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  createdBy User?    @relation("CalendarEventCreator", fields: [createdById], references: [id])
+
+  @@index([pharmacyId, date])
+  @@map("calendar_events")
 }

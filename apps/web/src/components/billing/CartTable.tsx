@@ -1,0 +1,329 @@
+"use client";
+
+import { useCallback, memo } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { format } from "date-fns";
+import { X, Info, Pencil, AlertTriangle } from "lucide-react";
+import { useBillingStore, type CartItem } from "./useBillingStore";
+import { EmptyBillState } from "./EmptyBillState";
+import { cn } from "@/lib/utils";
+
+// Column grid — 12 cols: ItemName | Unit | Loc | Batch | Expiry | MRP | Qty | D% | D.Price | GST% | Amount | Del
+const COL = "grid-cols-[minmax(200px,1fr)_80px_58px_104px_72px_80px_72px_64px_90px_64px_104px_38px]";
+
+const TH = "text-[11px] font-bold text-slate-500 uppercase tracking-wider text-right px-2.5 select-none whitespace-nowrap";
+
+// ─── Table header ─────────────────────────────────────────────────
+export function CartTableHeader({ lifa, onLifaToggle }: { lifa: boolean; onLifaToggle: () => void }) {
+  return (
+    <div className={cn("grid items-center bg-slate-50 border-b border-slate-200", COL)}>
+      {/* Item Name col */}
+      <div className="flex items-center justify-between px-3 py-2.5">
+        <span className="flex items-center gap-1 text-[11px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">
+          Item Name
+          <Info className="w-3 h-3 text-slate-400" />
+        </span>
+        {/* LIFA / LILA toggle */}
+        <button
+          onClick={onLifaToggle}
+          title={lifa ? "Switch to LILA" : "Switch to LIFA"}
+          className="flex items-center gap-1 ml-2"
+        >
+          <span className={cn("text-[11px] font-bold uppercase tracking-widest transition-colors", lifa ? "text-blue-600" : "text-slate-400")}>LIFA</span>
+          <div className={cn("w-8 h-4 rounded-full relative transition-colors duration-200", lifa ? "bg-blue-500" : "bg-slate-300")}>
+            <motion.span
+              layout
+              transition={{ type: "spring", stiffness: 600, damping: 35 }}
+              className={cn("absolute top-[3px] w-2.5 h-2.5 rounded-full bg-white shadow-sm", lifa ? "left-[18px]" : "left-[3px]")}
+            />
+          </div>
+          <span className={cn("text-[11px] font-bold uppercase tracking-widest transition-colors", !lifa ? "text-blue-600" : "text-slate-400")}>LILA</span>
+        </button>
+      </div>
+
+      <span className={cn(TH, "text-left px-2.5 py-2.5")}>Unit/Pack</span>
+      <span className={cn(TH, "text-left px-2.5 py-2.5")}>Loc.</span>
+      <span className={cn(TH, "py-2.5")}>Batch</span>
+      <span className={cn(TH, "py-2.5")}>Expiry</span>
+      <span className={cn(TH, "py-2.5")}>MRP</span>
+      <span className={cn(TH, "py-2.5 flex items-center justify-end gap-0.5")}>
+        Qty.<Info className="w-2.5 h-2.5 text-slate-400" />
+      </span>
+      <span className={cn(TH, "py-2.5 flex items-center justify-end gap-0.5")}>
+        <Pencil className="w-2.5 h-2.5 text-slate-400" />D%<Info className="w-2.5 h-2.5 text-slate-400" />
+      </span>
+      <span className={cn(TH, "py-2.5")}>D.Price</span>
+      <span className={cn(TH, "py-2.5 flex items-center justify-end gap-0.5")}>
+        GST%<Info className="w-2.5 h-2.5 text-slate-400" />
+      </span>
+      <span className={cn(TH, "py-2.5")}>Amount</span>
+      <span className={cn(TH, "py-2.5")} />
+    </div>
+  );
+}
+
+// ─── Skeleton row ─────────────────────────────────────────────────
+function SkeletonRow({ idx }: { idx: number }) {
+  return (
+    <div className={cn("grid items-center border-b border-slate-100", COL, idx % 2 === 1 ? "bg-slate-50/40" : "bg-white")} style={{ height: "var(--row-height, 42px)" }}>
+      <div className="px-3 flex items-center gap-2">
+        <div className="skeleton h-3.5 w-36 rounded" />
+      </div>
+      {[80, 58, 104, 72, 80, 72, 64, 90, 64, 104].map((w, i) => (
+        <div key={i} className="px-2.5 flex justify-end">
+          <div className="skeleton h-3 rounded" style={{ width: w * 0.44 }} />
+        </div>
+      ))}
+      <div />
+    </div>
+  );
+}
+
+// ─── Cart Row ─────────────────────────────────────────────────────
+const CartRow = memo(function CartRow({
+  item, idx, hasConflict, onKeyNav, onRemove, onQtyChange, onDiscountChange,
+}: {
+  item: CartItem; idx: number; hasConflict: boolean;
+  onKeyNav:         (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => void;
+  onRemove:         (id: string) => void;
+  onQtyChange:      (id: string, qty: number) => void;
+  onDiscountChange: (id: string, discount: number) => void;
+}) {
+  const isExpired      = new Date(item.expiryDate) < new Date();
+  const isExpiringSoon = !isExpired && new Date(item.expiryDate) < new Date(Date.now() + 90 * 86400000);
+
+  const stockStatus: "ok" | "low" | "over" | null = (() => {
+    if (item.availableStock == null) return null;
+    if (item.quantity > item.availableStock) return "over";
+    if (item.quantity >= item.availableStock * 0.8) return "low";
+    return "ok";
+  })();
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: -6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, x: -16 }}
+      transition={{ duration: 0.15, ease: [0.25, 0.1, 0.25, 1] }}
+      className={cn(
+        "grid items-center border-b border-slate-100/80 group",
+        "transition-colors duration-75",
+        hasConflict
+          ? "bg-red-50/70 shadow-[inset_3px_0_0_0_#ef4444]"
+          : "hover:bg-blue-50/35 hover:shadow-[inset_3px_0_0_0_#2563eb]",
+        COL,
+        !hasConflict && (idx % 2 === 1 ? "bg-slate-50/25" : "bg-white")
+      )}
+      style={{ minHeight: "var(--row-height, 42px)" }}
+    >
+      {/* Item Name */}
+      <div className="px-3 py-2 min-w-0">
+        <div className="flex items-center gap-1.5 min-w-0">
+          {hasConflict && <AlertTriangle className="w-3 h-3 text-red-500 flex-shrink-0" />}
+          <p className={cn(
+            "text-[14px] font-semibold truncate leading-tight",
+            hasConflict ? "text-red-700" : "text-slate-800"
+          )}>
+            {item.medicineName}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 mt-0.5">
+          {item.hsnCode && (
+            <p className="text-[10px] text-slate-400 font-mono">HSN {item.hsnCode}</p>
+          )}
+          {stockStatus !== null && item.availableStock != null && (
+            <p className={cn(
+              "text-[10px] font-semibold",
+              stockStatus === "over" ? "text-red-500" :
+              stockStatus === "low"  ? "text-amber-500" : "text-slate-400"
+            )}>
+              {stockStatus === "over"
+                ? `⚠ Only ${item.availableStock} in stock`
+                : stockStatus === "low"
+                ? `${item.availableStock - item.quantity} left`
+                : null}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Unit/Pack */}
+      <span className={cn("px-2.5 py-2 text-[13px] text-left truncate", item.packSize ? "text-slate-600 font-medium" : "text-slate-300")}>
+        {item.packSize ?? "—"}
+      </span>
+
+      {/* Loc. */}
+      <span className={cn("px-2.5 py-2 text-[13px] text-left truncate", item.location ? "text-slate-600 font-medium" : "text-slate-300")}>
+        {item.location ?? "—"}
+      </span>
+
+      {/* Batch */}
+      <span className="px-2.5 py-2 text-[12px] text-slate-500 text-right font-mono truncate">
+        {item.batchNumber}
+      </span>
+
+      {/* Expiry */}
+      <span className={cn(
+        "px-2.5 py-2 text-[13px] text-right font-bold tabnum",
+        isExpired      ? "text-red-600"   :
+        isExpiringSoon ? "text-amber-600" : "text-slate-500"
+      )}>
+        {format(new Date(item.expiryDate), "MM/yy")}
+        {isExpired && <span className="ml-0.5 text-[9px] bg-red-100 text-red-600 px-1 py-0.5 rounded font-bold">EXP</span>}
+        {isExpiringSoon && !isExpired && <span className="ml-0.5 text-[9px] bg-amber-100 text-amber-600 px-1 py-0.5 rounded font-bold">SOON</span>}
+      </span>
+
+      {/* MRP */}
+      <span className="px-2.5 py-2 text-[14px] text-slate-700 text-right font-medium tabnum">
+        {item.mrp.toFixed(2)}
+      </span>
+
+      {/* Qty */}
+      <div className="px-1.5 py-1.5">
+        <input
+          type="number"
+          min={1}
+          value={item.quantity}
+          data-row={idx}
+          data-col="qty"
+          onChange={(e) => onQtyChange(item.inventoryId, Number(e.target.value))}
+          onFocus={(e) => e.target.select()}
+          onKeyDown={(e) => onKeyNav(e, idx, "qty")}
+          className={cn(
+            "w-full text-center text-[14px] font-bold tabnum",
+            "border border-slate-200 rounded-md px-1 py-1.5",
+            "focus:outline-none focus:ring-2 focus:ring-blue-500/25 focus:border-blue-400",
+            "bg-white hover:border-blue-300 transition-all duration-75"
+          )}
+        />
+      </div>
+
+      {/* D% */}
+      <div className="px-1.5 py-1.5">
+        <input
+          type="number"
+          min={0}
+          max={100}
+          step={0.5}
+          value={item.discount}
+          data-row={idx}
+          data-col="dis"
+          onChange={(e) => onDiscountChange(item.inventoryId, Number(e.target.value))}
+          onFocus={(e) => e.target.select()}
+          onKeyDown={(e) => onKeyNav(e, idx, "dis")}
+          className={cn(
+            "w-full text-center text-[13px] tabnum",
+            "border border-slate-200 rounded-md px-1 py-1.5",
+            "focus:outline-none focus:ring-2 focus:ring-rose-500/25 focus:border-rose-400",
+            "bg-white hover:border-rose-300 transition-all duration-75",
+            item.discount > 0 ? "text-rose-600 font-bold" : "text-slate-500"
+          )}
+        />
+      </div>
+
+      {/* D.Price */}
+      <span className="px-2.5 py-2 text-[13px] text-slate-600 text-right tabnum">
+        {item.rate.toFixed(2)}
+      </span>
+
+      {/* GST% */}
+      <span className="px-2.5 py-2 text-[12px] text-slate-500 text-right tabnum">
+        {item.gstRate}%
+      </span>
+
+      {/* Amount */}
+      <motion.span
+        key={item.amount}
+        initial={{ scale: 0.9, opacity: 0.6 }}
+        animate={{ scale: 1, opacity: 1 }}
+        transition={{ type: "spring", stiffness: 500, damping: 30 }}
+        className="px-2.5 py-2 text-[15px] font-black text-slate-900 text-right tabnum block"
+      >
+        {item.amount.toFixed(2)}
+      </motion.span>
+
+      {/* Delete */}
+      <div className="flex justify-center">
+        <motion.button
+          whileHover={{ scale: 1.12 }}
+          whileTap={{ scale: 0.9 }}
+          onClick={() => onRemove(item.inventoryId)}
+          tabIndex={-1}
+          className="row-delete-btn opacity-0 group-hover:opacity-100 w-6 h-6 rounded-md bg-red-50 hover:bg-red-500 text-red-400 hover:text-white flex items-center justify-center transition-all duration-100"
+        >
+          <X className="w-3.5 h-3.5" />
+        </motion.button>
+      </div>
+    </motion.div>
+  );
+});
+
+// ─── CartTableRows ────────────────────────────────────────────────
+export function CartTableRows({
+  showSkeleton = false,
+  conflictInventoryIds = new Set<string>(),
+}: {
+  showSkeleton?: boolean;
+  conflictInventoryIds?: Set<string>;
+}) {
+  const { items, removeItem, updateQty, updateDiscount } = useBillingStore();
+
+  const handleKeyNav = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const el = document.querySelector<HTMLInputElement>(`[data-row="${idx + 1}"][data-col="${col}"]`);
+        el?.focus(); el?.select();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const el = document.querySelector<HTMLInputElement>(`[data-row="${idx - 1}"][data-col="${col}"]`);
+        el?.focus(); el?.select();
+      } else if (e.key === "Tab" && !e.shiftKey && col === "dis") {
+        const next = document.querySelector<HTMLInputElement>(`[data-row="${idx + 1}"][data-col="qty"]`);
+        if (next) { e.preventDefault(); next.focus(); next.select(); }
+      } else if (e.key === "Enter" && col === "qty") {
+        e.preventDefault();
+        const dis = document.querySelector<HTMLInputElement>(`[data-row="${idx}"][data-col="dis"]`);
+        dis?.focus(); dis?.select();
+      } else if (e.key === "Enter" && col === "dis") {
+        e.preventDefault();
+        const next = document.querySelector<HTMLInputElement>(`[data-row="${idx + 1}"][data-col="qty"]`);
+        if (next) { next.focus(); next.select(); }
+        else document.querySelector<HTMLInputElement>("[data-billing-search]")?.focus();
+      }
+    },
+    []
+  );
+
+  if (showSkeleton) {
+    return (
+      <div className="overflow-y-auto overflow-x-auto flex-1">
+        <div className="min-w-max">{[0, 1, 2].map(i => <SkeletonRow key={i} idx={i} />)}</div>
+      </div>
+    );
+  }
+
+  if (items.length === 0) return <EmptyBillState />;
+
+  return (
+    <div className="overflow-y-auto overflow-x-auto flex-1">
+      <div className="min-w-max">
+        <AnimatePresence initial={false}>
+          {items.map((item, idx) => (
+            <CartRow
+              key={item.inventoryId}
+              item={item}
+              idx={idx}
+              hasConflict={conflictInventoryIds.has(item.inventoryId)}
+              onKeyNav={handleKeyNav}
+              onRemove={removeItem}
+              onQtyChange={updateQty}
+              onDiscountChange={updateDiscount}
+            />
+          ))}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
