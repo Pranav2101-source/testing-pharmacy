@@ -43,6 +43,11 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: { message: "Password updated — please log in with your new credentials" } });
   });
 
+  app.post("/logout", { preHandler: authenticate }, async (req, reply) => {
+    await service.logout(req.user.sub);
+    return reply.send({ success: true, data: { message: "Logged out" } });
+  });
+
   app.get("/me", { preHandler: authenticate }, async (req, reply) => {
     const user = await app.prisma.user.findUnique({
       where:  { id: req.user.sub },

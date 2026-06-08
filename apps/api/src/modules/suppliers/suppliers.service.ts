@@ -4,23 +4,39 @@ import { InventoryRepo } from "../inventory/inventory.repo.js";
 import type { CreateSupplierInput, UpdateSupplierInput, ListSuppliersQuery, CreatePurchaseOrderInput } from "./suppliers.schema.js";
 import { AppError } from "../../lib/AppError.js";
 
+// Supplier lists change infrequently — 2-minute cache reduces repeated identical
+// queries during the purchase/GRN workflow where the list is often re-fetched.
+const SUPPLIERS_CACHE_TTL_S = 120;
+const suppliersListKey = (pharmacyId: string, params: object) =>
+  `suppliers:list:${pharmacyId}:${JSON.stringify(params)}`;
+
 export class SuppliersService {
   private repo:          SuppliersRepo;
   private inventoryRepo: InventoryRepo;
+  private app:           FastifyInstance;
 
   constructor(app: FastifyInstance) {
+    this.app           = app;
     this.repo          = new SuppliersRepo(app.prisma);
     this.inventoryRepo = new InventoryRepo(app.prisma);
   }
 
+  private async bustSuppliersCache(pharmacyId: string) {
+    await this.app.redis.del(suppliersListKey(pharmacyId, { page: 1, limit: 50 }));
+  }
+
   async createSupplier(pharmacyId: string, input: CreateSupplierInput) {
-    return this.repo.create(pharmacyId, input);
+    const supplier = await this.repo.create(pharmacyId, input);
+    void this.bustSuppliersCache(pharmacyId);
+    return supplier;
   }
 
   async updateSupplier(id: string, pharmacyId: string, input: UpdateSupplierInput) {
     const existing = await this.repo.getById(id, pharmacyId);
     if (!existing) throw AppError.notFound("Supplier not found");
-    return this.repo.update(id, pharmacyId, input);
+    const supplier = await this.repo.update(id, pharmacyId, input);
+    void this.bustSuppliersCache(pharmacyId);
+    return supplier;
   }
 
   async getById(id: string, pharmacyId: string) {
@@ -30,7 +46,15 @@ export class SuppliersService {
   }
 
   async list(pharmacyId: string, query: ListSuppliersQuery) {
-    return this.repo.list(pharmacyId, query.page, query.limit, query.search);
+    const params   = { page: query.page, limit: query.limit, search: query.search?.trim() || undefined };
+    const cacheKey = suppliersListKey(pharmacyId, params);
+    const cached   = await this.app.redis.get(cacheKey);
+    if (cached) {
+      try { return JSON.parse(cached); } catch { /* corrupt — fall through */ }
+    }
+    const result = await this.repo.list(pharmacyId, params.page, params.limit, params.search);
+    await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", SUPPLIERS_CACHE_TTL_S);
+    return result;
   }
 
   async listAll(pharmacyId: string) {

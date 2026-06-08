@@ -387,6 +387,16 @@ export class BillingRepo {
       });
 
       return tx.invoice.findFirst({ where: { id: params.invoiceId }, include: INVOICE_INCLUDE });
+    }, {
+      isolationLevel: "Serializable",
+      timeout:        10_000,
+    }).catch((err: { code?: string }) => {
+      if (err.code === "P2034") {
+        throw AppError.conflict(
+          "Another request modified this invoice simultaneously — please try again",
+        );
+      }
+      throw err;
     });
   }
 

@@ -11,15 +11,29 @@ const SEARCH_ATTRS = [
   "unit", "packSize", "isActive",
 ];
 
+// Global catalog changes rarely — 5-minute cache significantly reduces Postgres
+// load on the medicines list screen, which every user hits on login.
+const MEDICINES_CACHE_TTL_S = 300;
+const medicinesListKey = (params: object) =>
+  `medicines:list:${JSON.stringify(params)}`;
+
 export class MedicinesService {
   private repo:  MedicinesRepo;
   private meili: FastifyInstance["meilisearch"];
   private log:   FastifyInstance["log"];
+  private app:   FastifyInstance;
 
   constructor(app: FastifyInstance) {
+    this.app   = app;
     this.repo  = new MedicinesRepo(app.prisma);
     this.meili = app.meilisearch;
     this.log   = app.log;
+  }
+
+  // Bust the default-query cache entry (page 1, no filters) that most users hit.
+  // Other query combos expire via TTL.
+  private async bustListCache() {
+    await this.app.redis.del(medicinesListKey({ page: 1, limit: 100, isActive: true }));
   }
 
   private async syncOne(medicine: Record<string, unknown>) {
@@ -39,6 +53,7 @@ export class MedicinesService {
     }
     const medicine = await this.repo.create(input);
     await this.syncOne(medicine as Record<string, unknown>);
+    void this.bustListCache();
     return medicine;
   }
 
@@ -53,6 +68,7 @@ export class MedicinesService {
 
     const medicine = await this.repo.update(id, input);
     await this.syncOne(medicine as Record<string, unknown>);
+    void this.bustListCache();
     return medicine;
   }
 
@@ -63,7 +79,7 @@ export class MedicinesService {
   }
 
   async list(query: ListMedicinesQuery) {
-    return this.repo.list({
+    const params = {
       page:     Math.max(1, query.page),
       limit:    Math.min(100, Math.max(1, query.limit)),
       search:   query.search?.trim() || undefined,
@@ -71,7 +87,15 @@ export class MedicinesService {
       schedule: query.schedule,
       form:     query.form,
       isActive: query.isActive,
-    });
+    };
+    const cacheKey = medicinesListKey(params);
+    const cached   = await this.app.redis.get(cacheKey);
+    if (cached) {
+      try { return JSON.parse(cached); } catch { /* corrupt — fall through */ }
+    }
+    const result = await this.repo.list(params);
+    await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", MEDICINES_CACHE_TTL_S);
+    return result;
   }
 
   async deactivate(id: string) {
@@ -79,6 +103,7 @@ export class MedicinesService {
     if (!existing) throw AppError.notFound("Medicine not found");
     const medicine = await this.repo.update(id, { isActive: false });
     await this.syncOne(medicine as Record<string, unknown>);
+    void this.bustListCache();
     return medicine;
   }
 
@@ -87,6 +112,7 @@ export class MedicinesService {
     if (!existing) throw AppError.notFound("Medicine not found");
     const medicine = await this.repo.update(id, { isActive: true });
     await this.syncOne(medicine as Record<string, unknown>);
+    void this.bustListCache();
     return medicine;
   }
 

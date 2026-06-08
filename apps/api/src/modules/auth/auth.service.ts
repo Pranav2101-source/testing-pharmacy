@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { AuthRepo } from "./auth.repo.js";
 import type { LoginInput, RegisterInput, RefreshInput, ForgotPasswordInput, ResetPasswordInput } from "./auth.schema.js";
 import type { JwtPayload, UserRole } from "../../middleware/auth.js";
+import { tokenVersionKey } from "../../middleware/auth.js";
 import { AppError } from "../../lib/AppError.js";
 import { env } from "../../config/env.js";
 import { notifyOwners } from "../../lib/notifications.js";
@@ -127,9 +128,12 @@ export class AuthService {
       throw AppError.unauthorized("Refresh token has been revoked");
     }
 
-    // Increment tokenVersion — this invalidates the submitted refresh token so
-    // it cannot be reused even if intercepted
+    // Increment tokenVersion — invalidates the submitted refresh token and all
+    // outstanding access tokens bearing the old version.
     const newVersion = await this.repo.rotateTokenVersion(user.id);
+
+    // Evict the cached tokenVersion so authenticate picks up the new one immediately.
+    await this.app.redis.del(tokenVersionKey(user.id));
 
     return this.signTokens(user.id, user.pharmacyId, user.role, user.email, newVersion);
   }
@@ -184,8 +188,20 @@ export class AuthService {
 
     const newPasswordHash = await bcrypt.hash(input.newPassword, 12);
 
-    // consumePasswordResetToken also increments tokenVersion, logging out all sessions
+    // consumePasswordResetToken also increments tokenVersion, logging out all sessions.
     await this.repo.consumePasswordResetToken(user.id, newPasswordHash);
+
+    // Evict the tokenVersion cache so all existing access tokens are rejected immediately.
+    await this.app.redis.del(tokenVersionKey(user.id));
+  }
+
+  // ── Logout ────────────────────────────────────────────────────────────────
+
+  async logout(userId: string): Promise<void> {
+    // Incrementing tokenVersion server-side invalidates all outstanding tokens for
+    // this user — both the current access token and any refresh tokens in other tabs.
+    await this.repo.rotateTokenVersion(userId);
+    await this.app.redis.del(tokenVersionKey(userId));
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────

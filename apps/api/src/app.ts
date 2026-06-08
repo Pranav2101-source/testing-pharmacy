@@ -74,11 +74,19 @@ export async function buildApp() {
     credentials: true,
   });
 
-  // Global rate limit — generous baseline; tighter limits are set per-route below
+  // ── Plugins (registered early so Redis is available to rate-limit) ────────
+  await app.register(prismaPlugin);
+  await app.register(redisPlugin);
+  await app.register(meilisearchPlugin);
+  await app.register(multipart, { limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB max CSV
+
+  // Global rate limit backed by Redis — counts are shared across all API
+  // instances so a client cannot bypass the limit by hitting different pods.
   await app.register(rateLimit, {
     global:     true,
     max:        200,
     timeWindow: "1 minute",
+    redis:      app.redis,
     keyGenerator: (req) => req.ip,
   });
 
@@ -102,12 +110,6 @@ export async function buildApp() {
     });
     await app.register(swaggerUi, { routePrefix: "/docs" });
   }
-
-  // ── Plugins ───────────────────────────────────────────────────────────────
-  await app.register(multipart, { limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB max CSV
-  await app.register(prismaPlugin);
-  await app.register(redisPlugin);
-  await app.register(meilisearchPlugin);
 
   // ── Routes ────────────────────────────────────────────────────────────────
   // Auth routes get their own stricter rate limit (brute force / credential stuffing mitigation)

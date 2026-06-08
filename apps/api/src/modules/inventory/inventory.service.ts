@@ -8,10 +8,20 @@ import type {
 import { AppError } from "../../lib/AppError.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
+// Inventory changes on every sale (billing tx updates the DB directly, bypassing
+// this service), so we use a short TTL-only cache — no explicit invalidation.
+// 30 seconds keeps the list practically current while preventing redundant hits
+// when staff refresh the inventory screen between sales.
+const INVENTORY_CACHE_TTL_S = 30;
+const inventoryListKey = (pharmacyId: string, params: object) =>
+  `inventory:list:${pharmacyId}:${JSON.stringify(params)}`;
+
 export class InventoryService {
   private repo: InventoryRepo;
+  private app:  FastifyInstance;
 
   constructor(app: FastifyInstance) {
+    this.app  = app;
     this.repo = new InventoryRepo(app.prisma);
   }
 
@@ -20,16 +30,24 @@ export class InventoryService {
   }
 
   async list(pharmacyId: string, query: ListInventoryQuery) {
-    return this.repo.list(pharmacyId, {
+    const params = {
       page:       query.page,
       limit:      query.limit,
-      search:     query.search,
+      search:     query.search?.trim() || undefined,
       medicineId: query.medicineId,
       inStock:    query.inStock,
       lowStock:   query.lowStock,
       nearExpiry: query.nearExpiry,
       status:     query.status,
-    });
+    };
+    const cacheKey = inventoryListKey(pharmacyId, params);
+    const cached   = await this.app.redis.get(cacheKey);
+    if (cached) {
+      try { return JSON.parse(cached); } catch { /* corrupt — fall through */ }
+    }
+    const result = await this.repo.list(pharmacyId, params);
+    await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", INVENTORY_CACHE_TTL_S);
+    return result;
   }
 
   async getById(id: string, pharmacyId: string) {
