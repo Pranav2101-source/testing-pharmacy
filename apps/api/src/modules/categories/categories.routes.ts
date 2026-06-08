@@ -11,6 +11,8 @@ const categoriesRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/", { preHandler: auth }, async (_req, reply) => {
     const items = await service.listAll();
+    // Product categories are global master data — safe for aggressive caching.
+    reply.header("Cache-Control", "public, max-age=3600, stale-while-revalidate=300");
     return reply.send({ success: true, data: items });
   });
 

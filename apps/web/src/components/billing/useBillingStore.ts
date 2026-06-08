@@ -24,12 +24,13 @@ export type CartItem = {
 };
 
 export type BillingMeta = {
-  customerName: string;
+  customerName:  string;
   customerPhone: string;
-  doctorName: string;
-  paymentMode: "CASH" | "UPI" | "CARD" | "CREDIT";
+  doctorName:    string;
+  paymentMode:   "CASH" | "UPI" | "CARD" | "CREDIT";
   paymentStatus: "PAID" | "PENDING" | "PARTIAL";
-  notes: string;
+  isInterstate:  boolean; // true → IGST; false → CGST + SGST
+  notes:         string;
 };
 
 type BillingStore = {
@@ -46,12 +47,13 @@ type BillingStore = {
 };
 
 const DEFAULT_META: BillingMeta = {
-  customerName: "",
+  customerName:  "",
   customerPhone: "",
-  doctorName: "",
-  paymentMode: "CASH",
+  doctorName:    "",
+  paymentMode:   "CASH",
   paymentStatus: "PAID",
-  notes: "",
+  isInterstate:  false,
+  notes:         "",
 };
 
 function recompute(item: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "amount"> & Partial<CartItem>): CartItem {
@@ -137,13 +139,10 @@ export const useBillingStore = create<BillingStore>((set, get) => ({
   },
 
   getTotals() {
+    const { items, meta } = get();
     return calcInvoiceTotals(
-      get().items.map((i) => ({
-        mrp: i.mrp,
-        quantity: i.quantity,
-        discount: i.discount,
-        gstRate: i.gstRate,
-      }))
+      items.map((i) => ({ mrp: i.mrp, quantity: i.quantity, discount: i.discount, gstRate: i.gstRate })),
+      meta.isInterstate,
     );
   },
 }));

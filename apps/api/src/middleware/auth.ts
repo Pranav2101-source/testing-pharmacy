@@ -1,9 +1,11 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 
+export type UserRole = "OWNER" | "MANAGER" | "PHARMACIST" | "CASHIER";
+
 export type JwtPayload = {
   sub:          string;
   pharmacyId:   string;
-  role:         "OWNER" | "PHARMACIST";
+  role:         UserRole;
   email:        string;
   tokenVersion: number;
   type:         "access" | "refresh";
@@ -31,15 +33,30 @@ export async function authenticate(
 }
 
 /**
- * Must come AFTER `authenticate` in the preHandler array.
- * Checks the OWNER role only — JWT verification is already done.
+ * Factory that returns a preHandler which passes only if the authenticated
+ * user holds one of the specified roles. Must come AFTER `authenticate`.
+ *
+ * Usage:
+ *   const owner   = [authenticate, resolvePharmacy, requireRole("OWNER")];
+ *   const manager = [authenticate, resolvePharmacy, requireRole("OWNER", "MANAGER")];
  */
-export async function requireOwner(
-  request: FastifyRequest,
-  reply:   FastifyReply,
-): Promise<void> {
-  if (reply.sent) return;
-  if (request.user?.role !== "OWNER") {
-    return void reply.status(403).send({ success: false, error: "Forbidden: owner access required" });
-  }
+export function requireRole(...roles: UserRole[]) {
+  return async function roleGuard(
+    request: FastifyRequest,
+    reply:   FastifyReply,
+  ): Promise<void> {
+    if (reply.sent) return;
+    if (!roles.includes(request.user?.role)) {
+      return void reply.status(403).send({
+        success: false,
+        error:   `Forbidden: requires one of [${roles.join(", ")}]`,
+      });
+    }
+  };
 }
+
+/** Convenience: only OWNER may proceed. */
+export const requireOwner = requireRole("OWNER");
+
+/** OWNER or MANAGER — for admin-level operations that don't need full owner access. */
+export const requireManager = requireRole("OWNER", "MANAGER");

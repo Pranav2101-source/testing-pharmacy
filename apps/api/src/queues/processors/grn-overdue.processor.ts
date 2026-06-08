@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
-import { connection } from "../queue.client.js";
+import { connection, grnOverdueQueue } from "../queue.client.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 function buildHtml(overdueGrns: { grnNumber: string; supplierName: string; totalAmount: number; paymentDueDate: Date; daysOverdue: number }[], pharmacyName: string): string {
@@ -37,46 +37,64 @@ function buildHtml(overdueGrns: { grnNumber: string; supplierName: string; total
 export const grnOverdueWorker = new Worker(
   "grn-overdue",
   async (job) => {
-    const now        = new Date();
-    const pharmacies = await prisma.pharmacy.findMany({
-      where:  { isActive: true },
+    const { pharmacyId } = job.data as { pharmacyId?: string };
+
+    if (!pharmacyId) {
+      const pharmacies = await prisma.pharmacy.findMany({
+        where:  { isActive: true },
+        select: { id: true },
+      });
+      await Promise.all(
+        pharmacies.map((p) =>
+          grnOverdueQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
+            removeOnComplete: { count: 1 },
+            removeOnFail:     { count: 3 },
+          }),
+        ),
+      );
+      job.log(`Dispatched ${pharmacies.length} grn-overdue job(s)`);
+      return;
+    }
+
+    const pharmacy = await prisma.pharmacy.findUnique({
+      where:  { id: pharmacyId },
       select: { id: true, name: true },
     });
+    if (!pharmacy) return;
 
-    for (const pharmacy of pharmacies) {
-      const overdue = await prisma.goodsReceiptNote.findMany({
-        where: {
-          pharmacyId:     pharmacy.id,
-          status:         "CONFIRMED",
-          paymentDueDate: { lt: now },
-        },
-        include: { supplier: { select: { name: true } } },
-        orderBy: { paymentDueDate: "asc" },
-      });
+    const now    = new Date();
+    const overdue = await prisma.goodsReceiptNote.findMany({
+      where: {
+        pharmacyId:     pharmacy.id,
+        status:         "CONFIRMED",
+        paymentDueDate: { lt: now },
+      },
+      include: { supplier: { select: { name: true } } },
+      orderBy: { paymentDueDate: "asc" },
+    });
 
-      if (overdue.length === 0) continue;
+    if (overdue.length === 0) return;
 
-      const rows = overdue.map((g) => ({
-        grnNumber:    g.grnNumber,
-        supplierName: g.supplier.name,
-        totalAmount:  g.totalAmount,
-        paymentDueDate: g.paymentDueDate!,
-        daysOverdue:  Math.floor((now.getTime() - g.paymentDueDate!.getTime()) / 86_400_000),
-      }));
+    const rows = overdue.map((g) => ({
+      grnNumber:      g.grnNumber,
+      supplierName:   g.supplier.name,
+      totalAmount:    g.totalAmount,
+      paymentDueDate: g.paymentDueDate!,
+      daysOverdue:    Math.floor((now.getTime() - g.paymentDueDate!.getTime()) / 86_400_000),
+    }));
 
-      const total = rows.reduce((s, r) => s + r.totalAmount, 0);
+    const total   = rows.reduce((s, r) => s + r.totalAmount, 0);
+    const message =
+      `${overdue.length} supplier payment(s) are overdue. Total outstanding: ₹${total.toFixed(2)}\n\n` +
+      rows.map((r) => `${r.grnNumber} — ${r.supplierName} — ₹${r.totalAmount.toFixed(2)} — ${r.daysOverdue}d overdue`).join("\n");
 
-      const message = `${overdue.length} supplier payment(s) are overdue. Total outstanding: ₹${total.toFixed(2)}\n\n` +
-        rows.map((r) => `${r.grnNumber} — ${r.supplierName} — ₹${r.totalAmount.toFixed(2)} — ${r.daysOverdue}d overdue`).join("\n");
+    await notifyOwners(prisma, pharmacy.id, {
+      subject: `⚠️ ${overdue.length} Supplier Payment(s) Overdue — ${pharmacy.name}`,
+      message,
+      html:    buildHtml(rows, pharmacy.name),
+    });
 
-      await notifyOwners(prisma, pharmacy.id, {
-        subject: `⚠️ ${overdue.length} Supplier Payment(s) Overdue — ${pharmacy.name}`,
-        message,
-        html:    buildHtml(rows, pharmacy.name),
-      });
-
-      job.log(`[${pharmacy.name}] GRN overdue alert: ${overdue.length} invoices`);
-    }
+    job.log(`[${pharmacy.name}] GRN overdue alert: ${overdue.length} invoices`);
   },
-  { connection },
+  { connection, concurrency: 5 },
 );

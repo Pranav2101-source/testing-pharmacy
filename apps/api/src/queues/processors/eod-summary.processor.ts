@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
-import { connection } from "../queue.client.js";
+import { connection, eodSummaryQueue } from "../queue.client.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 function buildHtml(data: {
@@ -57,74 +57,91 @@ function buildHtml(data: {
 export const eodSummaryWorker = new Worker(
   "eod-summary",
   async (job) => {
-    const pharmacies = await prisma.pharmacy.findMany({
-      where:  { isActive: true },
+    const { pharmacyId } = job.data as { pharmacyId?: string };
+
+    if (!pharmacyId) {
+      const pharmacies = await prisma.pharmacy.findMany({
+        where:  { isActive: true },
+        select: { id: true },
+      });
+      await Promise.all(
+        pharmacies.map((p) =>
+          eodSummaryQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
+            removeOnComplete: { count: 1 },
+            removeOnFail:     { count: 3 },
+          }),
+        ),
+      );
+      job.log(`Dispatched ${pharmacies.length} eod-summary job(s)`);
+      return;
+    }
+
+    const pharmacy = await prisma.pharmacy.findUnique({
+      where:  { id: pharmacyId },
       select: { id: true, name: true },
     });
+    if (!pharmacy) return;
 
     const now        = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const dateStr    = todayStart.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 
-    for (const pharmacy of pharmacies) {
-      const [salesAgg, returnsAgg, paymentBreakdown, pendingCredit, cancelledCount] = await Promise.all([
-        prisma.invoice.aggregate({
-          where:  { pharmacyId: pharmacy.id, createdAt: { gte: todayStart }, isCancelled: false },
-          _sum:   { totalAmount: true },
-          _count: { id: true },
-        }),
-        prisma.salesReturn.aggregate({
-          where:  { pharmacyId: pharmacy.id, createdAt: { gte: todayStart } },
-          _sum:   { totalAmount: true },
-        }),
-        prisma.invoice.groupBy({
-          by:    ["paymentMode"],
-          where: { pharmacyId: pharmacy.id, createdAt: { gte: todayStart }, isCancelled: false },
-          _sum:  { totalAmount: true },
-          _count: { id: true },
-        }),
-        prisma.invoice.aggregate({
-          where: { pharmacyId: pharmacy.id, paymentStatus: "PENDING", isCancelled: false },
-          _sum:  { totalAmount: true },
-        }),
-        prisma.invoice.count({
-          where: { pharmacyId: pharmacy.id, createdAt: { gte: todayStart }, isCancelled: true },
-        }),
-      ]);
+    const [salesAgg, returnsAgg, paymentBreakdown, pendingCredit, cancelledCount] = await Promise.all([
+      prisma.invoice.aggregate({
+        where:  { pharmacyId: pharmacy.id, createdAt: { gte: todayStart }, isCancelled: false },
+        _sum:   { totalAmount: true },
+        _count: { id: true },
+      }),
+      prisma.salesReturn.aggregate({
+        where: { pharmacyId: pharmacy.id, createdAt: { gte: todayStart } },
+        _sum:  { totalAmount: true },
+      }),
+      prisma.invoice.groupBy({
+        by:     ["paymentMode"],
+        where:  { pharmacyId: pharmacy.id, createdAt: { gte: todayStart }, isCancelled: false },
+        _sum:   { totalAmount: true },
+        _count: { id: true },
+      }),
+      prisma.invoice.aggregate({
+        where: { pharmacyId: pharmacy.id, paymentStatus: "PENDING", isCancelled: false },
+        _sum:  { totalAmount: true },
+      }),
+      prisma.invoice.count({
+        where: { pharmacyId: pharmacy.id, createdAt: { gte: todayStart }, isCancelled: true },
+      }),
+    ]);
 
-      const totalSales   = salesAgg._sum.totalAmount ?? 0;
-      const invoiceCount = salesAgg._count.id;
+    const totalSales   = salesAgg._sum.totalAmount ?? 0;
+    const invoiceCount = salesAgg._count.id;
 
-      // Skip if no sales today
-      if (invoiceCount === 0) continue;
+    if (invoiceCount === 0) return;
 
-      const totalReturns = returnsAgg._sum.totalAmount ?? 0;
-      const netSales     = totalSales - totalReturns;
-      const pendingAmt   = pendingCredit._sum.totalAmount ?? 0;
+    const totalReturns = returnsAgg._sum.totalAmount ?? 0;
+    const netSales     = totalSales - totalReturns;
+    const pendingAmt   = pendingCredit._sum.totalAmount ?? 0;
 
-      const breakdown = paymentBreakdown.map((p) => ({
-        mode:  p.paymentMode as string,
-        total: p._sum.totalAmount ?? 0,
-        count: p._count.id,
-      }));
+    const breakdown = paymentBreakdown.map((p) => ({
+      mode:  p.paymentMode as string,
+      total: p._sum.totalAmount ?? 0,
+      count: p._count.id,
+    }));
 
-      const message =
-        `EOD Summary — ${pharmacy.name} — ${dateStr}\n\n` +
-        `Sales: ₹${totalSales.toFixed(2)} (${invoiceCount} invoices)\n` +
-        `Returns: ₹${totalReturns.toFixed(2)}\n` +
-        `Net: ₹${netSales.toFixed(2)}\n` +
-        (pendingAmt > 0 ? `Pending Credit: ₹${pendingAmt.toFixed(2)}\n` : "") +
-        (cancelledCount > 0 ? `Cancelled: ${cancelledCount}\n` : "") +
-        `\nBreakdown: ${breakdown.map((p) => `${p.mode} ₹${p.total.toFixed(2)}`).join(" | ")}`;
+    const message =
+      `EOD Summary — ${pharmacy.name} — ${dateStr}\n\n` +
+      `Sales: ₹${totalSales.toFixed(2)} (${invoiceCount} invoices)\n` +
+      `Returns: ₹${totalReturns.toFixed(2)}\n` +
+      `Net: ₹${netSales.toFixed(2)}\n` +
+      (pendingAmt > 0 ? `Pending Credit: ₹${pendingAmt.toFixed(2)}\n` : "") +
+      (cancelledCount > 0 ? `Cancelled: ${cancelledCount}\n` : "") +
+      `\nBreakdown: ${breakdown.map((p) => `${p.mode} ₹${p.total.toFixed(2)}`).join(" | ")}`;
 
-      await notifyOwners(prisma, pharmacy.id, {
-        subject: `EOD Summary — ${dateStr} — ₹${totalSales.toFixed(2)} — ${pharmacy.name}`,
-        message,
-        html:    buildHtml({ date: dateStr, pharmacyName: pharmacy.name, invoiceCount, totalSales, totalReturns, netSales, paymentBreakdown: breakdown, pendingCredit: pendingAmt, cancelledCount }),
-      });
+    await notifyOwners(prisma, pharmacy.id, {
+      subject: `EOD Summary — ${dateStr} — ₹${totalSales.toFixed(2)} — ${pharmacy.name}`,
+      message,
+      html:    buildHtml({ date: dateStr, pharmacyName: pharmacy.name, invoiceCount, totalSales, totalReturns, netSales, paymentBreakdown: breakdown, pendingCredit: pendingAmt, cancelledCount }),
+    });
 
-      job.log(`[${pharmacy.name}] EOD summary sent: ₹${totalSales.toFixed(2)} in ${invoiceCount} invoices`);
-    }
+    job.log(`[${pharmacy.name}] EOD summary sent: ₹${totalSales.toFixed(2)} in ${invoiceCount} invoices`);
   },
-  { connection },
+  { connection, concurrency: 5 },
 );

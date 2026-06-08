@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
-import { connection } from "../queue.client.js";
+import { connection, expiryAlertQueue } from "../queue.client.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -65,43 +65,64 @@ function buildHtml(items: ExpiryItem[], pharmacyName: string): string {
 export const expiryAlertWorker = new Worker(
   "expiry-alerts",
   async (job) => {
-    const threshold  = new Date(Date.now() + 90 * DAY_MS);
-    const pharmacies = await prisma.pharmacy.findMany({
-      where:  { isActive: true },
+    const { pharmacyId } = job.data as { pharmacyId?: string };
+
+    // Dispatch mode — enqueue one child job per active pharmacy so each
+    // runs independently. A single slow/failing pharmacy can't stall others.
+    if (!pharmacyId) {
+      const pharmacies = await prisma.pharmacy.findMany({
+        where:  { isActive: true },
+        select: { id: true },
+      });
+      await Promise.all(
+        pharmacies.map((p) =>
+          expiryAlertQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
+            removeOnComplete: { count: 1 },
+            removeOnFail:     { count: 3 },
+          }),
+        ),
+      );
+      job.log(`Dispatched ${pharmacies.length} expiry-alert job(s)`);
+      return;
+    }
+
+    // Process mode — handle a single pharmacy
+    const pharmacy = await prisma.pharmacy.findUnique({
+      where:  { id: pharmacyId },
       select: { id: true, name: true },
     });
+    if (!pharmacy) return;
 
-    for (const pharmacy of pharmacies) {
-      const expiring = await prisma.inventory.findMany({
-        where: {
-          pharmacyId: pharmacy.id,
-          expiryDate: { lte: threshold },
-          quantity:   { gt: 0 },
-          status:     "ACTIVE",
-        },
-        include: { medicine: { select: { name: true } } },
-        orderBy: { expiryDate: "asc" },
-      });
+    const threshold = new Date(Date.now() + 90 * DAY_MS);
+    const expiring  = await prisma.inventory.findMany({
+      where: {
+        pharmacyId: pharmacy.id,
+        expiryDate: { lte: threshold },
+        quantity:   { gt: 0 },
+        status:     "ACTIVE",
+      },
+      include: { medicine: { select: { name: true } } },
+      orderBy: { expiryDate: "asc" },
+    });
 
-      if (expiring.length === 0) continue;
+    if (expiring.length === 0) return;
 
-      const message =
-        `Expiry Alert — ${pharmacy.name}\n\n` +
-        expiring
-          .map((i) => {
-            const d = daysUntil(i.expiryDate);
-            return `${i.medicine.name} | Batch: ${i.batchNumber} | ${i.expiryDate.toISOString().split("T")[0]} | Qty: ${i.quantity} | ${d <= 0 ? "EXPIRED" : `${d}d left`}`;
-          })
-          .join("\n");
+    const message =
+      `Expiry Alert — ${pharmacy.name}\n\n` +
+      expiring
+        .map((i) => {
+          const d = daysUntil(i.expiryDate);
+          return `${i.medicine.name} | Batch: ${i.batchNumber} | ${i.expiryDate.toISOString().split("T")[0]} | Qty: ${i.quantity} | ${d <= 0 ? "EXPIRED" : `${d}d left`}`;
+        })
+        .join("\n");
 
-      await notifyOwners(prisma, pharmacy.id, {
-        subject: `Expiry Alert: ${expiring.length} batch(es) — ${pharmacy.name}`,
-        message,
-        html:    buildHtml(expiring, pharmacy.name),
-      });
+    await notifyOwners(prisma, pharmacy.id, {
+      subject: `Expiry Alert: ${expiring.length} batch(es) — ${pharmacy.name}`,
+      message,
+      html:    buildHtml(expiring, pharmacy.name),
+    });
 
-      job.log(`[${pharmacy.name}] expiry alert sent: ${expiring.length} items`);
-    }
+    job.log(`[${pharmacy.name}] expiry alert sent: ${expiring.length} items`);
   },
-  { connection },
+  { connection, concurrency: 5 },
 );

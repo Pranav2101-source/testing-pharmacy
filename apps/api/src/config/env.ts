@@ -22,6 +22,15 @@ const envSchema = z.object({
   // Password reset token TTL (e.g. "1h", "30m")
   PASSWORD_RESET_TOKEN_TTL: z.string().default("1h"),
 
+  // How long a stock reservation lives before being auto-released (minutes)
+  RESERVATION_TTL_MINUTES: z.coerce.number().int().positive().default(30),
+
+  // PostgreSQL connection pool — tune based on available DB connections and
+  // expected concurrent API + worker process count.
+  // pool_timeout: seconds a query waits for a free connection before erroring.
+  DB_POOL_SIZE:    z.coerce.number().int().positive().default(10),
+  DB_POOL_TIMEOUT: z.coerce.number().int().positive().default(10),
+
   // Optional SMTP — required in production if password reset emails are enabled
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().default(587),

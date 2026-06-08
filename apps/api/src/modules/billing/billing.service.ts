@@ -10,18 +10,53 @@ import type {
   ListInvoicesQuery,
   ListReturnsQuery,
 } from "./billing.schema.js";
-import type { InvoiceLineItem } from "./billing.types.js";
+import type { InvoiceLineItem, DashboardStats } from "./billing.types.js";
 import { INVOICE_SEQUENCE_KEY, RETURN_SEQUENCE_KEY } from "./billing.constants.js";
 import { AppError } from "../../lib/AppError.js";
-import { notifyOwners, sendNotification } from "../../lib/notifications.js";
+import { notifyOwners } from "../../lib/notifications.js";
+import { postInvoiceQueue } from "../../queues/queue.client.js";
 
 const MAX_PAGE_LIMIT = 100;
+
+// Invoice settings change rarely (at most once per financial year). Cache in
+// Redis for 5 minutes so each billing operation doesn't need a DB round-trip.
+const SETTINGS_CACHE_TTL_S = 300;
+const settingsCacheKey = (pharmacyId: string) => `billing:settings:${pharmacyId}`;
+
+// Dashboard stats are eventually-consistent by nature — a 30-second-old revenue
+// figure is acceptable. Cache in Redis; invalidate explicitly on invoice writes
+// so the UI refreshes immediately after a sale without waiting for TTL expiry.
+const STATS_CACHE_TTL_S = 30;
+const statsCacheKey = (pharmacyId: string) => `dashboard:stats:${pharmacyId}`;
 
 export class BillingService {
   private repo: BillingRepo;
 
   constructor(private app: FastifyInstance) {
     this.repo = new BillingRepo(app.prisma);
+  }
+
+  // ── Cached settings fetch ─────────────────────────────────────────────────
+  // Returns the parsed settings object, falling through to DB on cache miss.
+  // A settings change in the UI should call invalidateSettingsCache to ensure
+  // the next billing op sees the updated config within 5 minutes at most.
+
+  private async getSettings(pharmacyId: string): ReturnType<BillingRepo["getSettings"]> {
+    const key    = settingsCacheKey(pharmacyId);
+    const cached = await this.app.redis.get(key);
+    if (cached) {
+      try {
+        return JSON.parse(cached) as Awaited<ReturnType<BillingRepo["getSettings"]>>;
+      } catch {
+        // Corrupt cache entry — fall through to DB
+      }
+    }
+
+    const settings = await this.repo.getSettings(pharmacyId);
+    if (settings) {
+      await this.app.redis.set(key, JSON.stringify(settings), "EX", SETTINGS_CACHE_TTL_S);
+    }
+    return settings;
   }
 
   // ── Create Invoice ────────────────────────────────────────────────────────
@@ -44,6 +79,37 @@ export class BillingService {
     if (input.customerId && input.paymentMode === "CREDIT") {
       await this.validateCreditLimit(pharmacyId, input.customerId, input.items, batchMap);
     }
+
+    // ── IGST auto-detection ───────────────────────────────────────────────────
+    // Fetch pharmacy + customer data in parallel. The customer select grabs all
+    // fields needed downstream (IGST detection, customerName/Phone snapshot,
+    // post-invoice queue payload) so this single query replaces what used to be
+    // 3 separate customer fetches later in the flow.
+    let isInterstate = input.isInterstate;
+
+    const [pharmacyState, customerForIgst] = await Promise.all([
+      this.app.prisma.pharmacy.findUnique({
+        where:  { id: pharmacyId },
+        select: { state: true, name: true },
+      }),
+      input.customerId
+        ? this.app.prisma.customer.findFirst({
+            where:  { id: input.customerId, pharmacyId },
+            select: { state: true, name: true, phone: true },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    if (pharmacyState?.state) {
+      if (customerForIgst?.state) {
+        // Both states known — auto-determine; state codes are case-insensitive ("MH" === "mh")
+        isInterstate = customerForIgst.state.toUpperCase() !== pharmacyState.state.toUpperCase();
+      } else {
+        // Walk-in or customer state not on file → treat as intra-state
+        isInterstate = false;
+      }
+    }
+    // Pharmacy state not configured → honour the manual toggle from the frontend
 
     // Schedule H / H1 / X medicines require a prescription reference (Indian Drug Rules)
     const CONTROLLED = new Set(["H", "H1", "X"]);
@@ -71,9 +137,9 @@ export class BillingService {
       if (!batch.medicine.isActive) {
         throw AppError.unprocessable(`Medicine "${batch.medicine.name}" is inactive and cannot be billed`);
       }
-      if ((batch as any).status && (batch as any).status !== "ACTIVE") {
+      if (batch.status && batch.status !== "ACTIVE") {
         throw AppError.unprocessable(
-          `Batch "${batch.batchNumber}" of "${batch.medicine.name}" is ${(batch as any).status} and cannot be sold`,
+          `Batch "${batch.batchNumber}" of "${batch.medicine.name}" is ${batch.status} and cannot be sold`,
         );
       }
       if (batch.expiryDate <= now) {
@@ -81,13 +147,13 @@ export class BillingService {
           `Batch "${batch.batchNumber}" of "${batch.medicine.name}" expired on ${batch.expiryDate.toISOString().split("T")[0]}`,
         );
       }
-      if (batch.quantity < item.quantity) {
-        throw AppError.conflict(
-          `Insufficient stock for "${batch.medicine.name}": ${batch.quantity} available, ${item.quantity} requested`,
-        );
-      }
+      // Quantity is NOT checked here. The authoritative check is inside
+      // createInvoiceTransactional at Serializable isolation, where it reads
+      // the current quantity atomically. A pre-flight check here would use
+      // stale data (ignoring reservedQuantity from other sessions) and produce
+      // misleading error messages under concurrent billing.
 
-      const gst = calcGstFromMrp(batch.mrp, item.quantity, item.discount, batch.medicine.gstRate);
+      const gst = calcGstFromMrp(batch.mrp, item.quantity, item.discount, batch.medicine.gstRate, isInterstate);
 
       lineItems.push({
         inventoryId:   item.inventoryId,
@@ -104,36 +170,47 @@ export class BillingService {
         taxableAmount: gst.taxableAmount,
         cgst:          gst.cgst,
         sgst:          gst.sgst,
+        igst:          gst.igst,
         amount:        gst.totalAmount,
       });
     }
 
     const totals = calcInvoiceTotals(
       lineItems.map((li) => ({ mrp: li.mrp, quantity: li.quantity, discount: li.discount, gstRate: li.gstRate })),
+      isInterstate,
     );
 
-    const seq           = await this.app.redis.incr(INVOICE_SEQUENCE_KEY(pharmacyId));
-    const settings      = await this.repo.getSettings(pharmacyId);
-    const config        = (settings?.settings as typeof defaultInvoiceSettings) ?? defaultInvoiceSettings;
-    const invoiceNumber = generateInvoiceNumber(
-      config.numbering.prefix,
-      seq,
-      config.numbering.financialYear,
-    );
+    const settings = await this.getSettings(pharmacyId);
+    const config   = (settings?.settings as typeof defaultInvoiceSettings) ?? defaultInvoiceSettings;
+
+    // Generator is called inside the transaction, AFTER the idempotency check.
+    // This prevents duplicate requests from advancing the Redis sequence counter
+    // and eliminates gaps caused by transactions that roll back before inserting.
+    const makeInvoiceNumber = async () => {
+      const seq = await this.app.redis.incr(INVOICE_SEQUENCE_KEY(pharmacyId));
+      return generateInvoiceNumber(
+        config.numbering.prefix,
+        seq,
+        config.numbering.financialYear,
+      );
+    };
 
     const invoice = await this.repo.createInvoiceTransactional({
       pharmacyId,
       userId,
-      idempotencyKey: input.idempotencyKey,
-      customerId:     input.customerId,
-      totalAmount:    totals.totalAmount,
-      paymentStatus:  input.paymentStatus,
-      paymentMode:    input.paymentMode,
+      idempotencyKey:        input.idempotencyKey,
+      customerId:            input.customerId,
+      totalAmount:           totals.totalAmount,
+      paymentStatus:         input.paymentStatus,
+      paymentMode:           input.paymentMode,
+      generateInvoiceNumber: makeInvoiceNumber,
       invoiceData: {
         pharmacy:      { connect: { id: pharmacyId } },
         user:          { connect: { id: userId } },
         ...(input.customerId ? { customer: { connect: { id: input.customerId } } } : {}),
-        invoiceNumber,
+        // Snapshot — preserved even if the customer record changes later
+        customerName:   customerForIgst?.name  ?? null,
+        customerPhone:  customerForIgst?.phone ?? null,
         doctorName:     input.doctorName,
         prescriptionId: input.prescriptionId,
         paymentMode:    input.paymentMode,
@@ -146,8 +223,10 @@ export class BillingService {
         taxableAmount:  totals.taxableAmount,
         cgst:           totals.cgst,
         sgst:           totals.sgst,
+        igst:           totals.igst,
         totalGst:       totals.totalGst,
         totalAmount:    totals.totalAmount,
+        isInterstate,
         items: {
           create: lineItems.map((li) => ({
             inventory:     { connect: { id: li.inventoryId } },
@@ -163,6 +242,7 @@ export class BillingService {
             gstRate:       li.gstRate,
             cgst:          li.cgst,
             sgst:          li.sgst,
+            igst:          li.igst,
             taxableAmount: li.taxableAmount,
             amount:        li.amount,
           })),
@@ -176,44 +256,31 @@ export class BillingService {
       auditMeta,
     });
 
-    // ── Post-invoice notifications (fire-and-forget) ──────────────────────
+    // ── Post-invoice side-effects ─────────────────────────────────────────────
 
-    // 1. Invoice copy to customer (if they have an email on file)
-    if (input.customerId) {
-      const customer = await this.app.prisma.customer.findFirst({
-        where:  { id: input.customerId, pharmacyId },
-        select: { email: true, name: true },
-      });
-      if (customer?.email) {
-        const pharmacy = await this.app.prisma.pharmacy.findUnique({
-          where:  { id: pharmacyId },
-          select: { name: true },
-        });
-        void sendNotification(this.app.prisma, {
-          pharmacyId,
-          recipient: customer.email,
-          subject:   `Your bill from ${pharmacy?.name ?? "Pharmacy"} — ₹${totals.totalAmount.toFixed(2)}`,
-          message:   `Invoice ${invoice.invoiceNumber} for ₹${totals.totalAmount.toFixed(2)}.\nPayment: ${input.paymentMode}.\nThank you for your purchase!`,
-        });
-      }
-    }
+    // Enqueue notifications (receipt + credit warning) in BullMQ.
+    // The worker runs asynchronously so the billing response is not blocked by
+    // SMTP latency, and BullMQ retries on SMTP failure (unlike fire-and-forget).
+    await postInvoiceQueue.add(
+      "post-invoice",
+      {
+        pharmacyId,
+        invoiceId:     invoice.id,
+        invoiceNumber: invoice.invoiceNumber,
+        totalAmount:   totals.totalAmount,
+        paymentMode:   input.paymentMode,
+        customerId:    input.customerId ?? null,
+      },
+      {
+        attempts:         3,
+        backoff:          { type: "exponential", delay: 5_000 },
+        removeOnComplete: { count: 20 },
+        removeOnFail:     { count: 5 },
+      },
+    );
 
-    // 2. Credit limit warning to owner when usage crosses 80%
-    if (input.customerId && input.paymentMode === "CREDIT") {
-      const customer = await this.app.prisma.customer.findFirst({
-        where:  { id: input.customerId, pharmacyId },
-        select: { name: true, creditLimit: true, creditUsed: true },
-      });
-      if (customer !== null && customer.creditLimit > 0) {
-        const usedPct = (customer.creditUsed / customer.creditLimit) * 100;
-        if (usedPct >= 80) {
-          void notifyOwners(this.app.prisma, pharmacyId, {
-            subject: `⚠️ Credit limit warning — ${customer.name}`,
-            message: `${customer.name} has used ₹${customer.creditUsed.toFixed(2)} of ₹${customer.creditLimit.toFixed(2)} (${usedPct.toFixed(0)}%). Invoice: ${invoice.invoiceNumber}.`,
-          });
-        }
-      }
-    }
+    // Invalidate the dashboard stats cache so the next load reflects this sale.
+    void this.app.redis.del(statsCacheKey(pharmacyId));
 
     return invoice;
   }
@@ -257,7 +324,9 @@ export class BillingService {
     reason:     string,
     auditMeta?: { ipAddress?: string; userAgent?: string },
   ) {
-    return this.repo.cancelInvoiceTransactional({ invoiceId: id, pharmacyId, userId, reason, auditMeta });
+    const result = await this.repo.cancelInvoiceTransactional({ invoiceId: id, pharmacyId, userId, reason, auditMeta });
+    void this.app.redis.del(statsCacheKey(pharmacyId));
+    return result;
   }
 
   // ── Create Sales Return ───────────────────────────────────────────────────
@@ -269,23 +338,25 @@ export class BillingService {
     input:      CreateReturnInput,
     auditMeta?: { ipAddress?: string; userAgent?: string },
   ) {
-    const seq          = await this.app.redis.incr(RETURN_SEQUENCE_KEY(pharmacyId));
     const settings     = await this.repo.getSettings(pharmacyId);
     const config       = (settings?.settings as typeof defaultInvoiceSettings) ?? defaultInvoiceSettings;
-    const returnNumber = generateInvoiceNumber(
-      (config.numbering.prefix ?? "INV") + "-RET",
-      seq,
-      config.numbering.financialYear,
-    );
-    // policy.returnWindowDays: 0 = no limit; absent in older settings rows → fall back to default 30
     const returnWindowDays = config.policy?.returnWindowDays ?? defaultInvoiceSettings.policy!.returnWindowDays;
+
+    const makeReturnNumber = async () => {
+      const seq = await this.app.redis.incr(RETURN_SEQUENCE_KEY(pharmacyId));
+      return generateInvoiceNumber(
+        (config.numbering.prefix ?? "INV") + "-RET",
+        seq,
+        config.numbering.financialYear,
+      );
+    };
 
     return this.repo.createReturnTransactional({
       pharmacyId,
       invoiceId,
       userId,
-      returnNumber,
-      reason:            input.reason,
+      generateReturnNumber: makeReturnNumber,
+      reason:               input.reason,
       idempotencyKey:    input.idempotencyKey,
       returnWindowDays,
       returnItems:       input.items.map((i) => ({ ...i, disposition: i.disposition as "RESTOCK" | "WRITEOFF" })),
@@ -339,18 +410,34 @@ export class BillingService {
     const invoice = await this.repo.getInvoice(invoiceId, pharmacyId);
     if (invoice?.paymentStatus === "PAID" && invoice.paymentMode === "CREDIT" && invoice.customerId) {
       void notifyOwners(this.app.prisma, pharmacyId, {
-        subject: `✅ Credit settled — ${invoice.customer?.name ?? "Customer"}`,
+        subject: `Credit settled — ${invoice.customer?.name ?? "Customer"}`,
         message: `Invoice ${invoice.invoiceNumber} (₹${invoice.totalAmount.toFixed(2)}) has been fully settled by ${invoice.customer?.name ?? "customer"}.`,
       });
     }
 
+    void this.app.redis.del(statsCacheKey(pharmacyId));
     return payment;
   }
 
   // ── Dashboard Stats ───────────────────────────────────────────────────────
 
-  async getDashboardStats(pharmacyId: string) {
-    return this.repo.getDashboardStats(pharmacyId);
+  async getDashboardStats(pharmacyId: string): Promise<DashboardStats> {
+    const key    = statsCacheKey(pharmacyId);
+    const cached = await this.app.redis.get(key);
+    if (cached) {
+      try { return JSON.parse(cached) as DashboardStats; } catch { /* corrupt — fall through */ }
+    }
+    const stats = await this.repo.getDashboardStats(pharmacyId);
+    await this.app.redis.set(key, JSON.stringify(stats), "EX", STATS_CACHE_TTL_S);
+    return stats;
+  }
+
+  // ── Settings cache invalidation ───────────────────────────────────────────
+  // Call this from the invoice-settings update route so the next billing op
+  // picks up the new config immediately instead of waiting for TTL expiry.
+
+  async invalidateSettingsCache(pharmacyId: string) {
+    await this.app.redis.del(settingsCacheKey(pharmacyId));
   }
 
   // ── FIFO Batch ────────────────────────────────────────────────────────────

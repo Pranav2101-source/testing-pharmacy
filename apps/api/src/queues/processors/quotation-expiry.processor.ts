@@ -1,51 +1,69 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
-import { connection } from "../queue.client.js";
+import { connection, quotationExpiryQueue } from "../queue.client.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 export const quotationExpiryWorker = new Worker(
   "quotation-expiry",
   async (job) => {
-    const twoDaysFromNow = new Date(Date.now() + 2 * 86_400_000);
-    const now            = new Date();
+    const { pharmacyId } = job.data as { pharmacyId?: string };
 
-    const pharmacies = await prisma.pharmacy.findMany({
-      where:  { isActive: true },
+    if (!pharmacyId) {
+      const pharmacies = await prisma.pharmacy.findMany({
+        where:  { isActive: true },
+        select: { id: true },
+      });
+      await Promise.all(
+        pharmacies.map((p) =>
+          quotationExpiryQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
+            removeOnComplete: { count: 1 },
+            removeOnFail:     { count: 3 },
+          }),
+        ),
+      );
+      job.log(`Dispatched ${pharmacies.length} quotation-expiry job(s)`);
+      return;
+    }
+
+    const pharmacy = await prisma.pharmacy.findUnique({
+      where:  { id: pharmacyId },
       select: { id: true, name: true },
     });
+    if (!pharmacy) return;
 
-    for (const pharmacy of pharmacies) {
-      const expiring = await prisma.quotation.findMany({
-        where: {
-          pharmacyId: pharmacy.id,
-          status:     { in: ["SENT", "RECEIVED"] },
-          validUntil: { gte: now, lte: twoDaysFromNow },
-        },
-        include: {
-          supplier: { select: { name: true } },
-          _count:   { select: { items: true } },
-        },
-        orderBy: { validUntil: "asc" },
-      });
+    const now            = new Date();
+    const twoDaysFromNow = new Date(Date.now() + 2 * 86_400_000);
 
-      if (expiring.length === 0) continue;
+    const expiring = await prisma.quotation.findMany({
+      where: {
+        pharmacyId: pharmacy.id,
+        status:     { in: ["SENT", "RECEIVED"] },
+        validUntil: { gte: now, lte: twoDaysFromNow },
+      },
+      include: {
+        supplier: { select: { name: true } },
+        _count:   { select: { items: true } },
+      },
+      orderBy: { validUntil: "asc" },
+    });
 
-      const lines = expiring
-        .map((q) => {
-          const daysLeft = Math.ceil((q.validUntil!.getTime() - now.getTime()) / 86_400_000);
-          return `${q.quotationNumber} — ${q.supplier.name} — expires in ${daysLeft}d (${q.validUntil!.toISOString().split("T")[0]})`;
-        })
-        .join("\n");
+    if (expiring.length === 0) return;
 
-      const message = `${expiring.length} quotation(s) expiring within 2 days:\n\n${lines}\n\nConvert to Purchase Order before they expire.`;
+    const lines = expiring
+      .map((q) => {
+        const daysLeft = Math.ceil((q.validUntil!.getTime() - now.getTime()) / 86_400_000);
+        return `${q.quotationNumber} — ${q.supplier.name} — expires in ${daysLeft}d (${q.validUntil!.toISOString().split("T")[0]})`;
+      })
+      .join("\n");
 
-      await notifyOwners(prisma, pharmacy.id, {
-        subject: `⏰ ${expiring.length} Quotation(s) Expiring Soon — ${pharmacy.name}`,
-        message,
-      });
+    const message = `${expiring.length} quotation(s) expiring within 2 days:\n\n${lines}\n\nConvert to Purchase Order before they expire.`;
 
-      job.log(`[${pharmacy.name}] quotation-expiry alert: ${expiring.length} quotations`);
-    }
+    await notifyOwners(prisma, pharmacy.id, {
+      subject: `⏰ ${expiring.length} Quotation(s) Expiring Soon — ${pharmacy.name}`,
+      message,
+    });
+
+    job.log(`[${pharmacy.name}] quotation-expiry alert: ${expiring.length} quotations`);
   },
-  { connection },
+  { connection, concurrency: 5 },
 );

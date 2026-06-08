@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { AuthRepo } from "./auth.repo.js";
 import type { LoginInput, RegisterInput, RefreshInput, ForgotPasswordInput, ResetPasswordInput } from "./auth.schema.js";
-import type { JwtPayload } from "../../middleware/auth.js";
+import type { JwtPayload, UserRole } from "../../middleware/auth.js";
 import { AppError } from "../../lib/AppError.js";
 import { env } from "../../config/env.js";
 import { notifyOwners } from "../../lib/notifications.js";
@@ -149,10 +149,10 @@ export class AuthService {
 
     await this.repo.setPasswordResetToken(user.id, tokenHash, expiresAt);
 
-    if (env.NODE_ENV !== "production") {
+    if (env.NODE_ENV === "development") {
       this.app.log.info(
         { userId: user.id, resetToken: plainToken },
-        "Password reset token (dev-only — do not log in production)",
+        "Password reset token (local dev only — never logs in test or production)",
       );
     }
 
@@ -193,7 +193,7 @@ export class AuthService {
   private signTokens(
     userId:       string,
     pharmacyId:   string,
-    role:         "OWNER" | "PHARMACIST",
+    role:         UserRole,
     email:        string,
     tokenVersion: number,
   ) {

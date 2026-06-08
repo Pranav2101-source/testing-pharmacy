@@ -1,8 +1,8 @@
-import type { PrismaClient, Prisma } from "@pharmacy/database";
+import { Prisma, type PrismaClient, type BatchStatus, type MovementType, type MovementDirection } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
+import { env } from "../../config/env.js";
 
-const RESERVATION_TTL_MS =
-  Number(process.env["RESERVATION_TTL_MINUTES"] ?? 30) * 60 * 1000;
+const RESERVATION_TTL_MS = env.RESERVATION_TTL_MINUTES * 60 * 1000;
 
 const MEDICINE_SELECT = {
   id:          true,
@@ -69,12 +69,73 @@ export class InventoryRepo {
     nearExpiry?: boolean;
     status?:     string;
   }) {
+    // lowStock requires a column-to-column comparison (quantity <= minimumStock)
+    // that Prisma's where API cannot express. We use $queryRaw for correct DB-level
+    // filtering and pagination, then reload the matching rows with findMany for the
+    // full include shape.
+    if (params.lowStock) {
+      const offset      = (params.page - 1) * params.limit;
+      const nearExpDate = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+
+      const searchSql    = params.search
+        ? Prisma.sql`AND (m.name ILIKE ${`%${params.search}%`} OR m."genericName" ILIKE ${`%${params.search}%`} OR i."batchNumber" ILIKE ${`%${params.search}%`})`
+        : Prisma.empty;
+      const medicineSql  = params.medicineId
+        ? Prisma.sql`AND i."medicineId" = ${params.medicineId}`
+        : Prisma.empty;
+      const nearExpSql   = params.nearExpiry
+        ? Prisma.sql`AND i."expiryDate" <= ${nearExpDate}`
+        : Prisma.empty;
+      const statusSql    = params.status
+        ? Prisma.sql`AND i.status::text = ${params.status}`
+        : Prisma.empty;
+
+      const [countRows, idRows] = await Promise.all([
+        this.db.$queryRaw<[{ count: bigint }]>`
+          SELECT COUNT(*) AS count
+          FROM   inventory i
+          JOIN   medicines m ON m.id = i."medicineId"
+          WHERE  i."pharmacyId" = ${pharmacyId}
+            AND  i.quantity > 0
+            AND  i.quantity <= i."minimumStock"
+            ${searchSql} ${medicineSql} ${nearExpSql} ${statusSql}
+        `,
+        this.db.$queryRaw<Array<{ id: string }>>`
+          SELECT i.id
+          FROM   inventory i
+          JOIN   medicines m ON m.id = i."medicineId"
+          WHERE  i."pharmacyId" = ${pharmacyId}
+            AND  i.quantity > 0
+            AND  i.quantity <= i."minimumStock"
+            ${searchSql} ${medicineSql} ${nearExpSql} ${statusSql}
+          ORDER BY i."expiryDate" ASC, i."createdAt" DESC
+          LIMIT  ${params.limit} OFFSET ${offset}
+        `,
+      ]);
+
+      const ids   = idRows.map((r) => r.id);
+      const items = ids.length > 0
+        ? await this.db.inventory.findMany({
+            where:   { id: { in: ids } },
+            orderBy: [{ expiryDate: "asc" }, { createdAt: "desc" }],
+            include: INVENTORY_INCLUDE,
+          })
+        : [];
+
+      return {
+        items,
+        total: Number(countRows[0]?.count ?? 0),
+        page:  params.page,
+        limit: params.limit,
+      };
+    }
+
     const where: Prisma.InventoryWhereInput = {
       pharmacyId,
       ...(params.inStock    ? { quantity: { gt: 0 } } : {}),
       ...(params.nearExpiry ? { expiryDate: { lte: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000) } } : {}),
       ...(params.medicineId ? { medicineId: params.medicineId } : {}),
-      ...(params.status     ? { status: params.status as any } : {}),
+      ...(params.status     ? { status: params.status as BatchStatus } : {}),
       ...(params.search
         ? {
             OR: [
@@ -86,7 +147,7 @@ export class InventoryRepo {
         : {}),
     };
 
-    const [allItems, total] = await Promise.all([
+    const [items, total] = await Promise.all([
       this.db.inventory.findMany({
         where,
         orderBy: [{ expiryDate: "asc" }, { createdAt: "desc" }],
@@ -96,10 +157,6 @@ export class InventoryRepo {
       }),
       this.db.inventory.count({ where }),
     ]);
-
-    const items = params.lowStock
-      ? allItems.filter((i) => i.quantity > 0 && i.quantity <= i.minimumStock)
-      : allItems;
 
     return { items, total, page: params.page, limit: params.limit };
   }
@@ -121,7 +178,7 @@ export class InventoryRepo {
 
       const updated = await tx.inventory.update({
         where:   { id },
-        data:    { status: status as any },
+        data:    { status: status as BatchStatus },
         include: INVENTORY_INCLUDE,
       });
 
@@ -206,8 +263,8 @@ export class InventoryRepo {
     const where: Prisma.InventoryMovementWhereInput = {
       pharmacyId,
       ...(params.inventoryId ? { inventoryId: params.inventoryId } : {}),
-      ...(params.type        ? { type: params.type as any } : {}),
-      ...(params.direction   ? { direction: params.direction as any } : {}),
+      ...(params.type        ? { type: params.type as MovementType } : {}),
+      ...(params.direction   ? { direction: params.direction as MovementDirection } : {}),
       ...(params.from || params.to
         ? { createdAt: { ...(params.from ? { gte: params.from } : {}), ...(params.to ? { lte: params.to } : {}) } }
         : {}),
@@ -354,20 +411,30 @@ export class InventoryRepo {
   }
 
   async getLowStockAlerts(pharmacyId: string) {
+    // column-to-column comparison (quantity <= minimumStock) requires raw SQL;
+    // fetch matching IDs at the DB level then reload with the full include shape.
+    const idRows = await this.db.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM inventory
+      WHERE  "pharmacyId" = ${pharmacyId}
+        AND  status::text = 'ACTIVE'
+        AND  quantity     <= "minimumStock"
+      ORDER BY quantity ASC
+    `;
+
+    if (idRows.length === 0) return [];
+
     const items = await this.db.inventory.findMany({
-      where:   { pharmacyId, status: "ACTIVE" },
+      where:   { id: { in: idRows.map((r) => r.id) } },
       include: { medicine: { select: { name: true, genericName: true, form: true } } },
+      orderBy: { quantity: "asc" },
     });
-    // Split into out-of-stock, reorder needed, and low (between reorder and minimum)
-    return items
-      .filter((i) => i.quantity <= i.minimumStock)
-      .map((i) => ({
-        ...i,
-        tier: i.quantity === 0          ? "OUT_OF_STOCK" as const
-            : i.quantity <= i.reorderLevel ? "REORDER"     as const
-                                           : "LOW"         as const,
-      }))
-      .sort((a, b) => a.quantity - b.quantity);
+
+    return items.map((i) => ({
+      ...i,
+      tier: i.quantity === 0             ? "OUT_OF_STOCK" as const
+          : i.quantity <= i.reorderLevel ? "REORDER"      as const
+                                         : "LOW"          as const,
+    }));
   }
 
   // ── FEFO batch selection (used by billing) ─────────────────────────────────

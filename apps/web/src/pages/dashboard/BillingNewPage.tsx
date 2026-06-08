@@ -1,6 +1,7 @@
 
 
-import { useState, useMemo, useCallback, useEffect, useRef, Suspense, lazy } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef, Suspense, lazy, memo } from "react";
+import { useAnimationControls } from "framer-motion";
 import { Link, useSearchParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -57,6 +58,36 @@ const PAY_ICONS: Record<"CASH"|"UPI"|"CARD"|"CREDIT", React.ElementType> = {
 };
 const PAY_SHORTCUTS: Record<string, string> = { CASH: "1", UPI: "2", CARD: "3", CREDIT: "4" };
 
+// ─── Animated counter ─────────────────────────────────────────────────────────
+// Triggers a quick slide-in animation when the value changes WITHOUT remounting
+// the DOM node. Replacing key={value} + initial/animate with this avoids the
+// React unmount/mount cycle and Framer Motion layout re-measurement on every
+// cart interaction.
+
+const AnimatedCount = memo(function AnimatedCount({
+  value,
+  className,
+  children,
+}: {
+  value: number | string;
+  className?: string;
+  children?: React.ReactNode;
+}) {
+  const controls  = useAnimationControls();
+  const firstRender = useRef(true);
+
+  useEffect(() => {
+    if (firstRender.current) { firstRender.current = false; return; }
+    void controls.start({ opacity: [0.4, 1], y: [-5, 0], transition: { duration: 0.18, ease: "easeOut" } });
+  }, [value, controls]);
+
+  return (
+    <motion.span animate={controls} className={className}>
+      {children ?? value}
+    </motion.span>
+  );
+});
+
 // ─── Sub-navigation bar ───────────────────────────────────────────────────────
 
 function BillingSubNav({
@@ -66,6 +97,8 @@ function BillingSubNav({
   hasItems,
   paymentMode,
   onPaymentMode,
+  isInterstate,
+  onInterstate,
 }: {
   onSave: () => void;
   onSaveDraft: () => void;
@@ -73,6 +106,8 @@ function BillingSubNav({
   hasItems: boolean;
   paymentMode: "CASH" | "UPI" | "CARD" | "CREDIT";
   onPaymentMode: (m: "CASH" | "UPI" | "CARD" | "CREDIT") => void;
+  isInterstate: boolean;
+  onInterstate: (v: boolean) => void;
 }) {
   const [showSaveDrop, setShowSaveDrop] = useState(false);
 
@@ -95,8 +130,8 @@ function BillingSubNav({
 
       {/* Controls */}
       <div className="flex items-center gap-2">
-        {/* Owner */}
-        <button className="flex items-center gap-1 text-[12px] text-slate-600 font-medium border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50 transition-colors">
+        {/* Owner — staff selector, pending implementation */}
+        <button disabled title="Staff selector — coming soon" className="flex items-center gap-1 text-[12px] text-slate-400 font-medium border border-slate-200 rounded-lg px-2.5 py-1.5 opacity-50 cursor-not-allowed">
           <UserCircle2 className="w-3.5 h-3.5 text-slate-400" />
           Owner
           <ChevronDown className="w-2.5 h-2.5 text-slate-400" />
@@ -127,14 +162,28 @@ function BillingSubNav({
           })}
         </div>
 
-        {/* Reminder */}
-        <button className="flex items-center gap-1 text-[12px] text-slate-600 font-medium border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50 transition-colors">
+        {/* Interstate (IGST) toggle */}
+        <button
+          onClick={() => onInterstate(!isInterstate)}
+          title={isInterstate ? "Interstate sale — IGST applies. Click to switch to intra-state (CGST+SGST)" : "Intra-state sale — CGST+SGST. Click to switch to interstate (IGST)"}
+          className={cn(
+            "flex items-center gap-1 text-[12px] font-semibold border rounded-lg px-2.5 py-1.5 transition-colors",
+            isInterstate
+              ? "bg-violet-600 text-white border-violet-600 hover:bg-violet-700"
+              : "text-slate-600 border-slate-200 hover:bg-slate-50",
+          )}
+        >
+          {isInterstate ? "IGST" : "CGST+SGST"}
+        </button>
+
+        {/* Reminder — pending implementation */}
+        <button disabled title="Medicine reminder — coming soon" className="flex items-center gap-1 text-[12px] text-slate-400 font-medium border border-slate-200 rounded-lg px-2.5 py-1.5 opacity-50 cursor-not-allowed">
           <Bell className="w-3.5 h-3.5 text-slate-400" />
           Reminder
         </button>
 
-        {/* Pickup */}
-        <button className="flex items-center gap-1 text-[12px] text-slate-600 font-medium border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50 transition-colors">
+        {/* Pickup — pending implementation */}
+        <button disabled title="Pickup scheduling — coming soon" className="flex items-center gap-1 text-[12px] text-slate-400 font-medium border border-slate-200 rounded-lg px-2.5 py-1.5 opacity-50 cursor-not-allowed">
           <Truck className="w-3.5 h-3.5 text-slate-400" />
           Pickup
           <ChevronDown className="w-2.5 h-2.5 text-slate-400" />
@@ -186,9 +235,9 @@ function BillingSubNav({
           )}
         </div>
 
-        {/* Settings */}
-        <button className="w-8 h-8 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition-colors">
-          <Settings className="w-4 h-4 text-slate-500" />
+        {/* Settings — pending implementation */}
+        <button disabled title="Billing settings — coming soon" className="w-8 h-8 rounded-lg border border-slate-200 flex items-center justify-center opacity-50 cursor-not-allowed">
+          <Settings className="w-4 h-4 text-slate-400" />
         </button>
       </div>
     </div>
@@ -219,10 +268,15 @@ function NewBillInner() {
   // Multi-tab awareness
   const [multiTabNotice, setMultiTabNotice] = useState<string | null>(null);
 
+  // Always-current ref so the keydown handler never closes over a stale handleSave.
+  // Initialized with a no-op; synced to the real callback after handleSave is declared below.
+  const handleSaveRef = useRef<() => Promise<void>>(async () => {});
+
   // F9 = Save, Alt+1..4 = payment mode
+  // Empty deps: registers once at mount, reads the latest callback via ref on each keystroke.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "F9") { e.preventDefault(); handleSave(); }
+      if (e.key === "F9") { e.preventDefault(); void handleSaveRef.current(); }
       if (e.altKey) {
         const map: Record<string, "CASH"|"UPI"|"CARD"|"CREDIT"> = { "1": "CASH", "2": "UPI", "3": "CARD", "4": "CREDIT" };
         if (map[e.key]) { e.preventDefault(); setMeta({ paymentMode: map[e.key] }); }
@@ -230,8 +284,7 @@ function NewBillInner() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, meta]);
+  }, []);
 
   // Idempotency key — prevents duplicate invoices on double-click or network retry
   const idempotencyKeyRef = useRef(crypto.randomUUID());
@@ -326,6 +379,7 @@ function NewBillInner() {
         doctorName:    meta.doctorName    || undefined,
         paymentMode:   meta.paymentMode,
         paymentStatus: meta.paymentStatus,
+        isInterstate:  meta.isInterstate,
         notes:         meta.notes         || undefined,
         items: items.map((i) => ({
           inventoryId: i.inventoryId,
@@ -334,30 +388,34 @@ function NewBillInner() {
         })),
       });
       const printData: PrintInvoiceData = {
-        invoiceNumber: data.data.invoiceNumber,
-        createdAt:     data.data.createdAt,
-        customerName:  meta.customerName  || undefined,
-        customerPhone: meta.customerPhone || undefined,
-        doctorName:    meta.doctorName    || undefined,
-        paymentMode:   meta.paymentMode,
-        paymentStatus: meta.paymentStatus,
-        items:         items.map((i) => ({ ...i })),
-        subtotal:      totals.subtotal,
+        invoiceNumber:  data.data.invoiceNumber,
+        createdAt:      data.data.createdAt,
+        customerName:   meta.customerName  || undefined,
+        customerPhone:  meta.customerPhone || undefined,
+        doctorName:     meta.doctorName    || undefined,
+        paymentMode:    meta.paymentMode,
+        paymentStatus:  meta.paymentStatus,
+        isInterstate:   meta.isInterstate,
+        items:          items.map((i) => ({ ...i, igst: i.igst ?? 0 })),
+        subtotal:       totals.subtotal,
         discountAmount: totals.discountAmount,
-        taxableAmount: totals.taxableAmount,
-        cgst:          totals.cgst,
-        sgst:          totals.sgst,
-        totalGst:      totals.totalGst,
-        totalAmount:   roundedTotal,
+        taxableAmount:  totals.taxableAmount,
+        cgst:           totals.cgst,
+        sgst:           totals.sgst,
+        igst:           totals.igst,
+        totalGst:       totals.totalGst,
+        totalAmount:    roundedTotal,
       };
       // Cleanup draft + session + regenerate idempotency key for next bill
       if (loadedDraftId) { deleteDraft(loadedDraftId); setLoadedDraftId(null); }
       clearSession();
       idempotencyKeyRef.current = crypto.randomUUID();
 
-      // Notify other tabs that a bill was saved
+      // Notify other tabs that a bill was saved; close immediately to avoid leaking the channel.
       if (typeof BroadcastChannel !== "undefined") {
-        new BroadcastChannel("checkup_billing").postMessage({ type: "bill_saved" });
+        const bc = new BroadcastChannel("checkup_billing");
+        bc.postMessage({ type: "bill_saved" });
+        bc.close();
       }
 
       setSavedInvoiceId(data.data.id);
@@ -377,6 +435,9 @@ function NewBillInner() {
       setSubmitting(false);
     }
   }, [items, meta, totals, roundedTotal, loadedDraftId, clear]);
+  // Keep the ref current after every render so the keydown handler always dispatches
+  // to the latest handleSave (which closes over the correct loadedDraftId et al.).
+  useEffect(() => { handleSaveRef.current = handleSave; });
 
   const handleCancel = useCallback(async () => {
     if (!savedInvoiceId || !cancelReason.trim()) return;
@@ -429,6 +490,8 @@ function NewBillInner() {
           hasItems={items.length > 0}
           paymentMode={meta.paymentMode}
           onPaymentMode={(m) => setMeta({ paymentMode: m })}
+          isInterstate={meta.isInterstate}
+          onInterstate={(v) => setMeta({ isInterstate: v })}
         />
 
         {/* Draft saved toast */}
@@ -570,44 +633,25 @@ function NewBillInner() {
 
           <div className="flex items-center gap-4 text-white text-[15px]">
             <span className="text-white/70">
-              <motion.span
-                key={totalQty}
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                className="font-bold text-white inline-block"
-              >
-                {totalQty}
-              </motion.span>
+              <AnimatedCount value={totalQty} className="font-bold text-white inline-block" />
               {" "}Qty.
             </span>
 
             <span className="text-white/30">•</span>
 
             <span className="text-white/70">
-              <motion.span
-                key={items.length}
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                className="font-bold text-white inline-block"
-              >
-                {items.length}
-              </motion.span>
+              <AnimatedCount value={items.length} className="font-bold text-white inline-block" />
               {" "}Items
             </span>
 
             <span className="text-white/30">•</span>
 
-            <motion.span
-              key={roundedTotal}
-              initial={{ opacity: 0, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ type: "spring", stiffness: 400, damping: 25 }}
+            <AnimatedCount
+              value={roundedTotal}
               className="font-bold text-white tabular-nums inline-block"
             >
               ₹{roundedTotal.toFixed(2)}
-            </motion.span>
+            </AnimatedCount>
 
             <div className="flex items-center gap-2 pl-2 border-l border-white/15">
               <Calculator className="w-5 h-5 text-white/40" />
@@ -616,18 +660,15 @@ function NewBillInner() {
             <span className="text-white/30">•</span>
             <span className="text-white/60 font-medium">Net Payable</span>
 
-            <motion.div
-              key={`net-${roundedTotal}`}
-              initial={{ scale: 0.9 }}
-              animate={{ scale: 1 }}
-              transition={{ type: "spring", stiffness: 500, damping: 30 }}
+            <AnimatedCount
+              value={roundedTotal}
               className="flex items-center gap-1 bg-white/10 hover:bg-white/15 transition-colors rounded px-3 py-1.5 cursor-pointer"
             >
               <span className="font-bold text-white tabular-nums text-[18px]">
                 ₹{roundedTotal.toFixed(2)}
               </span>
               <ChevronUp className="w-4 h-4 text-white/50" />
-            </motion.div>
+            </AnimatedCount>
           </div>
         </div>
       </motion.div>

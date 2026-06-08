@@ -56,6 +56,11 @@ export type InvoiceSettingsConfig = {
     currencySymbol: string;
     dateFormat: string;
   };
+  policy?: {
+    // Maximum days after invoice date within which a customer return is accepted.
+    // Set to 0 to disable the limit entirely.
+    returnWindowDays: number;
+  };
 };
 
 export const defaultInvoiceSettings: InvoiceSettingsConfig = {
@@ -115,5 +120,8 @@ export const defaultInvoiceSettings: InvoiceSettingsConfig = {
     language: "en",
     currencySymbol: "₹",
     dateFormat: "DD/MM/YYYY",
+  },
+  policy: {
+    returnWindowDays: 30,
   },
 };

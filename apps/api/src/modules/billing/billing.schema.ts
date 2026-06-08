@@ -16,8 +16,9 @@ export const createInvoiceSchema = z.object({
   prescriptionId: z.string().optional(),
   paymentMode:    z.enum(PAYMENT_MODES).default("CASH"),
   paymentStatus:  z.enum(PAYMENT_STATUSES).default("PAID"),
+  // true → IGST (single tax); false → CGST + SGST (split). Defaults intra-state.
+  isInterstate:   z.boolean().default(false),
   notes:          z.string().max(1000).optional(),
-  // Auto-generated server-side if omitted — prevents double-save on network retry
   idempotencyKey: z.string().uuid().default(() => randomUUID()),
   items:          z.array(invoiceItemSchema).min(1, "At least one item required"),
 });

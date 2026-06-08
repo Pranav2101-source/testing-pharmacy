@@ -12,12 +12,17 @@ const suppliersRoutes: FastifyPluginAsync = async (app) => {
   // Dropdown list (no paging)
   app.get("/all", { preHandler: auth }, async (req, reply) => {
     const items = await service.listAll(req.pharmacyId);
+    // Supplier list is per-pharmacy and changes infrequently — 5-min private cache.
+    reply.header("Cache-Control", "private, max-age=300, stale-while-revalidate=60");
+    reply.header("Vary", "Authorization");
     return reply.send({ success: true, data: items });
   });
 
   app.get("/", { preHandler: auth }, async (req, reply) => {
     const query  = listSuppliersQuerySchema.parse(req.query);
     const result = await service.list(req.pharmacyId, query);
+    reply.header("Cache-Control", "private, max-age=300, stale-while-revalidate=60");
+    reply.header("Vary", "Authorization");
     return reply.send({ success: true, data: result });
   });
 

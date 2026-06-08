@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
-import { connection } from "../queue.client.js";
+import { connection, lowStockAlertQueue } from "../queue.client.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 type LowStockRow = { medicineName: string; batchNumber: string; quantity: number; minimumStock: number };
@@ -44,45 +44,63 @@ function buildHtml(outOfStock: LowStockRow[], low: LowStockRow[], pharmacyName: 
 export const lowStockAlertWorker = new Worker(
   "low-stock-alerts",
   async (job) => {
-    const pharmacies = await prisma.pharmacy.findMany({
-      where:  { isActive: true },
+    const { pharmacyId } = job.data as { pharmacyId?: string };
+
+    if (!pharmacyId) {
+      const pharmacies = await prisma.pharmacy.findMany({
+        where:  { isActive: true },
+        select: { id: true },
+      });
+      await Promise.all(
+        pharmacies.map((p) =>
+          lowStockAlertQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
+            removeOnComplete: { count: 1 },
+            removeOnFail:     { count: 3 },
+          }),
+        ),
+      );
+      job.log(`Dispatched ${pharmacies.length} low-stock-alert job(s)`);
+      return;
+    }
+
+    const pharmacy = await prisma.pharmacy.findUnique({
+      where:  { id: pharmacyId },
       select: { id: true, name: true },
     });
+    if (!pharmacy) return;
 
-    for (const pharmacy of pharmacies) {
-      const lowStock = await prisma.$queryRaw<LowStockRow[]>`
-        SELECT m.name AS "medicineName", i."batchNumber", i.quantity, i."minimumStock"
-        FROM inventory i
-        JOIN medicines m ON i."medicineId" = m.id
-        WHERE i."pharmacyId" = ${pharmacy.id}
-          AND i.status = 'ACTIVE'
-          AND i.quantity <= i."minimumStock"
-        ORDER BY i.quantity ASC
-        LIMIT 50
-      `;
+    const lowStock = await prisma.$queryRaw<LowStockRow[]>`
+      SELECT m.name AS "medicineName", i."batchNumber", i.quantity, i."minimumStock"
+      FROM inventory i
+      JOIN medicines m ON i."medicineId" = m.id
+      WHERE i."pharmacyId" = ${pharmacy.id}
+        AND i.status = 'ACTIVE'
+        AND i.quantity <= i."minimumStock"
+      ORDER BY i.quantity ASC
+      LIMIT 50
+    `;
 
-      if (lowStock.length === 0) continue;
+    if (lowStock.length === 0) return;
 
-      const outOfStock = lowStock.filter((i) => i.quantity === 0);
-      const low        = lowStock.filter((i) => i.quantity > 0);
+    const outOfStock = lowStock.filter((i) => i.quantity === 0);
+    const low        = lowStock.filter((i) => i.quantity > 0);
 
-      const lines = [
-        outOfStock.length > 0
-          ? `OUT OF STOCK: ${outOfStock.map((i) => i.medicineName).join(", ")}`
-          : "",
-        low.length > 0
-          ? `LOW STOCK: ${low.map((i) => `${i.medicineName} (${i.quantity} left)`).join(", ")}`
-          : "",
-      ].filter(Boolean).join("\n\n");
+    const lines = [
+      outOfStock.length > 0
+        ? `OUT OF STOCK: ${outOfStock.map((i) => i.medicineName).join(", ")}`
+        : "",
+      low.length > 0
+        ? `LOW STOCK: ${low.map((i) => `${i.medicineName} (${i.quantity} left)`).join(", ")}`
+        : "",
+    ].filter(Boolean).join("\n\n");
 
-      await notifyOwners(prisma, pharmacy.id, {
-        subject: `Stock Alert: ${lowStock.length} item(s) need restocking — ${pharmacy.name}`,
-        message: `Stock Alert for ${pharmacy.name}\n\n${lines}`,
-        html:    buildHtml(outOfStock, low, pharmacy.name),
-      });
+    await notifyOwners(prisma, pharmacy.id, {
+      subject: `Stock Alert: ${lowStock.length} item(s) need restocking — ${pharmacy.name}`,
+      message: `Stock Alert for ${pharmacy.name}\n\n${lines}`,
+      html:    buildHtml(outOfStock, low, pharmacy.name),
+    });
 
-      job.log(`[${pharmacy.name}] low-stock alert sent for ${lowStock.length} items`);
-    }
+    job.log(`[${pharmacy.name}] low-stock alert sent for ${lowStock.length} items`);
   },
-  { connection },
+  { connection, concurrency: 5 },
 );

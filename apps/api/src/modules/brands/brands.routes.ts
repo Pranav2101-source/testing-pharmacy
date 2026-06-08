@@ -12,6 +12,8 @@ const brandsRoutes: FastifyPluginAsync = async (app) => {
   // List all brands (for comboboxes) — no paging
   app.get("/all", { preHandler }, async (_req, reply) => {
     const items = await service.listAll();
+    // Brands are global master data — rarely change, safe for long public cache.
+    reply.header("Cache-Control", "public, max-age=3600, stale-while-revalidate=300");
     return reply.send({ success: true, data: items });
   });
 
@@ -19,6 +21,7 @@ const brandsRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", { preHandler }, async (req, reply) => {
     const query = listBrandsQuerySchema.parse(req.query);
     const result = await service.list(query);
+    reply.header("Cache-Control", "public, max-age=3600, stale-while-revalidate=300");
     return reply.send({ success: true, data: result });
   });
 

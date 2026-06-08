@@ -1,6 +1,6 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
-import { connection } from "../queue.client.js";
+import { connection, pendingCreditQueue } from "../queue.client.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 function buildHtml(
@@ -39,49 +39,66 @@ function buildHtml(
 export const pendingCreditWorker = new Worker(
   "pending-credit-digest",
   async (job) => {
-    const now        = new Date();
-    const pharmacies = await prisma.pharmacy.findMany({
-      where:  { isActive: true },
+    const { pharmacyId } = job.data as { pharmacyId?: string };
+
+    if (!pharmacyId) {
+      const pharmacies = await prisma.pharmacy.findMany({
+        where:  { isActive: true },
+        select: { id: true },
+      });
+      await Promise.all(
+        pharmacies.map((p) =>
+          pendingCreditQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
+            removeOnComplete: { count: 1 },
+            removeOnFail:     { count: 3 },
+          }),
+        ),
+      );
+      job.log(`Dispatched ${pharmacies.length} pending-credit job(s)`);
+      return;
+    }
+
+    const pharmacy = await prisma.pharmacy.findUnique({
+      where:  { id: pharmacyId },
       select: { id: true, name: true },
     });
+    if (!pharmacy) return;
 
-    for (const pharmacy of pharmacies) {
-      const pending = await prisma.invoice.findMany({
-        where: {
-          pharmacyId:    pharmacy.id,
-          paymentStatus: "PENDING",
-          isCancelled:   false,
-        },
-        include: { customer: { select: { name: true } } },
-        orderBy: { createdAt: "asc" },
-        take:    50,
-      });
+    const now     = new Date();
+    const pending = await prisma.invoice.findMany({
+      where: {
+        pharmacyId:    pharmacy.id,
+        paymentStatus: "PENDING",
+        isCancelled:   false,
+      },
+      include: { customer: { select: { name: true } } },
+      orderBy: { createdAt: "asc" },
+      take:    50,
+    });
 
-      if (pending.length === 0) continue;
+    if (pending.length === 0) return;
 
-      const rows = pending.map((inv) => ({
-        invoiceNumber: inv.invoiceNumber,
-        customerName:  inv.customer?.name ?? "Walk-in",
-        totalAmount:   inv.totalAmount,
-        createdAt:     inv.createdAt,
-        ageDays:       Math.floor((now.getTime() - inv.createdAt.getTime()) / 86_400_000),
-      }));
+    const rows = pending.map((inv) => ({
+      invoiceNumber: inv.invoiceNumber,
+      customerName:  inv.customer?.name ?? "Walk-in",
+      totalAmount:   inv.totalAmount,
+      createdAt:     inv.createdAt,
+      ageDays:       Math.floor((now.getTime() - inv.createdAt.getTime()) / 86_400_000),
+    }));
 
-      const total = rows.reduce((s, r) => s + r.totalAmount, 0);
+    const total   = rows.reduce((s, r) => s + r.totalAmount, 0);
+    const message =
+      `Weekly Pending Credit Digest — ${pharmacy.name}\n\n` +
+      `${pending.length} invoice(s) unpaid. Total: ₹${total.toFixed(2)}\n\n` +
+      rows.map((r) => `${r.invoiceNumber} — ${r.customerName} — ₹${r.totalAmount.toFixed(2)} — ${r.ageDays}d old`).join("\n");
 
-      const message =
-        `Weekly Pending Credit Digest — ${pharmacy.name}\n\n` +
-        `${pending.length} invoice(s) unpaid. Total: ₹${total.toFixed(2)}\n\n` +
-        rows.map((r) => `${r.invoiceNumber} — ${r.customerName} — ₹${r.totalAmount.toFixed(2)} — ${r.ageDays}d old`).join("\n");
+    await notifyOwners(prisma, pharmacy.id, {
+      subject: `Weekly Digest: ₹${total.toFixed(2)} in Pending Credit — ${pharmacy.name}`,
+      message,
+      html:    buildHtml(rows, total, pharmacy.name),
+    });
 
-      await notifyOwners(prisma, pharmacy.id, {
-        subject: `Weekly Digest: ₹${total.toFixed(2)} in Pending Credit — ${pharmacy.name}`,
-        message,
-        html:    buildHtml(rows, total, pharmacy.name),
-      });
-
-      job.log(`[${pharmacy.name}] pending-credit digest: ${pending.length} invoices ₹${total.toFixed(2)}`);
-    }
+    job.log(`[${pharmacy.name}] pending-credit digest: ${pending.length} invoices ₹${total.toFixed(2)}`);
   },
-  { connection },
+  { connection, concurrency: 5 },
 );

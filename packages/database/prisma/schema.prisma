@@ -92,7 +92,9 @@ model User {
 
 enum Role {
   OWNER
+  MANAGER
   PHARMACIST
+  CASHIER
 }
 
 // ─── Medicine (Global — shared across all pharmacies) ────────────────────────
@@ -210,6 +212,10 @@ model Inventory {
   @@index([pharmacyId, medicineId])
   @@index([pharmacyId, expiryDate])
   @@index([pharmacyId, status])
+  // Covering index for active-stock and low-stock queries: WHERE pharmacyId=? AND status='ACTIVE' AND quantity>0
+  @@index([pharmacyId, status, quantity])
+  // Covering index for FEFO batch selection: WHERE pharmacyId=? AND medicineId=? AND status='ACTIVE' ORDER BY expiryDate ASC
+  @@index([pharmacyId, medicineId, status, expiryDate])
   @@map("inventory")
 }
 
@@ -245,6 +251,7 @@ model Customer {
   phone        String?
   email        String?
   address      String?
+  state        String?      // Indian state code (e.g. "MH", "KA") — used for IGST determination
   age          Int?
   gender       String?
   customerType CustomerType @default(WALK_IN)
@@ -391,6 +398,10 @@ model Invoice {
   pharmacyId      String
   invoiceNumber   String
   customerId      String?
+  // Snapshot of customer name/phone at billing time — avoids JOIN in search queries
+  // and preserves the name even if the customer record is later updated.
+  customerName    String?
+  customerPhone   String?
   userId          String
   doctorName      String?
   prescriptionId  String?
@@ -402,9 +413,11 @@ model Invoice {
   taxableAmount   Float
   cgst            Float
   sgst            Float
+  igst            Float         @default(0)
   totalGst        Float
   totalAmount     Float
   returnedAmount  Float         @default(0)
+  isInterstate    Boolean       @default(false)
   notes           String?
   isCancelled     Boolean       @default(false)
   cancelledAt     DateTime?
@@ -426,6 +439,10 @@ model Invoice {
   @@index([pharmacyId, createdAt])
   @@index([pharmacyId, customerId])
   @@index([pharmacyId, status])
+  // Covering index for pending-credit queries: WHERE pharmacyId=? AND paymentStatus='PENDING' AND isCancelled=false
+  @@index([pharmacyId, paymentStatus, isCancelled])
+  // Covering index for filtered invoice list sorted by date (most common view)
+  @@index([pharmacyId, isCancelled, createdAt(sort: Desc)])
   @@map("invoices")
 }
 
@@ -467,6 +484,7 @@ model InvoiceItem {
   gstRate       Float
   cgst          Float
   sgst          Float
+  igst          Float    @default(0)
   taxableAmount Float
   amount        Float
 
@@ -514,6 +532,7 @@ model SalesReturn {
   taxableAmount  Float
   cgst           Float
   sgst           Float
+  igst           Float    @default(0)
   totalGst       Float
   totalAmount    Float
   idempotencyKey String?
@@ -555,6 +574,7 @@ model SalesReturnItem {
   gstRate       Float
   cgst          Float
   sgst          Float
+  igst          Float             @default(0)
   taxableAmount Float
   amount        Float
   disposition   ReturnDisposition @default(RESTOCK)
@@ -593,6 +613,8 @@ model InventoryMovement {
   @@index([pharmacyId, inventoryId])
   @@index([pharmacyId, createdAt])
   @@index([referenceId])
+  // Covering index for ledger filtered by movement type (sale/purchase/adjustment history views)
+  @@index([pharmacyId, type, createdAt(sort: Desc)])
   @@map("inventory_movements")
 }
 

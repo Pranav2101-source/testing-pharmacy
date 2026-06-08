@@ -24,6 +24,10 @@ const inventoryRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", { preHandler: auth }, async (req, reply) => {
     const query  = listInventoryQuerySchema.parse(req.query);
     const result = await service.list(req.pharmacyId, query);
+    // Stock changes on every sale — 30-second cache prevents redundant hits when
+    // staff open inventory from multiple tabs but keeps data practically current.
+    reply.header("Cache-Control", "private, max-age=30, must-revalidate");
+    reply.header("Vary", "Authorization");
     return reply.send({ success: true, data: result });
   });
 
@@ -60,11 +64,19 @@ const inventoryRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/alerts/expiry", { preHandler: auth }, async (req, reply) => {
     const items = await service.getExpiryAlerts(req.pharmacyId);
+    // Expiry status changes daily at most — a 10-minute cache reduces redundant
+    // DB queries when staff open the alerts panel multiple times in a shift.
+    reply.header("Cache-Control", "private, max-age=600");
+    reply.header("Vary", "Authorization");
     return reply.send({ success: true, data: items });
   });
 
   app.get("/alerts/low-stock", { preHandler: auth }, async (req, reply) => {
     const items = await service.getLowStockAlerts(req.pharmacyId);
+    // Low-stock levels change on purchase receipt or sale — 5-minute cache
+    // balances freshness with DB load reduction during peak dispensing hours.
+    reply.header("Cache-Control", "private, max-age=300");
+    reply.header("Vary", "Authorization");
     return reply.send({ success: true, data: items });
   });
 

@@ -15,6 +15,7 @@ export type InvoiceLineItem = {
   taxableAmount: number;
   cgst:          number;
   sgst:          number;
+  igst:          number;
   amount:        number;
 };
 

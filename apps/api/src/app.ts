@@ -45,6 +45,7 @@ import "./queues/processors/eod-summary.processor.js";
 import "./queues/processors/quotation-expiry.processor.js";
 import "./queues/processors/pending-credit.processor.js";
 import "./queues/processors/calendar-digest.processor.js";
+import "./queues/processors/post-invoice.processor.js";
 
 import { setupScheduledJobs } from "./queues/scheduler.js";
 

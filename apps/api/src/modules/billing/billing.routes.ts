@@ -19,6 +19,11 @@ const billingRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/dashboard/stats", { preHandler: auth }, async (req, reply) => {
     const stats = await service.getDashboardStats(req.pharmacyId);
+    // Stats are recomputed from live data on every request; a 60-second browser
+    // cache avoids redundant hits when multiple tabs or page navigations occur
+    // within the same minute. CDN/proxy caching requires Vary: Authorization.
+    reply.header("Cache-Control", "private, max-age=60");
+    reply.header("Vary", "Authorization");
     return reply.send({ success: true, data: stats });
   });
 

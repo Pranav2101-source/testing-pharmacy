@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   Search, Loader2, Pill, ChevronRight, ScanBarcode,
   X, AlertTriangle, Clock,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
 import { useBillingStore } from "./useBillingStore";
 import { cn } from "@/lib/utils";
@@ -192,9 +193,7 @@ function BatchPickerDialog({
 
 export function MedicineSearchCombobox() {
   const [query,    setQuery]    = useState("");
-  const [results,  setResults]  = useState<MedicineSearchResult[]>([]);
   const [open,     setOpen]     = useState(false);
-  const [loading,  setLoading]  = useState(false);
   const [addingId, setAddingId] = useState<string | null>(null);
   const [focused,  setFocused]  = useState(false);
 

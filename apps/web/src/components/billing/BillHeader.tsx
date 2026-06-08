@@ -13,7 +13,9 @@ function Divider() {
 }
 
 export function BillHeader() {
-  const { meta, setMeta } = useBillingStore();
+  // Selector: only re-renders when meta changes, not when items change.
+  const meta    = useBillingStore((s) => s.meta);
+  const setMeta = useBillingStore((s) => s.setMeta);
 
   return (
     <motion.div

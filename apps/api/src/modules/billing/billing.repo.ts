@@ -1,4 +1,4 @@
-import type { PrismaClient, Prisma } from "@pharmacy/database";
+import type { PrismaClient, Prisma, PaymentMode, PaymentStatus, InvoiceStatus } from "@pharmacy/database";
 import type { PendingMovement } from "./billing.types.js";
 import { AppError } from "../../lib/AppError.js";
 
@@ -6,7 +6,7 @@ import { AppError } from "../../lib/AppError.js";
 
 const INVOICE_INCLUDE = {
   items:    true,
-  customer: { select: { id: true, name: true, phone: true } },
+  customer: { select: { id: true, name: true, phone: true, email: true } },
   user:     { select: { id: true, name: true } },
   payments: { orderBy: { paidAt: "asc" as const } },
   returns:  { select: { id: true, returnNumber: true, totalAmount: true, createdAt: true } },
@@ -59,20 +59,24 @@ export class BillingRepo {
   //   5.   Write invoice AuditLog.
 
   async createInvoiceTransactional(params: {
-    pharmacyId:      string;
-    userId:          string;
-    invoiceData:     Prisma.InvoiceCreateInput;
-    stockDecrements: { inventoryId: string; quantity: number; medicineName: string }[];
-    idempotencyKey?: string;
-    customerId?:     string;
-    totalAmount:     number;
-    paymentStatus?:  string;
-    paymentMode?:    string;
-    auditMeta?:      { ipAddress?: string; userAgent?: string };
+    pharmacyId:            string;
+    userId:                string;
+    // invoiceNumber is excluded from invoiceData and generated inside the
+    // transaction (after the idempotency check) via the callback below, so
+    // duplicate requests never advance the Redis sequence counter.
+    invoiceData:           Omit<Prisma.InvoiceCreateInput, "invoiceNumber">;
+    generateInvoiceNumber: () => Promise<string>;
+    stockDecrements:       { inventoryId: string; quantity: number; medicineName: string }[];
+    idempotencyKey?:       string;
+    customerId?:           string;
+    totalAmount:           number;
+    paymentStatus?:        string;
+    paymentMode?:          string;
+    auditMeta?:            { ipAddress?: string; userAgent?: string };
   }) {
     return this.db.$transaction(async (tx) => {
 
-      // Step 0 — idempotency
+      // Step 0 — idempotency (generator NOT called on duplicate → no sequence gap)
       if (params.idempotencyKey) {
         const existing = await tx.invoice.findUnique({
           where: {
@@ -85,6 +89,9 @@ export class BillingRepo {
         });
         if (existing) return existing;
       }
+
+      // Generate invoice number only after confirming this is a new request.
+      const invoiceNumber = await params.generateInvoiceNumber();
 
       // Step 0.5 — release stock reservations for this billing session
       if (params.idempotencyKey) {
@@ -105,46 +112,56 @@ export class BillingRepo {
         }
       }
 
-      // Step 1 — atomic stock decrement
-      const movements: PendingMovement[] = [];
+      // Step 1 — atomic stock decrement (single CTE: N items → 1 round-trip).
+      // UPDATE ... RETURNING gives us the post-update quantity atomically, so no
+      // separate SELECT is needed. All decrements execute in one statement inside
+      // the Serializable transaction, which also shortens the lock-hold window.
+      type DecrRow = { id: string; qty_after: number; qty_dec: number };
+      const inventoryIds = params.stockDecrements.map((i) => i.inventoryId);
+      const quantities   = params.stockDecrements.map((i) => i.quantity);
 
-      for (const item of params.stockDecrements) {
-        const result = await tx.inventory.updateMany({
-          where: {
-            id:         item.inventoryId,
-            pharmacyId: params.pharmacyId,
-            quantity:   { gte: item.quantity },
-          },
-          data: { quantity: { decrement: item.quantity } },
-        });
+      const decremented = await tx.$queryRaw<DecrRow[]>`
+        WITH batch(id, qty) AS (
+          SELECT unnest(${inventoryIds}::uuid[]), unnest(${quantities}::int[])
+        ),
+        upd AS (
+          UPDATE inventory inv
+          SET    quantity = inv.quantity - b.qty
+          FROM   batch b
+          WHERE  inv.id           = b.id
+            AND  inv."pharmacyId" = ${params.pharmacyId}::uuid
+            AND  inv.quantity    >= b.qty
+          RETURNING inv.id, inv.quantity AS qty_after, b.qty AS qty_dec
+        )
+        SELECT * FROM upd
+      `;
 
-        if (result.count === 0) {
-          const current = await tx.inventory.findFirst({
-            where:  { id: item.inventoryId, pharmacyId: params.pharmacyId },
-            select: { quantity: true },
-          });
-          throw current
-            ? AppError.conflict(
-                `Insufficient stock for "${item.medicineName}": ${current.quantity} available, ${item.quantity} requested`,
-              )
-            : AppError.notFound(`Inventory item not found: ${item.inventoryId}`);
-        }
-
-        const after = await tx.inventory.findFirst({
-          where:  { id: item.inventoryId },
+      // If fewer rows came back than expected, one or more items had insufficient stock.
+      // Find the first offender and surface a precise error message.
+      if (decremented.length !== params.stockDecrements.length) {
+        const succeededIds = new Set(decremented.map((r) => r.id));
+        const failed       = params.stockDecrements.find((i) => !succeededIds.has(i.inventoryId))!;
+        const current      = await tx.inventory.findFirst({
+          where:  { id: failed.inventoryId, pharmacyId: params.pharmacyId },
           select: { quantity: true },
         });
-        movements.push({
-          inventoryId:    item.inventoryId,
-          quantity:       item.quantity,
-          quantityBefore: after!.quantity + item.quantity,
-          quantityAfter:  after!.quantity,
-        });
+        throw current
+          ? AppError.conflict(
+              `Insufficient stock for "${failed.medicineName}": ${current.quantity} available, ${failed.quantity} requested`,
+            )
+          : AppError.notFound(`Inventory item not found: ${failed.inventoryId}`);
       }
+
+      const movements: PendingMovement[] = decremented.map((row) => ({
+        inventoryId:    row.id,
+        quantity:       row.qty_dec,
+        quantityBefore: row.qty_after + row.qty_dec,
+        quantityAfter:  row.qty_after,
+      }));
 
       // Step 2 — create invoice + line items
       const invoice = await tx.invoice.create({
-        data:    params.invoiceData,
+        data:    { ...params.invoiceData, invoiceNumber },
         include: INVOICE_INCLUDE,
       });
 
@@ -320,11 +337,15 @@ export class BillingRepo {
         });
       }
 
-      // Reverse credit balance only if it was a CREDIT mode sale
+      // Reverse credit balance only when it was incremented at creation.
+      // createInvoiceTransactional guards with paymentStatus !== "PAID" — mirror
+      // that exact condition here so immediately-settled CREDIT invoices (where
+      // creditUsed was never incremented) don't drive the balance negative.
       const wasCreditSale =
         invoice.customerId &&
-        invoice.paymentMode === "CREDIT" &&
-        invoice.totalAmount > 0;
+        invoice.paymentMode   === "CREDIT" &&
+        invoice.paymentStatus !== "PAID"   &&
+        invoice.totalAmount   >   0;
 
       if (wasCreditSale) {
         await tx.customer.updateMany({
@@ -372,13 +393,13 @@ export class BillingRepo {
   // ── Sales return (atomic) ─────────────────────────────────────────────────
 
   async createReturnTransactional(params: {
-    pharmacyId:        string;
-    invoiceId:         string;
-    userId:            string;
-    returnNumber:      string;
-    reason:            string;
-    idempotencyKey?:   string;
-    returnWindowDays?: number;
+    pharmacyId:           string;
+    invoiceId:            string;
+    userId:               string;
+    generateReturnNumber: () => Promise<string>;
+    reason:               string;
+    idempotencyKey?:      string;
+    returnWindowDays?:    number;
     returnItems: {
       invoiceItemId: string;
       quantity:      number;
@@ -388,7 +409,7 @@ export class BillingRepo {
   }) {
     return this.db.$transaction(async (tx) => {
 
-      // Idempotency
+      // Idempotency (generator NOT called on duplicate → no sequence gap)
       if (params.idempotencyKey) {
         const existing = await tx.salesReturn.findFirst({
           where:   { pharmacyId: params.pharmacyId, idempotencyKey: params.idempotencyKey },
@@ -396,6 +417,8 @@ export class BillingRepo {
         });
         if (existing) return existing;
       }
+
+      const returnNumber = await params.generateReturnNumber();
 
       const invoice = await tx.invoice.findFirst({
         where:   { id: params.invoiceId, pharmacyId: params.pharmacyId },
@@ -445,6 +468,7 @@ export class BillingRepo {
         gstRate:       number;
         cgst:          number;
         sgst:          number;
+        igst:          number;
         taxableAmount: number;
         amount:        number;
         disposition:   "RESTOCK" | "WRITEOFF";
@@ -472,6 +496,7 @@ export class BillingRepo {
         const ratio        = ri.quantity / originalItem.quantity;
         const cgst         = parseFloat((originalItem.cgst         * ratio).toFixed(2));
         const sgst         = parseFloat((originalItem.sgst         * ratio).toFixed(2));
+        const igst         = parseFloat((originalItem.igst         * ratio).toFixed(2));
         const taxableAmount = parseFloat((originalItem.taxableAmount * ratio).toFixed(2));
         const amount       = parseFloat((originalItem.amount       * ratio).toFixed(2));
 
@@ -489,6 +514,7 @@ export class BillingRepo {
           gstRate:       originalItem.gstRate,
           cgst,
           sgst,
+          igst,
           taxableAmount,
           amount,
           disposition: (ri.disposition ?? "RESTOCK") as "RESTOCK" | "WRITEOFF",
@@ -518,6 +544,7 @@ export class BillingRepo {
       const totalAmount    = parseFloat(returnLineItems.reduce((s, i) => s + i.amount,        0).toFixed(2));
       const totalCgst      = parseFloat(returnLineItems.reduce((s, i) => s + i.cgst,          0).toFixed(2));
       const totalSgst      = parseFloat(returnLineItems.reduce((s, i) => s + i.sgst,          0).toFixed(2));
+      const totalIgst      = parseFloat(returnLineItems.reduce((s, i) => s + i.igst,          0).toFixed(2));
       const totalTaxable   = parseFloat(returnLineItems.reduce((s, i) => s + i.taxableAmount, 0).toFixed(2));
       const subtotal       = parseFloat(returnLineItems.reduce((s, i) => s + i.mrp * i.quantity, 0).toFixed(2));
 
@@ -525,7 +552,7 @@ export class BillingRepo {
         data: {
           pharmacyId:     params.pharmacyId,
           invoiceId:      params.invoiceId,
-          returnNumber:   params.returnNumber,
+          returnNumber,
           reason:         params.reason,
           userId:         params.userId,
           customerId:     invoice.customerId ?? undefined,
@@ -535,7 +562,8 @@ export class BillingRepo {
           taxableAmount:  totalTaxable,
           cgst:           totalCgst,
           sgst:           totalSgst,
-          totalGst:       parseFloat((totalCgst + totalSgst).toFixed(2)),
+          igst:           totalIgst,
+          totalGst:       parseFloat((totalCgst + totalSgst + totalIgst).toFixed(2)),
           totalAmount,
           items: {
             create: returnLineItems.map((li) => ({
@@ -552,6 +580,7 @@ export class BillingRepo {
               gstRate:       li.gstRate,
               cgst:          li.cgst,
               sgst:          li.sgst,
+              igst:          li.igst,
               taxableAmount: li.taxableAmount,
               amount:        li.amount,
               disposition:   li.disposition,
@@ -589,8 +618,13 @@ export class BillingRepo {
         });
       }
 
-      // Reverse credit balance only if original sale was CREDIT mode
-      const wasCreditSale = invoice.customerId && invoice.paymentMode === "CREDIT" && totalAmount > 0;
+      // Same paymentStatus guard as cancelInvoiceTransactional — only reverse
+      // creditUsed when it was actually incremented at invoice creation.
+      const wasCreditSale =
+        invoice.customerId &&
+        invoice.paymentMode   === "CREDIT" &&
+        invoice.paymentStatus !== "PAID"   &&
+        totalAmount           >   0;
       if (wasCreditSale) {
         await tx.customer.updateMany({
           where: { id: invoice.customerId!, pharmacyId: params.pharmacyId, customerType: "CREDIT" },
@@ -608,7 +642,7 @@ export class BillingRepo {
               change:       `-${totalAmount}`,
               reason:       "sales_return",
               returnId:     salesReturn.id,
-              returnNumber: params.returnNumber,
+              returnNumber,
             },
             ipAddress: params.auditMeta?.ipAddress,
             userAgent: params.auditMeta?.userAgent?.slice(0, 500),
@@ -624,7 +658,7 @@ export class BillingRepo {
           entity:     "SalesReturn",
           entityId:   salesReturn.id,
           newData: {
-            returnNumber:  params.returnNumber,
+            returnNumber,
             invoiceNumber: invoice.invoiceNumber,
             totalAmount,
             itemCount:     returnLineItems.length,
@@ -657,6 +691,7 @@ export class BillingRepo {
         include: { payments: true },
       });
 
+
       if (!invoice)            throw AppError.notFound("Invoice not found");
       if (invoice.isCancelled) throw AppError.conflict("Cannot add payment to a cancelled invoice");
 
@@ -675,7 +710,7 @@ export class BillingRepo {
           invoiceId:   params.invoiceId,
           createdBy:   params.userId,
           amount:      params.amount,
-          paymentMode: params.paymentMode as never,
+          paymentMode: params.paymentMode as PaymentMode,
           reference:   params.reference,
           notes:       params.notes,
           paidAt:      params.paidAt ?? new Date(),
@@ -689,12 +724,18 @@ export class BillingRepo {
 
       await tx.invoice.update({
         where: { id: params.invoiceId },
-        data:  { paymentStatus, paymentMode: params.paymentMode as never },
+        data:  { paymentStatus: paymentStatus as PaymentStatus, paymentMode: params.paymentMode as PaymentMode },
       });
 
-      // Reduce creditUsed ONLY when the original sale was CREDIT mode —
-      // prevents CASH/UPI payments from incorrectly mutating the credit balance.
-      const wasCreditSale = paymentStatus === "PAID" && invoice.customerId && invoice.paymentMode === "CREDIT";
+      // Reduce creditUsed ONLY when this payment settles a CREDIT invoice that
+      // actually had creditUsed incremented at creation (paymentStatus !== "PAID"
+      // at creation time). An already-PAID invoice (paymentStatus was set to "PAID"
+      // at creation) never incremented creditUsed, so we must not decrement it here.
+      const wasCreditSale =
+        paymentStatus             === "PAID"   &&
+        invoice.paymentStatus     !== "PAID"   &&
+        invoice.customerId                     &&
+        invoice.paymentMode       === "CREDIT";
       if (wasCreditSale) {
         await tx.customer.updateMany({
           where: { id: invoice.customerId!, pharmacyId: params.pharmacyId, customerType: "CREDIT" },
@@ -734,6 +775,16 @@ export class BillingRepo {
       });
 
       return payment;
+    }, {
+      isolationLevel: "Serializable",
+      timeout:        10_000,
+    }).catch((err: { code?: string }) => {
+      if (err.code === "P2034") {
+        throw AppError.conflict(
+          "Another payment was recorded simultaneously — please try again",
+        );
+      }
+      throw err;
     });
   }
 
@@ -768,7 +819,7 @@ export class BillingRepo {
       pharmacyId,
       // status filter takes precedence over includeCancelled shorthand
       ...(params.status
-        ? { status: params.status as never }
+        ? { status: params.status as InvoiceStatus }
         : params.includeCancelled
           ? {}
           : { isCancelled: false }),
@@ -778,8 +829,8 @@ export class BillingRepo {
             ...(params.to   ? { lte: params.to   } : {}),
           } }
         : {}),
-      ...(params.paymentMode   ? { paymentMode:   params.paymentMode   as never } : {}),
-      ...(params.paymentStatus ? { paymentStatus: params.paymentStatus as never } : {}),
+      ...(params.paymentMode   ? { paymentMode:   params.paymentMode   as PaymentMode   } : {}),
+      ...(params.paymentStatus ? { paymentStatus: params.paymentStatus as PaymentStatus } : {}),
       ...(params.userId     ? { userId:     params.userId }     : {}),
       ...(params.customerId ? { customerId: params.customerId } : {}),
       ...(params.minAmount !== undefined || params.maxAmount !== undefined
@@ -792,8 +843,8 @@ export class BillingRepo {
         ? {
             OR: [
               { invoiceNumber: { contains: params.search, mode: "insensitive" } },
-              { customer: { name:  { contains: params.search, mode: "insensitive" } } },
-              { customer: { phone: { contains: params.search, mode: "insensitive" } } },
+              { customerName:  { contains: params.search, mode: "insensitive" } },
+              { customerPhone: { contains: params.search, mode: "insensitive" } },
             ],
           }
         : {}),

@@ -267,7 +267,12 @@ export function CartTableRows({
   showSkeleton?: boolean;
   conflictInventoryIds?: Set<string>;
 }) {
-  const { items, removeItem, updateQty, updateDiscount } = useBillingStore();
+  // Selectors: CartTableRows only subscribes to items + action callbacks.
+  // Meta changes (payment mode, customer name) will NOT trigger a re-render here.
+  const items          = useBillingStore((s) => s.items);
+  const removeItem     = useBillingStore((s) => s.removeItem);
+  const updateQty      = useBillingStore((s) => s.updateQty);
+  const updateDiscount = useBillingStore((s) => s.updateDiscount);
 
   const handleKeyNav = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => {

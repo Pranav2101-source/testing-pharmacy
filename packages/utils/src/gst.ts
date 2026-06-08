@@ -1,79 +1,119 @@
 /**
  * In India, MRP is always GST-inclusive.
  * Pharmacy GST slabs: 0%, 5%, 12%
+ *
+ * GST type depends on the sale:
+ *   Intra-state → CGST + SGST (each at gstRate / 2)
+ *   Inter-state → IGST (at full gstRate)
  */
 
 export type GstBreakdown = {
   taxableAmount: number;
-  cgst: number;
-  sgst: number;
-  totalGst: number;
-  totalAmount: number;
+  cgst:          number;
+  sgst:          number;
+  igst:          number; // 0 for intra-state; full GST for inter-state
+  totalGst:      number;
+  totalAmount:   number;
 };
 
 export type InvoiceItemInput = {
-  mrp: number;
-  quantity: number;
-  discount: number; // percentage 0-100
-  gstRate: number;  // 0 | 5 | 12
+  mrp:          number;
+  quantity:     number;
+  discount:     number; // percentage 0-100
+  gstRate:      number; // 0 | 5 | 12
+  isInterstate?: boolean;
 };
 
 export function calcGstFromMrp(
-  mrp: number,
-  quantity: number,
+  mrp:             number,
+  quantity:        number,
   discountPercent: number,
-  gstRate: number
+  gstRate:         number,
+  isInterstate =   false,
 ): GstBreakdown {
-  const lineTotal = mrp * quantity;
-  const discountAmount = (lineTotal * discountPercent) / 100;
+  const lineTotal           = mrp * quantity;
+  const discountAmount      = (lineTotal * discountPercent) / 100;
   const amountAfterDiscount = lineTotal - discountAmount;
 
   // Reverse-calculate taxable from GST-inclusive MRP
   const taxableAmount = amountAfterDiscount / (1 + gstRate / 100);
-  const totalGst = amountAfterDiscount - taxableAmount;
-  const cgst = totalGst / 2;
-  const sgst = totalGst / 2;
+  const totalGst      = amountAfterDiscount - taxableAmount;
+
+  // Round taxable and the half-GST components first; derive totals from
+  // rounded values so cgst+sgst===totalGst and taxable+totalGst===totalAmount.
+  const roundedTaxable = round(taxableAmount);
+  const halfGst        = round(totalGst / 2);
+
+  if (isInterstate) {
+    const igst = halfGst * 2; // keep symmetry with intra-state rounding
+    return {
+      taxableAmount: roundedTaxable,
+      cgst:          0,
+      sgst:          0,
+      igst,
+      totalGst:      igst,
+      totalAmount:   roundedTaxable + igst,
+    };
+  }
 
   return {
-    taxableAmount: round(taxableAmount),
-    cgst: round(cgst),
-    sgst: round(sgst),
-    totalGst: round(totalGst),
-    totalAmount: round(amountAfterDiscount),
+    taxableAmount: roundedTaxable,
+    cgst:          halfGst,
+    sgst:          halfGst,
+    igst:          0,
+    totalGst:      halfGst * 2,
+    totalAmount:   roundedTaxable + halfGst * 2,
   };
 }
 
 export function calcInvoiceTotals(
-  items: InvoiceItemInput[]
+  items:          InvoiceItemInput[],
+  isInterstate =  false,
 ): Omit<GstBreakdown, "totalAmount"> & { subtotal: number; totalAmount: number; discountAmount: number } {
-  let subtotal = 0;
+  let subtotal       = 0;
   let discountAmount = 0;
-  let taxableAmount = 0;
-  let cgst = 0;
-  let sgst = 0;
+  let taxableAmount  = 0;
+  let halfGstTotal   = 0;
 
   for (const item of items) {
-    const lineTotal = item.mrp * item.quantity;
+    const lineTotal    = item.mrp * item.quantity;
     const lineDiscount = (lineTotal * item.discount) / 100;
     const afterDiscount = lineTotal - lineDiscount;
-    const taxable = afterDiscount / (1 + item.gstRate / 100);
-    const gst = afterDiscount - taxable;
+    const taxable      = afterDiscount / (1 + item.gstRate / 100);
+    const gst          = afterDiscount - taxable;
 
-    subtotal += lineTotal;
+    subtotal       += lineTotal;
     discountAmount += lineDiscount;
-    taxableAmount += taxable;
-    cgst += gst / 2;
-    sgst += gst / 2;
+    taxableAmount  += taxable;
+    halfGstTotal   += gst / 2;
+  }
+
+  const roundedTaxable = round(taxableAmount);
+  const roundedHalf    = round(halfGstTotal);
+
+  if (isInterstate) {
+    const igst = roundedHalf * 2;
+    return {
+      subtotal:       round(subtotal),
+      discountAmount: round(discountAmount),
+      taxableAmount:  roundedTaxable,
+      cgst:           0,
+      sgst:           0,
+      igst,
+      totalGst:       igst,
+      totalAmount:    roundedTaxable + igst,
+    };
   }
 
   return {
-    subtotal: round(subtotal),
+    subtotal:       round(subtotal),
     discountAmount: round(discountAmount),
-    taxableAmount: round(taxableAmount),
-    cgst: round(cgst),
-    sgst: round(sgst),
-    totalGst: round(cgst + sgst),
-    totalAmount: round(taxableAmount + cgst + sgst),
+    taxableAmount:  roundedTaxable,
+    cgst:           roundedHalf,
+    sgst:           roundedHalf,
+    igst:           0,
+    totalGst:       roundedHalf * 2,
+    totalAmount:    roundedTaxable + roundedHalf * 2,
   };
 }
 

@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": "../../",
     "paths": {
       "@pharmacy/database": ["../../packages/database/src/client.ts"],
       "@pharmacy/types": ["../../packages/types/src/index.ts"],

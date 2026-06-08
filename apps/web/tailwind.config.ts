@@ -3,9 +3,8 @@ import type { Config } from "tailwindcss";
 const config: Config = {
   darkMode: ["class"],
   content: [
-    "./app/**/*.{ts,tsx}",
-    "./components/**/*.{ts,tsx}",
-    "./lib/**/*.{ts,tsx}",
+    "./index.html",
+    "./src/**/*.{ts,tsx}",
   ],
   theme: {
     extend: {
@@ -44,14 +43,11 @@ const config: Config = {
         "card-lg":    "0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.04)",
         "nav":        "0 4px 24px 0 rgb(9 15 51 / 0.25)",
         "inner-sm":   "inset 0 1px 2px 0 rgb(0 0 0 / 0.05)",
-        // Glow effects
         "glow-blue":  "0 0 0 3px rgba(59,130,246,0.18), 0 0 20px 0 rgba(59,130,246,0.09)",
         "glow-blue-md":"0 0 0 4px rgba(59,130,246,0.22), 0 0 32px 0 rgba(59,130,246,0.13)",
         "glow-emerald":"0 0 0 3px rgba(16,185,129,0.18), 0 0 20px 0 rgba(16,185,129,0.09)",
-        // Lift — for hover elevate
         "lift":       "0 4px 14px -3px rgba(0,0,0,0.11), 0 2px 6px -2px rgba(0,0,0,0.05)",
         "lift-md":    "0 8px 22px -4px rgba(0,0,0,0.13), 0 3px 8px -2px rgba(0,0,0,0.06)",
-        // Card hover glow
         "card-glow":  "0 8px 28px -4px rgba(59,130,246,0.14), 0 3px 10px -2px rgba(0,0,0,0.06)",
       },
       borderRadius: {

@@ -11,6 +11,7 @@ export type PrintInvoiceData = {
   doctorName?: string;
   paymentMode: string;
   paymentStatus: string;
+  isInterstate?: boolean;
   items: Array<{
     medicineName: string;
     hsnCode: string | null;
@@ -24,6 +25,7 @@ export type PrintInvoiceData = {
     taxableAmount: number;
     cgst: number;
     sgst: number;
+    igst: number;
     amount: number;
   }>;
   subtotal: number;
@@ -31,6 +33,7 @@ export type PrintInvoiceData = {
   taxableAmount: number;
   cgst: number;
   sgst: number;
+  igst: number;
   totalGst: number;
   totalAmount: number;
 };
@@ -42,14 +45,17 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
     const roundedTotal = Math.round(invoice.totalAmount);
     const roundOff = roundedTotal - invoice.totalAmount;
 
+    const isInterstate = invoice.isInterstate ?? false;
+
     // GST slab summary
     const slabs = invoice.items.reduce<
-      Record<number, { taxable: number; cgst: number; sgst: number }>
+      Record<number, { taxable: number; cgst: number; sgst: number; igst: number }>
     >((acc, item) => {
-      if (!acc[item.gstRate]) acc[item.gstRate] = { taxable: 0, cgst: 0, sgst: 0 };
+      if (!acc[item.gstRate]) acc[item.gstRate] = { taxable: 0, cgst: 0, sgst: 0, igst: 0 };
       acc[item.gstRate]!.taxable += item.taxableAmount;
-      acc[item.gstRate]!.cgst += item.cgst;
-      acc[item.gstRate]!.sgst += item.sgst;
+      acc[item.gstRate]!.cgst   += item.cgst;
+      acc[item.gstRate]!.sgst   += item.sgst;
+      acc[item.gstRate]!.igst   += item.igst;
       return acc;
     }, {});
 
@@ -101,7 +107,9 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
         <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: "14px", fontSize: "9.5px" }}>
           <thead>
             <tr style={{ background: "#1a1a1a", color: "#fff" }}>
-              {["#", "Medicine", "HSN", "Batch", "Exp", "MRP", "Qty", "Disc%", "Taxable", "GST%", "CGST", "SGST", "Amount"].map((h) => (
+              {["#", "Medicine", "HSN", "Batch", "Exp", "MRP", "Qty", "Disc%", "Taxable", "GST%",
+                ...(isInterstate ? ["IGST"] : ["CGST", "SGST"]),
+                "Amount"].map((h) => (
                 <th key={h} style={{ padding: "5px 6px", textAlign: h === "#" || h === "Qty" || h === "GST%" ? "center" : ["Medicine", "HSN", "Batch", "Exp"].includes(h) ? "left" : "right", fontWeight: 600, whiteSpace: "nowrap" }}>
                   {h}
                 </th>
@@ -125,8 +133,13 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
                 </td>
                 <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>₹{item.taxableAmount.toFixed(2)}</td>
                 <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "center" }}>{item.gstRate}%</td>
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>₹{item.cgst.toFixed(2)}</td>
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>₹{item.sgst.toFixed(2)}</td>
+                {isInterstate
+                  ? <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>₹{item.igst.toFixed(2)}</td>
+                  : <>
+                      <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>₹{item.cgst.toFixed(2)}</td>
+                      <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>₹{item.sgst.toFixed(2)}</td>
+                    </>
+                }
                 <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right", fontWeight: 600 }}>₹{item.amount.toFixed(2)}</td>
               </tr>
             ))}
@@ -143,8 +156,13 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
                 <tr style={{ background: "#f0f0f0" }}>
                   <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "left" }}>Rate</th>
                   <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>Taxable</th>
-                  <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>CGST</th>
-                  <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>SGST</th>
+                  {isInterstate
+                    ? <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>IGST</th>
+                    : <>
+                        <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>CGST</th>
+                        <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>SGST</th>
+                      </>
+                  }
                 </tr>
               </thead>
               <tbody>
@@ -154,8 +172,13 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
                     <tr key={rate}>
                       <td style={{ border: "1px solid #ccc", padding: "4px 6px" }}>{rate}%</td>
                       <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.taxable.toFixed(2)}</td>
-                      <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.cgst.toFixed(2)}</td>
-                      <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.sgst.toFixed(2)}</td>
+                      {isInterstate
+                        ? <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.igst.toFixed(2)}</td>
+                        : <>
+                            <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.cgst.toFixed(2)}</td>
+                            <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.sgst.toFixed(2)}</td>
+                          </>
+                      }
                     </tr>
                   ))}
               </tbody>
@@ -170,8 +193,12 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
                 ? [{ label: "Discount", value: `− ${formatCurrency(invoice.discountAmount)}`, color: "#16a34a" }]
                 : []),
               { label: "Taxable Amount", value: formatCurrency(invoice.taxableAmount) },
-              { label: "CGST", value: formatCurrency(invoice.cgst) },
-              { label: "SGST", value: formatCurrency(invoice.sgst) },
+              ...(isInterstate
+                ? [{ label: "IGST", value: formatCurrency(invoice.igst) }]
+                : [
+                    { label: "CGST", value: formatCurrency(invoice.cgst) },
+                    { label: "SGST", value: formatCurrency(invoice.sgst) },
+                  ]),
               ...(Math.abs(roundOff) >= 0.01
                 ? [{ label: "Round Off", value: `${roundOff > 0 ? "+" : ""}${roundOff.toFixed(2)}`, color: "#999" }]
                 : []),

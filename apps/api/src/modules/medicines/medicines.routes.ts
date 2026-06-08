@@ -16,6 +16,9 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
   app.get("/search", { preHandler: auth }, async (req, reply) => {
     const { q = "", limit = "10" } = req.query as Record<string, string>;
     const hits = await service.search(q, Math.min(50, Number(limit)));
+    // Medicine catalog is global — same for every user. Short public cache lets
+    // CDN/reverse-proxy deduplicate identical search queries from multiple tabs.
+    reply.header("Cache-Control", "public, max-age=120, stale-while-revalidate=60");
     return reply.send({ success: true, data: hits });
   });
 
@@ -24,6 +27,8 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
     const { code } = req.params as { code: string };
     const medicine = await service.findByBarcode(code);
     if (!medicine) return reply.status(404).send({ success: false, error: "No medicine found for this barcode" });
+    // Barcode→medicine mapping is immutable once a product is registered.
+    reply.header("Cache-Control", "public, max-age=3600");
     return reply.send({ success: true, data: medicine });
   });
 
@@ -67,6 +72,7 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", { preHandler: auth }, async (req, reply) => {
     const query  = listMedicinesQuerySchema.parse(req.query);
     const result = await service.list(query);
+    reply.header("Cache-Control", "public, max-age=120, stale-while-revalidate=60");
     return reply.send({ success: true, data: result });
   });
 

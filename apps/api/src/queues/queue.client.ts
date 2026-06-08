@@ -8,6 +8,10 @@ export const notificationQueue = new Queue("notifications",   { connection });
 export const reportQueue        = new Queue("reports",         { connection });
 export const expiryAlertQueue   = new Queue("expiry-alerts",   { connection });
 
+// Post-invoice: customer receipt email + credit-limit warnings.
+// Runs asynchronously so the billing endpoint isn't blocked by SMTP latency.
+export const postInvoiceQueue = new Queue("post-invoice", { connection });
+
 // ─── Scheduled notification queues ───────────────────────────────────────────
 export const lowStockAlertQueue    = new Queue("low-stock-alerts",    { connection });
 export const grnOverdueQueue       = new Queue("grn-overdue",          { connection });
