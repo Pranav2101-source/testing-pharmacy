@@ -3,7 +3,7 @@
 import { useCallback, memo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
-import { X, Info, Pencil, AlertTriangle } from "lucide-react";
+import { X, AlertTriangle } from "lucide-react";
 import { useBillingStore, type CartItem } from "./useBillingStore";
 import { EmptyBillState } from "./EmptyBillState";
 import { cn } from "@/lib/utils";
@@ -14,48 +14,19 @@ const COL = "grid-cols-[minmax(200px,1fr)_80px_58px_104px_72px_80px_72px_64px_90
 const TH = "text-[11px] font-bold text-slate-500 uppercase tracking-wider text-right px-2.5 select-none whitespace-nowrap";
 
 // ─── Table header ─────────────────────────────────────────────────
-export function CartTableHeader({ lifa, onLifaToggle }: { lifa: boolean; onLifaToggle: () => void }) {
+export function CartTableHeader() {
   return (
     <div className={cn("grid items-center bg-slate-50 border-b border-slate-200", COL)}>
-      {/* Item Name col */}
-      <div className="flex items-center justify-between px-3 py-2.5">
-        <span className="flex items-center gap-1 text-[11px] font-bold text-slate-500 uppercase tracking-wider whitespace-nowrap">
-          Item Name
-          <Info className="w-3 h-3 text-slate-400" />
-        </span>
-        {/* LIFA / LILA toggle */}
-        <button
-          onClick={onLifaToggle}
-          title={lifa ? "Switch to LILA" : "Switch to LIFA"}
-          className="flex items-center gap-1 ml-2"
-        >
-          <span className={cn("text-[11px] font-bold uppercase tracking-widest transition-colors", lifa ? "text-blue-600" : "text-slate-400")}>LIFA</span>
-          <div className={cn("w-8 h-4 rounded-full relative transition-colors duration-200", lifa ? "bg-blue-500" : "bg-slate-300")}>
-            <motion.span
-              layout
-              transition={{ type: "spring", stiffness: 600, damping: 35 }}
-              className={cn("absolute top-[3px] w-2.5 h-2.5 rounded-full bg-white shadow-sm", lifa ? "left-[18px]" : "left-[3px]")}
-            />
-          </div>
-          <span className={cn("text-[11px] font-bold uppercase tracking-widest transition-colors", !lifa ? "text-blue-600" : "text-slate-400")}>LILA</span>
-        </button>
-      </div>
-
-      <span className={cn(TH, "text-left px-2.5 py-2.5")}>Unit/Pack</span>
-      <span className={cn(TH, "text-left px-2.5 py-2.5")}>Loc.</span>
+      <span className={cn(TH, "text-left px-3 py-2.5")}>Item</span>
+      <span className={cn(TH, "text-left px-2.5 py-2.5")}>Pack</span>
+      <span className={cn(TH, "text-left px-2.5 py-2.5")}>Loc</span>
       <span className={cn(TH, "py-2.5")}>Batch</span>
       <span className={cn(TH, "py-2.5")}>Expiry</span>
       <span className={cn(TH, "py-2.5")}>MRP</span>
-      <span className={cn(TH, "py-2.5 flex items-center justify-end gap-0.5")}>
-        Qty.<Info className="w-2.5 h-2.5 text-slate-400" />
-      </span>
-      <span className={cn(TH, "py-2.5 flex items-center justify-end gap-0.5")}>
-        <Pencil className="w-2.5 h-2.5 text-slate-400" />D%<Info className="w-2.5 h-2.5 text-slate-400" />
-      </span>
-      <span className={cn(TH, "py-2.5")}>D.Price</span>
-      <span className={cn(TH, "py-2.5 flex items-center justify-end gap-0.5")}>
-        GST%<Info className="w-2.5 h-2.5 text-slate-400" />
-      </span>
+      <span className={cn(TH, "py-2.5")}>Qty</span>
+      <span className={cn(TH, "py-2.5")}>Disc %</span>
+      <span className={cn(TH, "py-2.5")}>Rate</span>
+      <span className={cn(TH, "py-2.5")}>GST</span>
       <span className={cn(TH, "py-2.5")}>Amount</span>
       <span className={cn(TH, "py-2.5")} />
     </div>

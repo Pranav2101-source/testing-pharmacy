@@ -5,20 +5,25 @@ import { useAnimationControls } from "framer-motion";
 import { Link, useSearchParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  ChevronRight, Lightbulb, ChevronDown, ChevronUp,
-  Bell, Truck, Settings, Calculator, Loader2,
-  UserCircle2, XCircle, BookmarkCheck, RotateCcw, X, MonitorSmartphone,
+  ChevronRight, ChevronDown, ChevronUp,
+  Settings, Calculator, Loader2,
+  XCircle, BookmarkCheck, RotateCcw, X, MonitorSmartphone,
   Banknote, Smartphone, CreditCard as CreditCardIcon, Clock3,
+  MoreHorizontal, Pin,
 } from "lucide-react";
+import { useBillingPreferences, ACTION_DEF_MAP } from "@/lib/billingPreferences";
+import type { ActionId } from "@/lib/billingPreferences";
 import { BillHeader } from "@/components/billing/BillHeader";
 import { CartTableHeader, CartTableRows } from "@/components/billing/CartTable";
 import { MedicineSearchCombobox } from "@/components/billing/MedicineSearchCombobox";
 import { useBillingStore } from "@/components/billing/useBillingStore";
+import { InvoiceBreakdownModal } from "@/components/billing/InvoiceBreakdownModal";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { saveDraft, getDraft, deleteDraft } from "@/lib/draftStorage";
 import { saveSession, loadSession, clearSession, type AutoSaveSession } from "@/lib/autoSave";
 import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
+import { useInvoicePrintConfig } from "@/lib/useInvoicePrintConfig";
 
 const InvoicePrintView = lazy(() =>
   import("@/components/billing/InvoicePrintView").then((m) => ({ default: m.InvoicePrintView }))
@@ -69,11 +74,11 @@ const AnimatedCount = memo(function AnimatedCount({
   className,
   children,
 }: {
-  value: number | string;
+  value:     number | string;
   className?: string;
   children?: React.ReactNode;
 }) {
-  const controls  = useAnimationControls();
+  const controls    = useAnimationControls();
   const firstRender = useRef(true);
 
   useEffect(() => {
@@ -88,56 +93,288 @@ const AnimatedCount = memo(function AnimatedCount({
   );
 });
 
+// ─── Save dropdown ────────────────────────────────────────────────────────────
+
+function SaveDropdown({
+  onAction,
+  submitting,
+  hasItems,
+}: {
+  onAction: (id: ActionId) => void;
+  submitting: boolean;
+  hasItems: boolean;
+}) {
+  const { pinnedActions, moreActions } = useBillingPreferences();
+  const [showDrop, setShowDrop] = useState(false);
+  const [showMore, setShowMore] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Close everything when focus leaves the whole widget
+  const handleBlur = useCallback((e: React.FocusEvent) => {
+    if (!wrapRef.current?.contains(e.relatedTarget as Node)) {
+      setShowDrop(false);
+      setShowMore(false);
+    }
+  }, []);
+
+  const handleAction = useCallback((id: ActionId) => {
+    setShowDrop(false);
+    setShowMore(false);
+    onAction(id);
+  }, [onAction]);
+
+  // Primary button invokes the first pinned action (save_print by default)
+  const primaryId: ActionId = pinnedActions[0]?.id ?? "save_print";
+  const primaryDef = ACTION_DEF_MAP[primaryId];
+
+  return (
+    <div
+      ref={wrapRef}
+      className="relative flex items-stretch"
+      onBlur={handleBlur}
+    >
+      {/* Primary save button */}
+      <button
+        onClick={() => hasItems && onAction(primaryId)}
+        disabled={submitting || !hasItems}
+        title={`${primaryDef.label}${primaryDef.shortcut ? ` (${primaryDef.shortcut})` : ""}`}
+        className={cn(
+          "flex items-center gap-1.5 text-[13px] font-bold px-4 py-1.5 rounded-l-lg transition-colors active:scale-[0.98]",
+          hasItems
+            ? "bg-blue-600 hover:bg-blue-700 text-white"
+            : "bg-blue-300 text-white cursor-not-allowed"
+        )}
+      >
+        {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+        Save
+        {primaryDef.shortcut && (
+          <kbd className={cn(
+            "text-[9px] rounded px-1 py-0.5 font-mono leading-none ml-0.5",
+            hasItems ? "bg-white/20 text-white/70" : "bg-white/10 text-white/40"
+          )}>
+            {primaryDef.shortcut}
+          </kbd>
+        )}
+      </button>
+
+      {/* Dropdown chevron */}
+      <button
+        onClick={() => { if (!hasItems) return; setShowMore(false); setShowDrop(v => !v); }}
+        aria-haspopup="menu"
+        aria-expanded={showDrop}
+        className={cn(
+          "flex items-center justify-center px-1.5 rounded-r-lg border-l transition-colors",
+          hasItems
+            ? "bg-blue-600 hover:bg-blue-700 text-white border-blue-500"
+            : "bg-blue-300 text-white border-blue-200 cursor-not-allowed"
+        )}
+      >
+        <ChevronDown className={cn("w-3.5 h-3.5 transition-transform duration-150", showDrop && "rotate-180")} />
+      </button>
+
+      {/* Main dropdown */}
+      <AnimatePresence>
+        {showDrop && (
+          <motion.div
+            role="menu"
+            initial={{ opacity: 0, y: -6, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0,  scale: 1    }}
+            exit={{   opacity: 0, y: -4, scale: 0.97 }}
+            transition={{ duration: 0.13, ease: "easeOut" }}
+            className="absolute top-full right-0 mt-1.5 bg-white border border-slate-200 rounded-2xl shadow-2xl z-40 overflow-hidden"
+            style={{
+              minWidth: "220px",
+              boxShadow: "0 20px 48px -8px rgba(0,0,0,0.20), 0 4px 16px -4px rgba(0,0,0,0.10)",
+            }}
+          >
+            {/* Pinned actions */}
+            {pinnedActions.length > 0 && (
+              <div className="p-1.5 space-y-0.5">
+                {pinnedActions.map((pref) => {
+                  const def = ACTION_DEF_MAP[pref.id];
+                  const Icon = def.icon;
+                  return (
+                    <button
+                      key={pref.id}
+                      role="menuitem"
+                      onClick={() => handleAction(pref.id)}
+                      className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-[12px] text-slate-700 hover:bg-slate-50 transition-colors group"
+                    >
+                      <span className={cn("w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0", def.iconBg)}>
+                        <Icon className={cn("w-3.5 h-3.5", def.iconColor)} strokeWidth={2} />
+                      </span>
+                      <span className="font-semibold flex-1 text-left">{def.label}</span>
+                      {def.shortcut && (
+                        <kbd className="text-[9px] bg-slate-100 text-slate-400 rounded px-1.5 py-0.5 font-mono leading-none flex-shrink-0">
+                          {def.shortcut}
+                        </kbd>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* More Actions row */}
+            {moreActions.length > 0 && (
+              <>
+                {pinnedActions.length > 0 && (
+                  <div className="mx-3 border-t border-slate-100" />
+                )}
+                <div className="p-1.5">
+                  <button
+                    role="menuitem"
+                    onMouseEnter={() => setShowMore(true)}
+                    onClick={() => setShowMore(v => !v)}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-3 py-2 rounded-xl text-[12px] transition-colors",
+                      showMore ? "bg-slate-100 text-slate-800" : "text-slate-500 hover:bg-slate-50 hover:text-slate-700"
+                    )}
+                  >
+                    <span className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
+                      <MoreHorizontal className="w-3.5 h-3.5 text-slate-500" strokeWidth={2} />
+                    </span>
+                    <span className="font-semibold flex-1 text-left">More Actions</span>
+                    <ChevronRight className="w-3 h-3 text-slate-400 flex-shrink-0" />
+                  </button>
+                </div>
+              </>
+            )}
+
+            {/* Preferences link */}
+            <div className="mx-3 mb-2 border-t border-slate-100 pt-1.5">
+              <Link
+                to="/dashboard/settings/billing"
+                onClick={() => { setShowDrop(false); setShowMore(false); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-colors"
+              >
+                <Settings className="w-3 h-3" strokeWidth={1.8} />
+                Billing Preferences
+              </Link>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* More Actions flyout (to the left) */}
+      <AnimatePresence>
+        {showDrop && showMore && moreActions.length > 0 && (
+          <motion.div
+            role="menu"
+            initial={{ opacity: 0, x: 8, scale: 0.97 }}
+            animate={{ opacity: 1, x: 0, scale: 1    }}
+            exit={{   opacity: 0, x: 4, scale: 0.97 }}
+            transition={{ duration: 0.13, ease: "easeOut" }}
+            onMouseLeave={() => setShowMore(false)}
+            className="absolute top-full z-50 bg-white border border-slate-200 rounded-2xl overflow-hidden"
+            style={{
+              right: "234px",   // clears the 220px main dropdown + 14px gap
+              marginTop: "6px",
+              minWidth: "210px",
+              boxShadow: "0 20px 48px -8px rgba(0,0,0,0.20), 0 4px 16px -4px rgba(0,0,0,0.10)",
+            }}
+          >
+            {/* Header */}
+            <div className="px-4 py-2.5 border-b border-slate-100">
+              <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">More Actions</p>
+            </div>
+
+            <div className="p-1.5 space-y-0.5">
+              {moreActions.map((pref) => {
+                const def = ACTION_DEF_MAP[pref.id];
+                const Icon = def.icon;
+                return (
+                  <button
+                    key={pref.id}
+                    role="menuitem"
+                    onClick={() => handleAction(pref.id)}
+                    className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-[12px] text-slate-700 hover:bg-slate-50 transition-colors group"
+                  >
+                    <span className={cn("w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0", def.iconBg)}>
+                      <Icon className={cn("w-3.5 h-3.5", def.iconColor)} strokeWidth={2} />
+                    </span>
+                    <span className="font-semibold flex-1 text-left">{def.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Manage link */}
+            <div className="mx-3 mb-2 border-t border-slate-100 pt-1.5">
+              <Link
+                to="/dashboard/settings/billing"
+                onClick={() => { setShowDrop(false); setShowMore(false); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-[11px] text-slate-400 hover:text-slate-600 hover:bg-slate-50 transition-colors"
+              >
+                <Pin className="w-3 h-3" strokeWidth={1.8} />
+                Pin / manage actions
+              </Link>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ─── Sub-navigation bar ───────────────────────────────────────────────────────
 
 function BillingSubNav({
-  onSave,
-  onSaveDraft,
+  onAction,
   submitting,
   hasItems,
   paymentMode,
   onPaymentMode,
   isInterstate,
   onInterstate,
+  lifa,
+  onLifaToggle,
 }: {
-  onSave: () => void;
-  onSaveDraft: () => void;
+  onAction: (id: ActionId) => void;
   submitting: boolean;
   hasItems: boolean;
   paymentMode: "CASH" | "UPI" | "CARD" | "CREDIT";
   onPaymentMode: (m: "CASH" | "UPI" | "CARD" | "CREDIT") => void;
   isInterstate: boolean;
   onInterstate: (v: boolean) => void;
+  lifa: boolean;
+  onLifaToggle: () => void;
 }) {
-  const [showSaveDrop, setShowSaveDrop] = useState(false);
-
   return (
     <div
       className="flex items-center justify-between px-4 flex-shrink-0 border-b border-slate-200 bg-white"
-      style={{ height: "var(--subnav-height, 46px)" }}
+      style={{ height: "var(--subnav-height, 44px)" }}
     >
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5">
-        <Link to="/dashboard/billing" className="text-[13px] text-blue-600 font-medium hover:underline">
+        <Link to="/dashboard/billing" className="text-[12px] text-slate-400 font-medium hover:text-blue-600 transition-colors">
           Sales
         </Link>
-        <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
-        <span className="text-[13px] text-slate-800 font-bold">New Bill</span>
-        <div className="w-5 h-5 rounded-full bg-amber-400 flex items-center justify-center ml-1 shadow-sm" title="Tips">
-          <Lightbulb className="w-2.5 h-2.5 text-white" strokeWidth={2.5} />
-        </div>
+        <ChevronRight className="w-3 h-3 text-slate-300" />
+        <span className="text-[13px] text-slate-800 font-semibold">New Bill</span>
       </div>
 
-      {/* Controls */}
-      <div className="flex items-center gap-2">
-        {/* Owner — staff selector, pending implementation */}
-        <button disabled title="Staff selector — coming soon" className="flex items-center gap-1 text-[12px] text-slate-400 font-medium border border-slate-200 rounded-lg px-2.5 py-1.5 opacity-50 cursor-not-allowed">
-          <UserCircle2 className="w-3.5 h-3.5 text-slate-400" />
-          Owner
-          <ChevronDown className="w-2.5 h-2.5 text-slate-400" />
+      {/* Controls — only live, purposeful controls */}
+      <div className="flex items-center gap-1.5">
+        {/* LIFA / LILA — batch selection strategy, moved here from the column header */}
+        <button
+          onClick={onLifaToggle}
+          title={lifa
+            ? "LIFA — Last In, First Available. Click to switch to LILA"
+            : "LILA — Last In, Last Available. Click to switch to LIFA"}
+          className={cn(
+            "text-[11px] font-bold px-2 py-1 rounded-md border transition-colors",
+            lifa
+              ? "border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100"
+              : "border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100"
+          )}
+        >
+          {lifa ? "LIFA" : "LILA"}
         </button>
 
-        {/* Payment mode — inline segmented buttons (one click instead of two) */}
+        <div className="h-4 w-px bg-slate-200 mx-0.5" />
+
+        {/* Payment mode — segmented control */}
         <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5">
           {(["CASH", "UPI", "CARD", "CREDIT"] as const).map((m) => {
             const Icon = PAY_ICONS[m];
@@ -150,95 +387,41 @@ function BillingSubNav({
                 className={cn(
                   "flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all duration-100",
                   active
-                    ? "bg-blue-600 text-white shadow-sm"
-                    : "text-slate-500 hover:text-slate-700 hover:bg-white"
+                    ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80"
+                    : "text-slate-500 hover:text-slate-700 hover:bg-white/60"
                 )}
               >
                 <Icon className="w-3 h-3" strokeWidth={active ? 2.3 : 1.8} />
                 {PAY_LABELS[m]}
-                {active && <kbd className="ml-0.5 text-[8px] bg-white/20 text-white/70 rounded px-0.5 leading-none font-mono">Alt+{PAY_SHORTCUTS[m]}</kbd>}
               </button>
             );
           })}
         </div>
 
-        {/* Interstate (IGST) toggle */}
+        {/* Tax regime toggle */}
         <button
           onClick={() => onInterstate(!isInterstate)}
-          title={isInterstate ? "Interstate sale — IGST applies. Click to switch to intra-state (CGST+SGST)" : "Intra-state sale — CGST+SGST. Click to switch to interstate (IGST)"}
+          title={isInterstate
+            ? "Interstate — IGST applies. Click to switch to intra-state (CGST+SGST)"
+            : "Intra-state — CGST+SGST. Click to switch to interstate (IGST)"}
           className={cn(
-            "flex items-center gap-1 text-[12px] font-semibold border rounded-lg px-2.5 py-1.5 transition-colors",
+            "text-[11px] font-bold border rounded-md px-2.5 py-1 transition-colors",
             isInterstate
               ? "bg-violet-600 text-white border-violet-600 hover:bg-violet-700"
-              : "text-slate-600 border-slate-200 hover:bg-slate-50",
+              : "text-slate-600 border-slate-200 bg-slate-100 hover:bg-slate-200",
           )}
         >
           {isInterstate ? "IGST" : "CGST+SGST"}
         </button>
 
-        {/* Reminder — pending implementation */}
-        <button disabled title="Medicine reminder — coming soon" className="flex items-center gap-1 text-[12px] text-slate-400 font-medium border border-slate-200 rounded-lg px-2.5 py-1.5 opacity-50 cursor-not-allowed">
-          <Bell className="w-3.5 h-3.5 text-slate-400" />
-          Reminder
-        </button>
+        <div className="h-4 w-px bg-slate-200 mx-0.5" />
 
-        {/* Pickup — pending implementation */}
-        <button disabled title="Pickup scheduling — coming soon" className="flex items-center gap-1 text-[12px] text-slate-400 font-medium border border-slate-200 rounded-lg px-2.5 py-1.5 opacity-50 cursor-not-allowed">
-          <Truck className="w-3.5 h-3.5 text-slate-400" />
-          Pickup
-          <ChevronDown className="w-2.5 h-2.5 text-slate-400" />
-        </button>
-
-        <div className="h-4 w-px bg-slate-200" />
-
-        {/* Save / Draft split button */}
-        <div
-          className="relative flex items-stretch"
-          onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setShowSaveDrop(false); }}
-        >
-          <button
-            onClick={onSave}
-            disabled={submitting || !hasItems}
-            title="Save Bill (F9)"
-            className={cn(
-              "flex items-center gap-1.5 text-[13px] font-bold px-4 py-1.5 rounded-l-lg transition-colors active:scale-[0.98]",
-              hasItems
-                ? "bg-blue-600 hover:bg-blue-700 text-white"
-                : "bg-blue-300 text-white cursor-not-allowed"
-            )}
-          >
-            {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-            Save
-            <kbd className={cn("text-[9px] rounded px-1 py-0.5 font-mono leading-none ml-0.5",
-              hasItems ? "bg-white/20 text-white/70" : "bg-white/10 text-white/40"
-            )}>F9</kbd>
-          </button>
-          <button
-            onClick={() => hasItems && setShowSaveDrop(v => !v)}
-            className={cn(
-              "flex items-center justify-center px-1.5 rounded-r-lg border-l transition-colors",
-              hasItems ? "bg-blue-600 hover:bg-blue-700 text-white border-blue-500" : "bg-blue-300 text-white border-blue-200 cursor-not-allowed"
-            )}
-          >
-            <ChevronDown className="w-3.5 h-3.5" />
-          </button>
-          {showSaveDrop && (
-            <div className="absolute top-full right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl z-30 py-1 min-w-[160px]">
-              <button
-                onClick={() => { onSaveDraft(); setShowSaveDrop(false); }}
-                className="w-full flex items-center gap-2.5 px-4 py-2.5 text-[12px] text-slate-700 hover:bg-amber-50 transition-colors"
-              >
-                <BookmarkCheck className="w-3.5 h-3.5 text-amber-500" />
-                Save as Draft
-              </button>
-            </div>
-          )}
-        </div>
-
-        {/* Settings — pending implementation */}
-        <button disabled title="Billing settings — coming soon" className="w-8 h-8 rounded-lg border border-slate-200 flex items-center justify-center opacity-50 cursor-not-allowed">
-          <Settings className="w-4 h-4 text-slate-400" />
-        </button>
+        {/* Save */}
+        <SaveDropdown
+          onAction={onAction}
+          submitting={submitting}
+          hasItems={hasItems}
+        />
       </div>
     </div>
   );
@@ -248,20 +431,23 @@ function BillingSubNav({
 
 function NewBillInner() {
   const { items, meta, clear, getTotals, setMeta, loadDraft } = useBillingStore();
+  const { config: printConfig, pharmacy: printPharmacy } = useInvoicePrintConfig();
   const [searchParams] = useSearchParams();
   const navigate     = useNavigate();
   const [submitting,           setSubmitting]           = useState(false);
   const [error,                setError]                = useState<string | null>(null);
   const [conflictInventoryIds, setConflictInventoryIds] = useState<Set<string>>(new Set());
-  const [invoice, setInvoice] = useState<PrintInvoiceData | null>(null);
-  const [showPrint, setShowPrint] = useState(false);
-  const [lifa, setLifa] = useState(true);
-  const [savedInvoiceId, setSavedInvoiceId] = useState<string | null>(null);
-  const [cancelConfirm, setCancelConfirm] = useState(false);
-  const [cancelReason, setCancelReason] = useState("");
-  const [cancelling, setCancelling] = useState(false);
-  const [draftToast, setDraftToast] = useState<string | null>(null);
-  const [loadedDraftId, setLoadedDraftId] = useState<string | null>(null);
+  const [invoice,              setInvoice]              = useState<PrintInvoiceData | null>(null);
+  const [showPrint,            setShowPrint]            = useState(false);
+  const [showBreakdown,        setShowBreakdown]        = useState(false);
+  const [lifa,                 setLifa]                 = useState(true);
+  const [savedInvoiceId,       setSavedInvoiceId]       = useState<string | null>(null);
+  const [cancelConfirm,        setCancelConfirm]        = useState(false);
+  const [cancelReason,         setCancelReason]         = useState("");
+  const [cancelling,           setCancelling]           = useState(false);
+  const [draftToast,           setDraftToast]           = useState<string | null>(null);
+  const [loadedDraftId,        setLoadedDraftId]        = useState<string | null>(null);
+  const [actionToast,          setActionToast]          = useState<{ msg: string; type: "info" | "warn" } | null>(null);
 
   // Crash / refresh recovery
   const [sessionRecovery, setSessionRecovery] = useState<AutoSaveSession | null>(null);
@@ -270,13 +456,21 @@ function NewBillInner() {
 
   // Always-current ref so the keydown handler never closes over a stale handleSave.
   // Initialized with a no-op; synced to the real callback after handleSave is declared below.
-  const handleSaveRef = useRef<() => Promise<void>>(async () => {});
+  const handleSaveRef = useRef<(action?: ActionId) => Promise<void>>(async () => {});
 
-  // F9 = Save, Alt+1..4 = payment mode
-  // Empty deps: registers once at mount, reads the latest callback via ref on each keystroke.
+  // F9 = Save & Print, F8 = Save & New, Ctrl+S = Draft, Alt+1..4 = payment mode
+  // Empty deps: registered once at mount; latest callbacks accessed via refs.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "F9") { e.preventDefault(); void handleSaveRef.current(); }
+      if (e.key === "F9") { e.preventDefault(); void handleSaveRef.current("save_print"); }
+      if (e.key === "F8") { e.preventDefault(); void handleSaveRef.current("save_new"); }
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        const tag = (e.target as HTMLElement).tagName;
+        if (tag !== "INPUT" && tag !== "TEXTAREA") {
+          e.preventDefault();
+          void handleSaveRef.current("save_draft");
+        }
+      }
       if (e.altKey) {
         const map: Record<string, "CASH"|"UPI"|"CARD"|"CREDIT"> = { "1": "CASH", "2": "UPI", "3": "CARD", "4": "CREDIT" };
         if (map[e.key]) { e.preventDefault(); setMeta({ paymentMode: map[e.key] }); }
@@ -364,23 +558,49 @@ function NewBillInner() {
     setTimeout(() => setDraftToast(null), 3000);
   }, [items, meta, loadedDraftId, clear]);
 
-  const totals       = useMemo(() => getTotals(), [getTotals, items]);
-  const totalQty     = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
-  const roundedTotal = Math.round(totals.totalAmount);
+  const totals   = useMemo(() => getTotals(), [getTotals, items]);
+  const totalQty = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
 
-  const handleSave = useCallback(async () => {
+  // Net payable includes bill-level adjustments — kept consistent with InvoiceBreakdownModal
+  const netPayable = useMemo(() => {
+    const billDiscAmt = (meta.billDiscountPct / 100) * totals.totalAmount;
+    const preRound    = Math.max(0, totals.totalAmount - billDiscAmt + meta.extraCharges + meta.adjustmentAmount);
+    return preRound + (Math.round(preRound) - preRound);
+  }, [totals.totalAmount, meta.billDiscountPct, meta.extraCharges, meta.adjustmentAmount]);
+
+  const roundedTotal = Math.round(netPayable);
+
+  const handleSave = useCallback(async (action: ActionId = "save_print") => {
     if (items.length === 0) return;
+    if (submitting) return;          // guard: F9 + modal Submit race
+
+    // Draft action is handled separately
+    if (action === "save_draft") { handleSaveDraft(); return; }
+
+    // Extended actions that are not yet implemented
+    const comingSoon: ActionId[] = ["whatsapp", "email", "credit_sale", "delivery", "pickup", "duplicate_print", "return"];
+    if (comingSoon.includes(action)) {
+      setActionToast({ msg: `${ACTION_DEF_MAP[action].label} — coming soon`, type: "info" });
+      setTimeout(() => setActionToast(null), 3000);
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
     setConflictInventoryIds(new Set());
     try {
       const { data } = await api.post<{ data: { id: string; invoiceNumber: string; createdAt: string } }>("/billing", {
-        idempotencyKey: idempotencyKeyRef.current,
-        doctorName:    meta.doctorName    || undefined,
-        paymentMode:   meta.paymentMode,
-        paymentStatus: meta.paymentStatus,
-        isInterstate:  meta.isInterstate,
-        notes:         meta.notes         || undefined,
+        idempotencyKey:   idempotencyKeyRef.current,
+        customerId:       (meta.customerId && meta.customerId !== "COUNTER") ? meta.customerId : undefined,
+        doctorName:       meta.doctorName       || undefined,
+        paymentMode:      meta.paymentMode,
+        paymentStatus:    meta.paymentStatus,
+        isInterstate:     meta.isInterstate,
+        notes:            meta.notes            || undefined,
+        deliveryNotes:    meta.deliveryNotes    || undefined,
+        billDiscountPct:  meta.billDiscountPct,
+        extraCharges:     meta.extraCharges,
+        adjustmentAmount: meta.adjustmentAmount,
         items: items.map((i) => ({
           inventoryId: i.inventoryId,
           quantity:    i.quantity,
@@ -390,21 +610,23 @@ function NewBillInner() {
       const printData: PrintInvoiceData = {
         invoiceNumber:  data.data.invoiceNumber,
         createdAt:      data.data.createdAt,
-        customerName:   meta.customerName  || undefined,
+        // Exclude the "COUNTER" sentinel — counter bills have no named patient on the invoice
+        customerName:   (meta.customerName && meta.customerId !== "COUNTER") ? meta.customerName : undefined,
         customerPhone:  meta.customerPhone || undefined,
         doctorName:     meta.doctorName    || undefined,
         paymentMode:    meta.paymentMode,
         paymentStatus:  meta.paymentStatus,
         isInterstate:   meta.isInterstate,
-        items:          items.map((i) => ({ ...i, igst: i.igst ?? 0 })),
+        items:          items,
         subtotal:       totals.subtotal,
-        discountAmount: totals.discountAmount,
+        // Include bill-level discount so the print receipt shows the true total savings
+        discountAmount: totals.discountAmount + (meta.billDiscountPct / 100) * totals.totalAmount,
         taxableAmount:  totals.taxableAmount,
         cgst:           totals.cgst,
         sgst:           totals.sgst,
         igst:           totals.igst,
         totalGst:       totals.totalGst,
-        totalAmount:    roundedTotal,
+        totalAmount:    roundedTotal,  // net payable after all adjustments
       };
       // Cleanup draft + session + regenerate idempotency key for next bill
       if (loadedDraftId) { deleteDraft(loadedDraftId); setLoadedDraftId(null); }
@@ -418,10 +640,18 @@ function NewBillInner() {
         bc.close();
       }
 
-      setSavedInvoiceId(data.data.id);
-      setInvoice(printData);
-      setShowPrint(true);
       clear();
+
+      if (action === "save_new") {
+        // Skip print overlay — just confirm and stay on the new-bill page
+        setActionToast({ msg: `Invoice #${data.data.invoiceNumber} saved — ready for next bill`, type: "info" });
+        setTimeout(() => setActionToast(null), 3500);
+      } else {
+        // save_print (default): show print overlay
+        setSavedInvoiceId(data.data.id);
+        setInvoice(printData);
+        setShowPrint(true);
+      }
     } catch (err) {
       const msg = (err as { response?: { data?: { message?: string; error?: string } } })
         ?.response?.data?.message
@@ -434,7 +664,7 @@ function NewBillInner() {
     } finally {
       setSubmitting(false);
     }
-  }, [items, meta, totals, roundedTotal, loadedDraftId, clear]);
+  }, [items, meta, totals, roundedTotal, loadedDraftId, clear, submitting]); // eslint-disable-line react-hooks/exhaustive-deps
   // Keep the ref current after every render so the keydown handler always dispatches
   // to the latest handleSave (which closes over the correct loadedDraftId et al.).
   useEffect(() => { handleSaveRef.current = handleSave; });
@@ -469,10 +699,10 @@ function NewBillInner() {
 
   return (
     <>
-      {/* Print-only layer */}
+      {/* Print-only layer — uses saved pharmacy settings so the actual print matches the template */}
       {invoice && (
         <div className="hidden print:block">
-          <InvoicePrintView invoice={invoice} />
+          <InvoicePrintView invoice={invoice} config={printConfig} pharmacy={printPharmacy} />
         </div>
       )}
 
@@ -484,15 +714,31 @@ function NewBillInner() {
       >
         {/* Zone 1: Sub-nav */}
         <BillingSubNav
-          onSave={handleSave}
-          onSaveDraft={handleSaveDraft}
+          onAction={handleSave}
           submitting={submitting}
           hasItems={items.length > 0}
           paymentMode={meta.paymentMode}
           onPaymentMode={(m) => setMeta({ paymentMode: m })}
           isInterstate={meta.isInterstate}
           onInterstate={(v) => setMeta({ isInterstate: v })}
+          lifa={lifa}
+          onLifaToggle={() => setLifa((v) => !v)}
         />
+
+        {/* Action feedback toast (Save & New, coming-soon stubs) */}
+        <AnimatePresence>
+          {actionToast && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
+              className={cn(
+                "absolute top-16 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 text-white text-[13px] font-semibold px-4 py-2.5 rounded-xl shadow-lg",
+                actionToast.type === "info" ? "bg-blue-600" : "bg-amber-500"
+              )}
+            >
+              {actionToast.msg}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Draft saved toast */}
         <AnimatePresence>
@@ -591,9 +837,9 @@ function NewBillInner() {
         {/* Zone 3: Cart table */}
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <div className="flex-shrink-0 border-b border-slate-200 bg-slate-50">
-            <CartTableHeader lifa={lifa} onLifaToggle={() => setLifa((v) => !v)} />
+            <CartTableHeader />
           </div>
-          <div className="flex-shrink-0 border-b border-slate-200 bg-[#eef4ff]">
+          <div className="flex-shrink-0 border-b border-slate-200 bg-white">
             <MedicineSearchCombobox />
           </div>
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -660,18 +906,33 @@ function NewBillInner() {
             <span className="text-white/30">•</span>
             <span className="text-white/60 font-medium">Net Payable</span>
 
-            <AnimatedCount
-              value={roundedTotal}
-              className="flex items-center gap-1 bg-white/10 hover:bg-white/15 transition-colors rounded px-3 py-1.5 cursor-pointer"
+            <button
+              type="button"
+              onClick={() => setShowBreakdown(true)}
+              className="flex items-center gap-1 bg-white/10 hover:bg-white/20 active:scale-[0.97] transition-all rounded px-3 py-1.5 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-white/40"
             >
-              <span className="font-bold text-white tabular-nums text-[18px]">
+              <AnimatedCount value={roundedTotal} className="font-bold text-white tabular-nums text-[18px]">
                 ₹{roundedTotal.toFixed(2)}
-              </span>
+              </AnimatedCount>
               <ChevronUp className="w-4 h-4 text-white/50" />
-            </AnimatedCount>
+            </button>
           </div>
         </div>
       </motion.div>
+
+      {/* ── Invoice Breakdown modal ──────────────────────────── */}
+      <AnimatePresence>
+        {showBreakdown && (
+          <InvoiceBreakdownModal
+            onClose={() => setShowBreakdown(false)}
+            submitting={submitting}
+            onSubmit={async () => {
+              setShowBreakdown(false);
+              await handleSave("save_print");
+            }}
+          />
+        )}
+      </AnimatePresence>
 
       {/* ── Print preview modal ───────────────────────────────── */}
       <AnimatePresence>
@@ -750,7 +1011,7 @@ function NewBillInner() {
               </div>
               <div className="p-8">
                 <div className="shadow-card-lg mx-auto" style={{ width: "fit-content" }}>
-                  <InvoicePrintView invoice={invoice} />
+                  <InvoicePrintView invoice={invoice} config={printConfig} pharmacy={printPharmacy} />
                 </div>
               </div>
             </motion.div>

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { motion, AnimatePresence } from "framer-motion";
 import { Mail, Lock, Eye, EyeOff, AlertCircle, ArrowRight, CheckCircle2, Shield, UserPlus } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { storeUser, type StoredUser } from "@/lib/auth";
 
 const schema = z.object({
   email:    z.string().email("Enter a valid email address"),
@@ -33,7 +34,7 @@ export default function LoginPage() {
       });
       const json = await res.json() as {
         success: boolean;
-        data?:   { tokens: { accessToken: string } };
+        data?:   { tokens: { accessToken: string }; user: StoredUser };
         error?:  string;
       };
 
@@ -44,6 +45,7 @@ export default function LoginPage() {
 
       localStorage.setItem("token", json.data.tokens.accessToken);
       document.cookie = `auth-token=${json.data.tokens.accessToken}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
+      storeUser(json.data.user);
       setSuccess(true);
       setTimeout(() => navigate("/dashboard"), 600);
     } catch {

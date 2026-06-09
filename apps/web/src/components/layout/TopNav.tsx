@@ -6,19 +6,28 @@ import {
   Home, FileText, ShoppingCart, Package2, FlaskConical, Zap, Link2,
   Search, Phone, Truck, Calendar, ChevronDown, LogOut, Settings, Menu, X,
   Dot, QrCode, Coins, Send, Monitor, IndianRupee, Info, MapPin, Building2,
-  Receipt, FilePlus, RotateCcw, BookmarkCheck, ClipboardList, Plus,
+  Receipt, FilePlus, RotateCcw, BookmarkCheck, ClipboardList, Plus, Users,
+  MoreHorizontal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCalendarTodayCount } from "@/components/calendar/useCalendarEvents";
+import { useCurrentUser, clearUser } from "@/lib/auth";
 
 // ─── Types ────────────────────────────────────────────────────────
 type NavTab = { href: string; label: string; icon: React.ElementType };
 
+// Primary nav — high-frequency operational modules only
 const NAV_TABS: NavTab[] = [
-  { href: "/dashboard",           label: "Home",      icon: Home         },
-  { href: "/dashboard/purchase",  label: "Purchase",  icon: ShoppingCart },
-  { href: "/dashboard/medicines", label: "Medicines", icon: FlaskConical },
-  { href: "/dashboard/ginni",     label: "Ginni",     icon: Zap          },
+  { href: "/dashboard",          label: "Home",     icon: Home         },
+  { href: "/dashboard/purchase", label: "Purchase", icon: ShoppingCart },
+];
+
+// Secondary modules surfaced under "More"
+type MoreItem = { href: string; label: string; description: string; icon: React.ElementType };
+const MORE_ITEMS: MoreItem[] = [
+  { href: "/dashboard/customers", label: "Customers", description: "Manage registered patients",   icon: Users        },
+  { href: "/dashboard/medicines", label: "Medicines",  description: "Global medicines catalogue",   icon: FlaskConical },
+  { href: "/dashboard/ginni",     label: "Ginni",      description: "AI assistant",                 icon: Zap          },
 ];
 
 type InventoryItem = { href: string; label: string; description: string; icon: React.ElementType };
@@ -85,9 +94,9 @@ function NavItem({ tab, pathname }: { tab: NavTab; pathname: string }) {
       aria-selected={active}
       className={cn(
         "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-        "text-[12px] font-semibold transition-all duration-100 outline-none",
+        "text-[13px] font-semibold transition-all duration-100 outline-none",
         "focus-visible:ring-2 focus-visible:ring-white/50",
-        active ? "nav-pill-active text-brand-700" : "text-white/60 hover:text-white hover:bg-white/10"
+        active ? "nav-pill-active text-brand-700" : "text-white/70 hover:text-white hover:bg-white/10"
       )}
     >
       {active && (
@@ -111,7 +120,7 @@ function ShopLiveToggle() {
     <button
       onClick={() => setOn(v => !v)}
       aria-label={`Shop Live ${on ? "on" : "off"}`}
-      className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 bg-white/8 hover:bg-white/14 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+      className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 bg-white/8 hover:bg-white/14 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/40"
     >
       <div className={cn("relative h-4 w-7 rounded-full flex-shrink-0 transition-colors duration-200", on ? "bg-emerald-400" : "bg-white/20")}>
         <motion.span
@@ -120,12 +129,10 @@ function ShopLiveToggle() {
           className={cn("absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm", on ? "left-[14px]" : "left-0.5")}
         />
       </div>
-      <div className="text-left leading-none">
-        <p className="text-[11px] font-bold text-white leading-none">Shop Live</p>
-        <p className={cn("text-[9px] mt-0.5 font-medium leading-none", on ? "text-emerald-300" : "text-white/40")}>
-          {on ? "Online ON" : "Online OFF"}
-        </p>
-      </div>
+      <span className="text-[12px] font-bold text-white/80 leading-none">Shop Live</span>
+      <span className={cn("text-[10px] font-semibold leading-none", on ? "text-emerald-300" : "text-white/35")}>
+        {on ? "ON" : "OFF"}
+      </span>
     </button>
   );
 }
@@ -142,17 +149,15 @@ function CalendarPill() {
       className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 bg-white/8 hover:bg-white/14 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/40"
     >
       <div className="relative flex-shrink-0">
-        <Calendar className="w-3.5 h-3.5 text-white/75" strokeWidth={1.8} />
+        <Calendar className="w-3.5 h-3.5 text-white/70" strokeWidth={1.8} />
         {count > 0 && (
           <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-red-400 ring-[1.5px] ring-navy-900" />
         )}
       </div>
-      <div className="text-left leading-none">
-        <p className="text-[11px] font-bold text-white leading-none">Calendar</p>
-        <p className="text-[9px] mt-0.5 font-medium text-white/50 leading-none">
-          {count > 0 ? `${count} Today` : "No events"}
-        </p>
-      </div>
+      <span className="text-[12px] font-bold text-white/80 leading-none">Calendar</span>
+      {count > 0 && (
+        <span className="text-[10px] font-semibold text-white/50 leading-none tabular-nums">{count}</span>
+      )}
     </button>
   );
 }
@@ -172,23 +177,25 @@ function GlobalSearchBar() {
 
   return (
     <div className={cn(
-      "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 w-52 transition-all duration-150",
-      focused ? "bg-white/18 ring-1 ring-white/30 shadow-md" : "bg-white/8 hover:bg-white/12"
+      "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 w-44 transition-all duration-150",
+      focused ? "bg-white/18 ring-1 ring-white/30" : "bg-white/8 hover:bg-white/12"
     )}>
-      <Search className="w-3 h-3 text-white/45 flex-shrink-0" aria-hidden />
+      <Search className="w-3 h-3 text-white/40 flex-shrink-0" aria-hidden />
       <input
         ref={inputRef}
         type="search"
         aria-label="Global search"
-        placeholder="Search medicine, customer…"
+        placeholder="Search…"
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
-        className="flex-1 min-w-0 bg-transparent text-[11px] text-white placeholder-white/30 focus:outline-none"
+        className="flex-1 min-w-0 bg-transparent text-[12px] text-white placeholder-white/30 focus:outline-none"
       />
-      <div className="flex items-center gap-0.5 flex-shrink-0">
-        <kbd className="kbd-hint">Ctrl</kbd>
-        <kbd className="kbd-hint">K</kbd>
-      </div>
+      {!focused && (
+        <div className="flex items-center gap-0.5 flex-shrink-0">
+          <kbd className="kbd-hint">Ctrl</kbd>
+          <kbd className="kbd-hint">K</kbd>
+        </div>
+      )}
     </div>
   );
 }
@@ -215,11 +222,10 @@ function NewBillBtn() {
   const navigate = useNavigate();
   return (
     <motion.button
-      whileHover={{ scale: 1.03 }}
+      whileHover={{ scale: 1.02 }}
       whileTap={{ scale: 0.97 }}
       onClick={() => navigate("/dashboard/billing/new")}
-      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-bold text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-white/40"
-      style={{ background: "rgba(37,99,235,0.85)", color: "#fff", boxShadow: "0 1px 6px 0 rgba(37,99,235,0.35)" }}
+      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-bold text-[13px] bg-blue-600 hover:bg-blue-500 text-white shadow-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60"
       aria-label="New Bill (F2)"
     >
       <Plus className="w-3 h-3" strokeWidth={2.5} />
@@ -230,8 +236,6 @@ function NewBillBtn() {
 }
 
 // ─── Profile Dropdown ─────────────────────────────────────────────
-const PHARMACY = { name: "Admin Pharmacy", city: "City", logoText: "CP", qrCode: "C48X8" };
-const STAFF    = { initials: "CP", name: "-", role: "Pharmacist" };
 
 type MenuItem = {
   id: string; icon: React.ElementType; label: string;
@@ -240,18 +244,19 @@ type MenuItem = {
 const MENU_ITEMS: MenuItem[] = [
   { id: "settings",     icon: Settings,    label: "Account & Settings", href: "/dashboard/settings/pharmacy-profile" },
   { id: "integration",  icon: Link2,       label: "Integrations",       href: "/dashboard/integration"               },
-  { id: "qr",           icon: QrCode,      label: "Show QR",       extra: PHARMACY.qrCode, extraType: "blue" },
-  { id: "coins",        icon: Coins,       label: "VitalCoins",    extraType: "coin"    },
-  { id: "refer",        icon: Send,        label: "Refer & Earn"                        },
-  { id: "support",      icon: Monitor,     label: "Support Tickets", extra: "New", extraType: "badge-new" },
-  { id: "zero",         icon: IndianRupee, label: "ZERO"                                },
-  { id: "shortcuts",    icon: Info,        label: "Shortcuts / Help"                    },
+  { id: "qr",           icon: QrCode,      label: "Show QR",            extraType: "blue"     },
+  { id: "coins",        icon: Coins,       label: "VitalCoins",         extraType: "coin"     },
+  { id: "refer",        icon: Send,        label: "Refer & Earn"                               },
+  { id: "support",      icon: Monitor,     label: "Support Tickets",    extra: "New", extraType: "badge-new" },
+  { id: "zero",         icon: IndianRupee, label: "ZERO"                                       },
+  { id: "shortcuts",    icon: Info,        label: "Shortcuts / Help"                           },
 ];
 
 function ProfileDropdown() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+  const user = useCurrentUser();
 
   useEffect(() => {
     const onOut = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
@@ -274,11 +279,11 @@ function ProfileDropdown() {
         className="flex items-center gap-1.5 bg-white/10 hover:bg-white/16 rounded-lg pl-1.5 pr-2 py-1 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/40"
       >
         <div className="w-6 h-6 rounded-md bg-gradient-to-br from-blue-400 via-indigo-500 to-purple-500 flex items-center justify-center text-white text-[10px] font-extrabold shadow-inner select-none">
-          {PHARMACY.logoText}
+          {user.initials}
         </div>
         <div className="text-left leading-none hidden sm:block">
-          <p className="text-[11px] font-bold text-white leading-none">{STAFF.name === "-" ? "Admin" : STAFF.name}</p>
-          <p className="text-[9px] text-white/45 mt-0.5 leading-none truncate max-w-[80px]">{PHARMACY.name}</p>
+          <p className="text-[11px] font-bold text-white leading-none truncate max-w-[80px]">{user.name}</p>
+          <p className="text-[9px] text-white/45 mt-0.5 leading-none truncate max-w-[80px]">{user.role}</p>
         </div>
         <ChevronDown className={cn("w-3 h-3 text-white/40 transition-transform duration-200", open && "rotate-180")} />
       </button>
@@ -302,22 +307,18 @@ function ProfileDropdown() {
               <span className="absolute -top-5 -right-5 w-20 h-20 rounded-full bg-white/5 pointer-events-none" />
               <span className="absolute -bottom-4 -left-4 w-16 h-16 rounded-full bg-white/5 pointer-events-none" />
               <div>
-                <div className="w-10 h-10 rounded-xl bg-white/15 ring-1 ring-white/25 flex items-center justify-center mb-2.5 shadow-inner">
-                  <Building2 className="w-5 h-5 text-white/80" strokeWidth={1.6} />
+                <div className="w-10 h-10 rounded-xl bg-white/15 ring-1 ring-white/25 flex items-center justify-center mb-2.5 shadow-inner select-none">
+                  <span className="text-white font-black text-[13px] leading-none">{user.pharmacyInitials}</span>
                 </div>
-                <p className="text-white font-bold text-[13px] leading-snug">{PHARMACY.name}</p>
-                <div className="flex items-center gap-1 mt-0.5">
-                  <MapPin className="w-2.5 h-2.5 text-blue-300/70 flex-shrink-0" strokeWidth={1.8} />
-                  <p className="text-blue-200/60 text-[10px]">{PHARMACY.city}</p>
-                </div>
+                <p className="text-white font-bold text-[13px] leading-snug">{user.pharmacyName}</p>
               </div>
               <div className="flex items-center gap-2 mt-4">
                 <div className="w-8 h-8 rounded-full ring-2 ring-white/20 bg-gradient-to-br from-teal-400 to-blue-500 flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0 select-none">
-                  {STAFF.initials}
+                  {user.initials}
                 </div>
                 <div className="min-w-0">
-                  <p className="text-white text-[11px] font-semibold truncate">{STAFF.role}</p>
-                  <p className="text-white/40 text-[10px] truncate">{STAFF.name}</p>
+                  <p className="text-white text-[11px] font-semibold truncate">{user.name}</p>
+                  <p className="text-white/50 text-[10px] truncate">{user.role}</p>
                 </div>
               </div>
             </div>
@@ -359,12 +360,12 @@ function ProfileDropdown() {
               ))}
               <div className="mx-3 my-1 border-t border-slate-100" />
               <div className="flex items-center gap-2.5 px-3.5 py-2">
-                <div className="w-6 h-6 rounded-full bg-gradient-to-br from-teal-400 to-blue-500 flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0">
-                  {STAFF.initials}
+                <div className="w-6 h-6 rounded-full bg-gradient-to-br from-teal-400 to-blue-500 flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0 select-none">
+                  {user.initials}
                 </div>
                 <div className="min-w-0">
-                  <p className="text-slate-700 text-[11px] font-semibold truncate">{STAFF.name}</p>
-                  <p className="text-slate-400 text-[10px] truncate">{STAFF.role}</p>
+                  <p className="text-slate-700 text-[11px] font-semibold truncate">{user.name}</p>
+                  <p className="text-slate-400 text-[10px] truncate">{user.role}</p>
                 </div>
               </div>
               <button
@@ -372,6 +373,7 @@ function ProfileDropdown() {
                 onClick={() => {
                   setOpen(false);
                   localStorage.removeItem("token");
+                  clearUser();
                   document.cookie = "auth-token=; path=/; max-age=0; SameSite=Lax";
                   navigate("/login");
                 }}
@@ -416,9 +418,9 @@ function SalesNavDropdown({ pathname }: { pathname: string }) {
         aria-expanded={open}
         className={cn(
           "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-          "text-[12px] font-semibold transition-all duration-100 outline-none",
+          "text-[13px] font-semibold transition-all duration-100 outline-none",
           "focus-visible:ring-2 focus-visible:ring-white/50",
-          salesActive ? "nav-pill-active text-brand-700" : "text-white/60 hover:text-white hover:bg-white/10"
+          salesActive ? "nav-pill-active text-brand-700" : "text-white/70 hover:text-white hover:bg-white/10"
         )}
       >
         {salesActive && (
@@ -539,6 +541,93 @@ function SalesNavDropdown({ pathname }: { pathname: string }) {
   );
 }
 
+// ─── More Nav Dropdown ────────────────────────────────────────────
+function MoreNavDropdown({ pathname }: { pathname: string }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const moreActive = MORE_ITEMS.some((item) => pathname.startsWith(item.href));
+
+  useEffect(() => {
+    const onOut = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", onOut);
+    return () => document.removeEventListener("mousedown", onOut);
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={cn(
+          "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
+          "text-[13px] font-semibold transition-all duration-100 outline-none",
+          "focus-visible:ring-2 focus-visible:ring-white/50",
+          moreActive ? "nav-pill-active text-brand-700" : "text-white/70 hover:text-white hover:bg-white/10",
+        )}
+      >
+        {moreActive && (
+          <motion.span
+            layoutId="nav-active-bg"
+            className="absolute inset-0 rounded-lg bg-white"
+            style={{ zIndex: -1 }}
+            transition={{ type: "spring", stiffness: 380, damping: 32 }}
+          />
+        )}
+        <MoreHorizontal className={cn("w-3 h-3 flex-shrink-0", moreActive ? "text-brand-600" : "text-white/55")} strokeWidth={moreActive ? 2.3 : 1.9} />
+        <span>More</span>
+        <ChevronDown className={cn("w-2.5 h-2.5 transition-transform duration-200", open && "rotate-180", moreActive ? "text-brand-400" : "text-white/35")} />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            role="menu"
+            initial={{ opacity: 0, y: -6, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0,  scale: 1    }}
+            exit={{   opacity: 0, y: -6, scale: 0.97 }}
+            transition={{ duration: 0.13, ease: "easeOut" }}
+            className="absolute left-0 top-full mt-1.5 w-56 rounded-xl shadow-2xl border border-slate-200/70 bg-white overflow-hidden z-50"
+            style={{ boxShadow: "0 16px 36px -6px rgba(0,0,0,0.18), 0 4px 12px -4px rgba(0,0,0,0.08)" }}
+          >
+            <div className="p-1.5">
+              {MORE_ITEMS.map(({ href, label, description, icon: Icon }) => {
+                const active = pathname.startsWith(href);
+                return (
+                  <Link
+                    key={href}
+                    to={href}
+                    role="menuitem"
+                    onClick={() => setOpen(false)}
+                    className={cn(
+                      "flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-colors",
+                      active ? "bg-blue-50 text-blue-700" : "text-slate-700 hover:bg-slate-50",
+                    )}
+                  >
+                    <span className={cn("w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0", active ? "bg-blue-100" : "bg-slate-100")}>
+                      <Icon className={cn("w-3 h-3", active ? "text-blue-600" : "text-slate-500")} strokeWidth={1.8} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-[12px] leading-none">{label}</p>
+                      <p className={cn("text-[10px] mt-0.5", active ? "text-blue-500" : "text-slate-400")}>{description}</p>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
 // ─── Inventory Nav Dropdown ───────────────────────────────────────
 function InventoryNavDropdown({ pathname }: { pathname: string }) {
   const [open, setOpen] = useState(false);
@@ -568,9 +657,9 @@ function InventoryNavDropdown({ pathname }: { pathname: string }) {
         aria-expanded={open}
         className={cn(
           "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-          "text-[12px] font-semibold transition-all duration-100 outline-none",
+          "text-[13px] font-semibold transition-all duration-100 outline-none",
           "focus-visible:ring-2 focus-visible:ring-white/50",
-          inventoryActive ? "nav-pill-active text-brand-700" : "text-white/60 hover:text-white hover:bg-white/10"
+          inventoryActive ? "nav-pill-active text-brand-700" : "text-white/70 hover:text-white hover:bg-white/10"
         )}
       >
         {inventoryActive && (
@@ -632,22 +721,29 @@ function InventoryNavDropdown({ pathname }: { pathname: string }) {
 // ─── Mobile Menu ──────────────────────────────────────────────────
 function MobileMenu({ pathname }: { pathname: string }) {
   const [open, setOpen] = useState(false);
-  const [salesExpanded, setSalesExpanded]       = useState(() => pathname.startsWith("/dashboard/billing"));
+  const brand = useCurrentUser();
+  const [salesExpanded,     setSalesExpanded]     = useState(() => pathname.startsWith("/dashboard/billing"));
   const [inventoryExpanded, setInventoryExpanded] = useState(() =>
     pathname.startsWith("/dashboard/inventory") ||
     pathname.startsWith("/dashboard/locations") ||
-    pathname.startsWith("/dashboard/stock-audit")
+    pathname.startsWith("/dashboard/stock-audit"),
   );
+  const [moreExpanded, setMoreExpanded] = useState(() =>
+    MORE_ITEMS.some((item) => pathname.startsWith(item.href)),
+  );
+
   const isSalesActive     = pathname.startsWith("/dashboard/billing");
   const isInventoryActive =
     pathname.startsWith("/dashboard/inventory") ||
     pathname.startsWith("/dashboard/locations") ||
     pathname.startsWith("/dashboard/stock-audit");
+  const isMoreActive = MORE_ITEMS.some((item) => pathname.startsWith(item.href));
 
   useEffect(() => {
     setOpen(false);
     if (pathname.startsWith("/dashboard/billing")) setSalesExpanded(true);
     if (isInventoryActive) setInventoryExpanded(true);
+    if (isMoreActive) setMoreExpanded(true);
   }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!open) return;
@@ -696,12 +792,11 @@ function MobileMenu({ pathname }: { pathname: string }) {
               className="fixed left-0 top-0 z-50 h-full w-60 bg-gradient-to-b from-navy-900 to-navy-800 shadow-2xl xl:hidden flex flex-col"
             >
               <div className="flex items-center gap-2.5 px-4 py-4 border-b border-white/10">
-                <div className="w-8 h-8 rounded-lg bg-white/15 ring-1 ring-white/20 flex items-center justify-center">
-                  <span className="text-white font-black text-lg leading-none">+</span>
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-400 via-indigo-500 to-purple-500 ring-1 ring-white/20 flex items-center justify-center select-none shadow-inner">
+                  <span className="text-white font-black text-[11px] leading-none tracking-tight">{brand.pharmacyInitials}</span>
                 </div>
                 <div>
-                  <p className="text-white font-bold text-[13px]">Checkup</p>
-                  <p className="text-blue-200 text-[9px] font-medium uppercase tracking-wider">Pharmacy</p>
+                  <p className="text-white font-bold text-[13px] truncate max-w-[140px]">{brand.pharmacyName}</p>
                 </div>
                 <button onClick={() => setOpen(false)} className="ml-auto w-6 h-6 rounded-md bg-white/10 flex items-center justify-center text-white/60 hover:text-white">
                   <X className="w-3 h-3" />
@@ -792,8 +887,9 @@ function MobileMenu({ pathname }: { pathname: string }) {
                   </AnimatePresence>
                 </div>
 
-                {/* Remaining flat tabs: Purchase, Medicines, Ginni */}
-                {NAV_TABS.slice(1).map((tab) => {
+                {/* Purchase — flat tab */}
+                {NAV_TABS[1] && (() => {
+                  const tab = NAV_TABS[1]!;
                   const active = isActive(pathname, tab.href);
                   const Icon = tab.icon;
                   return (
@@ -806,7 +902,41 @@ function MobileMenu({ pathname }: { pathname: string }) {
                       {active && <Dot className="ml-auto w-3.5 h-3.5 text-brand-500" />}
                     </Link>
                   );
-                })}
+                })()}
+
+                {/* More — expandable section: Customers, Medicines, Ginni */}
+                <div>
+                  <button
+                    onClick={() => setMoreExpanded((v) => !v)}
+                    className={cn("w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all",
+                      isMoreActive ? "bg-white/10 text-white" : "text-white/65 hover:text-white hover:bg-white/10")}
+                  >
+                    <MoreHorizontal className={cn("w-3.5 h-3.5", isMoreActive ? "text-white/80" : "text-white/50")} strokeWidth={1.8} />
+                    More
+                    <ChevronDown className={cn("w-3 h-3 ml-auto transition-transform duration-200", moreExpanded && "rotate-180")} />
+                  </button>
+                  <AnimatePresence initial={false}>
+                    {moreExpanded && (
+                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.16 }} className="overflow-hidden">
+                        <div className="ml-4 mt-0.5 mb-0.5 space-y-0.5 border-l border-white/10 pl-2.5">
+                          {MORE_ITEMS.map(({ href, label, icon: Icon }) => {
+                            const active = pathname.startsWith(href);
+                            return (
+                              <Link key={href} to={href} onClick={() => setOpen(false)}
+                                className={cn("flex items-center gap-2 px-2.5 py-2 rounded-lg text-[12px] font-semibold transition-all",
+                                  active ? "bg-white text-brand-700" : "text-white/60 hover:text-white hover:bg-white/10")}
+                              >
+                                <Icon className={cn("w-3 h-3", active ? "text-brand-600" : "text-white/40")} strokeWidth={1.8} />
+                                {label}
+                                {active && <Dot className="ml-auto w-3.5 h-3.5 text-brand-500" />}
+                              </Link>
+                            );
+                          })}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               </div>
             </motion.nav>
           </>
@@ -820,6 +950,7 @@ function MobileMenu({ pathname }: { pathname: string }) {
 export function TopNav() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
+  const brand = useCurrentUser();
 
   // F2 = New Bill (global shortcut)
   useEffect(() => {
@@ -845,41 +976,35 @@ export function TopNav() {
         boxShadow: "0 2px 20px 0 rgba(8,13,45,0.45), 0 1px 0 0 rgba(255,255,255,0.05) inset",
       }}
     >
-      {/* Brand */}
+      {/* Brand — pharmacy identity */}
       <Link
         to="/dashboard"
         className="flex items-center gap-2 flex-shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-white/40 rounded-lg p-0.5"
-        aria-label="Checkup Pharmacy — dashboard"
+        aria-label={`${brand.pharmacyName} — dashboard`}
       >
-        <motion.div
-          whileHover={{ rotate: [0, -8, 8, 0], scale: 1.06 }}
-          transition={{ duration: 0.35 }}
-          className="w-7 h-7 rounded-lg flex items-center justify-center ring-1 ring-white/20 shadow-inner flex-shrink-0"
-          style={{ background: "rgba(255,255,255,0.13)" }}
-        >
-          <span className="text-white font-black text-base leading-none select-none">+</span>
-        </motion.div>
-        <div className="leading-none hidden sm:block">
-          <p className="text-white font-extrabold text-[13px] tracking-tight leading-none">Checkup</p>
-          <p className="text-blue-200/75 text-[8px] font-semibold tracking-[0.18em] uppercase mt-0.5 leading-none">Pharmacy</p>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center ring-1 ring-white/20 flex-shrink-0 bg-gradient-to-br from-blue-400 via-indigo-500 to-purple-500 shadow-inner select-none">
+          <span className="text-white font-black text-[10px] leading-none tracking-tight">{brand.pharmacyInitials}</span>
         </div>
+        <p className="text-white font-extrabold text-[14px] tracking-tight leading-none hidden sm:block truncate max-w-[160px]">
+          {brand.pharmacyName}
+        </p>
       </Link>
 
       {/* Divider */}
-      <div className="h-5 w-px bg-white/12 flex-shrink-0 mx-0.5" />
+      <div className="h-5 w-px bg-white/15 flex-shrink-0 mx-0.5" />
 
       {/* Nav tabs — desktop */}
       <nav role="tablist" aria-label="Main navigation" className="hidden xl:flex items-center gap-0.5">
+        {/* Home */}
         {NAV_TABS[0] && <NavItem tab={NAV_TABS[0]} pathname={pathname} />}
+        {/* Sales dropdown */}
         <SalesNavDropdown pathname={pathname} />
-        {/* Purchase tab */}
+        {/* Purchase */}
         {NAV_TABS[1] && <NavItem tab={NAV_TABS[1]} pathname={pathname} />}
         {/* Inventory dropdown — Inventory, Locations, Stock Audit */}
         <InventoryNavDropdown pathname={pathname} />
-        {/* Remaining tabs: Medicines, Ginni */}
-        {NAV_TABS.slice(2).map(tab => (
-          <NavItem key={tab.href} tab={tab} pathname={pathname} />
-        ))}
+        {/* More — Customers, Medicines, Ginni */}
+        <MoreNavDropdown pathname={pathname} />
       </nav>
 
       {/* Spacer */}
@@ -889,19 +1014,19 @@ export function TopNav() {
       <div className="hidden md:flex items-center gap-1.5">
         <NewBillBtn />
 
-        <div className="h-5 w-px bg-white/10 mx-0.5" />
+        <div className="h-5 w-px bg-white/15 mx-1" />
 
         <ShopLiveToggle />
         <CalendarPill />
         <GlobalSearchBar />
 
-        <div className="h-5 w-px bg-white/10 mx-0.5" />
+        <div className="h-5 w-px bg-white/15 mx-1" />
 
         <IconBtn icon={Truck}  label="Delivery status" />
         <NotificationBell />
         <IconBtn icon={Phone}  label="Support"         />
 
-        <div className="h-5 w-px bg-white/10 mx-0.5" />
+        <div className="h-5 w-px bg-white/15 mx-1" />
 
         <ProfileDropdown />
       </div>
