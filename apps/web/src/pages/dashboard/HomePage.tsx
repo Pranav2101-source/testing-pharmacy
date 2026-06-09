@@ -33,7 +33,7 @@ type RecentInvoice = {
   paymentStatus: string;
   isCancelled:   boolean;
   customer:      { name: string } | null;
-  items:         { quantity: number }[];
+  _count:        { items: number };
 };
 
 type LowStockItem = {
@@ -336,7 +336,7 @@ export default function DashboardHomePage() {
                   {recentBills.map(bill => {
                     const statusKey = bill.isCancelled ? "CANCELLED" : bill.paymentStatus;
                     const s = getStatus(statusKey);
-                    const totalQty = bill.items.reduce((acc, i) => acc + i.quantity, 0);
+                    const totalQty = bill._count?.items ?? 0;
                     return (
                       <Link
                         key={bill.id}

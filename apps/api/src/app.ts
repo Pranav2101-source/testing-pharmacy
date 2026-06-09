@@ -33,6 +33,7 @@ import customersRoutes from "./modules/customers/customers.routes.js";
 import locationsRoutes from "./modules/locations/locations.routes.js";
 import stockAuditRoutes from "./modules/stock-audit/stock-audit.routes.js";
 import calendarRoutes from "./modules/calendar/calendar.routes.js";
+import pharmacyRoutes from "./modules/pharmacy/pharmacy.routes.js";
 
 import { env, allowedOrigins } from "./config/env.js";
 import { AppError } from "./lib/AppError.js";
@@ -152,6 +153,7 @@ export async function buildApp() {
   await app.register(locationsRoutes,     { prefix: "/api/locations" });
   await app.register(stockAuditRoutes,    { prefix: "/api/stock-audit" });
   await app.register(calendarRoutes,      { prefix: "/api/calendar" });
+  await app.register(pharmacyRoutes,      { prefix: "/api/pharmacy" });
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/health", async () => ({ status: "ok", ts: new Date().toISOString() }));

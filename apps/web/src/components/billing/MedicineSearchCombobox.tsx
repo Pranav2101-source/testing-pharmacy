@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback, memo } from "react";
 import {
   Search, Loader2, Pill, ChevronRight, ScanBarcode,
   X, AlertTriangle, Clock,
@@ -67,8 +67,10 @@ function SkeletonResult() {
 }
 
 // ── Batch Picker Dialog ───────────────────────────────────────────────────────
+// memo: props only change when a different medicine is selected — prevents
+// re-renders triggered by parent search query / results state changes.
 
-function BatchPickerDialog({
+const BatchPickerDialog = memo(function BatchPickerDialog({
   med,
   batches,
   onSelect,
@@ -187,13 +189,15 @@ function BatchPickerDialog({
       </motion.div>
     </motion.div>
   );
-}
+});
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function MedicineSearchCombobox() {
   const [query,    setQuery]    = useState("");
   const [open,     setOpen]     = useState(false);
+  const [results,  setResults]  = useState<MedicineSearchResult[]>([]);
+  const [loading,  setLoading]  = useState(false);
   const [addingId, setAddingId] = useState<string | null>(null);
   const [focused,  setFocused]  = useState(false);
 
@@ -331,7 +335,7 @@ export function MedicineSearchCombobox() {
         return;
       }
 
-      if (liveBatches.length === 1) {
+      if (liveBatches.length === 1 && liveBatches[0]) {
         addBatch(liveBatches[0], med);
       } else {
         setPickerState({ med, batches: liveBatches });

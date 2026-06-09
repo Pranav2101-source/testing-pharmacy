@@ -17,6 +17,24 @@ const billingRoutes: FastifyPluginAsync = async (app) => {
   const auth  = [authenticate, resolvePharmacy];
   const owner = [authenticate, requireOwner, resolvePharmacy];
 
+  // ── Invoice Settings ──────────────────────────────────────────────────────
+
+  app.get("/settings", { preHandler: auth }, async (req, reply) => {
+    const config = await service.getInvoiceSettings(req.pharmacyId);
+    return reply.send({ success: true, data: config });
+  });
+
+  app.put("/settings", { preHandler: owner }, async (req, reply) => {
+    const config = req.body as Record<string, unknown>;
+    const result = await service.saveInvoiceSettings(
+      req.pharmacyId,
+      req.user.sub,
+      config,
+      { ipAddress: req.ip, userAgent: req.headers["user-agent"] },
+    );
+    return reply.send({ success: true, data: result });
+  });
+
   app.get("/dashboard/stats", { preHandler: auth }, async (req, reply) => {
     const stats = await service.getDashboardStats(req.pharmacyId);
     // Stats are recomputed from live data on every request; a 60-second browser

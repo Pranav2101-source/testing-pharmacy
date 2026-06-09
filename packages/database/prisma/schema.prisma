@@ -245,18 +245,25 @@ model StockReservation {
 // ─── Customer ────────────────────────────────────────────────────────────────
 
 model Customer {
-  id           String       @id @default(cuid())
-  pharmacyId   String
-  name         String
-  phone        String?
-  email        String?
-  address      String?
-  state        String?      // Indian state code (e.g. "MH", "KA") — used for IGST determination
-  age          Int?
-  gender       String?
-  customerType CustomerType @default(WALK_IN)
-  creditLimit  Float        @default(0)
-  creditUsed   Float        @default(0)
+  id              String       @id @default(cuid())
+  pharmacyId      String
+  name            String
+  phone           String?
+  email           String?
+  address         String?
+  state           String?      // Indian state code (e.g. "MH", "KA") — used for IGST determination
+  age             Int?         // legacy field; prefer dateOfBirth for new records
+  dateOfBirth     DateTime?
+  gender          String?
+  abhaNumber      String?      // ABHA / Health ID / IPD / OPD number
+  cardNumber      String?      // Pharmacy loyalty card (unique per pharmacy; NULLs are distinct)
+  customerType    CustomerType @default(WALK_IN)
+  defaultDiscount Float        @default(0)  // auto-applied discount % shown at billing
+  creditLimit     Float        @default(0)
+  creditUsed      Float        @default(0)
+  notes           String?
+  deletedAt       DateTime?    // soft delete — null = active
+  createdById     String?      // ID of staff who created (stored as plain ID; preserved on user delete)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -265,8 +272,12 @@ model Customer {
   invoices    Invoice[]
   returns     SalesReturn[]
 
+  @@unique([pharmacyId, cardNumber])
   @@index([pharmacyId, phone])
+  @@index([pharmacyId, name])
+  @@index([pharmacyId, abhaNumber])
   @@index([pharmacyId, customerType])
+  @@index([pharmacyId, deletedAt])
   @@map("customers")
 }
 

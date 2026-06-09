@@ -303,69 +303,100 @@ export class InventoryRepo {
     items:      { inventoryId: string; quantity: number }[];
   }): Promise<{ inventoryId: string; available: number }[]> {
     return this.db.$transaction(async (tx) => {
+      const now = new Date();
+
+      // Expired reservation cleanup — scoped to this pharmacy to avoid cross-tenant writes.
+      // Single raw SQL decrement instead of N individual updates.
       const expired = await tx.stockReservation.findMany({
-        where:  { expiresAt: { lt: new Date() } },
+        where:  { pharmacyId: params.pharmacyId, expiresAt: { lt: now } },
         select: { inventoryId: true, quantity: true },
       });
       if (expired.length > 0) {
-        await tx.stockReservation.deleteMany({ where: { expiresAt: { lt: new Date() } } });
-        const grouped = new Map<string, number>();
-        for (const r of expired) {
-          grouped.set(r.inventoryId, (grouped.get(r.inventoryId) ?? 0) + r.quantity);
-        }
-        for (const [inventoryId, qty] of grouped) {
-          await tx.inventory.update({ where: { id: inventoryId }, data: { reservedQuantity: { decrement: qty } } });
-        }
+        const expIds  = expired.map((r) => r.inventoryId);
+        const expQtys = expired.map((r) => r.quantity);
+        await Promise.all([
+          tx.stockReservation.deleteMany({ where: { pharmacyId: params.pharmacyId, expiresAt: { lt: now } } }),
+          tx.$executeRaw`
+            UPDATE inventory inv
+            SET "reservedQuantity" = GREATEST(0, inv."reservedQuantity" - b.qty)
+            FROM (SELECT unnest(${expIds}::text[]) AS id, unnest(${expQtys}::int[]) AS qty) AS b
+            WHERE inv.id = b.id AND inv."pharmacyId" = ${params.pharmacyId}::text
+          `,
+        ]);
       }
 
-      const existing = await tx.stockReservation.findMany({
-        where:  { pharmacyId: params.pharmacyId, sessionId: params.sessionId },
-        select: { inventoryId: true, quantity: true },
-      });
-      const existingMap = new Map<string, number>(existing.map((r): [string, number] => [r.inventoryId, r.quantity]));
+      // Fetch existing reservations for this session AND all requested inventory items
+      // in ONE query each instead of N separate findFirst calls.
+      const itemIds = params.items.map((i) => i.inventoryId);
+      const [existing, inventoryRows] = await Promise.all([
+        tx.stockReservation.findMany({
+          where:  { pharmacyId: params.pharmacyId, sessionId: params.sessionId },
+          select: { inventoryId: true, quantity: true },
+        }),
+        tx.inventory.findMany({
+          where:  { id: { in: itemIds }, pharmacyId: params.pharmacyId, status: "ACTIVE" },
+          select: { id: true, quantity: true, reservedQuantity: true },
+        }),
+      ]);
+
+      const existingMap   = new Map(existing.map((r): [string, number] => [r.inventoryId, r.quantity]));
+      const inventoryMap  = new Map(inventoryRows.map((r) => [r.id, r]));
 
       type Conflict = { inventoryId: string; available: number; requested: number };
       const conflicts: Conflict[] = [];
       const results: { inventoryId: string; available: number }[] = [];
 
       for (const item of params.items) {
-        const inv = await tx.inventory.findFirst({
-          where:  { id: item.inventoryId, pharmacyId: params.pharmacyId, status: "ACTIVE" },
-          select: { quantity: true, reservedQuantity: true },
-        });
+        const inv = inventoryMap.get(item.inventoryId);
         if (!inv) continue;
-
         const thisSessionQty   = existingMap.get(item.inventoryId) ?? 0;
         const reservedByOthers = Math.max(0, inv.reservedQuantity - thisSessionQty);
         const available        = inv.quantity - reservedByOthers;
         results.push({ inventoryId: item.inventoryId, available });
-
-        if (item.quantity > available) {
-          conflicts.push({ inventoryId: item.inventoryId, available, requested: item.quantity });
-        }
+        if (item.quantity > available) conflicts.push({ inventoryId: item.inventoryId, available, requested: item.quantity });
       }
 
       if (conflicts.length > 0) {
         throw Object.assign(new Error("Insufficient unreserved stock"), { statusCode: 409, conflicts });
       }
 
-      if (existing.length > 0) {
-        await tx.stockReservation.deleteMany({ where: { pharmacyId: params.pharmacyId, sessionId: params.sessionId } });
-        for (const [inventoryId, qty] of existingMap) {
-          await tx.inventory.update({ where: { id: inventoryId }, data: { reservedQuantity: { decrement: qty } } });
-        }
-      }
-
       const expiresAt = new Date(Date.now() + RESERVATION_TTL_MS);
-      await tx.stockReservation.createMany({
-        data: params.items.map((item) => ({
-          pharmacyId: params.pharmacyId, inventoryId: item.inventoryId,
-          sessionId:  params.sessionId,  quantity:    item.quantity, expiresAt,
-        })),
-      });
-      for (const item of params.items) {
-        await tx.inventory.update({ where: { id: item.inventoryId }, data: { reservedQuantity: { increment: item.quantity } } });
-      }
+
+      // Release old reservations + create new ones — two raw SQL batch ops in parallel.
+      const decIds  = [...existingMap.keys()];
+      const decQtys = [...existingMap.values()];
+      const incIds  = itemIds;
+      const incQtys = params.items.map((i) => i.quantity);
+
+      await Promise.all([
+        // Delete old reservations for this session
+        existing.length > 0
+          ? tx.stockReservation.deleteMany({ where: { pharmacyId: params.pharmacyId, sessionId: params.sessionId } })
+          : Promise.resolve(),
+        // Decrement old reservedQuantity
+        decIds.length > 0
+          ? tx.$executeRaw`
+              UPDATE inventory inv
+              SET "reservedQuantity" = GREATEST(0, inv."reservedQuantity" - b.qty)
+              FROM (SELECT unnest(${decIds}::text[]) AS id, unnest(${decQtys}::int[]) AS qty) AS b
+              WHERE inv.id = b.id AND inv."pharmacyId" = ${params.pharmacyId}::text
+            `
+          : Promise.resolve(),
+        // Create new reservations
+        tx.stockReservation.createMany({
+          data: params.items.map((item) => ({
+            pharmacyId: params.pharmacyId, inventoryId: item.inventoryId,
+            sessionId:  params.sessionId,  quantity:    item.quantity, expiresAt,
+          })),
+        }),
+        // Increment new reservedQuantity
+        tx.$executeRaw`
+          UPDATE inventory inv
+          SET "reservedQuantity" = inv."reservedQuantity" + b.qty
+          FROM (SELECT unnest(${incIds}::text[]) AS id, unnest(${incQtys}::int[]) AS qty) AS b
+          WHERE inv.id = b.id AND inv."pharmacyId" = ${params.pharmacyId}::text
+        `,
+      ]);
 
       return results;
     });
@@ -379,10 +410,17 @@ export class InventoryRepo {
       });
       if (existing.length === 0) return;
 
-      await tx.stockReservation.deleteMany({ where: { pharmacyId: params.pharmacyId, sessionId: params.sessionId } });
-      for (const res of existing) {
-        await tx.inventory.update({ where: { id: res.inventoryId }, data: { reservedQuantity: { decrement: res.quantity } } });
-      }
+      const ids  = existing.map((r) => r.inventoryId);
+      const qtys = existing.map((r) => r.quantity);
+      await Promise.all([
+        tx.stockReservation.deleteMany({ where: { pharmacyId: params.pharmacyId, sessionId: params.sessionId } }),
+        tx.$executeRaw`
+          UPDATE inventory inv
+          SET "reservedQuantity" = GREATEST(0, inv."reservedQuantity" - b.qty)
+          FROM (SELECT unnest(${ids}::text[]) AS id, unnest(${qtys}::int[]) AS qty) AS b
+          WHERE inv.id = b.id AND inv."pharmacyId" = ${params.pharmacyId}::text
+        `,
+      ]);
     });
   }
 
@@ -473,27 +511,27 @@ export class InventoryRepo {
       if (affected.length === 0)
         throw AppError.notFound("No ACTIVE batches found matching the given batch number")
 
-      for (const item of affected) {
-        await tx.inventory.update({
-          where: { id: item.id },
+      // Batch all status updates + movement inserts — replaces 2N sequential queries
+      await Promise.all([
+        tx.inventory.updateMany({
+          where: { id: { in: affected.map((i) => i.id) } },
           data:  { status: "QUARANTINE" },
-        });
-
-        await tx.inventoryMovement.create({
-          data: {
+        }),
+        tx.inventoryMovement.createMany({
+          data: affected.map((item) => ({
             pharmacyId,
             userId,
             inventoryId:    item.id,
-            type:           "ADJUSTMENT",
-            direction:      "OUT",
+            type:           "ADJUSTMENT" as const,
+            direction:      "OUT" as const,
             quantity:       0,
             quantityBefore: item.quantity,
             quantityAfter:  item.quantity,
             referenceType:  "BATCH_RECALL",
             notes:          `RECALL: ${data.reason}`,
-          },
-        });
-      }
+          })),
+        }),
+      ]);
 
       await tx.auditLog.create({
         data: {

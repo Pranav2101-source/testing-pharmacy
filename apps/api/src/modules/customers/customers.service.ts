@@ -1,6 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { CustomersRepo } from "./customers.repo.js";
-import type { CreateCustomerInput, UpdateCustomerInput, ListCustomersQuery } from "./customers.schema.js";
+import type {
+  CreateCustomerInput,
+  UpdateCustomerInput,
+  ListCustomersQuery,
+  SearchCustomersQuery,
+} from "./customers.schema.js";
 
 const MAX_PAGE_LIMIT = 100;
 
@@ -11,29 +16,40 @@ export class CustomersService {
     this.repo = new CustomersRepo(app.prisma);
   }
 
-  async create(pharmacyId: string, input: CreateCustomerInput) {
+  async create(pharmacyId: string, input: CreateCustomerInput, createdById?: string) {
     return this.repo.create(pharmacyId, {
-      name:         input.name,
-      phone:        input.phone,
-      email:        input.email,
-      address:      input.address,
-      age:          input.age,
-      gender:       input.gender,
-      customerType: input.customerType,
-      creditLimit:  input.creditLimit,
+      name:            input.name,
+      phone:           input.phone,
+      email:           input.email,
+      address:         input.address,
+      age:             input.age,
+      dateOfBirth:     input.dateOfBirth,
+      gender:          input.gender,
+      abhaNumber:      input.abhaNumber,
+      cardNumber:      input.cardNumber,
+      customerType:    input.customerType,
+      defaultDiscount: input.defaultDiscount,
+      creditLimit:     input.creditLimit,
+      notes:           input.notes,
+      createdById,
     });
   }
 
   async update(id: string, pharmacyId: string, input: UpdateCustomerInput) {
     return this.repo.update(id, pharmacyId, {
-      name:         input.name,
-      phone:        input.phone,
-      email:        input.email,
-      address:      input.address,
-      age:          input.age,
-      gender:       input.gender,
-      customerType: input.customerType,
-      creditLimit:  input.creditLimit,
+      name:            input.name,
+      phone:           input.phone,
+      email:           input.email,
+      address:         input.address,
+      age:             input.age,
+      dateOfBirth:     input.dateOfBirth,
+      gender:          input.gender,
+      abhaNumber:      input.abhaNumber,
+      cardNumber:      input.cardNumber,
+      customerType:    input.customerType,
+      defaultDiscount: input.defaultDiscount,
+      creditLimit:     input.creditLimit,
+      notes:           input.notes,
     });
   }
 
@@ -56,8 +72,13 @@ export class CustomersService {
     });
   }
 
+  async search(pharmacyId: string, query: SearchCustomersQuery) {
+    const items = await this.repo.search(pharmacyId, query.q, Math.min(20, query.limit));
+    return { items };
+  }
+
   async delete(id: string, pharmacyId: string) {
-    return this.repo.delete(id, pharmacyId);
+    return this.repo.softDelete(id, pharmacyId);
   }
 
   async getCreditSummary(id: string, pharmacyId: string) {

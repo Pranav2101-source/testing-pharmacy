@@ -11,16 +11,20 @@ export const invoiceItemSchema = z.object({
 });
 
 export const createInvoiceSchema = z.object({
-  customerId:     z.string().optional(),
-  doctorName:     z.string().max(200).optional(),
-  prescriptionId: z.string().optional(),
-  paymentMode:    z.enum(PAYMENT_MODES).default("CASH"),
-  paymentStatus:  z.enum(PAYMENT_STATUSES).default("PAID"),
-  // true → IGST (single tax); false → CGST + SGST (split). Defaults intra-state.
-  isInterstate:   z.boolean().default(false),
-  notes:          z.string().max(1000).optional(),
-  idempotencyKey: z.string().uuid().default(() => randomUUID()),
-  items:          z.array(invoiceItemSchema).min(1, "At least one item required"),
+  customerId:       z.string().optional(),
+  doctorName:       z.string().max(200).optional(),
+  prescriptionId:   z.string().optional(),
+  paymentMode:      z.enum(PAYMENT_MODES).default("CASH"),
+  paymentStatus:    z.enum(PAYMENT_STATUSES).default("PAID"),
+  isInterstate:     z.boolean().default(false),
+  notes:            z.string().max(1000).optional(),
+  deliveryNotes:    z.string().max(1000).optional(),
+  // Bill-level adjustments applied on top of item discounts
+  billDiscountPct:  z.number().min(0).max(100).default(0),
+  extraCharges:     z.number().min(0).default(0),
+  adjustmentAmount: z.number().default(0),  // can be negative (reduction)
+  idempotencyKey:   z.string().uuid().default(() => randomUUID()),
+  items:            z.array(invoiceItemSchema).min(1, "At least one item required"),
 });
 
 export const cancelInvoiceSchema = z.object({
@@ -60,9 +64,9 @@ export const listInvoicesQuerySchema = z.object({
   page:             z.coerce.number().int().positive().default(1),
   limit:            z.coerce.number().int().positive().max(100).default(20),
   search:           z.string().optional(),
-  // Dates must carry a timezone offset (e.g. +05:30) so filtering is accurate for IST pharmacies
-  from:             z.string().datetime({ offset: true }).optional(),
-  to:               z.string().datetime({ offset: true }).optional(),
+  // Accept plain date (YYYY-MM-DD) from date pickers or full ISO datetime with offset
+  from:             z.string().optional(),
+  to:               z.string().optional(),
   status:           z.enum(INVOICE_STATUSES).optional(),
   includeCancelled: z.coerce.boolean().default(false),
   paymentMode:      z.enum(PAYMENT_MODES).optional(),
@@ -77,8 +81,8 @@ export const listReturnsQuerySchema = z.object({
   page:      z.coerce.number().int().positive().default(1),
   limit:     z.coerce.number().int().positive().max(100).default(20),
   search:    z.string().optional(),
-  from:      z.string().datetime({ offset: true }).optional(),
-  to:        z.string().datetime({ offset: true }).optional(),
+  from:      z.string().optional(),
+  to:        z.string().optional(),
   invoiceId: z.string().optional(),
 });
 

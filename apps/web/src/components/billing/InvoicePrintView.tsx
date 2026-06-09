@@ -2,50 +2,118 @@
 import { forwardRef } from "react";
 import { format } from "date-fns";
 import { formatCurrency, formatAmountInWords } from "@pharmacy/utils";
+import { defaultInvoiceSettings } from "@pharmacy/types";
+import type { InvoiceSettingsConfig } from "@pharmacy/types";
+
+// ─── Data shape ───────────────────────────────────────────────────────────────
 
 export type PrintInvoiceData = {
-  invoiceNumber: string;
-  createdAt: string;
-  customerName?: string;
+  invoiceNumber:  string;
+  createdAt:      string;
+  customerName?:  string;
   customerPhone?: string;
-  doctorName?: string;
-  paymentMode: string;
-  paymentStatus: string;
-  isInterstate?: boolean;
+  doctorName?:    string;
+  paymentMode:    string;
+  paymentStatus:  string;
+  isInterstate?:  boolean;
+  cashierName?:   string;
   items: Array<{
-    medicineName: string;
-    hsnCode: string | null;
-    batchNumber: string;
-    expiryDate: string;
-    mrp: number;
-    quantity: number;
-    discount: number;
-    gstRate: number;
-    rate: number;
+    medicineName:  string;
+    hsnCode:       string | null;
+    batchNumber:   string;
+    expiryDate:    string;
+    mrp:           number;
+    quantity:      number;
+    discount:      number;
+    gstRate:       number;
+    rate:          number;
     taxableAmount: number;
-    cgst: number;
-    sgst: number;
-    igst: number;
-    amount: number;
+    cgst:          number;
+    sgst:          number;
+    igst:          number;
+    amount:        number;
   }>;
-  subtotal: number;
+  subtotal:       number;
   discountAmount: number;
-  taxableAmount: number;
-  cgst: number;
-  sgst: number;
-  igst: number;
-  totalGst: number;
-  totalAmount: number;
+  taxableAmount:  number;
+  cgst:           number;
+  sgst:           number;
+  igst:           number;
+  totalGst:       number;
+  totalAmount:    number;
 };
 
-type Props = { invoice: PrintInvoiceData };
+// Pharmacy info passed down from the session context (or omitted for mock preview)
+export type PharmacyProfile = {
+  name:        string;
+  address?:    string;
+  phone?:      string;
+  email?:      string;
+  website?:    string;
+  gstin?:      string;
+  drugLicense?: string;
+  fssai?:      string;
+};
+
+type Props = {
+  invoice:  PrintInvoiceData;
+  config?:  Partial<InvoiceSettingsConfig>;
+  pharmacy?: PharmacyProfile;
+};
+
+// ─── Mock pharmacy used in the live preview ───────────────────────────────────
+
+const PREVIEW_PHARMACY: PharmacyProfile = {
+  name:        "Checkup Pharmacy",
+  address:     "123 MG Road, Andheri West, Mumbai 400058",
+  phone:       "+91 98765 43210",
+  email:       "info@checkuppharmacy.com",
+  gstin:       "27ABCDE1234F1Z5",
+  drugLicense: "MH-MUM-1234",
+  fssai:       "11224567890123",
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function merge(config?: Partial<InvoiceSettingsConfig>): InvoiceSettingsConfig {
+  if (!config) return defaultInvoiceSettings;
+  return {
+    ...defaultInvoiceSettings,
+    ...config,
+    branding: { ...defaultInvoiceSettings.branding, ...config.branding },
+    header:   { ...defaultInvoiceSettings.header,   ...config.header   },
+    patient:  { ...defaultInvoiceSettings.patient,  ...config.patient  },
+    columns:  { ...defaultInvoiceSettings.columns,  ...config.columns  },
+    totals:   { ...defaultInvoiceSettings.totals,   ...config.totals   },
+    footer:   { ...defaultInvoiceSettings.footer,   ...config.footer   },
+    numbering:{ ...defaultInvoiceSettings.numbering,...config.numbering },
+    paper:    { ...defaultInvoiceSettings.paper,    ...config.paper    },
+    policy:   { ...defaultInvoiceSettings.policy,   ...config.policy   },
+  };
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
-  function InvoicePrintView({ invoice }, ref) {
-    const roundedTotal = Math.round(invoice.totalAmount);
-    const roundOff = roundedTotal - invoice.totalAmount;
+  function InvoicePrintView({ invoice, config: configProp, pharmacy: pharmacyProp }, ref) {
+    const cfg      = merge(configProp);
+    const pharmacy = pharmacyProp ?? PREVIEW_PHARMACY;
+    const col      = cfg.columns;
+    const tot      = cfg.totals;
+    const hdr      = cfg.header;
+    const pat      = cfg.patient;
+    const ftr      = cfg.footer;
+    const br       = cfg.branding;
 
+    const primary      = br.primaryColor || "#1a3080";
+    const displayName  = br.pharmacyNameOverride || pharmacy.name;
+    const roundedTotal = Math.round(invoice.totalAmount);
+    const roundOff     = roundedTotal - invoice.totalAmount;
     const isInterstate = invoice.isInterstate ?? false;
+
+    // Determine which GST columns to show
+    const showCgstCol = !isInterstate && col.showGstRate;
+    const showIgstCol =  isInterstate && col.showGstRate;
 
     // GST slab summary
     const slabs = invoice.items.reduce<
@@ -59,182 +127,307 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
       return acc;
     }, {});
 
+    // Paper size → pixel width
+    const paperStyle: React.CSSProperties =
+      cfg.paper.size === "A5"
+        ? { width: "148mm", minHeight: "210mm", padding: "8mm",  fontSize: "9px"  }
+        : { width: "210mm", minHeight: "297mm", padding: "10mm", fontSize: "10px" };
+
+    const thStyle: React.CSSProperties = {
+      padding: "5px 6px",
+      fontWeight: 600,
+      whiteSpace: "nowrap" as const,
+      color: "#fff",
+      background: primary,
+    };
+
+    const tdStyle = (right = false): React.CSSProperties => ({
+      padding: "4px 6px",
+      borderBottom: "1px solid #eee",
+      textAlign: right ? "right" : "left",
+    });
+
     return (
       <div
         ref={ref}
-        className="bg-white font-sans text-gray-900"
-        style={{ width: "210mm", minHeight: "297mm", padding: "10mm", fontSize: "10px", lineHeight: "1.4" }}
+        className="bg-white font-sans text-gray-900 relative"
+        style={{ ...paperStyle, lineHeight: "1.4" }}
       >
-        {/* ── Header ── */}
-        <div style={{ borderBottom: "2px solid #1a1a1a", paddingBottom: "10px", marginBottom: "12px", textAlign: "center" }}>
-          <h1 style={{ fontSize: "20px", fontWeight: 700, margin: 0 }}>Checkup Pharmacy</h1>
-          <p style={{ color: "#555", margin: "4px 0 2px" }}>
-            123 Main Street, City · +91 98765 43210
-          </p>
-          <p style={{ color: "#555", margin: 0 }}>
-            GSTIN: 27ABCDE1234F1Z5 · Drug Lic: MH-1234
-          </p>
+        {/* Watermark */}
+        {br.watermarkText && (
           <div style={{
-            display: "inline-block",
-            background: "#1a1a1a",
-            color: "#fff",
-            padding: "2px 14px",
-            borderRadius: "4px",
-            marginTop: "8px",
-            fontSize: "11px",
-            fontWeight: 600,
-            letterSpacing: "0.08em",
+            position: "absolute", top: "50%", left: "50%",
+            transform: "translate(-50%,-50%) rotate(-45deg)",
+            fontSize: "48px", fontWeight: 900, opacity: 0.06,
+            color: primary, pointerEvents: "none", userSelect: "none",
+            whiteSpace: "nowrap", zIndex: 0,
           }}>
-            TAX INVOICE
+            {br.watermarkText}
           </div>
-        </div>
+        )}
 
-        {/* ── Invoice meta ── */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "12px" }}>
-          <div style={{ lineHeight: "1.8" }}>
-            <p><strong>Invoice No:</strong> {invoice.invoiceNumber}</p>
-            <p><strong>Date:</strong> {format(new Date(invoice.createdAt), "dd/MM/yyyy HH:mm")}</p>
-            <p><strong>Payment:</strong> {invoice.paymentMode} — {invoice.paymentStatus}</p>
-          </div>
-          <div style={{ lineHeight: "1.8" }}>
-            {invoice.customerName && <p><strong>Patient:</strong> {invoice.customerName}</p>}
-            {invoice.customerPhone && <p><strong>Phone:</strong> {invoice.customerPhone}</p>}
-            {invoice.doctorName && <p><strong>Doctor:</strong> {invoice.doctorName}</p>}
-          </div>
-        </div>
+        <div style={{ position: "relative", zIndex: 1 }}>
 
-        {/* ── Items table ── */}
-        <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: "14px", fontSize: "9.5px" }}>
-          <thead>
-            <tr style={{ background: "#1a1a1a", color: "#fff" }}>
-              {["#", "Medicine", "HSN", "Batch", "Exp", "MRP", "Qty", "Disc%", "Taxable", "GST%",
-                ...(isInterstate ? ["IGST"] : ["CGST", "SGST"]),
-                "Amount"].map((h) => (
-                <th key={h} style={{ padding: "5px 6px", textAlign: h === "#" || h === "Qty" || h === "GST%" ? "center" : ["Medicine", "HSN", "Batch", "Exp"].includes(h) ? "left" : "right", fontWeight: 600, whiteSpace: "nowrap" }}>
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {invoice.items.map((item, i) => (
-              <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#f9f9f9" }}>
-                <td style={{ padding: "4px 6px", textAlign: "center", borderBottom: "1px solid #eee" }}>{i + 1}</td>
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", fontWeight: 500 }}>{item.medicineName}</td>
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", color: "#666" }}>{item.hsnCode || "—"}</td>
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", fontFamily: "monospace" }}>{item.batchNumber}</td>
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", whiteSpace: "nowrap" }}>
-                  {format(new Date(item.expiryDate), "MM/yy")}
-                </td>
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>₹{item.mrp.toFixed(2)}</td>
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "center" }}>{item.quantity}</td>
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>
-                  {item.discount > 0 ? `${item.discount}%` : "—"}
-                </td>
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>₹{item.taxableAmount.toFixed(2)}</td>
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "center" }}>{item.gstRate}%</td>
-                {isInterstate
-                  ? <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>₹{item.igst.toFixed(2)}</td>
-                  : <>
-                      <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>₹{item.cgst.toFixed(2)}</td>
-                      <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right" }}>₹{item.sgst.toFixed(2)}</td>
-                    </>
-                }
-                <td style={{ padding: "4px 6px", borderBottom: "1px solid #eee", textAlign: "right", fontWeight: 600 }}>₹{item.amount.toFixed(2)}</td>
+          {/* ── Header ────────────────────────────────────────────────────────── */}
+          <div style={{
+            borderBottom: `2px solid ${primary}`,
+            paddingBottom: "10px",
+            marginBottom: "12px",
+            textAlign: hdr.align,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: hdr.align === "center" ? "center" : hdr.align === "right" ? "flex-end" : "flex-start",
+          }}>
+            {br.showLogo && br.logoUrl && (
+              <img
+                src={br.logoUrl}
+                alt="logo"
+                style={{
+                  height: br.logoSize === "small" ? "36px" : br.logoSize === "large" ? "72px" : "52px",
+                  marginBottom: "6px",
+                  objectFit: "contain",
+                }}
+              />
+            )}
+
+            {hdr.showName && (
+              <h1 style={{
+                fontSize: cfg.paper.size === "A5" ? "16px" : "20px",
+                fontWeight: br.pharmacyNameStyle === "bold" ? 700 : br.pharmacyNameStyle === "italic" ? 400 : 600,
+                fontStyle: br.pharmacyNameStyle === "italic" ? "italic" : "normal",
+                margin: 0,
+                color: primary,
+              }}>
+                {displayName}
+              </h1>
+            )}
+            {hdr.showAddress && pharmacy.address && (
+              <p style={{ color: "#555", margin: "3px 0 2px", fontSize: "9px" }}>{pharmacy.address}</p>
+            )}
+            <div style={{ fontSize: "9px", color: "#555", margin: "2px 0" }}>
+              {hdr.showPhone       && pharmacy.phone       && <span>{pharmacy.phone}</span>}
+              {hdr.showPhone && hdr.showEmail && pharmacy.phone && pharmacy.email && <span> · </span>}
+              {hdr.showEmail       && pharmacy.email       && <span>{pharmacy.email}</span>}
+              {hdr.showWebsite     && pharmacy.website     && <span> · {pharmacy.website}</span>}
+            </div>
+            <div style={{ fontSize: "9px", color: "#555", margin: "2px 0" }}>
+              {hdr.showGstin       && pharmacy.gstin       && <span>GSTIN: {pharmacy.gstin}</span>}
+              {hdr.showGstin && hdr.showDrugLicense && pharmacy.gstin && pharmacy.drugLicense && <span> · </span>}
+              {hdr.showDrugLicense && pharmacy.drugLicense && <span>Drug Lic: {pharmacy.drugLicense}</span>}
+              {hdr.showFssai       && pharmacy.fssai       && <span> · FSSAI: {pharmacy.fssai}</span>}
+            </div>
+            {hdr.customText && (
+              <p style={{ fontSize: "8.5px", color: "#777", marginTop: "3px" }}>{hdr.customText}</p>
+            )}
+            <div style={{
+              display: "inline-block", background: primary, color: "#fff",
+              padding: "2px 14px", borderRadius: "4px", marginTop: "8px",
+              fontSize: "11px", fontWeight: 600, letterSpacing: "0.08em",
+            }}>
+              TAX INVOICE
+            </div>
+          </div>
+
+          {/* ── Invoice meta + Patient info ───────────────────────────────────── */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px", marginBottom: "12px" }}>
+            <div style={{ lineHeight: "1.8", fontSize: "9.5px" }}>
+              <p><strong>Invoice No:</strong> {invoice.invoiceNumber}</p>
+              {pat.showInvoiceDate && (
+                <p><strong>Date:</strong> {format(new Date(invoice.createdAt), "dd/MM/yyyy HH:mm")}</p>
+              )}
+              {tot.showPaymentMode && (
+                <p><strong>Payment:</strong> {invoice.paymentMode} — {invoice.paymentStatus}</p>
+              )}
+              {pat.showCashier && invoice.cashierName && (
+                <p><strong>Cashier:</strong> {invoice.cashierName}</p>
+              )}
+            </div>
+            <div style={{ lineHeight: "1.8", fontSize: "9.5px" }}>
+              {pat.showName   && invoice.customerName  && <p><strong>Patient:</strong> {invoice.customerName}</p>}
+              {pat.showMobile && invoice.customerPhone && <p><strong>Phone:</strong>   {invoice.customerPhone}</p>}
+              {pat.showDoctor && invoice.doctorName    && <p><strong>Doctor:</strong>  {invoice.doctorName}</p>}
+            </div>
+          </div>
+
+          {/* ── Items table ──────────────────────────────────────────────────── */}
+          <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: "14px", fontSize: "9px" }}>
+            <thead>
+              <tr>
+                <th style={{ ...thStyle, textAlign: "center" }}>#</th>
+                <th style={{ ...thStyle, textAlign: "left" }}>Medicine</th>
+                {col.showHsn      && <th style={{ ...thStyle, textAlign: "left" }}>HSN</th>}
+                {col.showBatch    && <th style={{ ...thStyle, textAlign: "left" }}>Batch</th>}
+                {col.showExpiry   && <th style={{ ...thStyle, textAlign: "left" }}>Exp</th>}
+                {col.showMrp      && <th style={{ ...thStyle, textAlign: "right" }}>MRP</th>}
+                <th style={{ ...thStyle, textAlign: "center" }}>Qty</th>
+                {col.showFreeQty  && <th style={{ ...thStyle, textAlign: "center" }}>Free</th>}
+                {col.showDiscount && <th style={{ ...thStyle, textAlign: "right" }}>Disc%</th>}
+                {col.showRate     && <th style={{ ...thStyle, textAlign: "right" }}>Rate</th>}
+                {col.showTaxable  && <th style={{ ...thStyle, textAlign: "right" }}>Taxable</th>}
+                {col.showGstRate  && <th style={{ ...thStyle, textAlign: "center" }}>GST%</th>}
+                {showCgstCol && <th style={{ ...thStyle, textAlign: "right" }}>CGST</th>}
+                {showCgstCol && <th style={{ ...thStyle, textAlign: "right" }}>SGST</th>}
+                {showIgstCol && <th style={{ ...thStyle, textAlign: "right" }}>IGST</th>}
+                <th style={{ ...thStyle, textAlign: "right" }}>Amt</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-
-        {/* ── Totals + GST slab summary ── */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginBottom: "12px" }}>
-          {/* GST summary */}
-          <div>
-            <p style={{ fontWeight: 600, marginBottom: "6px", color: "#333" }}>GST Summary</p>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "9.5px", border: "1px solid #ccc" }}>
-              <thead>
-                <tr style={{ background: "#f0f0f0" }}>
-                  <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "left" }}>Rate</th>
-                  <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>Taxable</th>
-                  {isInterstate
-                    ? <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>IGST</th>
-                    : <>
-                        <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>CGST</th>
-                        <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>SGST</th>
-                      </>
-                  }
+            </thead>
+            <tbody>
+              {invoice.items.map((item, i) => (
+                <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#f9f9f9" }}>
+                  <td style={{ ...tdStyle(), textAlign: "center" }}>{i + 1}</td>
+                  <td style={{ ...tdStyle(), fontWeight: 500 }}>{item.medicineName}</td>
+                  {col.showHsn      && <td style={tdStyle()}>{item.hsnCode || "—"}</td>}
+                  {col.showBatch    && <td style={{ ...tdStyle(), fontFamily: "monospace" }}>{item.batchNumber}</td>}
+                  {col.showExpiry   && <td style={{ ...tdStyle(), whiteSpace: "nowrap" }}>{format(new Date(item.expiryDate), "MM/yy")}</td>}
+                  {col.showMrp      && <td style={tdStyle(true)}>₹{item.mrp.toFixed(2)}</td>}
+                  <td style={{ ...tdStyle(), textAlign: "center" }}>{item.quantity}</td>
+                  {col.showFreeQty  && <td style={{ ...tdStyle(), textAlign: "center" }}>—</td>}
+                  {col.showDiscount && <td style={tdStyle(true)}>{item.discount > 0 ? `${item.discount}%` : "—"}</td>}
+                  {col.showRate     && <td style={tdStyle(true)}>₹{item.rate.toFixed(2)}</td>}
+                  {col.showTaxable  && <td style={tdStyle(true)}>₹{item.taxableAmount.toFixed(2)}</td>}
+                  {col.showGstRate  && <td style={{ ...tdStyle(), textAlign: "center" }}>{item.gstRate}%</td>}
+                  {showCgstCol && <td style={tdStyle(true)}>₹{item.cgst.toFixed(2)}</td>}
+                  {showCgstCol && <td style={tdStyle(true)}>₹{item.sgst.toFixed(2)}</td>}
+                  {showIgstCol && <td style={tdStyle(true)}>₹{(item.igst || item.cgst + item.sgst).toFixed(2)}</td>}
+                  <td style={{ ...tdStyle(true), fontWeight: 600 }}>₹{item.amount.toFixed(2)}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {Object.entries(slabs)
-                  .sort(([a], [b]) => Number(a) - Number(b))
-                  .map(([rate, v]) => (
-                    <tr key={rate}>
-                      <td style={{ border: "1px solid #ccc", padding: "4px 6px" }}>{rate}%</td>
-                      <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.taxable.toFixed(2)}</td>
+              ))}
+            </tbody>
+          </table>
+
+          {/* ── Totals + GST slab ────────────────────────────────────────────── */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px", marginBottom: "12px" }}>
+            {/* GST slab breakdown */}
+            {tot.showGstBreakdown && (
+              <div>
+                <p style={{ fontWeight: 600, marginBottom: "6px", color: "#333", fontSize: "9.5px" }}>GST Summary</p>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "9px", border: "1px solid #ccc" }}>
+                  <thead>
+                    <tr style={{ background: "#f0f0f0" }}>
+                      <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "left" }}>Rate</th>
+                      <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>Taxable</th>
                       {isInterstate
-                        ? <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.igst.toFixed(2)}</td>
+                        ? <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>IGST</th>
                         : <>
-                            <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.cgst.toFixed(2)}</td>
-                            <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.sgst.toFixed(2)}</td>
+                            <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>CGST</th>
+                            <th style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>SGST</th>
                           </>
                       }
                     </tr>
-                  ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Invoice totals */}
-          <div style={{ fontSize: "10px" }}>
-            {[
-              { label: "Subtotal (MRP)", value: formatCurrency(invoice.subtotal) },
-              ...(invoice.discountAmount > 0
-                ? [{ label: "Discount", value: `− ${formatCurrency(invoice.discountAmount)}`, color: "#16a34a" }]
-                : []),
-              { label: "Taxable Amount", value: formatCurrency(invoice.taxableAmount) },
-              ...(isInterstate
-                ? [{ label: "IGST", value: formatCurrency(invoice.igst) }]
-                : [
-                    { label: "CGST", value: formatCurrency(invoice.cgst) },
-                    { label: "SGST", value: formatCurrency(invoice.sgst) },
-                  ]),
-              ...(Math.abs(roundOff) >= 0.01
-                ? [{ label: "Round Off", value: `${roundOff > 0 ? "+" : ""}${roundOff.toFixed(2)}`, color: "#999" }]
-                : []),
-            ].map(({ label, value, color }) => (
-              <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: color ?? "#333", borderBottom: "1px solid #f0f0f0" }}>
-                <span>{label}</span>
-                <span>{value}</span>
+                  </thead>
+                  <tbody>
+                    {Object.entries(slabs).sort(([a], [b]) => Number(a) - Number(b)).map(([rate, v]) => (
+                      <tr key={rate}>
+                        <td style={{ border: "1px solid #ccc", padding: "4px 6px" }}>{rate}%</td>
+                        <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.taxable.toFixed(2)}</td>
+                        {isInterstate
+                          ? <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.igst.toFixed(2)}</td>
+                          : <>
+                              <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.cgst.toFixed(2)}</td>
+                              <td style={{ border: "1px solid #ccc", padding: "4px 6px", textAlign: "right" }}>₹{v.sgst.toFixed(2)}</td>
+                            </>
+                        }
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-            ))}
-            <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0 4px", borderTop: "2px solid #1a1a1a", fontWeight: 700, fontSize: "13px", marginTop: "4px" }}>
-              <span>Total</span>
-              <span>₹{roundedTotal.toFixed(2)}</span>
+            )}
+
+            {/* Invoice totals */}
+            <div style={{ fontSize: "9.5px", ...(tot.showGstBreakdown ? {} : { gridColumn: "1 / -1" }) }}>
+              {tot.showSubtotal && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid #f0f0f0" }}>
+                  <span>Subtotal (MRP)</span><span>{formatCurrency(invoice.subtotal)}</span>
+                </div>
+              )}
+              {tot.showDiscount && invoice.discountAmount > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#16a34a", borderBottom: "1px solid #f0f0f0" }}>
+                  <span>Discount</span><span>− {formatCurrency(invoice.discountAmount)}</span>
+                </div>
+              )}
+              {tot.showSavings && invoice.discountAmount > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#16a34a", borderBottom: "1px solid #f0f0f0" }}>
+                  <span>You Save</span><span>{formatCurrency(invoice.discountAmount)}</span>
+                </div>
+              )}
+              {tot.showTaxable && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid #f0f0f0" }}>
+                  <span>Taxable Amount</span><span>{formatCurrency(invoice.taxableAmount)}</span>
+                </div>
+              )}
+              {!isInterstate && tot.showCgst && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid #f0f0f0" }}>
+                  <span>CGST</span><span>{formatCurrency(invoice.cgst)}</span>
+                </div>
+              )}
+              {!isInterstate && tot.showSgst && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid #f0f0f0" }}>
+                  <span>SGST</span><span>{formatCurrency(invoice.sgst)}</span>
+                </div>
+              )}
+              {isInterstate && tot.showIgst && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid #f0f0f0" }}>
+                  <span>IGST</span><span>{formatCurrency(invoice.igst)}</span>
+                </div>
+              )}
+              {tot.showRoundOff && Math.abs(roundOff) >= 0.005 && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#999", borderBottom: "1px solid #f0f0f0" }}>
+                  <span>Round Off</span><span>{roundOff > 0 ? "+" : ""}{roundOff.toFixed(2)}</span>
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0 4px", borderTop: `2px solid ${primary}`, fontWeight: 700, fontSize: "13px", marginTop: "4px" }}>
+                <span>Net Payable</span><span>₹{roundedTotal.toFixed(2)}</span>
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* ── Amount in words ── */}
-        <div style={{ background: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: "4px", padding: "6px 10px", marginBottom: "16px", fontSize: "9.5px" }}>
-          <strong>Amount in Words: </strong>
-          <em>{formatAmountInWords(roundedTotal)}</em>
-        </div>
-
-        {/* ── Footer ── */}
-        <div style={{ borderTop: "1px solid #ccc", paddingTop: "10px", display: "grid", gridTemplateColumns: "1fr 1fr", fontSize: "9px", color: "#666" }}>
-          <div>
-            <p style={{ fontWeight: 600, color: "#333", marginBottom: "4px" }}>Terms & Conditions</p>
-            <p>• Medicines once sold will not be returned.</p>
-            <p>• This is a computer-generated invoice.</p>
-            <p>• All disputes subject to local jurisdiction.</p>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ marginTop: "30px", borderTop: "1px solid #999", paddingTop: "4px", display: "inline-block", minWidth: "120px" }}>
-              <p style={{ fontWeight: 600, color: "#333" }}>Authorized Signature</p>
-              <p>Checkup Pharmacy</p>
+          {/* ── Amount in words ───────────────────────────────────────────────── */}
+          {tot.showAmountWords && (
+            <div style={{ background: "#f5f5f5", border: "1px solid #e0e0e0", borderRadius: "4px", padding: "5px 10px", marginBottom: "16px", fontSize: "9px" }}>
+              <strong>Amount in Words: </strong><em>{formatAmountInWords(roundedTotal)}</em>
             </div>
+          )}
+
+          {/* ── Footer ───────────────────────────────────────────────────────── */}
+          <div style={{ borderTop: "1px solid #ccc", paddingTop: "10px", display: "grid", gridTemplateColumns: ftr.showSignature ? "1fr 1fr" : "1fr", gap: "16px", fontSize: "9px", color: "#666" }}>
+            <div>
+              {ftr.terms && (
+                <>
+                  <p style={{ fontWeight: 600, color: "#333", marginBottom: "4px" }}>Terms & Conditions</p>
+                  {ftr.terms.split("\n").map((line, i) => (
+                    <p key={i}>• {line}</p>
+                  ))}
+                </>
+              )}
+              {ftr.contactInfo && <p style={{ marginTop: "6px" }}>{ftr.contactInfo}</p>}
+            </div>
+
+            {ftr.showSignature && (
+              <div style={{ textAlign: "right" }}>
+                <div style={{ marginTop: "30px", borderTop: "1px solid #999", paddingTop: "4px", display: "inline-block", minWidth: "120px" }}>
+                  <p style={{ fontWeight: 600, color: "#333" }}>{ftr.signatureLabel}</p>
+                  <p>{displayName}</p>
+                </div>
+              </div>
+            )}
           </div>
+
+          {ftr.thankYouText && (
+            <p style={{ textAlign: "center", marginTop: "12px", fontSize: "9.5px", color: "#777", fontStyle: "italic" }}>
+              {ftr.thankYouText}
+            </p>
+          )}
+
+          {ftr.showQrCode && ftr.upiId && (
+            <div style={{ textAlign: "center", marginTop: "10px" }}>
+              <p style={{ fontSize: "9px", color: "#555" }}>UPI: <strong>{ftr.upiId}</strong></p>
+            </div>
+          )}
+
+          <p style={{ textAlign: "center", marginTop: "8px", fontSize: "8px", color: "#bbb" }}>
+            This is a computer-generated invoice.
+          </p>
         </div>
       </div>
     );

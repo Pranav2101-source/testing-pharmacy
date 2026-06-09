@@ -41,6 +41,7 @@ const LocationsPage       = lazy(() => import("./pages/dashboard/LocationsPage")
 const StockAuditPage      = lazy(() => import("./pages/dashboard/StockAuditPage"));
 const StockAuditDetailPage = lazy(() => import("./pages/dashboard/StockAuditDetailPage"));
 const CalendarPage         = lazy(() => import("./pages/dashboard/CalendarPage"));
+const CustomersPage        = lazy(() => import("./pages/dashboard/CustomersPage"));
 
 // ─── Settings ─────────────────────────────────────────────────
 const SettingsPage           = lazy(() => import("./pages/dashboard/settings/SettingsPage"));
@@ -49,7 +50,8 @@ const DocumentsPage          = lazy(() => import("./pages/dashboard/settings/Doc
 const StaffSettingsPage      = lazy(() => import("./pages/dashboard/settings/StaffSettingsPage"));
 const PlansPage              = lazy(() => import("./pages/dashboard/settings/PlansPage"));
 const ChangePasswordPage     = lazy(() => import("./pages/dashboard/settings/ChangePasswordPage"));
-const InvoiceSettingsPage    = lazy(() => import("./pages/dashboard/settings/InvoiceSettingsPage"));
+const InvoiceSettingsPage        = lazy(() => import("./pages/dashboard/settings/InvoiceSettingsPage"));
+const BillingPreferencesPage     = lazy(() => import("./pages/dashboard/settings/BillingPreferencesPage"));
 
 function PageLoader() {
   return (
@@ -97,6 +99,7 @@ export function App() {
               <Route path="/dashboard/stock-audit"           element={<StockAuditPage />} />
               <Route path="/dashboard/stock-audit/:id"       element={<StockAuditDetailPage />} />
               <Route path="/dashboard/calendar"             element={<CalendarPage />} />
+              <Route path="/dashboard/customers"           element={<CustomersPage />} />
 
               {/* Settings nested layout */}
               <Route element={<SettingsLayout />}>
@@ -107,6 +110,7 @@ export function App() {
                 <Route path="/dashboard/settings/plans"                element={<PlansPage />} />
                 <Route path="/dashboard/settings/change-password"      element={<ChangePasswordPage />} />
                 <Route path="/dashboard/settings/invoice"              element={<InvoiceSettingsPage />} />
+                <Route path="/dashboard/settings/billing"             element={<BillingPreferencesPage />} />
               </Route>
             </Route>
           </Route>

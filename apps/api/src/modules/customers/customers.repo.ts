@@ -1,62 +1,105 @@
 import type { PrismaClient, Prisma, CustomerType } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 
+type CustomerWriteData = {
+  name:            string;
+  phone?:          string;
+  email?:          string;
+  address?:        string;
+  age?:            number;
+  dateOfBirth?:    string; // "YYYY-MM-DD" — converted to Date before writing
+  gender?:         string;
+  abhaNumber?:     string;
+  cardNumber?:     string;
+  customerType:    string;
+  defaultDiscount: number;
+  creditLimit:     number;
+  notes?:          string;
+  createdById?:    string;
+};
+
+// Reusable filter that excludes soft-deleted customers from all queries
+const ACTIVE = { deletedAt: null } as const;
+
+function parseDate(iso?: string): Date | undefined {
+  if (!iso) return undefined;
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? undefined : d;
+}
+
 export class CustomersRepo {
   constructor(private db: PrismaClient) {}
 
-  async create(pharmacyId: string, data: {
-    name:         string;
-    phone?:       string;
-    email?:       string;
-    address?:     string;
-    age?:         number;
-    gender?:      string;
-    customerType: string;
-    creditLimit:  number;
-  }) {
+  async create(pharmacyId: string, data: CustomerWriteData) {
     if (data.phone) {
-      const existing = await this.db.customer.findFirst({
-        where: { pharmacyId, phone: data.phone },
+      const dup = await this.db.customer.findFirst({
+        where: { pharmacyId, phone: data.phone, ...ACTIVE },
       });
-      if (existing) {
-        throw AppError.conflict(`A customer with mobile ${data.phone} already exists`);
-      }
+      if (dup) throw AppError.conflict(`A customer with mobile ${data.phone} already exists`);
     }
 
+    if (data.abhaNumber) {
+      const dup = await this.db.customer.findFirst({
+        where: { pharmacyId, abhaNumber: data.abhaNumber, ...ACTIVE },
+      });
+      if (dup) throw AppError.conflict(`A customer with ABHA number ${data.abhaNumber} already exists`);
+    }
+
+    if (data.cardNumber) {
+      const dup = await this.db.customer.findFirst({
+        where: { pharmacyId, cardNumber: data.cardNumber, ...ACTIVE },
+      });
+      if (dup) throw AppError.conflict(`Card number ${data.cardNumber} is already assigned to another customer`);
+    }
+
+    const { dateOfBirth, customerType, ...rest } = data;
     return this.db.customer.create({
-      data: { pharmacyId, ...data, customerType: data.customerType as never },
+      data: {
+        pharmacyId,
+        ...rest,
+        customerType:    customerType as CustomerType,
+        dateOfBirth:     parseDate(dateOfBirth),
+        defaultDiscount: rest.defaultDiscount ?? 0,
+      },
     });
   }
 
-  async update(id: string, pharmacyId: string, data: Partial<{
-    name:         string;
-    phone:        string;
-    email:        string;
-    address:      string;
-    age:          number;
-    gender:       string;
-    customerType: string;
-    creditLimit:  number;
-  }>) {
+  async update(id: string, pharmacyId: string, data: Partial<Omit<CustomerWriteData, "createdById">>) {
     if (data.phone) {
-      const duplicate = await this.db.customer.findFirst({
-        where: { pharmacyId, phone: data.phone, NOT: { id } },
+      const dup = await this.db.customer.findFirst({
+        where: { pharmacyId, phone: data.phone, NOT: { id }, ...ACTIVE },
       });
-      if (duplicate) {
-        throw AppError.conflict(`Mobile ${data.phone} is already registered to another customer`);
-      }
+      if (dup) throw AppError.conflict(`Mobile ${data.phone} is already registered to another customer`);
     }
 
-    const { customerType, ...rest } = data;
+    if (data.abhaNumber) {
+      const dup = await this.db.customer.findFirst({
+        where: { pharmacyId, abhaNumber: data.abhaNumber, NOT: { id }, ...ACTIVE },
+      });
+      if (dup) throw AppError.conflict(`ABHA number ${data.abhaNumber} is already assigned to another customer`);
+    }
+
+    if (data.cardNumber) {
+      const dup = await this.db.customer.findFirst({
+        where: { pharmacyId, cardNumber: data.cardNumber, NOT: { id }, ...ACTIVE },
+      });
+      if (dup) throw AppError.conflict(`Card number ${data.cardNumber} is already assigned to another customer`);
+    }
+
+    const { customerType, dateOfBirth, ...rest } = data;
     return this.db.customer.update({
-      where: { id, pharmacyId },  // pharmacyId scopes the update — cross-tenant modification impossible
-      data:  { ...rest, ...(customerType ? { customerType: customerType as CustomerType } : {}) },
+      where: { id, pharmacyId, deletedAt: null },
+      data:  {
+        ...rest,
+        ...(customerType !== undefined ? { customerType: customerType as CustomerType } : {}),
+        ...(dateOfBirth !== undefined  ? { dateOfBirth: parseDate(dateOfBirth) ?? null } : {}),
+      },
     });
   }
 
   async getById(id: string, pharmacyId: string) {
     return this.db.customer.findFirst({
-      where:   { id, pharmacyId },
+      where:   { id, pharmacyId, ...ACTIVE },
       include: {
         invoices: {
           where:   { isCancelled: false },
@@ -76,13 +119,16 @@ export class CustomersRepo {
   }) {
     const where: Prisma.CustomerWhereInput = {
       pharmacyId,
-      ...(params.customerType ? { customerType: params.customerType as never } : {}),
+      ...ACTIVE,
+      ...(params.customerType ? { customerType: params.customerType as CustomerType } : {}),
       ...(params.search
         ? {
             OR: [
-              { name:  { contains: params.search, mode: "insensitive" } },
-              { phone: { contains: params.search, mode: "insensitive" } },
-              { email: { contains: params.search, mode: "insensitive" } },
+              { name:       { contains: params.search, mode: "insensitive" } },
+              { phone:      { contains: params.search, mode: "insensitive" } },
+              { email:      { contains: params.search, mode: "insensitive" } },
+              { abhaNumber: { contains: params.search, mode: "insensitive" } },
+              { cardNumber: { contains: params.search, mode: "insensitive" } },
             ],
           }
         : {}),
@@ -108,17 +154,56 @@ export class CustomersRepo {
     };
   }
 
-  async delete(id: string, pharmacyId: string) {
-    const customer = await this.db.customer.findFirst({ where: { id, pharmacyId } });
+  // Fast search optimised for the billing combobox — returns lightweight projection only.
+  // Phone-digit queries bubble phone-prefix matches to the top for pharmacist speed.
+  async search(pharmacyId: string, q: string, limit: number) {
+    const trimmed = q.trim();
+    const isDigit = /^\d+$/.test(trimmed);
+
+    const where: Prisma.CustomerWhereInput = {
+      pharmacyId,
+      ...ACTIVE,
+      OR: [
+        { phone:      { startsWith: trimmed, mode: "insensitive" } },
+        { name:       { contains:   trimmed, mode: "insensitive" } },
+        { abhaNumber: { contains:   trimmed, mode: "insensitive" } },
+        { cardNumber: { contains:   trimmed, mode: "insensitive" } },
+        ...(!isDigit ? [{ email: { contains: trimmed, mode: "insensitive" as const } }] : []),
+      ],
+    };
+
+    return this.db.customer.findMany({
+      where,
+      take:    limit,
+      orderBy: isDigit ? { phone: "asc" } : { name: "asc" },
+      select:  {
+        id:              true,
+        name:            true,
+        phone:           true,
+        email:           true,
+        customerType:    true,
+        defaultDiscount: true,
+        creditLimit:     true,
+        creditUsed:      true,
+        abhaNumber:      true,
+        cardNumber:      true,
+      },
+    });
+  }
+
+  async softDelete(id: string, pharmacyId: string) {
+    const customer = await this.db.customer.findFirst({ where: { id, pharmacyId, ...ACTIVE } });
     if (!customer) throw AppError.notFound("Customer not found");
 
-    // pharmacyId scopes the delete — prevents cross-tenant deletion
-    return this.db.customer.delete({ where: { id, pharmacyId } });
+    return this.db.customer.update({
+      where: { id, pharmacyId },
+      data:  { deletedAt: new Date() },
+    });
   }
 
   async getCreditSummary(id: string, pharmacyId: string) {
     const customer = await this.db.customer.findFirst({
-      where:  { id, pharmacyId },
+      where:  { id, pharmacyId, ...ACTIVE },
       select: { creditLimit: true, creditUsed: true, customerType: true },
     });
     if (!customer) throw AppError.notFound("Customer not found");

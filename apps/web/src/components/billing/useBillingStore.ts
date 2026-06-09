@@ -14,29 +14,36 @@ export type CartItem = {
   quantity:       number;
   discount:       number;
   gstRate:        number;
-  availableStock?: number; // stock at time of add — used for in-cart warnings
+  availableStock?: number;
   // computed
   rate:           number;
   taxableAmount:  number;
   cgst:           number;
   sgst:           number;
+  igst:           number;  // 0 for intra-state; full GST for interstate
   amount:         number;
 };
 
 export type BillingMeta = {
-  customerName:  string;
-  customerPhone: string;
-  doctorName:    string;
-  paymentMode:   "CASH" | "UPI" | "CARD" | "CREDIT";
-  paymentStatus: "PAID" | "PENDING" | "PARTIAL";
-  isInterstate:  boolean; // true → IGST; false → CGST + SGST
-  notes:         string;
+  customerId:              string;
+  customerName:            string;
+  customerPhone:           string;
+  customerDefaultDiscount: number;
+  doctorName:              string;
+  paymentMode:             "CASH" | "UPI" | "CARD" | "CREDIT";
+  paymentStatus:           "PAID" | "PENDING" | "PARTIAL";
+  isInterstate:            boolean;
+  notes:                   string;  // internal notes
+  deliveryNotes:           string;  // delivery instructions (shown on print)
+  billDiscountPct:         number;  // bill-level discount % applied after item discounts
+  extraCharges:            number;  // delivery / packaging / misc charge
+  adjustmentAmount:        number;  // manual ± adjustment (rounding, goodwill, etc.)
 };
 
 type BillingStore = {
   items: CartItem[];
   meta: BillingMeta;
-  addItem: (base: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "amount">) => void;
+  addItem: (base: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "igst" | "amount">) => void;
   removeItem: (inventoryId: string) => void;
   updateQty: (inventoryId: string, qty: number) => void;
   updateDiscount: (inventoryId: string, discount: number) => void;
@@ -47,21 +54,29 @@ type BillingStore = {
 };
 
 const DEFAULT_META: BillingMeta = {
-  customerName:  "",
-  customerPhone: "",
-  doctorName:    "",
-  paymentMode:   "CASH",
-  paymentStatus: "PAID",
-  isInterstate:  false,
-  notes:         "",
+  customerId:              "",
+  customerName:            "",
+  customerPhone:           "",
+  customerDefaultDiscount: 0,
+  doctorName:              "",
+  paymentMode:             "CASH",
+  paymentStatus:           "PAID",
+  isInterstate:            false,
+  notes:                   "",
+  deliveryNotes:           "",
+  billDiscountPct:         0,
+  extraCharges:            0,
+  adjustmentAmount:        0,
 };
 
-function recompute(item: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "amount"> & Partial<CartItem>): CartItem {
-  const { taxableAmount, cgst, sgst, totalAmount } = calcGstFromMrp(
+function recompute(item: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "igst" | "amount"> & Partial<CartItem>): CartItem {
+  const isInterstate = false; // item-level calc is always intra-state; IGST toggled at invoice level
+  const { taxableAmount, cgst, sgst, igst, totalAmount } = calcGstFromMrp(
     item.mrp,
     item.quantity,
     item.discount,
-    item.gstRate
+    item.gstRate,
+    isInterstate,
   );
   return {
     inventoryId:    item.inventoryId,
@@ -80,6 +95,7 @@ function recompute(item: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgs
     taxableAmount,
     cgst,
     sgst,
+    igst,
     amount:         totalAmount,
   };
 }
@@ -135,7 +151,9 @@ export const useBillingStore = create<BillingStore>((set, get) => ({
   },
 
   loadDraft(draftItems, draftMeta) {
-    set({ items: draftItems, meta: draftMeta });
+    // Spread DEFAULT_META first so drafts saved before new fields were added
+    // still get valid defaults for customerId / customerDefaultDiscount.
+    set({ items: draftItems, meta: { ...DEFAULT_META, ...draftMeta } });
   },
 
   getTotals() {

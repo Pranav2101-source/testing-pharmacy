@@ -58,12 +58,17 @@ export class BillingRepo {
   //   4.5. Audit entry for credit change.
   //   5.   Write invoice AuditLog.
 
+  // Minimal invoice shape returned from the transaction — only scalar fields needed
+  // inside the lock window. Relation data (items, payments, customer, user) is NOT
+  // loaded here; callers that need it should do a separate findUnique outside the tx.
+  private static readonly INVOICE_CREATE_SELECT = {
+    id: true, invoiceNumber: true, createdAt: true,
+    totalAmount: true, paymentMode: true,
+  } satisfies Prisma.InvoiceSelect;
+
   async createInvoiceTransactional(params: {
     pharmacyId:            string;
     userId:                string;
-    // invoiceNumber is excluded from invoiceData and generated inside the
-    // transaction (after the idempotency check) via the callback below, so
-    // duplicate requests never advance the Redis sequence counter.
     invoiceData:           Omit<Prisma.InvoiceCreateInput, "invoiceNumber">;
     generateInvoiceNumber: () => Promise<string>;
     stockDecrements:       { inventoryId: string; quantity: number; medicineName: string }[];
@@ -74,7 +79,7 @@ export class BillingRepo {
     paymentMode?:          string;
     auditMeta?:            { ipAddress?: string; userAgent?: string };
   }) {
-    return this.db.$transaction(async (tx) => {
+    const txResult = await this.db.$transaction(async (tx) => {
 
       // Step 0 — idempotency (generator NOT called on duplicate → no sequence gap)
       if (params.idempotencyKey) {
@@ -85,30 +90,35 @@ export class BillingRepo {
               idempotencyKey: params.idempotencyKey,
             },
           },
-          include: INVOICE_INCLUDE,
+          select: BillingRepo.INVOICE_CREATE_SELECT,
         });
-        if (existing) return existing;
+        if (existing) return { invoice: existing, isNew: false };
       }
 
       // Generate invoice number only after confirming this is a new request.
       const invoiceNumber = await params.generateInvoiceNumber();
 
-      // Step 0.5 — release stock reservations for this billing session
+      // Step 0.5 — release stock reservations (single raw SQL instead of N round-trips)
       if (params.idempotencyKey) {
         const reservations = await tx.stockReservation.findMany({
           where:  { pharmacyId: params.pharmacyId, sessionId: params.idempotencyKey },
           select: { inventoryId: true, quantity: true },
         });
         if (reservations.length > 0) {
-          await tx.stockReservation.deleteMany({
-            where: { pharmacyId: params.pharmacyId, sessionId: params.idempotencyKey },
-          });
-          for (const r of reservations) {
-            await tx.inventory.update({
-              where: { id: r.inventoryId },
-              data:  { reservedQuantity: { decrement: r.quantity } },
-            });
-          }
+          const resIds  = reservations.map((r) => r.inventoryId);
+          const resQtys = reservations.map((r) => r.quantity);
+          await Promise.all([
+            tx.stockReservation.deleteMany({
+              where: { pharmacyId: params.pharmacyId, sessionId: params.idempotencyKey },
+            }),
+            tx.$executeRaw`
+              UPDATE inventory inv
+              SET    "reservedQuantity" = GREATEST(0, inv."reservedQuantity" - b.qty)
+              FROM   (SELECT unnest(${resIds}::text[]) AS id, unnest(${resQtys}::int[]) AS qty) AS b
+              WHERE  inv.id           = b.id
+                AND  inv."pharmacyId" = ${params.pharmacyId}::text
+            `,
+          ]);
         }
       }
 
@@ -122,14 +132,14 @@ export class BillingRepo {
 
       const decremented = await tx.$queryRaw<DecrRow[]>`
         WITH batch(id, qty) AS (
-          SELECT unnest(${inventoryIds}::uuid[]), unnest(${quantities}::int[])
+          SELECT unnest(${inventoryIds}::text[]), unnest(${quantities}::int[])
         ),
         upd AS (
           UPDATE inventory inv
           SET    quantity = inv.quantity - b.qty
           FROM   batch b
           WHERE  inv.id           = b.id
-            AND  inv."pharmacyId" = ${params.pharmacyId}::uuid
+            AND  inv."pharmacyId" = ${params.pharmacyId}::text
             AND  inv.quantity    >= b.qty
           RETURNING inv.id, inv.quantity AS qty_after, b.qty AS qty_dec
         )
@@ -159,10 +169,10 @@ export class BillingRepo {
         quantityAfter:  row.qty_after,
       }));
 
-      // Step 2 — create invoice + line items
+      // Step 2 — create invoice + line items (minimal select — no relation joins inside the tx)
       const invoice = await tx.invoice.create({
-        data:    { ...params.invoiceData, invoiceNumber },
-        include: INVOICE_INCLUDE,
+        data:   { ...params.invoiceData, invoiceNumber },
+        select: BillingRepo.INVOICE_CREATE_SELECT,
       });
 
       // Step 3 — inventory movements
@@ -217,29 +227,10 @@ export class BillingRepo {
         });
       }
 
-      // Step 5 — invoice audit log
-      await tx.auditLog.create({
-        data: {
-          pharmacyId: params.pharmacyId,
-          userId:     params.userId,
-          action:     "CREATE",
-          entity:     "Invoice",
-          entityId:   invoice.id,
-          newData: {
-            invoiceNumber: invoice.invoiceNumber,
-            totalAmount:   invoice.totalAmount,
-            itemCount:     invoice.items.length,
-            paymentMode:   invoice.paymentMode,
-          },
-          ipAddress: params.auditMeta?.ipAddress,
-          userAgent: params.auditMeta?.userAgent?.slice(0, 500),
-        },
-      });
-
-      return invoice;
+      return { invoice, isNew: true };
     }, {
       isolationLevel: "Serializable",
-      timeout: 15_000,
+      timeout: 10_000,
     }).catch((err: { code?: string }) => {
       if (err.code === "P2034") {
         throw AppError.conflict(
@@ -248,6 +239,30 @@ export class BillingRepo {
       }
       throw err;
     });
+
+    // Write invoice audit log OUTSIDE the Serializable transaction — reduces lock-hold
+    // time. Non-critical: a write failure here does not roll back the committed invoice.
+    if (txResult.isNew) {
+      void this.db.auditLog.create({
+        data: {
+          pharmacyId: params.pharmacyId,
+          userId:     params.userId,
+          action:     "CREATE",
+          entity:     "Invoice",
+          entityId:   txResult.invoice.id,
+          newData: {
+            invoiceNumber: txResult.invoice.invoiceNumber,
+            totalAmount:   txResult.invoice.totalAmount,
+            itemCount:     params.stockDecrements.length,
+            paymentMode:   txResult.invoice.paymentMode,
+          },
+          ipAddress: params.auditMeta?.ipAddress,
+          userAgent: params.auditMeta?.userAgent?.slice(0, 500),
+        },
+      }).catch(() => { /* audit write failure must not fail the billing op */ });
+    }
+
+    return txResult.invoice;
   }
 
   // ── Cancel invoice (atomic) ───────────────────────────────────────────────
@@ -300,24 +315,30 @@ export class BillingRepo {
 
       if (result.count === 0) throw AppError.conflict("Invoice is already cancelled");
 
-      // Restore stock + write movements
-      const movements: PendingMovement[] = [];
-      for (const item of invoice.items) {
-        await tx.inventory.update({
-          where: { id: item.inventoryId },
-          data:  { quantity: { increment: item.quantity } },
-        });
-        const after = await tx.inventory.findFirst({
-          where:  { id: item.inventoryId },
-          select: { quantity: true },
-        });
-        movements.push({
-          inventoryId:    item.inventoryId,
-          quantity:       item.quantity,
-          quantityBefore: after!.quantity - item.quantity,
-          quantityAfter:  after!.quantity,
-        });
-      }
+      // Restore stock — single UPDATE…RETURNING replaces 2N round-trips
+      const cancelIds  = invoice.items.map((i) => i.inventoryId);
+      const cancelQtys = invoice.items.map((i) => i.quantity);
+      type CancelRow = { id: string; qty_after: number; qty_inc: number };
+      const cancelRows = await tx.$queryRaw<CancelRow[]>`
+        WITH batch(id, qty) AS (
+          SELECT unnest(${cancelIds}::text[]), unnest(${cancelQtys}::int[])
+        ),
+        upd AS (
+          UPDATE inventory inv
+          SET    quantity = inv.quantity + b.qty
+          FROM   batch b
+          WHERE  inv.id           = b.id
+            AND  inv."pharmacyId" = ${params.pharmacyId}::text
+          RETURNING inv.id, inv.quantity AS qty_after, b.qty AS qty_inc
+        )
+        SELECT * FROM upd
+      `;
+      const movements: PendingMovement[] = cancelRows.map((row) => ({
+        inventoryId:    row.id,
+        quantity:       row.qty_inc,
+        quantityBefore: row.qty_after - row.qty_inc,
+        quantityAfter:  row.qty_after,
+      }));
 
       if (movements.length > 0) {
         await tx.inventoryMovement.createMany({
@@ -532,24 +553,33 @@ export class BillingRepo {
       }
 
       // Restore stock — RESTOCK adds back, WRITEOFF leaves inventory unchanged
-      const movements: PendingMovement[] = [];
-      for (const li of returnLineItems) {
-        if (li.disposition === "WRITEOFF") continue;
-        await tx.inventory.update({
-          where: { id: li.inventoryId },
-          data:  { quantity: { increment: li.quantity } },
-        });
-        const after = await tx.inventory.findFirst({
-          where:  { id: li.inventoryId },
-          select: { quantity: true },
-        });
-        movements.push({
-          inventoryId:    li.inventoryId,
-          quantity:       li.quantity,
-          quantityBefore: after!.quantity - li.quantity,
-          quantityAfter:  after!.quantity,
-        });
-      }
+      // Single UPDATE…RETURNING replaces 2N round-trips
+      const restockItems = returnLineItems.filter((li) => li.disposition !== "WRITEOFF");
+      const retIds  = restockItems.map((li) => li.inventoryId);
+      const retQtys = restockItems.map((li) => li.quantity);
+      type RetRow = { id: string; qty_after: number; qty_inc: number };
+      const retRows = retIds.length > 0
+        ? await tx.$queryRaw<RetRow[]>`
+            WITH batch(id, qty) AS (
+              SELECT unnest(${retIds}::text[]), unnest(${retQtys}::int[])
+            ),
+            upd AS (
+              UPDATE inventory inv
+              SET    quantity = inv.quantity + b.qty
+              FROM   batch b
+              WHERE  inv.id           = b.id
+                AND  inv."pharmacyId" = ${params.pharmacyId}::text
+              RETURNING inv.id, inv.quantity AS qty_after, b.qty AS qty_inc
+            )
+            SELECT * FROM upd
+          `
+        : [];
+      const movements: PendingMovement[] = retRows.map((row) => ({
+        inventoryId:    row.id,
+        quantity:       row.qty_inc,
+        quantityBefore: row.qty_after - row.qty_inc,
+        quantityAfter:  row.qty_after,
+      }));
 
       const totalAmount    = parseFloat(returnLineItems.reduce((s, i) => s + i.amount,        0).toFixed(2));
       const totalCgst      = parseFloat(returnLineItems.reduce((s, i) => s + i.cgst,          0).toFixed(2));
@@ -869,7 +899,7 @@ export class BillingRepo {
         include: {
           customer: { select: { name: true, phone: true } },
           user:     { select: { name: true } },
-          returns:  { select: { id: true, totalAmount: true } },
+          _count:   { select: { items: true } },
         },
       }),
       this.db.invoice.count({ where }),

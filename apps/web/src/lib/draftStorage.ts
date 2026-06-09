@@ -25,7 +25,8 @@ function writeAll(drafts: DraftBill[]) {
 
 export function saveDraft(items: CartItem[], meta: BillingMeta): DraftBill {
   const drafts = readAll();
-  const label = meta.customerName.trim()
+  const hasNamedCustomer = meta.customerName.trim() && meta.customerId !== "COUNTER";
+  const label = hasNamedCustomer
     ? `${meta.customerName} — ${new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}`
     : `Draft — ${new Date().toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true })}`;
 

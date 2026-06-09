@@ -76,9 +76,9 @@ export class BillingService {
     const batchMap = new Map(batches.map((b) => [b.id, b]));
     const now      = new Date();
 
-    if (input.customerId && input.paymentMode === "CREDIT") {
-      await this.validateCreditLimit(pharmacyId, input.customerId, input.items, batchMap);
-    }
+    // Credit limit is validated below, after all adjustments are applied to the total.
+    // Validating here against raw item totals would incorrectly reject bills where
+    // a bill discount brings the final amount within the customer's available credit.
 
     // ── IGST auto-detection ───────────────────────────────────────────────────
     // Fetch pharmacy + customer data in parallel. The customer select grabs all
@@ -94,7 +94,10 @@ export class BillingService {
       }),
       input.customerId
         ? this.app.prisma.customer.findFirst({
-            where:  { id: input.customerId, pharmacyId },
+            // deletedAt: null — snapshot only from active record; soft-deleted customer
+            // data is still used for the name/phone snapshot on the invoice but
+            // should not drive IGST logic since the record may be stale.
+            where:  { id: input.customerId, pharmacyId, deletedAt: null },
             select: { state: true, name: true, phone: true },
           })
         : Promise.resolve(null),
@@ -175,10 +178,31 @@ export class BillingService {
       });
     }
 
-    const totals = calcInvoiceTotals(
+    const itemTotals = calcInvoiceTotals(
       lineItems.map((li) => ({ mrp: li.mrp, quantity: li.quantity, discount: li.discount, gstRate: li.gstRate })),
       isInterstate,
     );
+
+    // ── Bill-level adjustments (applied post-tax; do not affect GST base) ────
+    const billDiscountAmt = (input.billDiscountPct / 100) * itemTotals.totalAmount;
+    // Clamp to 0 — a pharmacy invoice must never have a negative total.
+    const preRound        = Math.max(
+      0,
+      itemTotals.totalAmount - billDiscountAmt + input.extraCharges + input.adjustmentAmount,
+    );
+    const roundOff   = Math.round(preRound) - preRound;
+    const finalTotal = preRound + roundOff;
+
+    const totals = {
+      ...itemTotals,
+      discountAmount: itemTotals.discountAmount + billDiscountAmt,
+      totalAmount:    finalTotal,
+    };
+
+    // Validate credit limit against the true final amount (after bill discount + adjustments)
+    if (input.customerId && input.paymentMode === "CREDIT") {
+      await this.validateCreditLimit(pharmacyId, input.customerId, finalTotal);
+    }
 
     const settings = await this.getSettings(pharmacyId);
     const config   = (settings?.settings as typeof defaultInvoiceSettings) ?? defaultInvoiceSettings;
@@ -191,7 +215,8 @@ export class BillingService {
       return generateInvoiceNumber(
         config.numbering.prefix,
         seq,
-        config.numbering.financialYear,
+        // financialYear is a string ("2025-26") in new configs, boolean in old ones
+        !!config.numbering.financialYear,
       );
     };
 
@@ -216,7 +241,7 @@ export class BillingService {
         paymentMode:    input.paymentMode,
         paymentStatus:  input.paymentStatus,
         status:         "COMPLETED",
-        notes:          input.notes,
+        notes:          [input.notes, input.deliveryNotes ? `[Delivery] ${input.deliveryNotes}` : ""].filter(Boolean).join("\n") || null,
         idempotencyKey: input.idempotencyKey,
         subtotal:       totals.subtotal,
         discountAmount: totals.discountAmount,
@@ -258,10 +283,10 @@ export class BillingService {
 
     // ── Post-invoice side-effects ─────────────────────────────────────────────
 
-    // Enqueue notifications (receipt + credit warning) in BullMQ.
-    // The worker runs asynchronously so the billing response is not blocked by
-    // SMTP latency, and BullMQ retries on SMTP failure (unlike fire-and-forget).
-    await postInvoiceQueue.add(
+    // Enqueue post-invoice notifications (receipt, credit warning) in BullMQ.
+    // Fire-and-forget: the invoice is already committed; Redis enqueue latency
+    // must not delay the HTTP response. BullMQ persists the job and retries on failure.
+    void postInvoiceQueue.add(
       "post-invoice",
       {
         pharmacyId,
@@ -277,7 +302,9 @@ export class BillingService {
         removeOnComplete: { count: 20 },
         removeOnFail:     { count: 5 },
       },
-    );
+    ).catch((err: unknown) => {
+      this.app.log.error(err, "post-invoice queue enqueue failed");
+    });
 
     // Invalidate the dashboard stats cache so the next load reflects this sale.
     void this.app.redis.del(statsCacheKey(pharmacyId));
@@ -300,10 +327,16 @@ export class BillingService {
       page:             Math.max(1, query.page),
       limit:            Math.min(MAX_PAGE_LIMIT, Math.max(1, query.limit)),
       search:           query.search?.trim() || undefined,
-      // Dates arrive as ISO 8601 with timezone offset (validated by Zod),
-      // so new Date() parses them correctly to UTC.
-      from:             query.from  ? new Date(query.from)  : undefined,
-      to:               query.to    ? new Date(query.to)    : undefined,
+      // Accept both plain dates (YYYY-MM-DD) and full ISO datetimes.
+      // For plain dates, set `to` to end-of-day so invoices created on the
+      // last selected day are included rather than cut off at midnight UTC.
+      from: query.from ? new Date(query.from) : undefined,
+      to:   query.to   ? (() => {
+        const d = new Date(query.to!);
+        // Only extend to end-of-day when the input is a plain date (no time component)
+        if (!query.to!.includes("T")) { d.setUTCHours(23, 59, 59, 999); }
+        return d;
+      })() : undefined,
       status:           query.status,
       includeCancelled: query.includeCancelled,
       paymentMode:      query.paymentMode,
@@ -347,7 +380,7 @@ export class BillingService {
       return generateInvoiceNumber(
         (config.numbering.prefix ?? "INV") + "-RET",
         seq,
-        config.numbering.financialYear,
+        !!config.numbering.financialYear,
       );
     };
 
@@ -379,8 +412,8 @@ export class BillingService {
       page:      Math.max(1, query.page),
       limit:     Math.min(MAX_PAGE_LIMIT, Math.max(1, query.limit)),
       search:    query.search?.trim() || undefined,
-      from:      query.from  ? new Date(query.from)  : undefined,
-      to:        query.to    ? new Date(query.to)    : undefined,
+      from:      query.from ? new Date(query.from) : undefined,
+      to:        query.to   ? (() => { const d = new Date(query.to!); if (!query.to!.includes("T")) d.setUTCHours(23, 59, 59, 999); return d; })() : undefined,
       invoiceId: query.invoiceId,
     });
   }
@@ -432,9 +465,47 @@ export class BillingService {
     return stats;
   }
 
+  // ── Invoice settings CRUD ─────────────────────────────────────────────────
+
+  async getInvoiceSettings(pharmacyId: string) {
+    const settings = await this.getSettings(pharmacyId);
+    return settings?.settings ?? null;
+  }
+
+  async saveInvoiceSettings(
+    pharmacyId: string,
+    userId:     string,
+    config:     Record<string, unknown>,
+    auditMeta?: { ipAddress?: string; userAgent?: string },
+  ) {
+    // Prisma's Json type requires an explicit cast from Record<string,unknown>
+    const json = config as Parameters<typeof this.app.prisma.invoiceSettings.upsert>[0]["create"]["settings"];
+
+    const result = await this.app.prisma.invoiceSettings.upsert({
+      where:  { pharmacyId },
+      update: { settings: json },
+      create: { pharmacyId, settings: json },
+    });
+
+    await this.app.prisma.auditLog.create({
+      data: {
+        pharmacyId,
+        userId,
+        action:    "UPDATE",
+        entity:    "InvoiceSettings",
+        entityId:  pharmacyId,
+        newData:   config as Parameters<typeof this.app.prisma.auditLog.create>[0]["data"]["newData"],
+        ipAddress: auditMeta?.ipAddress,
+        userAgent: auditMeta?.userAgent?.slice(0, 500),
+      },
+    });
+
+    // Bust the settings cache so next billing op picks up the new config
+    await this.app.redis.del(settingsCacheKey(pharmacyId));
+    return result;
+  }
+
   // ── Settings cache invalidation ───────────────────────────────────────────
-  // Call this from the invoice-settings update route so the next billing op
-  // picks up the new config immediately instead of waiting for TTL expiry.
 
   async invalidateSettingsCache(pharmacyId: string) {
     await this.app.redis.del(settingsCacheKey(pharmacyId));
@@ -453,10 +524,9 @@ export class BillingService {
   // ── Private helpers ───────────────────────────────────────────────────────
 
   private async validateCreditLimit(
-    pharmacyId: string,
-    customerId: string,
-    items:      CreateInvoiceInput["items"],
-    batchMap:   Map<string, { mrp: number; medicine: { gstRate: number } }>,
+    pharmacyId:  string,
+    customerId:  string,
+    invoiceTotal: number,
   ) {
     const customer = await this.app.prisma.customer.findFirst({
       where:  { id: customerId, pharmacyId },
@@ -467,17 +537,10 @@ export class BillingService {
     if (customer.customerType !== "CREDIT") return;
     if (customer.creditLimit <= 0)          return;
 
-    const estimatedTotal = items.reduce((sum, item) => {
-      const batch = batchMap.get(item.inventoryId);
-      if (!batch) return sum;
-      const gst = calcGstFromMrp(batch.mrp, item.quantity, item.discount ?? 0, batch.medicine.gstRate);
-      return sum + gst.totalAmount;
-    }, 0);
-
     const available = customer.creditLimit - customer.creditUsed;
-    if (estimatedTotal > available + 0.01) {
+    if (invoiceTotal > available + 0.01) {
       throw AppError.unprocessable(
-        `Credit limit exceeded. Available: ₹${available.toFixed(2)}, required: ₹${estimatedTotal.toFixed(2)}`,
+        `Credit limit exceeded. Available: ₹${available.toFixed(2)}, required: ₹${invoiceTotal.toFixed(2)}`,
       );
     }
   }

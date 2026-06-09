@@ -43,7 +43,7 @@ export function CustomerInfoCard() {
                   </p>
                 )}
                 <button
-                  onClick={() => setMeta({ customerName: "", customerPhone: "" })}
+                  onClick={() => setMeta({ customerId: "", customerName: "", customerPhone: "", customerDefaultDiscount: 0 })}
                   className="text-[10px] text-red-400 hover:text-red-600 font-semibold mt-1 transition-colors"
                 >
                   Remove ×
