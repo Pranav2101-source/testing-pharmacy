@@ -118,10 +118,11 @@ model Medicine {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  brandId   String?
-  brand     Brand?      @relation(fields: [brandId], references: [id])
-  barcode   String?
-  boxSize   Int?        // strips per box; used with packSize for unit conversion
+  brandId    String?
+  brand      Brand?      @relation(fields: [brandId], references: [id])
+  barcode    String?
+  boxSize    Int?        // strips per box; used with packSize for unit conversion
+  catalogMrp Float?      // 2022 reference price — pre-fills GRN form only, never used for billing
 
   inventory           Inventory[]
   grnItems            GRNItem[]

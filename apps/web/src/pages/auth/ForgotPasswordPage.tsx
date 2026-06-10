@@ -81,7 +81,7 @@ export default function ForgotPasswordPage() {
                 </AnimatePresence>
 
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-xs font-semibold text-slate-600">
+                  <label htmlFor="forgot-email" className="text-xs font-semibold text-slate-600">
                     Email Address <span className="text-red-400">*</span>
                   </label>
                   <div className={cn(
@@ -92,6 +92,8 @@ export default function ForgotPasswordPage() {
                   )}>
                     <Mail className={cn("w-4 h-4 flex-shrink-0", showErr ? "text-red-400" : "text-slate-400")} strokeWidth={1.8} />
                     <input
+                      id="forgot-email"
+                      name="email"
                       type="email"
                       placeholder="you@pharmacy.com"
                       value={email}

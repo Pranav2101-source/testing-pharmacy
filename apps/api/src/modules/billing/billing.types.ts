@@ -47,8 +47,9 @@ export type DashboardStats = {
   todayCount:       number;
   todayCancelled:   number;
   todayReturns:     number;
-  weekSales:        number;
-  weekCount:        number;
+  // Rolling 7-day window ending now — NOT the current Mon–Sun calendar week.
+  last7DaysSales:   number;
+  last7DaysCount:   number;
   monthSales:       number;
   monthCount:       number;
   paymentBreakdown: { mode: string; total: number; count: number }[];

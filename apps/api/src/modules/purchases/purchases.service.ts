@@ -2,10 +2,14 @@ import type { FastifyInstance } from "fastify";
 import { PurchasesRepo } from "./purchases.repo.js";
 import type {
   CreatePOInput, UpdatePOInput, ListPOQuery, ApprovePOInput, SharePOInput,
-  CreateGRNInput, ListGRNQuery, AutoSuggestQuery,
+  CreateGRNInput, UpdateGRNInput, ListGRNQuery, AutoSuggestQuery,
 } from "./purchases.schema.js";
 import type { ImportedGRNRow } from "./purchases.import.js";
 import { AppError } from "../../lib/AppError.js";
+import {
+  PO_SEQUENCE_KEY, generatePONumber,
+  GRN_SEQUENCE_KEY, generateGRNNumber,
+} from "../billing/billing.constants.js";
 
 const NEAR_EXPIRY_DAYS = 90; // warn if any GRN item expires within 90 days
 
@@ -59,7 +63,18 @@ export class PurchasesService {
     // PHARMACIST-created POs need OWNER approval; OWNER auto-approves
     const approvalStatus = userRole === "OWNER" ? "NOT_REQUIRED" : "PENDING_APPROVAL";
 
+    // Generate order number via Redis INCR (financial-year scoped) so concurrent
+    // creates never collide — replacing the COUNT(*)-based approach that races.
+    let seq: number;
+    try {
+      seq = await this.app.redis.incr(PO_SEQUENCE_KEY(pharmacyId));
+    } catch {
+      throw AppError.internal("We couldn't generate an order number right now. Please try again in a moment.");
+    }
+    const orderNumber = generatePONumber(seq);
+
     return this.repo.createPO(pharmacyId, userId, {
+      orderNumber,
       supplierId:    input.supplierId,
       invoiceNo:     input.invoiceNo,
       notes:         input.notes,
@@ -179,20 +194,32 @@ export class PurchasesService {
       });
       if (duplicate) {
         throw AppError.unprocessable(
-          `Invoice ${input.supplierInvoiceNo} has already been recorded (GRN ${duplicate.grnNumber}). Possible duplicate.`
+          `Supplier invoice ${input.supplierInvoiceNo} is already saved as GRN ${duplicate.grnNumber}. You may be adding the same delivery twice.`
         );
       }
     }
 
-    // #21 Near-expiry purchase validation — warn on items expiring within 90 days
-    const nearExpiryThreshold = new Date(Date.now() + NEAR_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
-    const nearExpiryItems = input.items.filter((item) => new Date(item.expiryDate) <= nearExpiryThreshold);
-    if (nearExpiryItems.length > 0) {
-      const names = nearExpiryItems.map((i) => i.medicineName).join(", ");
-      throw AppError.unprocessable(
-        `Near-expiry stock detected: ${names}. Expiry is within ${NEAR_EXPIRY_DAYS} days. ` +
-        `Remove these items or confirm they are intentional before proceeding.`
-      );
+    // Warn if supplier invoice number is missing — without it, duplicate GRNs for the
+    // same delivery cannot be detected. The warning is returned in the response so the
+    // frontend can surface it, but it does not block creation.
+    const missingInvoiceWarning = !input.supplierInvoiceNo
+      ? "No supplier invoice number was entered. Without it, we can't detect if this delivery is accidentally added twice."
+      : null;
+
+    // #21 Near-expiry purchase validation — reject items expiring within 90 days
+    // unless the caller has explicitly acknowledged the risk via allowNearExpiry.
+    // Pharmacies occasionally buy near-expiry stock at a discount; the flag lets
+    // them bypass the guard while still making the risk visible in the UI.
+    if (!input.allowNearExpiry) {
+      const nearExpiryThreshold = new Date(Date.now() + NEAR_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+      const nearExpiryItems = input.items.filter((item) => new Date(item.expiryDate) <= nearExpiryThreshold);
+      if (nearExpiryItems.length > 0) {
+        const names = nearExpiryItems.map((i) => i.medicineName).join(", ");
+        throw AppError.unprocessable(
+          `The following items expire within ${NEAR_EXPIRY_DAYS} days: ${names}. ` +
+          `If you still want to add them (e.g. bought at a discount), tick "Allow near-expiry stock" and try again.`,
+        );
+      }
     }
 
     let subtotal = 0;
@@ -220,7 +247,17 @@ export class PurchasesService {
       };
     });
 
-    return this.repo.createGRN(pharmacyId, userId, {
+    // Generate GRN number via Redis INCR — same race-safe pattern as invoices.
+    let grnSeq: number;
+    try {
+      grnSeq = await this.app.redis.incr(GRN_SEQUENCE_KEY(pharmacyId));
+    } catch {
+      throw AppError.internal("We couldn't generate a GRN number right now. Please try again in a moment.");
+    }
+    const grnNumber = generateGRNNumber(grnSeq);
+
+    const grn = await this.repo.createGRN(pharmacyId, userId, {
+      grnNumber,
       supplierId:          input.supplierId,
       purchaseOrderId:     input.purchaseOrderId,
       supplierInvoiceNo:   input.supplierInvoiceNo,
@@ -230,6 +267,57 @@ export class PurchasesService {
       subtotal,
       totalGst,
       totalAmount: subtotal + totalGst,
+    });
+
+    return { ...grn, warning: missingInvoiceWarning };
+  }
+
+  async updateGRN(id: string, pharmacyId: string, userId: string, input: UpdateGRNInput) {
+    if (!input.allowNearExpiry && input.items) {
+      const nearExpiryThreshold = new Date(Date.now() + NEAR_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+      const nearExpiryItems = input.items.filter((item) => new Date(item.expiryDate) <= nearExpiryThreshold);
+      if (nearExpiryItems.length > 0) {
+        const names = nearExpiryItems.map((i) => i.medicineName).join(", ");
+        throw AppError.unprocessable(
+          `The following items expire within ${NEAR_EXPIRY_DAYS} days: ${names}. ` +
+          `If you still want to add them (e.g. bought at a discount), tick "Allow near-expiry stock" and try again.`,
+        );
+      }
+    }
+
+    let subtotal: number | undefined;
+    let totalGst: number | undefined;
+
+    const items = input.items?.map((item) => {
+      const { lineTotal, cgst, sgst, amount } = calcGRNLineAmount(item.purchaseRate, item.receivedQty, item.discount, item.gstRate);
+      subtotal = (subtotal ?? 0) + lineTotal;
+      totalGst = (totalGst ?? 0) + cgst + sgst;
+      return {
+        medicineId:   item.medicineId,
+        medicineName: item.medicineName,
+        batchNumber:  item.batchNumber,
+        expiryDate:   new Date(item.expiryDate),
+        orderedQty:   item.orderedQty,
+        receivedQty:  item.receivedQty,
+        freeQty:      item.freeQty,
+        purchaseRate: item.purchaseRate,
+        mrp:          item.mrp,
+        discount:     item.discount,
+        gstRate:      item.gstRate,
+        cgst,
+        sgst,
+        amount,
+      };
+    });
+
+    return this.repo.updateGRN(id, pharmacyId, userId, {
+      supplierInvoiceNo:   input.supplierInvoiceNo,
+      supplierInvoiceDate: input.supplierInvoiceDate ? new Date(input.supplierInvoiceDate) : undefined,
+      notes:               input.notes,
+      items,
+      subtotal,
+      totalGst,
+      totalAmount: subtotal !== undefined && totalGst !== undefined ? subtotal + totalGst : undefined,
     });
   }
 
@@ -268,7 +356,7 @@ export class PurchasesService {
   // ── Bulk CSV Import (#29) ──────────────────────────────────────────────────
   // Resolves medicineName → medicineId via DB lookup, then creates a DRAFT GRN.
 
-  async importGRNFromCSV(pharmacyId: string, userId: string, supplierId: string, rows: ImportedGRNRow[]) {
+  async importGRNFromCSV(pharmacyId: string, userId: string, supplierId: string, rows: ImportedGRNRow[], allowNearExpiry = false) {
     // Resolve medicineIds by name — case-insensitive
     const names    = [...new Set(rows.map((r) => r.medicineName))];
     const medicines = await this.app.prisma.medicine.findMany({
@@ -295,6 +383,7 @@ export class PurchasesService {
       const input: CreateGRNInput = {
         supplierId,
         supplierInvoiceNo: invoiceNo !== "__default__" ? invoiceNo : undefined,
+        allowNearExpiry,
         items: groupRows.map((r) => ({
           medicineId:       nameToId.get(r.medicineName.toLowerCase())!,
           medicineName:     r.medicineName,

@@ -4,13 +4,8 @@ import { AppError } from "../../lib/AppError.js";
 export class SupplierReturnsRepo {
   constructor(private db: PrismaClient) {}
 
-  private async nextReturnNumber(pharmacyId: string, tx: Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">): Promise<string> {
-    const count = await tx.supplierReturn.count({ where: { pharmacyId } });
-    const year  = new Date().getFullYear();
-    return `SR-${year}-${String(count + 1).padStart(5, "0")}`;
-  }
-
   async create(pharmacyId: string, userId: string, data: {
+    returnNumber: string;
     supplierId:  string;
     debitNoteNo?: string;
     notes?:      string;
@@ -28,13 +23,11 @@ export class SupplierReturnsRepo {
     totalAmount: number;
   }) {
     return this.db.$transaction(async (tx) => {
-      const returnNumber = await this.nextReturnNumber(pharmacyId, tx);
-
       const sr = await tx.supplierReturn.create({
         data: {
           pharmacyId,
           supplierId:  data.supplierId,
-          returnNumber,
+          returnNumber: data.returnNumber,
           debitNoteNo: data.debitNoteNo,
           notes:       data.notes,
           status:      "DRAFT",

@@ -54,7 +54,7 @@ const billingRoutes: FastifyPluginAsync = async (app) => {
     if (!Number.isFinite(qty) || qty <= 0) {
       return reply.status(400).send({ success: false, error: "quantity must be a positive number" });
     }
-    const batch = await service.getFifoBatch(medicineId, req.pharmacyId, qty);
+    const batch = await service.getFEFOBatch(medicineId, req.pharmacyId, qty);
     return reply.send({ success: true, data: batch });
   });
 

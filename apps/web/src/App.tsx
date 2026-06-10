@@ -2,9 +2,10 @@ import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PrivateRoute } from "./router/PrivateRoute";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
+  defaultOptions: { queries: { retry: 1, staleTime: 120_000 } },
 });
 
 // ─── Layouts ──────────────────────────────────────────────────
@@ -79,7 +80,9 @@ export function App() {
 
           {/* Protected dashboard routes */}
           <Route element={<PrivateRoute />}>
-            <Route element={<DashboardLayout />}>
+            {/* ErrorBoundary wraps DashboardLayout so any uncaught render error in
+                any dashboard page shows a recovery UI instead of a blank screen. */}
+            <Route element={<ErrorBoundary><DashboardLayout /></ErrorBoundary>}>
               <Route path="/dashboard"                       element={<DashboardHomePage />} />
               <Route path="/dashboard/billing"               element={<BillingPage />} />
               <Route path="/dashboard/billing/new"           element={<BillingNewPage />} />

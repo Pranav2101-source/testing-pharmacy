@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
 import { connection, pendingCreditQueue } from "../queue.client.js";
+import { onWorkerFailed } from "../on-worker-failed.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 function buildHtml(
@@ -102,3 +103,4 @@ export const pendingCreditWorker = new Worker(
   },
   { connection, concurrency: 5 },
 );
+onWorkerFailed(pendingCreditWorker);

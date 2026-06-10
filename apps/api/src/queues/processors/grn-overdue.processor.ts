@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
 import { connection, grnOverdueQueue } from "../queue.client.js";
+import { onWorkerFailed } from "../on-worker-failed.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 function buildHtml(overdueGrns: { grnNumber: string; supplierName: string; totalAmount: number; paymentDueDate: Date; daysOverdue: number }[], pharmacyName: string): string {
@@ -98,3 +99,4 @@ export const grnOverdueWorker = new Worker(
   },
   { connection, concurrency: 5 },
 );
+onWorkerFailed(grnOverdueWorker);

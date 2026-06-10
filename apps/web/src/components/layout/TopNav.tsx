@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
@@ -77,14 +77,52 @@ const SALES_ITEMS: SalesItem[] = [
   },
 ];
 
+const MENU_ITEMS: Array<{
+  id: string; icon: React.ElementType; label: string;
+  extra?: string; extraType?: "blue" | "badge-new" | "coin"; href?: string;
+}> = [
+  { id: "settings",     icon: Settings,    label: "Account & Settings", href: "/dashboard/settings/pharmacy-profile" },
+  { id: "integration",  icon: Link2,       label: "Integrations",       href: "/dashboard/integration"               },
+  { id: "qr",           icon: QrCode,      label: "Show QR",            extraType: "blue"     },
+  { id: "coins",        icon: Coins,       label: "VitalCoins",         extraType: "coin"     },
+  { id: "refer",        icon: Send,        label: "Refer & Earn"                               },
+  { id: "support",      icon: Monitor,     label: "Support Tickets",    extra: "New", extraType: "badge-new" },
+  { id: "zero",         icon: IndianRupee, label: "ZERO"                                       },
+  { id: "shortcuts",    icon: Info,        label: "Shortcuts / Help"                           },
+];
+
 // ─── Helpers ──────────────────────────────────────────────────────
 function isActive(pathname: string, href: string) {
   if (href === "/dashboard") return pathname === href;
   return pathname.startsWith(href);
 }
 
+// Shared hook: handles outside-click + ESC for a single dropdown
+function useDropdown() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onOut = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onOut, { passive: true });
+    return () => document.removeEventListener("mousedown", onOut);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey, { passive: true });
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return { open, setOpen, ref };
+}
+
 // ─── NavItem ──────────────────────────────────────────────────────
-function NavItem({ tab, pathname }: { tab: NavTab; pathname: string }) {
+// memo: pathname changes on every navigation, but most tabs aren't affected
+const NavItem = memo(function NavItem({ tab, pathname }: { tab: NavTab; pathname: string }) {
   const active = isActive(pathname, tab.href);
   const Icon = tab.icon;
   return (
@@ -93,28 +131,27 @@ function NavItem({ tab, pathname }: { tab: NavTab; pathname: string }) {
       role="tab"
       aria-selected={active}
       className={cn(
-        "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-        "text-[13px] font-semibold transition-all duration-100 outline-none",
+        "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
+        "text-[13px] font-semibold transition-all duration-150 outline-none",
         "focus-visible:ring-2 focus-visible:ring-white/50",
-        active ? "nav-pill-active text-brand-700" : "text-white/70 hover:text-white hover:bg-white/10"
+        active
+          ? "bg-white text-brand-700 shadow-sm"
+          : "text-white/70 hover:text-white hover:bg-white/10"
       )}
     >
-      {active && (
-        <motion.span
-          layoutId="nav-active-bg"
-          className="absolute inset-0 rounded-lg bg-white"
-          style={{ zIndex: -1 }}
-          transition={{ type: "spring", stiffness: 380, damping: 32 }}
-        />
-      )}
-      <Icon className={cn("w-3 h-3 flex-shrink-0", active ? "text-brand-600" : "text-white/55")} strokeWidth={active ? 2.3 : 1.9} aria-hidden />
+      <Icon
+        className={cn("w-3 h-3 flex-shrink-0", active ? "text-brand-600" : "text-white/55")}
+        strokeWidth={active ? 2.3 : 1.9}
+        aria-hidden
+      />
       <span>{tab.label}</span>
     </Link>
   );
-}
+});
 
 // ─── Shop Live Toggle ─────────────────────────────────────────────
-function ShopLiveToggle() {
+// memo: never depends on pathname — isolated from route changes
+const ShopLiveToggle = memo(function ShopLiveToggle() {
   const [on, setOn] = useState(true);
   return (
     <button
@@ -123,10 +160,10 @@ function ShopLiveToggle() {
       className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 bg-white/8 hover:bg-white/14 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/40"
     >
       <div className={cn("relative h-4 w-7 rounded-full flex-shrink-0 transition-colors duration-200", on ? "bg-emerald-400" : "bg-white/20")}>
-        <motion.span
-          layout
-          transition={{ type: "spring", stiffness: 600, damping: 36 }}
-          className={cn("absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm", on ? "left-[14px]" : "left-0.5")}
+        {/* CSS translate replaces motion.span layout — no JS layout pass */}
+        <span
+          className="absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-transform duration-200 will-change-transform"
+          style={{ transform: on ? "translateX(10px)" : "translateX(0)" }}
         />
       </div>
       <span className="text-[12px] font-bold text-white/80 leading-none">Shop Live</span>
@@ -135,10 +172,11 @@ function ShopLiveToggle() {
       </span>
     </button>
   );
-}
+});
 
 // ─── Calendar Pill ────────────────────────────────────────────────
-function CalendarPill() {
+// memo: re-renders only when calendar count changes
+const CalendarPill = memo(function CalendarPill() {
   const navigate  = useNavigate();
   const { data: count = 0 } = useCalendarTodayCount();
 
@@ -160,10 +198,11 @@ function CalendarPill() {
       )}
     </button>
   );
-}
+});
 
 // ─── Global Search ────────────────────────────────────────────────
-function GlobalSearchBar() {
+// memo: no dynamic props — only internal focused state changes
+const GlobalSearchBar = memo(function GlobalSearchBar() {
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -171,7 +210,7 @@ function GlobalSearchBar() {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "k") { e.preventDefault(); inputRef.current?.focus(); }
     };
-    window.addEventListener("keydown", handler);
+    window.addEventListener("keydown", handler, { passive: false });
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
@@ -198,10 +237,10 @@ function GlobalSearchBar() {
       )}
     </div>
   );
-}
+});
 
 // ─── Icon Btn ─────────────────────────────────────────────────────
-function IconBtn({ icon: Icon, label, badge }: { icon: React.ElementType; label: string; badge?: number }) {
+const IconBtn = memo(function IconBtn({ icon: Icon, label, badge }: { icon: React.ElementType; label: string; badge?: number }) {
   return (
     <button
       aria-label={label}
@@ -215,60 +254,31 @@ function IconBtn({ icon: Icon, label, badge }: { icon: React.ElementType; label:
       )}
     </button>
   );
-}
+});
 
 // ─── New Bill Quick Button ─────────────────────────────────────────
-function NewBillBtn() {
+// memo: navigate ref is stable; no pathname dependency
+const NewBillBtn = memo(function NewBillBtn() {
   const navigate = useNavigate();
   return (
-    <motion.button
-      whileHover={{ scale: 1.02 }}
-      whileTap={{ scale: 0.97 }}
+    // CSS scale replaces motion.button whileHover/whileTap — no framer listeners
+    <button
       onClick={() => navigate("/dashboard/billing/new")}
-      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-bold text-[13px] bg-blue-600 hover:bg-blue-500 text-white shadow-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60"
+      className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-bold text-[13px] bg-blue-600 hover:bg-blue-500 text-white shadow-sm transition-all duration-100 outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 active:scale-[0.97] hover:scale-[1.02] will-change-transform"
       aria-label="New Bill (F2)"
     >
       <Plus className="w-3 h-3" strokeWidth={2.5} />
       New Bill
       <kbd className="kbd-hint ml-0.5">F2</kbd>
-    </motion.button>
+    </button>
   );
-}
+});
 
 // ─── Profile Dropdown ─────────────────────────────────────────────
-
-type MenuItem = {
-  id: string; icon: React.ElementType; label: string;
-  extra?: string; extraType?: "blue" | "badge-new" | "coin"; href?: string;
-};
-const MENU_ITEMS: MenuItem[] = [
-  { id: "settings",     icon: Settings,    label: "Account & Settings", href: "/dashboard/settings/pharmacy-profile" },
-  { id: "integration",  icon: Link2,       label: "Integrations",       href: "/dashboard/integration"               },
-  { id: "qr",           icon: QrCode,      label: "Show QR",            extraType: "blue"     },
-  { id: "coins",        icon: Coins,       label: "VitalCoins",         extraType: "coin"     },
-  { id: "refer",        icon: Send,        label: "Refer & Earn"                               },
-  { id: "support",      icon: Monitor,     label: "Support Tickets",    extra: "New", extraType: "badge-new" },
-  { id: "zero",         icon: IndianRupee, label: "ZERO"                                       },
-  { id: "shortcuts",    icon: Info,        label: "Shortcuts / Help"                           },
-];
-
 function ProfileDropdown() {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const { open, setOpen, ref } = useDropdown();
   const navigate = useNavigate();
   const user = useCurrentUser();
-
-  useEffect(() => {
-    const onOut = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", onOut);
-    return () => document.removeEventListener("mousedown", onOut);
-  }, []);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
 
   return (
     <div ref={ref} className="relative">
@@ -393,22 +403,9 @@ function ProfileDropdown() {
 }
 
 // ─── Sales Nav Dropdown ────────────────────────────────────────────
-function SalesNavDropdown({ pathname }: { pathname: string }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+const SalesNavDropdown = memo(function SalesNavDropdown({ pathname }: { pathname: string }) {
+  const { open, setOpen, ref } = useDropdown();
   const salesActive = pathname.startsWith("/dashboard/billing");
-
-  useEffect(() => {
-    const onOut = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", onOut);
-    return () => document.removeEventListener("mousedown", onOut);
-  }, []);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
 
   return (
     <div ref={ref} className="relative">
@@ -417,20 +414,14 @@ function SalesNavDropdown({ pathname }: { pathname: string }) {
         aria-haspopup="menu"
         aria-expanded={open}
         className={cn(
-          "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-          "text-[13px] font-semibold transition-all duration-100 outline-none",
+          "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
+          "text-[13px] font-semibold transition-all duration-150 outline-none",
           "focus-visible:ring-2 focus-visible:ring-white/50",
-          salesActive ? "nav-pill-active text-brand-700" : "text-white/70 hover:text-white hover:bg-white/10"
+          salesActive
+            ? "bg-white text-brand-700 shadow-sm"
+            : "text-white/70 hover:text-white hover:bg-white/10"
         )}
       >
-        {salesActive && (
-          <motion.span
-            layoutId="nav-active-bg"
-            className="absolute inset-0 rounded-lg bg-white"
-            style={{ zIndex: -1 }}
-            transition={{ type: "spring", stiffness: 380, damping: 32 }}
-          />
-        )}
         <Receipt className={cn("w-3 h-3 flex-shrink-0", salesActive ? "text-brand-600" : "text-white/55")} strokeWidth={salesActive ? 2.3 : 1.9} />
         <span>Sales</span>
         <ChevronDown className={cn("w-2.5 h-2.5 transition-transform duration-200", open && "rotate-180", salesActive ? "text-brand-400" : "text-white/35")} />
@@ -479,14 +470,12 @@ function SalesNavDropdown({ pathname }: { pathname: string }) {
                       active ? cn(activeBg, activeText) : cn("text-slate-700", hoverBg)
                     )}
                   >
-                    {/* Left accent bar */}
-                    {active && (
-                      <motion.span
-                        layoutId="sales-accent"
-                        className={cn("absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full", accent)}
-                        transition={{ type: "spring", stiffness: 380, damping: 32 }}
-                      />
-                    )}
+                    {/* CSS accent bar — no layoutId needed */}
+                    <span className={cn(
+                      "absolute left-0 top-2 bottom-2 w-[3px] rounded-r-full transition-opacity duration-150",
+                      accent,
+                      active ? "opacity-100" : "opacity-0"
+                    )} />
 
                     {/* Icon tile */}
                     <span className={cn(
@@ -539,25 +528,12 @@ function SalesNavDropdown({ pathname }: { pathname: string }) {
       </AnimatePresence>
     </div>
   );
-}
+});
 
 // ─── More Nav Dropdown ────────────────────────────────────────────
-function MoreNavDropdown({ pathname }: { pathname: string }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+const MoreNavDropdown = memo(function MoreNavDropdown({ pathname }: { pathname: string }) {
+  const { open, setOpen, ref } = useDropdown();
   const moreActive = MORE_ITEMS.some((item) => pathname.startsWith(item.href));
-
-  useEffect(() => {
-    const onOut = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", onOut);
-    return () => document.removeEventListener("mousedown", onOut);
-  }, []);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
 
   return (
     <div ref={ref} className="relative">
@@ -566,20 +542,14 @@ function MoreNavDropdown({ pathname }: { pathname: string }) {
         aria-haspopup="menu"
         aria-expanded={open}
         className={cn(
-          "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-          "text-[13px] font-semibold transition-all duration-100 outline-none",
+          "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
+          "text-[13px] font-semibold transition-all duration-150 outline-none",
           "focus-visible:ring-2 focus-visible:ring-white/50",
-          moreActive ? "nav-pill-active text-brand-700" : "text-white/70 hover:text-white hover:bg-white/10",
+          moreActive
+            ? "bg-white text-brand-700 shadow-sm"
+            : "text-white/70 hover:text-white hover:bg-white/10"
         )}
       >
-        {moreActive && (
-          <motion.span
-            layoutId="nav-active-bg"
-            className="absolute inset-0 rounded-lg bg-white"
-            style={{ zIndex: -1 }}
-            transition={{ type: "spring", stiffness: 380, damping: 32 }}
-          />
-        )}
         <MoreHorizontal className={cn("w-3 h-3 flex-shrink-0", moreActive ? "text-brand-600" : "text-white/55")} strokeWidth={moreActive ? 2.3 : 1.9} />
         <span>More</span>
         <ChevronDown className={cn("w-2.5 h-2.5 transition-transform duration-200", open && "rotate-180", moreActive ? "text-brand-400" : "text-white/35")} />
@@ -626,28 +596,15 @@ function MoreNavDropdown({ pathname }: { pathname: string }) {
       </AnimatePresence>
     </div>
   );
-}
+});
 
 // ─── Inventory Nav Dropdown ───────────────────────────────────────
-function InventoryNavDropdown({ pathname }: { pathname: string }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+const InventoryNavDropdown = memo(function InventoryNavDropdown({ pathname }: { pathname: string }) {
+  const { open, setOpen, ref } = useDropdown();
   const inventoryActive =
     pathname.startsWith("/dashboard/inventory") ||
     pathname.startsWith("/dashboard/locations") ||
     pathname.startsWith("/dashboard/stock-audit");
-
-  useEffect(() => {
-    const onOut = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener("mousedown", onOut);
-    return () => document.removeEventListener("mousedown", onOut);
-  }, []);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
 
   return (
     <div ref={ref} className="relative">
@@ -656,20 +613,14 @@ function InventoryNavDropdown({ pathname }: { pathname: string }) {
         aria-haspopup="menu"
         aria-expanded={open}
         className={cn(
-          "relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-          "text-[13px] font-semibold transition-all duration-100 outline-none",
+          "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
+          "text-[13px] font-semibold transition-all duration-150 outline-none",
           "focus-visible:ring-2 focus-visible:ring-white/50",
-          inventoryActive ? "nav-pill-active text-brand-700" : "text-white/70 hover:text-white hover:bg-white/10"
+          inventoryActive
+            ? "bg-white text-brand-700 shadow-sm"
+            : "text-white/70 hover:text-white hover:bg-white/10"
         )}
       >
-        {inventoryActive && (
-          <motion.span
-            layoutId="nav-active-bg"
-            className="absolute inset-0 rounded-lg bg-white"
-            style={{ zIndex: -1 }}
-            transition={{ type: "spring", stiffness: 380, damping: 32 }}
-          />
-        )}
         <Package2 className={cn("w-3 h-3 flex-shrink-0", inventoryActive ? "text-brand-600" : "text-white/55")} strokeWidth={inventoryActive ? 2.3 : 1.9} />
         <span>Inventory</span>
         <ChevronDown className={cn("w-2.5 h-2.5 transition-transform duration-200", open && "rotate-180", inventoryActive ? "text-brand-400" : "text-white/35")} />
@@ -716,7 +667,7 @@ function InventoryNavDropdown({ pathname }: { pathname: string }) {
       </AnimatePresence>
     </div>
   );
-}
+});
 
 // ─── Mobile Menu ──────────────────────────────────────────────────
 function MobileMenu({ pathname }: { pathname: string }) {
@@ -748,7 +699,7 @@ function MobileMenu({ pathname }: { pathname: string }) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, { passive: true });
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
@@ -962,7 +913,7 @@ export function TopNav() {
         navigate("/dashboard/billing/new");
       }
     };
-    window.addEventListener("keydown", handler);
+    window.addEventListener("keydown", handler, { passive: false });
     return () => window.removeEventListener("keydown", handler);
   }, [navigate]);
 
@@ -995,15 +946,10 @@ export function TopNav() {
 
       {/* Nav tabs — desktop */}
       <nav role="tablist" aria-label="Main navigation" className="hidden xl:flex items-center gap-0.5">
-        {/* Home */}
         {NAV_TABS[0] && <NavItem tab={NAV_TABS[0]} pathname={pathname} />}
-        {/* Sales dropdown */}
         <SalesNavDropdown pathname={pathname} />
-        {/* Purchase */}
         {NAV_TABS[1] && <NavItem tab={NAV_TABS[1]} pathname={pathname} />}
-        {/* Inventory dropdown — Inventory, Locations, Stock Audit */}
         <InventoryNavDropdown pathname={pathname} />
-        {/* More — Customers, Medicines, Ginni */}
         <MoreNavDropdown pathname={pathname} />
       </nav>
 

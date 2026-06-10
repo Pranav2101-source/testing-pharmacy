@@ -36,3 +36,8 @@ Thumbs.db
 
 # Prisma dev migrations
 prisma/migrations/dev
+
+# Medicine import data (large files — not for git)
+scripts/data/*.csv
+scripts/data/*.xlsx
+scripts/data/import-report.txt

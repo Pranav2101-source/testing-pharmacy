@@ -2,30 +2,44 @@ import type { FastifyInstance } from "fastify";
 import { SupplierReturnsRepo } from "./supplier-returns.repo.js";
 import type { CreateSRInput, ListSRQuery } from "./supplier-returns.schema.js";
 import { AppError } from "../../lib/AppError.js";
+import { SR_SEQUENCE_KEY, generateSRNumber } from "../billing/billing.constants.js";
 
 export class SupplierReturnsService {
   private repo: SupplierReturnsRepo;
 
-  constructor(app: FastifyInstance) {
+  constructor(private app: FastifyInstance) {
     this.repo = new SupplierReturnsRepo(app.prisma);
   }
 
   async create(pharmacyId: string, userId: string, input: CreateSRInput) {
-    const items = input.items.map((item) => ({
-      inventoryId:  item.inventoryId,
-      medicineId:   item.medicineId,
-      medicineName: item.medicineName,
-      batchNumber:  item.batchNumber,
-      expiryDate:   new Date(item.expiryDate),
-      quantity:     item.quantity,
-      purchaseRate: item.purchaseRate,
-      amount:       parseFloat((item.purchaseRate * item.quantity).toFixed(2)),
-      reason:       item.reason,
-    }));
+    const items = input.items.map((item) => {
+      // A valid debit note must include GST so the supplier can issue a
+      // corresponding credit note and the pharmacy can reverse its ITC.
+      // amount = purchaseRate × qty × (1 + gstRate/100)
+      const taxMultiplier = 1 + item.gstRate / 100;
+      const amount = parseFloat((item.purchaseRate * item.quantity * taxMultiplier).toFixed(2));
+      return {
+        inventoryId:  item.inventoryId,
+        medicineId:   item.medicineId,
+        medicineName: item.medicineName,
+        batchNumber:  item.batchNumber,
+        expiryDate:   new Date(item.expiryDate),
+        quantity:     item.quantity,
+        purchaseRate: item.purchaseRate,
+        amount,
+        reason:       item.reason,
+      };
+    });
 
     const totalAmount = parseFloat(items.reduce((s, i) => s + i.amount, 0).toFixed(2));
 
+    // Generate return number via Redis INCR — same race-safe pattern as invoices.
+    // COUNT(*)-based generation produced duplicate numbers under concurrent requests.
+    const seq          = await this.app.redis.incr(SR_SEQUENCE_KEY(pharmacyId));
+    const returnNumber = generateSRNumber(seq);
+
     return this.repo.create(pharmacyId, userId, {
+      returnNumber,
       supplierId:  input.supplierId,
       debitNoteNo: input.debitNoteNo,
       notes:       input.notes,

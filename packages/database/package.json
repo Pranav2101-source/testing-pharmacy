@@ -9,7 +9,8 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "db:seed": "tsx prisma/seeds/index.ts"
+    "db:seed": "tsx prisma/seeds/index.ts",
+    "import:medicines": "tsx prisma/seeds/import-medicines.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.19.0"
@@ -17,6 +18,10 @@
   "devDependencies": {
     "prisma": "^5.19.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.4.5",
+    "ioredis": "^5.4.1",
+    "meilisearch": "^0.44.0"
   }
 }

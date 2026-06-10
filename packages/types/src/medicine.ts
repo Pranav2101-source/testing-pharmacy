@@ -26,4 +26,34 @@ export type MedicineSearchResult = {
   hsnCode: string | null;
   gstRate: number;
   schedule: string | null;
+  hasAlternatives?: boolean;
+};
+
+export type AlternativeBatch = {
+  id: string;
+  batchNumber: string;
+  expiryDate: string;
+  quantity: number;
+  reservedQuantity: number;
+  mrp: number;
+  purchaseRate: number;
+  location: string | null;
+};
+
+export type AlternativeResult = {
+  id: string;
+  name: string;
+  manufacturer: string | null;
+  genericName: string | null;
+  strength: string | null;
+  form: string | null;
+  packSize: string | null;
+  hsnCode: string | null;
+  gstRate: number;
+  brand: { id: string; name: string } | null;
+  totalStock: number;
+  mrp: number;
+  margin: number | null;
+  stockStatus: "in_stock" | "low_stock" | "out_of_stock";
+  batches: AlternativeBatch[];
 };

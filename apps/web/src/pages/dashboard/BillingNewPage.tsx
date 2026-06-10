@@ -16,8 +16,10 @@ import type { ActionId } from "@/lib/billingPreferences";
 import { BillHeader } from "@/components/billing/BillHeader";
 import { CartTableHeader, CartTableRows } from "@/components/billing/CartTable";
 import { MedicineSearchCombobox } from "@/components/billing/MedicineSearchCombobox";
+import { AlternativesDrawer } from "@/components/billing/AlternativesDrawer";
 import { useBillingStore } from "@/components/billing/useBillingStore";
 import { InvoiceBreakdownModal } from "@/components/billing/InvoiceBreakdownModal";
+import type { MedicineSearchResult } from "@pharmacy/types";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { saveDraft, getDraft, deleteDraft } from "@/lib/draftStorage";
@@ -95,7 +97,7 @@ const AnimatedCount = memo(function AnimatedCount({
 
 // ─── Save dropdown ────────────────────────────────────────────────────────────
 
-function SaveDropdown({
+const SaveDropdown = memo(function SaveDropdown({
   onAction,
   submitting,
   hasItems,
@@ -315,11 +317,11 @@ function SaveDropdown({
       </AnimatePresence>
     </div>
   );
-}
+});
 
 // ─── Sub-navigation bar ───────────────────────────────────────────────────────
 
-function BillingSubNav({
+const BillingSubNav = memo(function BillingSubNav({
   onAction,
   submitting,
   hasItems,
@@ -425,12 +427,18 @@ function BillingSubNav({
       </div>
     </div>
   );
-}
+});
 
 // ─── New Bill page ─────────────────────────────────────────────────────────────
 
 function NewBillInner() {
-  const { items, meta, clear, getTotals, setMeta, loadDraft } = useBillingStore();
+  // Granular selectors — each re-renders only when its own slice changes
+  const items    = useBillingStore((s) => s.items);
+  const meta     = useBillingStore((s) => s.meta);
+  const clear    = useBillingStore((s) => s.clear);
+  const getTotals= useBillingStore((s) => s.getTotals);
+  const setMeta  = useBillingStore((s) => s.setMeta);
+  const loadDraft= useBillingStore((s) => s.loadDraft);
   const { config: printConfig, pharmacy: printPharmacy } = useInvoicePrintConfig();
   const [searchParams] = useSearchParams();
   const navigate     = useNavigate();
@@ -448,6 +456,7 @@ function NewBillInner() {
   const [draftToast,           setDraftToast]           = useState<string | null>(null);
   const [loadedDraftId,        setLoadedDraftId]        = useState<string | null>(null);
   const [actionToast,          setActionToast]          = useState<{ msg: string; type: "info" | "warn" } | null>(null);
+  const [altDrawer,            setAltDrawer]            = useState<{ med: MedicineSearchResult; autoSuggest: boolean } | null>(null);
 
   // Crash / refresh recovery
   const [sessionRecovery, setSessionRecovery] = useState<AutoSaveSession | null>(null);
@@ -697,6 +706,11 @@ function NewBillInner() {
     setCancelReason("");
   }
 
+  // Stable callbacks for BillingSubNav — prevents re-renders on every cart change
+  const handlePaymentMode  = useCallback((m: "CASH"|"UPI"|"CARD"|"CREDIT") => setMeta({ paymentMode: m }), [setMeta]);
+  const handleInterstate   = useCallback((v: boolean) => setMeta({ isInterstate: v }), [setMeta]);
+  const handleLifaToggle   = useCallback(() => setLifa((v) => !v), []);
+
   return (
     <>
       {/* Print-only layer — uses saved pharmacy settings so the actual print matches the template */}
@@ -718,11 +732,11 @@ function NewBillInner() {
           submitting={submitting}
           hasItems={items.length > 0}
           paymentMode={meta.paymentMode}
-          onPaymentMode={(m) => setMeta({ paymentMode: m })}
+          onPaymentMode={handlePaymentMode}
           isInterstate={meta.isInterstate}
-          onInterstate={(v) => setMeta({ isInterstate: v })}
+          onInterstate={handleInterstate}
           lifa={lifa}
-          onLifaToggle={() => setLifa((v) => !v)}
+          onLifaToggle={handleLifaToggle}
         />
 
         {/* Action feedback toast (Save & New, coming-soon stubs) */}
@@ -840,7 +854,11 @@ function NewBillInner() {
             <CartTableHeader />
           </div>
           <div className="flex-shrink-0 border-b border-slate-200 bg-white">
-            <MedicineSearchCombobox />
+            <MedicineSearchCombobox
+              onOpenAlternatives={(med, autoSuggest) =>
+                setAltDrawer({ med, autoSuggest: autoSuggest ?? false })
+              }
+            />
           </div>
           <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
             <CartTableRows conflictInventoryIds={conflictInventoryIds} />
@@ -919,6 +937,17 @@ function NewBillInner() {
           </div>
         </div>
       </motion.div>
+
+      {/* ── Medicine Alternatives drawer ─────────────────────── */}
+      <AnimatePresence>
+        {altDrawer && (
+          <AlternativesDrawer
+            sourceMed={altDrawer.med}
+            autoSuggest={altDrawer.autoSuggest}
+            onClose={() => setAltDrawer(null)}
+          />
+        )}
+      </AnimatePresence>
 
       {/* ── Invoice Breakdown modal ──────────────────────────── */}
       <AnimatePresence>

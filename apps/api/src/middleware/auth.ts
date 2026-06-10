@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
+import { env } from "../config/env.js";
 
 export type UserRole = "OWNER" | "MANAGER" | "PHARMACIST" | "CASHIER";
 
@@ -19,9 +20,21 @@ declare module "@fastify/jwt" {
 }
 
 // Redis key that caches a user's current tokenVersion.
-// TTL matches the JWT access-token expiry so the cache never outlives a valid token.
+// TTL is derived from JWT_EXPIRES_IN so the cache never outlives a valid token,
+// regardless of how the env var is configured.
 export const tokenVersionKey = (userId: string) => `user:tv:${userId}`;
-const TOKEN_VERSION_TTL_S = 15 * 60; // 15 minutes — matches JWT_EXPIRES_IN default
+
+function parseTtlToSeconds(ttl: string): number {
+  const match = ttl.match(/^(\d+)(m|h|d)$/);
+  if (!match) return 15 * 60; // fallback: 15 min
+  const n    = parseInt(match[1]!, 10);
+  const unit = match[2];
+  if (unit === "m") return n * 60;
+  if (unit === "h") return n * 60 * 60;
+  return n * 24 * 60 * 60; // days
+}
+
+const TOKEN_VERSION_TTL_S = parseTtlToSeconds(env.JWT_EXPIRES_IN);
 
 export async function authenticate(
   request: FastifyRequest,

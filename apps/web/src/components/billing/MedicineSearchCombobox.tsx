@@ -193,13 +193,17 @@ const BatchPickerDialog = memo(function BatchPickerDialog({
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export function MedicineSearchCombobox() {
+export function MedicineSearchCombobox({
+  onOpenAlternatives,
+}: {
+  onOpenAlternatives?: (med: MedicineSearchResult, autoSuggest?: boolean) => void;
+}) {
   const [query,    setQuery]    = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [open,     setOpen]     = useState(false);
-  const [results,  setResults]  = useState<MedicineSearchResult[]>([]);
-  const [loading,  setLoading]  = useState(false);
   const [addingId, setAddingId] = useState<string | null>(null);
   const [focused,  setFocused]  = useState(false);
+  const [cursor,   setCursor]   = useState(0);
 
   const [pickerState,      setPickerState]      = useState<PickerState | null>(null);
   const [nearExpiryWarn,   setNearExpiryWarn]   = useState<{ name: string; days: number } | null>(null);
@@ -231,30 +235,45 @@ export function MedicineSearchCombobox() {
   }, [stockError]);
 
   // Barcode scanner detection — scanners fire chars < 50 ms apart, then Enter
-  const lastKeyTimeRef    = useRef<number>(0);
-  const barcodeCharCount  = useRef<number>(0);
-  const isBarcodeRef      = useRef<boolean>(false);
+  const lastKeyTimeRef   = useRef<number>(0);
+  const barcodeCharCount = useRef<number>(0);
+  const isBarcodeRef     = useRef<boolean>(false);
   const [isBarcode, setIsBarcode] = useState(false);
 
-  const search = useCallback(async (q: string) => {
-    if (!q.trim()) { setResults([]); setOpen(false); return; }
-    setLoading(true);
-    try {
-      const { data } = await api.get<{ data: MedicineSearchResult[] }>("/medicines/search", {
-        params: { q, limit: 8 },
-      });
-      setResults(data.data);
-      setOpen(data.data.length > 0);
-    } catch { setResults([]); }
-    finally { setLoading(false); }
-  }, []);
-
+  // Debounce: commit query to debouncedQuery after typing pauses
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
+    if (!query.trim()) { setDebouncedQuery(""); setOpen(false); return; }
     const delay = isBarcodeRef.current ? 60 : 300;
-    timerRef.current = setTimeout(() => search(query), delay);
+    timerRef.current = setTimeout(() => setDebouncedQuery(query.trim()), delay);
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
-  }, [query, search]);
+  }, [query]);
+
+  // React Query: cached medicine search — no manual loading/results state
+  const { data: searchData, isFetching: loading } = useQuery({
+    queryKey: ["medicine-search", debouncedQuery],
+    queryFn:  () =>
+      api.get<{ data: MedicineSearchResult[] }>("/medicines/search", {
+        params: { q: debouncedQuery, limit: 8 },
+      }).then((r) => r.data.data),
+    enabled:         debouncedQuery.length > 0,
+    staleTime:       60_000,
+    // Only keep previous data while a new query is actively fetching —
+    // never when the query is disabled (empty input), which would leave
+    // stale results visible even after the user clears the search box.
+    placeholderData: debouncedQuery.length > 0 ? keepPreviousData : undefined,
+  });
+  // Never expose results when there is no active query — guards against
+  // placeholder data leaking through when the input is empty.
+  const results = debouncedQuery.length > 0 ? (searchData ?? []) : [];
+
+  // Open dropdown when results arrive; close when query is cleared
+  useEffect(() => {
+    if (results.length > 0 && debouncedQuery) setOpen(true);
+  }, [results, debouncedQuery]);
+
+  // Reset cursor to top whenever the results list changes
+  useEffect(() => { setCursor(0); }, [results]);
 
   useEffect(() => {
     const onOut = (e: MouseEvent) => {
@@ -308,7 +327,7 @@ export function MedicineSearchCombobox() {
   async function selectMedicine(med: MedicineSearchResult) {
     setOpen(false);
     setQuery("");
-    setResults([]);
+    setDebouncedQuery("");   // clears React Query key → dropdown stays closed
     isBarcodeRef.current  = false;
     barcodeCharCount.current = 0;
     setIsBarcode(false);
@@ -327,7 +346,11 @@ export function MedicineSearchCombobox() {
         .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
 
       if (liveBatches.length === 0) {
-        if (allBatches.length > 0) {
+        // If the medicine has a genericName, open the alternatives drawer automatically
+        // instead of showing a plain error — keeps the billing flow moving.
+        if ((med.hasAlternatives || med.genericName) && onOpenAlternatives) {
+          onOpenAlternatives(med, true);
+        } else if (allBatches.length > 0) {
           setStockError(`All batches of "${med.name}" are expired.`);
         } else {
           setStockError(`No stock available for "${med.name}".`);
@@ -366,10 +389,34 @@ export function MedicineSearchCombobox() {
       }
     }
 
+    if (open && results.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setCursor((c) => Math.min(c + 1, results.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setCursor((c) => Math.max(c - 1, 0));
+        return;
+      }
+      // Right Arrow → open alternatives for the focused result
+      if (e.key === "ArrowRight") {
+        const focused = results[cursor];
+        if ((focused?.hasAlternatives || focused?.genericName) && onOpenAlternatives) {
+          e.preventDefault();
+          onOpenAlternatives(focused);
+          setOpen(false);
+          setQuery("");
+          return;
+        }
+      }
+    }
+
     if (e.key === "Enter") {
       e.preventDefault();
-      const first = results[0];
-      if (first) selectMedicine(first);
+      const target = results[cursor] ?? results[0];
+      if (target) selectMedicine(target);
     } else if (e.key === "Escape") {
       setOpen(false);
       setQuery("");
@@ -396,30 +443,28 @@ export function MedicineSearchCombobox() {
 
       <div ref={containerRef} className="relative flex-1">
 
-        {/* ── Input row ─────────────────────────────────────────── */}
-        <motion.div
-          animate={focused ? { backgroundColor: "rgba(219,234,254,0.6)" } : { backgroundColor: "transparent" }}
-          transition={{ duration: 0.18 }}
-          className={cn(
-            "flex items-center gap-3 px-4 py-3 rounded-none transition-shadow duration-200",
-            focused && "shadow-[inset_0_-2px_0_0_rgba(37,99,235,0.4)]"
-          )}
-        >
-          <AnimatePresence mode="wait" initial={false}>
-            {loading || addingId ? (
-              <motion.div key="loader" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }}>
-                <Loader2 className="w-6 h-6 text-blue-500 animate-spin flex-shrink-0" />
-              </motion.div>
-            ) : isBarcode ? (
-              <motion.div key="barcode" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }}>
-                <ScanBarcode className="w-6 h-6 text-emerald-500 flex-shrink-0" />
-              </motion.div>
-            ) : (
-              <motion.div key="search" initial={{ opacity: 0, scale: 0.8 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.8 }}>
-                <Search className="w-5 h-5 text-blue-400 flex-shrink-0" />
-              </motion.div>
-            )}
-          </AnimatePresence>
+        {/* ── Input row — CSS-only transitions, zero FM overhead ──── */}
+        <div className={cn(
+          "flex items-center gap-3 px-4 py-3 rounded-none transition-all duration-150",
+          focused
+            ? "bg-blue-50/60 shadow-[inset_0_-2px_0_0_rgba(37,99,235,0.4)]"
+            : "bg-transparent"
+        )}>
+          {/* Icon: loader / barcode / search — CSS opacity swap, no FM */}
+          <div className="w-6 h-6 flex-shrink-0 relative">
+            <Loader2 className={cn(
+              "w-6 h-6 text-blue-500 animate-spin absolute inset-0 transition-opacity duration-150",
+              (loading || addingId) ? "opacity-100" : "opacity-0 pointer-events-none"
+            )} />
+            <ScanBarcode className={cn(
+              "w-6 h-6 text-emerald-500 absolute inset-0 transition-opacity duration-150",
+              (!loading && !addingId && isBarcode) ? "opacity-100" : "opacity-0 pointer-events-none"
+            )} />
+            <Search className={cn(
+              "w-5 h-5 text-blue-400 absolute inset-0 m-0.5 transition-opacity duration-150",
+              (!loading && !addingId && !isBarcode) ? "opacity-100" : "opacity-0 pointer-events-none"
+            )} />
+          </div>
 
           <input
             ref={inputRef}
@@ -434,19 +479,12 @@ export function MedicineSearchCombobox() {
             className="flex-1 text-[15px] text-slate-700 placeholder-blue-400/70 bg-transparent focus:outline-none"
           />
 
-          <AnimatePresence>
-            {isBarcode && (
-              <motion.span
-                initial={{ opacity: 0, x: 6, scale: 0.85 }}
-                animate={{ opacity: 1, x: 0,  scale: 1    }}
-                exit={   { opacity: 0, x: 6,  scale: 0.85 }}
-                className="text-[9px] font-bold text-emerald-600 uppercase tracking-wide flex-shrink-0 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-full"
-              >
-                Barcode
-              </motion.span>
-            )}
-          </AnimatePresence>
-        </motion.div>
+          {isBarcode && (
+            <span className="text-[9px] font-bold text-emerald-600 uppercase tracking-wide flex-shrink-0 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-full animate-fade-in">
+              Barcode
+            </span>
+          )}
+        </div>
 
         {/* ── Inline toasts (stock error + near-expiry) ─────────── */}
         <AnimatePresence>
@@ -480,7 +518,7 @@ export function MedicineSearchCombobox() {
 
         {/* ── Search dropdown ───────────────────────────────────── */}
         <AnimatePresence>
-          {open && (loading || results.length > 0) && (
+          {open && debouncedQuery.length > 0 && (loading || results.length > 0) && (
             <motion.ul
               initial={{ opacity: 0, y: -6 }}
               animate={{ opacity: 1, y: 0   }}
@@ -491,21 +529,20 @@ export function MedicineSearchCombobox() {
               {loading && results.length === 0
                 ? [0, 1, 2].map((i) => <SkeletonResult key={i} />)
                 : results.map((med, i) => (
-                    <motion.li
+                    <li
                       key={med.id}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ delay: i * 0.025 }}
+                      onMouseEnter={() => setCursor(i)}
                       onMouseDown={() => selectMedicine(med)}
+                      style={{ animationDelay: `${i * 20}ms`, animationFillMode: "both" }}
                       className={cn(
                         "flex items-center gap-3 px-4 py-3 cursor-pointer border-b border-slate-50 last:border-0 group",
-                        "transition-colors duration-100",
-                        i === 0 ? "bg-blue-50/50 hover:bg-blue-100/70" : "hover:bg-blue-50/50"
+                        "transition-colors duration-75 animate-fade-in",
+                        i === cursor ? "bg-blue-100/70" : "hover:bg-blue-50/50"
                       )}
                     >
                       <div className={cn(
                         "w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0",
-                        i === 0 ? "bg-blue-100" : "bg-blue-50 group-hover:bg-blue-100"
+                        i === cursor ? "bg-blue-100" : "bg-blue-50 group-hover:bg-blue-100"
                       )}>
                         <Pill className="w-4 h-4 text-blue-500" />
                       </div>
@@ -526,12 +563,35 @@ export function MedicineSearchCombobox() {
                           <span className="pill bg-slate-100 text-slate-500 text-[12px]">{med.packSize}</span>
                         )}
                         <span className="pill bg-blue-100 text-blue-600 text-[12px]">GST {med.gstRate}%</span>
-                        {i === 0 && (
+                        {i === cursor && (
                           <span className="pill bg-emerald-100 text-emerald-600 uppercase tracking-wide">↵</span>
                         )}
+
+                        {/* A badge — shown when alternatives confirmed, or medicine has a genericName */}
+                        {(med.hasAlternatives || med.genericName) && (
+                          <button
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              onOpenAlternatives?.(med);
+                              setOpen(false);
+                              setQuery("");
+                            }}
+                            title={med.hasAlternatives ? "View Alternatives (→)" : "Find Alternatives (→)"}
+                            className={cn(
+                              "w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-extrabold transition-colors flex-shrink-0",
+                              med.hasAlternatives
+                                ? "bg-violet-100 hover:bg-violet-200 text-violet-700"
+                                : "bg-slate-100 hover:bg-slate-200 text-slate-500"
+                            )}
+                          >
+                            A
+                          </button>
+                        )}
+
                         <ChevronRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-blue-400 transition-colors" />
                       </div>
-                    </motion.li>
+                    </li>
                   ))}
             </motion.ul>
           )}

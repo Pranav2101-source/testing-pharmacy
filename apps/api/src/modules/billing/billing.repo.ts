@@ -202,10 +202,37 @@ export class BillingRepo {
         params.paymentStatus !== "PAID";
 
       if (isCreditSale) {
-        await tx.customer.updateMany({
-          where: { id: params.customerId!, pharmacyId: params.pharmacyId, customerType: "CREDIT" },
-          data:  { creditUsed: { increment: params.totalAmount } },
-        });
+        // Atomic check-and-increment in a single UPDATE so no two concurrent invoices
+        // can both pass a pre-flight credit check and then both commit, silently
+        // exceeding the customer's limit (TOCTOU race that existed when the service
+        // called validateCreditLimit before entering this transaction).
+        // The WHERE clause only matches when creditLimit is unlimited (≤ 0) OR when
+        // the resulting creditUsed would remain within the limit (+0.01 for float tolerance).
+        const updated = await tx.$queryRaw<{ creditUsed: number; creditLimit: number }[]>`
+          UPDATE customer
+          SET    "creditUsed" = "creditUsed" + ${params.totalAmount}
+          WHERE  id             = ${params.customerId!}
+            AND  "pharmacyId"   = ${params.pharmacyId}
+            AND  "customerType" = 'CREDIT'
+            AND  (
+                   "creditLimit" <= 0
+                   OR "creditUsed" + ${params.totalAmount} <= "creditLimit" + 0.01
+                 )
+          RETURNING "creditUsed", "creditLimit"
+        `;
+
+        if (updated.length === 0) {
+          // No row matched — the update was blocked by the credit limit clause.
+          // Read the current balance inside the transaction for a precise message.
+          const cust = await tx.customer.findFirst({
+            where:  { id: params.customerId!, pharmacyId: params.pharmacyId, customerType: "CREDIT" },
+            select: { creditLimit: true, creditUsed: true },
+          });
+          const available = cust ? cust.creditLimit - cust.creditUsed : 0;
+          throw AppError.unprocessable(
+            `Credit limit exceeded. Available: ₹${available.toFixed(2)}, required: ₹${params.totalAmount.toFixed(2)}`,
+          );
+        }
 
         // Step 4.5 — audit credit change
         await tx.auditLog.create({
@@ -473,13 +500,24 @@ export class BillingRepo {
         }
       }
 
-      const alreadyReturnedMap = new Map<string, number>();
+      // Two maps — quantity for the "max returnable" guard, amount for the
+      // exact-remainder rounding fix.  Tracking amounts here is what lets us
+      // compute `originalAmount - sum(previousReturnAmounts)` on the last
+      // return for a line item, rather than ratio × originalAmount.  Without
+      // this, returning 10 units one-at-a-time from a ₹10.09 line leaves a
+      // ₹0.09 residual that exceeds the 0.01 tolerance on isFullReturn.
+      const alreadyReturnedMap    = new Map<string, number>(); // qty
+      const alreadyReturnedAmtMap = new Map<string, number>(); // amount (₹)
       for (const ret of invoice.returns) {
         for (const ri of ret.items) {
           if (ri.invoiceItemId) {
             alreadyReturnedMap.set(
               ri.invoiceItemId,
               (alreadyReturnedMap.get(ri.invoiceItemId) ?? 0) + ri.quantity,
+            );
+            alreadyReturnedAmtMap.set(
+              ri.invoiceItemId,
+              (alreadyReturnedAmtMap.get(ri.invoiceItemId) ?? 0) + ri.amount,
             );
           }
         }
@@ -524,12 +562,23 @@ export class BillingRepo {
           );
         }
 
-        const ratio        = ri.quantity / originalItem.quantity;
+        const alreadyReturnedQty = alreadyReturnedMap.get(ri.invoiceItemId)    ?? 0;
+        const alreadyReturnedAmt = alreadyReturnedAmtMap.get(ri.invoiceItemId) ?? 0;
+        const ratio              = ri.quantity / originalItem.quantity;
+
+        // When this return completes the line item (all units now returned),
+        // use the exact remaining amount instead of ratio × original.
+        // Ratio-based rounding (e.g. 10 × ⌊₹10.09 / 10⌋ = ₹10.00 ≠ ₹10.09)
+        // accumulates error across multi-step returns and can cause the final
+        // returned total to fall outside the ±₹0.01 isFullReturn tolerance.
+        const isLastBatch = (alreadyReturnedQty + ri.quantity) === originalItem.quantity;
+        const amount       = isLastBatch
+          ? parseFloat((originalItem.amount       - alreadyReturnedAmt).toFixed(2))
+          : parseFloat((originalItem.amount       * ratio).toFixed(2));
         const cgst         = parseFloat((originalItem.cgst         * ratio).toFixed(2));
         const sgst         = parseFloat((originalItem.sgst         * ratio).toFixed(2));
         const igst         = parseFloat((originalItem.igst         * ratio).toFixed(2));
         const taxableAmount = parseFloat((originalItem.taxableAmount * ratio).toFixed(2));
-        const amount       = parseFloat((originalItem.amount       * ratio).toFixed(2));
 
         returnLineItems.push({
           invoiceItemId: ri.invoiceItemId,
@@ -762,9 +811,16 @@ export class BillingRepo {
       if (newTotalPaid >= invoice.totalAmount - 0.01) paymentStatus = "PAID";
       else if (newTotalPaid > 0)                      paymentStatus = "PARTIAL";
 
+      // Only update paymentStatus — intentionally NOT touching paymentMode.
+      // paymentMode records the agreed payment method set at invoice creation
+      // (CASH, CREDIT, UPI, etc.). Overwriting it with the mode of each
+      // subsequent payment would corrupt the original payment agreement and
+      // break the wasCreditSale guards in cancel and return flows, leaving
+      // creditUsed permanently inflated when a CREDIT invoice is settled via
+      // a different payment mode (e.g. a UPI follow-up on a credit account).
       await tx.invoice.update({
         where: { id: params.invoiceId },
-        data:  { paymentStatus: paymentStatus as PaymentStatus, paymentMode: params.paymentMode as PaymentMode },
+        data:  { paymentStatus: paymentStatus as PaymentStatus },
       });
 
       // Reduce creditUsed ONLY when this payment settles a CREDIT invoice that
@@ -970,10 +1026,22 @@ export class BillingRepo {
   // ── Dashboard stats ───────────────────────────────────────────────────────
 
   async getDashboardStats(pharmacyId: string) {
-    const now                 = new Date();
-    const todayStart          = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const weekStart           = new Date(todayStart); weekStart.setDate(weekStart.getDate() - 7);
-    const monthStart          = new Date(now.getFullYear(), now.getMonth(), 1);
+    const now = new Date();
+
+    // India Standard Time = UTC + 5:30.  Servers run UTC, so we must shift the
+    // "day boundary" by +5h30m before truncating to midnight, then shift back to
+    // get the correct UTC timestamp that corresponds to IST midnight.
+    // Example: 2025-06-10 00:00 IST = 2025-06-09 18:30:00 UTC.
+    // Using server-local Date(year, month, date) would give 2025-06-10 00:00 UTC,
+    // which is 5:30 AM IST — leaving the first 5.5 hours of every Indian day
+    // attributed to the previous day in stats.
+    const IST_OFFSET_MS       = 5.5 * 60 * 60 * 1000;
+    const istNow              = new Date(now.getTime() + IST_OFFSET_MS);
+    const istTodayMidnightUtc = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate()));
+    const todayStart          = new Date(istTodayMidnightUtc.getTime() - IST_OFFSET_MS);
+    const weekStart           = new Date(todayStart.getTime() - 7 * 86_400_000);
+    const istMonthStartUtc    = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), 1));
+    const monthStart          = new Date(istMonthStartUtc.getTime() - IST_OFFSET_MS);
     const nearExpiryThreshold = new Date(Date.now() + 90 * 86400000);
 
     const [
@@ -997,7 +1065,7 @@ export class BillingRepo {
       this.db.invoice.count({
         where: { pharmacyId, createdAt: { gte: todayStart }, isCancelled: true },
       }),
-      // Week invoices
+      // Rolling 7-day window (not the current Mon–Sun calendar week)
       this.db.invoice.aggregate({
         where:  { pharmacyId, createdAt: { gte: weekStart }, isCancelled: false },
         _sum:   { totalAmount: true },
@@ -1046,8 +1114,8 @@ export class BillingRepo {
       todayCount:      todaySalesAgg._count.id,
       todayCancelled:  todayCancelledCount,
       todayReturns:    todayReturns._sum.totalAmount    ?? 0,
-      weekSales:       weekInvoices._sum.totalAmount    ?? 0,
-      weekCount:       weekInvoices._count.id,
+      last7DaysSales:  weekInvoices._sum.totalAmount    ?? 0,
+      last7DaysCount:  weekInvoices._count.id,
       monthSales:      monthInvoices._sum.totalAmount   ?? 0,
       monthCount:      monthInvoices._count.id,
       pendingCredit:   pendingCredit._sum.totalAmount   ?? 0,
@@ -1061,11 +1129,13 @@ export class BillingRepo {
     };
   }
 
-  // ── FIFO / FEFO batch selection ───────────────────────────────────────────
+  // ── FEFO batch selection ──────────────────────────────────────────────────
   // Selects the earliest-expiring batch with sufficient stock (FEFO — First
   // Expired First Out), which is the industry standard for pharmacy.
+  // Previously named getFifoBatch, which was a misnomer: the query orders by
+  // expiryDate ASC, not by receipt/purchase date (FIFO).
 
-  async getFifoBatch(medicineId: string, pharmacyId: string, quantity: number) {
+  async getFEFOBatch(medicineId: string, pharmacyId: string, quantity: number) {
     return this.db.inventory.findFirst({
       where: {
         medicineId,

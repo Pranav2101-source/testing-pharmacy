@@ -112,11 +112,12 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: medicine });
   });
 
-  // ── Generic substitution alternatives ────────────────────────────────────
+  // ── Generic substitution alternatives (pharmacy-specific stock data) ─────
   app.get("/:id/alternatives", { preHandler: auth }, async (req, reply) => {
-    const { id }        = req.params as { id: string };
-    const alternatives  = await service.getAlternatives(id);
-    return reply.send({ success: true, data: alternatives });
+    const { id }   = req.params as { id: string };
+    const user     = req.user as { pharmacyId: string };
+    const data     = await service.getAlternatives(id, user.pharmacyId);
+    return reply.send({ success: true, data });
   });
 };
 

@@ -10,9 +10,12 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
   // Daily sales summary
   app.get("/sales/daily", { preHandler }, async (req, reply) => {
     const { date } = req.query as Record<string, string>;
-    const day  = date ? new Date(date) : new Date();
-    const from = new Date(day.setHours(0, 0, 0, 0));
-    const to   = new Date(day.setHours(23, 59, 59, 999));
+    // IST-aware day boundary — server runs UTC, IST = UTC+5:30
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const dateStr = date ?? new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
+    const [y, m, d] = dateStr.split("-").map(Number) as [number, number, number];
+    const from = new Date(Date.UTC(y, m - 1, d) - IST_OFFSET_MS);   // IST midnight in UTC
+    const to   = new Date(from.getTime() + 86400_000 - 1);           // next IST midnight - 1ms
 
     const [invoices, totalRevenue] = await Promise.all([
       app.prisma.invoice.count({
@@ -27,7 +30,7 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({
       success: true,
       data: {
-        date:         from,
+        date:         dateStr,  // YYYY-MM-DD string, not a Date object
         invoiceCount: invoices,
         revenue:      totalRevenue._sum.totalAmount ?? 0,
         gstCollected: totalRevenue._sum.totalGst    ?? 0,
@@ -505,6 +508,74 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
       data:    { groupBy, totalCostValue, totalRetailValue, items: rows },
     });
   });
+  // ── EOD Summary ──────────────────────────────────────────────────────────────
+  // Supplies the homepage "Today's Summary" card with data that isn't already
+  // returned by /billing/dashboard/stats — specifically top-5 medicines and the
+  // total GST collected today (which stats deliberately omits).
+  // Overdue GRN count is included here so the home page needs only two fetches.
+
+  app.get("/eod/summary", { preHandler }, async (req, reply) => {
+    // Mirror the IST-aware day boundary used in billing.repo getDashboardStats
+    const IST_OFFSET_MS       = 5.5 * 60 * 60 * 1000;
+    const istNow              = new Date(Date.now() + IST_OFFSET_MS);
+    const istTodayMidnightUtc = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate()));
+    const todayStart          = new Date(istTodayMidnightUtc.getTime() - IST_OFFSET_MS);
+
+    const invoiceWhere = {
+      pharmacyId:  req.pharmacyId,
+      isCancelled: false,
+      createdAt:   { gte: todayStart },
+    };
+
+    const [gstAgg, topItemGroups, overdueGrns] = await Promise.all([
+      app.prisma.invoice.aggregate({
+        where: invoiceWhere,
+        _sum:  { totalGst: true },
+      }),
+      // Group by inventoryId (InvoiceItem does not store medicineName directly)
+      app.prisma.invoiceItem.groupBy({
+        by:      ["inventoryId"],
+        where:   { invoice: invoiceWhere },
+        _sum:    { quantity: true, amount: true },
+        orderBy: { _sum: { quantity: "desc" } },
+        take:    5,
+      }),
+      app.prisma.goodsReceiptNote.count({
+        where: {
+          pharmacyId:     req.pharmacyId,
+          status:         "CONFIRMED",
+          paymentDueDate: { lt: new Date() },
+        },
+      }),
+    ]);
+
+    // Batch-enrich medicine names with a single IN query (avoids N+1)
+    const inventoryIds = topItemGroups.map((g) => g.inventoryId);
+    const inventories  = inventoryIds.length > 0
+      ? await app.prisma.inventory.findMany({
+          where:  { id: { in: inventoryIds } },
+          select: { id: true, medicine: { select: { name: true, genericName: true } } },
+        })
+      : [];
+    const invMap = new Map(inventories.map((i) => [i.id, i]));
+
+    const topMedicines = topItemGroups.map((g) => ({
+      medicineName: invMap.get(g.inventoryId)?.medicine.name          ?? "Unknown",
+      genericName:  invMap.get(g.inventoryId)?.medicine.genericName   ?? null,
+      qtySold:      g._sum.quantity ?? 0,
+      revenue:      parseFloat((g._sum.amount ?? 0).toFixed(2)),
+    }));
+
+    return reply.send({
+      success: true,
+      data: {
+        gstCollected:    parseFloat((gstAgg._sum.totalGst ?? 0).toFixed(2)),
+        topMedicines,
+        overdueGrnCount: overdueGrns,
+      },
+    });
+  });
+
 };
 
 export default reportsRoutes;

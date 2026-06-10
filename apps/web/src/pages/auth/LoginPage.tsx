@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Mail, Lock, Eye, EyeOff, AlertCircle, ArrowRight, CheckCircle2, Shield, UserPlus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { storeUser, type StoredUser } from "@/lib/auth";
+import { api } from "@/lib/api-client";
 
 const schema = z.object({
   email:    z.string().email("Enter a valid email address"),
@@ -27,29 +28,24 @@ export default function LoginPage() {
   async function onSubmit(data: Form) {
     setApiErr(null);
     try {
-      const res  = await fetch(`${import.meta.env.VITE_API_URL ?? "http://localhost:4000/api"}/auth/login`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json" },
-        body:    JSON.stringify(data),
-      });
-      const json = await res.json() as {
-        success: boolean;
-        data?:   { tokens: { accessToken: string }; user: StoredUser };
-        error?:  string;
-      };
-
-      if (!json.success || !json.data) {
-        setApiErr(json.error ?? "Invalid email or password.");
-        return;
-      }
-
-      localStorage.setItem("token", json.data.tokens.accessToken);
-      document.cookie = `auth-token=${json.data.tokens.accessToken}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
-      storeUser(json.data.user);
+      // Use the shared axios instance so interceptors (401 redirect, error
+      // normalisation) apply here too — replacing the previous raw fetch call.
+      const res = await api.post<{ data: { tokens: { accessToken: string }; user: StoredUser } }>(
+        "/auth/login",
+        data,
+      );
+      const { tokens, user } = res.data.data;
+      localStorage.setItem("token", tokens.accessToken);
+      document.cookie = `auth-token=${tokens.accessToken}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
+      storeUser(user);
       setSuccess(true);
       setTimeout(() => navigate("/dashboard"), 600);
-    } catch {
-      setApiErr("Network error — please try again.");
+    } catch (err) {
+      // axios normalises the backend error message onto err.message via the
+      // response interceptor, so we don't need to dig into err.response.data.
+      setApiErr(
+        (err as { message?: string }).message ?? "Network error — please try again.",
+      );
     }
   }
 
@@ -94,7 +90,7 @@ export default function LoginPage() {
 
           <div className="space-y-4 mb-2">
             <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-semibold text-slate-700">Email address</label>
+              <label htmlFor="login-email" className="text-sm font-semibold text-slate-700">Email address</label>
               <div className={cn(
                 "flex items-center gap-2.5 px-3.5 py-3 rounded-xl border bg-white transition-all",
                 errors.email
@@ -104,6 +100,7 @@ export default function LoginPage() {
                 <Mail className="w-4 h-4 text-slate-400 flex-shrink-0" strokeWidth={1.8} />
                 <input
                   {...register("email")}
+                  id="login-email"
                   type="email"
                   placeholder="you@pharmacy.com"
                   autoComplete="email"
@@ -119,7 +116,7 @@ export default function LoginPage() {
 
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between">
-                <label className="text-sm font-semibold text-slate-700">Password</label>
+                <label htmlFor="login-password" className="text-sm font-semibold text-slate-700">Password</label>
                 <Link to="/forgot-password" className="text-xs text-blue-600 hover:text-blue-700 font-semibold transition-colors">
                   Forgot password?
                 </Link>
@@ -133,6 +130,7 @@ export default function LoginPage() {
                 <Lock className="w-4 h-4 text-slate-400 flex-shrink-0" strokeWidth={1.8} />
                 <input
                   {...register("password")}
+                  id="login-password"
                   type={showPw ? "text" : "password"}
                   placeholder="••••••••"
                   autoComplete="current-password"

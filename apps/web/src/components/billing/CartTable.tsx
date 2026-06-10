@@ -60,8 +60,10 @@ const CartRow = memo(function CartRow({
   onQtyChange:      (id: string, qty: number) => void;
   onDiscountChange: (id: string, discount: number) => void;
 }) {
-  const isExpired      = new Date(item.expiryDate) < new Date();
-  const isExpiringSoon = !isExpired && new Date(item.expiryDate) < new Date(Date.now() + 90 * 86400000);
+  const now = Date.now();
+  const expiry = new Date(item.expiryDate).getTime();
+  const isExpired      = expiry < now;
+  const isExpiringSoon = !isExpired && expiry < now + 90 * 86400_000;
 
   const stockStatus: "ok" | "low" | "over" | null = (() => {
     if (item.availableStock == null) return null;
@@ -72,7 +74,6 @@ const CartRow = memo(function CartRow({
 
   return (
     <motion.div
-      layout
       initial={{ opacity: 0, y: -6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, x: -16 }}
@@ -203,28 +204,23 @@ const CartRow = memo(function CartRow({
         {item.gstRate}%
       </span>
 
-      {/* Amount */}
-      <motion.span
+      {/* Amount — CSS pop replaces motion.span key remount */}
+      <span
         key={item.amount}
-        initial={{ scale: 0.9, opacity: 0.6 }}
-        animate={{ scale: 1, opacity: 1 }}
-        transition={{ type: "spring", stiffness: 500, damping: 30 }}
-        className="px-2.5 py-2 text-[15px] font-black text-slate-900 text-right tabnum block"
+        className="px-2.5 py-2 text-[15px] font-black text-slate-900 text-right tabnum block animate-amount-pop"
       >
         {item.amount.toFixed(2)}
-      </motion.span>
+      </span>
 
-      {/* Delete */}
+      {/* Delete — CSS scale replaces motion.button whileHover/whileTap */}
       <div className="flex justify-center">
-        <motion.button
-          whileHover={{ scale: 1.12 }}
-          whileTap={{ scale: 0.9 }}
+        <button
           onClick={() => onRemove(item.inventoryId)}
           tabIndex={-1}
-          className="row-delete-btn opacity-0 group-hover:opacity-100 w-6 h-6 rounded-md bg-red-50 hover:bg-red-500 text-red-400 hover:text-white flex items-center justify-center transition-all duration-100"
+          className="row-delete-btn opacity-0 group-hover:opacity-100 w-6 h-6 rounded-md bg-red-50 hover:bg-red-500 text-red-400 hover:text-white flex items-center justify-center transition-all duration-100 hover:scale-110 active:scale-90 will-change-transform"
         >
           <X className="w-3.5 h-3.5" />
-        </motion.button>
+        </button>
       </div>
     </motion.div>
   );

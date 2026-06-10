@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
 import { connection, lowStockAlertQueue } from "../queue.client.js";
+import { onWorkerFailed } from "../on-worker-failed.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 type LowStockRow = { medicineName: string; batchNumber: string; quantity: number; minimumStock: number };
@@ -104,3 +105,4 @@ export const lowStockAlertWorker = new Worker(
   },
   { connection, concurrency: 5 },
 );
+onWorkerFailed(lowStockAlertWorker);

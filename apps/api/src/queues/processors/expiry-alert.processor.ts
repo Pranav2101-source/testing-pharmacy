@@ -2,6 +2,7 @@ import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
 import { connection, expiryAlertQueue } from "../queue.client.js";
 import { notifyOwners } from "../../lib/notifications.js";
+import { onWorkerFailed } from "../on-worker-failed.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -126,3 +127,4 @@ export const expiryAlertWorker = new Worker(
   },
   { connection, concurrency: 5 },
 );
+onWorkerFailed(expiryAlertWorker);

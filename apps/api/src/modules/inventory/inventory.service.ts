@@ -98,6 +98,8 @@ export class InventoryService {
   }
 
   async updateLocation(id: string, pharmacyId: string, data: { shelfId?: string | null; location?: string | null }) {
+    const item = await this.repo.db.inventory.findFirst({ where: { id, pharmacyId }, select: { id: true } });
+    if (!item) throw AppError.notFound("This stock item could not be found. It may have already been removed.");
     return this.repo.db.inventory.update({
       where: { id, pharmacyId },
       data:  { shelfId: data.shelfId, location: data.location },

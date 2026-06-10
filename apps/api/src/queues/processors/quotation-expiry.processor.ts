@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
 import { connection, quotationExpiryQueue } from "../queue.client.js";
+import { onWorkerFailed } from "../on-worker-failed.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 export const quotationExpiryWorker = new Worker(
@@ -67,3 +68,4 @@ export const quotationExpiryWorker = new Worker(
   },
   { connection, concurrency: 5 },
 );
+onWorkerFailed(quotationExpiryWorker);

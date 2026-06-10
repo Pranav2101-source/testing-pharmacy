@@ -6,6 +6,7 @@ import {
   quotationExpiryQueue,
   pendingCreditQueue,
   calendarDigestQueue,
+  reservationCleanupQueue,
 } from "./queue.client.js";
 
 // All times are UTC. India Standard Time = UTC+5:30.
@@ -60,6 +61,16 @@ const SCHEDULES = [
     // 8:00 AM IST = 02:30 UTC daily
     cron:        "30 2 * * *",
     description: "Daily calendar digest (8:00 AM IST)",
+  },
+  {
+    queue:       reservationCleanupQueue,
+    jobId:       "sched:reservation-cleanup",
+    // Every hour at :00 UTC — stock reservations have a 30-minute TTL by
+    // default, so hourly sweeps limit the window where reservedQuantity is
+    // stale (occurs when a user abandons their cart without a subsequent
+    // billing session to trigger opportunistic cleanup).
+    cron:        "0 * * * *",
+    description: "Hourly expired-reservation cleanup",
   },
 ] as const;
 

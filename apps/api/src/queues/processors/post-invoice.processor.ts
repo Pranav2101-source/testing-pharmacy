@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
 import { connection } from "../queue.client.js";
+import { onWorkerFailed } from "../on-worker-failed.js";
 import { notifyOwners, sendNotification } from "../../lib/notifications.js";
 
 export type PostInvoiceJobData = {
@@ -66,3 +67,4 @@ export const postInvoiceWorker = new Worker(
     concurrency: 5,
   },
 );
+onWorkerFailed(postInvoiceWorker);

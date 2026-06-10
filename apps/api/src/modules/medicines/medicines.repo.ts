@@ -109,14 +109,82 @@ export class MedicinesRepo {
     });
   }
 
-  async findAlternatives(excludeId: string, genericName: string) {
+  /**
+   * Checks which medicines in a search result set have alternatives in the
+   * global catalog (same genericName + strength + form, different id).
+   * Single query — safe to call on every search response.
+   */
+  async checkAlternativesExist(
+    medicines: Array<{ id: string; genericName: string | null; strength: string | null; form: string | null }>,
+  ): Promise<Map<string, boolean>> {
+    const result = new Map<string, boolean>(medicines.map((m) => [m.id, false]));
+    const withGeneric = medicines.filter((m) => m.genericName);
+    if (withGeneric.length === 0) return result;
+
+    // Fetch every medicine sharing any of the genericNames present in the results.
+    // The result set is bounded by the search limit (≤50), so genericNames ≤50.
+    const genericNames = [...new Set(withGeneric.map((m) => m.genericName!.toLowerCase()))];
+
+    const candidates = await this.db.medicine.findMany({
+      where: {
+        genericName: { in: genericNames, mode: "insensitive" },
+        isActive:    true,
+      },
+      select: { id: true, genericName: true, strength: true, form: true },
+    });
+
+    for (const m of withGeneric) {
+      const hasAlt = candidates.some(
+        (c) =>
+          c.id !== m.id &&
+          c.genericName?.toLowerCase() === m.genericName!.toLowerCase() &&
+          (!m.strength || c.strength?.toLowerCase() === m.strength.toLowerCase()) &&
+          (!m.form || c.form?.toLowerCase() === m.form.toLowerCase()),
+      );
+      result.set(m.id, hasAlt);
+    }
+
+    return result;
+  }
+
+  /**
+   * Finds alternative medicines matching genericName + strength + form and
+   * joins with the pharmacy's live inventory so the caller gets stock data
+   * without a second round-trip.
+   */
+  async findAlternatives(
+    pharmacyId: string,
+    excludeId: string,
+    params: { genericName: string; strength: string | null; form: string | null },
+  ) {
     return this.db.medicine.findMany({
       where: {
-        genericName: { equals: genericName, mode: "insensitive" },
-        isActive:    true,
-        id:          { not: excludeId },
+        genericName: { equals: params.genericName, mode: "insensitive" },
+        ...(params.strength ? { strength: { equals: params.strength, mode: "insensitive" } } : {}),
+        ...(params.form     ? { form:    { equals: params.form,    mode: "insensitive" } } : {}),
+        isActive: true,
+        id:       { not: excludeId },
       },
-      include: { brand: { select: { id: true, name: true } } },
+      include: {
+        brand: { select: { id: true, name: true } },
+        inventory: {
+          where: {
+            pharmacyId,
+            status:     "ACTIVE",
+            expiryDate: { gt: new Date() },
+          },
+          select: {
+            id:               true,
+            batchNumber:      true,
+            expiryDate:       true,
+            quantity:         true,
+            reservedQuantity: true,
+            mrp:              true,
+            purchaseRate:     true,
+            location:         true,
+          },
+        },
+      },
       orderBy: { name: "asc" },
     });
   }

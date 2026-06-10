@@ -1,6 +1,7 @@
 
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import type { ElementType } from "react";
 import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
@@ -20,8 +21,8 @@ type DashboardStats = {
   todayCount:      number;
   todayCancelled:  number;
   todayReturns:    number;
-  weekSales:       number;
-  weekCount:       number;
+  last7DaysSales:  number;
+  last7DaysCount:  number;
   monthSales:      number;
   monthCount:      number;
   pendingCredit:   number;
@@ -75,6 +76,61 @@ function getCurrentFY() {
     label: `01/04/${start} - 31/03/${start + 1}`,
   };
 }
+
+// Computed once at module load — FY doesn't change within a browser session
+const CURRENT_FY = getCurrentFY();
+
+type StatConfig = {
+  label:     string;
+  Icon:      ElementType;
+  iconCls:   string;
+  accent:    string;
+  getValue:  (s: DashboardStats) => string;
+  getSub:    (s: DashboardStats) => string | null;
+};
+
+const STAT_CONFIGS: StatConfig[] = [
+  {
+    label:    "Today's Sales",
+    Icon:     TrendingUp,
+    iconCls:  "text-blue-500",
+    accent:   "text-blue-700",
+    getValue: (s) => fmtCurrency(s.todaySales),
+    getSub:   (s) => `${s.todayCount} bill${s.todayCount !== 1 ? "s" : ""}`,
+  },
+  {
+    label:    "Last 7 Days",
+    Icon:     BadgeIndianRupee,
+    iconCls:  "text-indigo-500",
+    accent:   "text-indigo-700",
+    getValue: (s) => fmtCurrency(s.last7DaysSales),
+    getSub:   (s) => `${s.last7DaysCount} bills`,
+  },
+  {
+    label:    "This Month",
+    Icon:     BadgeIndianRupee,
+    iconCls:  "text-violet-500",
+    accent:   "text-violet-700",
+    getValue: (s) => fmtCurrency(s.monthSales),
+    getSub:   (s) => `${s.monthCount} bills`,
+  },
+  {
+    label:    "Today's Returns",
+    Icon:     RotateCcw,
+    iconCls:  "text-orange-400",
+    accent:   "text-orange-600",
+    getValue: (s) => fmtCurrency(s.todayReturns),
+    getSub:   () => null,
+  },
+  {
+    label:    "Credit Pending",
+    Icon:     CreditCard,
+    iconCls:  "text-red-400",
+    accent:   "text-red-600",
+    getValue: (s) => fmtCurrency(s.pendingCredit),
+    getSub:   () => null,
+  },
+];
 
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
@@ -135,7 +191,7 @@ function applyAmountFilter(inv: Invoice, filter: AmountFilter) {
 
 export default function BillingDashboardPage() {
   const navigate = useNavigate();
-  const fy = getCurrentFY();
+  const fy = CURRENT_FY;
 
   // ── Stats state ───────────────────────────────────────────────
   const [stats,        setStats]        = useState<DashboardStats | null>(null);
@@ -340,63 +396,26 @@ export default function BillingDashboardPage() {
 
       {/* ── Stats banner ────────────────────────────────────────── */}
       <div className="flex items-stretch gap-0 border-b border-slate-200 bg-slate-50 flex-shrink-0 divide-x divide-slate-200">
-        {[
-          {
-            label:   "Today's Sales",
-            icon:    <TrendingUp className="w-3.5 h-3.5 text-blue-500" />,
-            value:   stats ? fmtCurrency(stats.todaySales) : "—",
-            sub:     stats ? `${stats.todayCount} bill${stats.todayCount !== 1 ? "s" : ""}` : null,
-            loading: statsLoading,
-            accent:  "text-blue-700",
-          },
-          {
-            label:   "This Week",
-            icon:    <BadgeIndianRupee className="w-3.5 h-3.5 text-indigo-500" />,
-            value:   stats ? fmtCurrency(stats.weekSales) : "—",
-            sub:     stats ? `${stats.weekCount} bills` : null,
-            loading: statsLoading,
-            accent:  "text-indigo-700",
-          },
-          {
-            label:   "This Month",
-            icon:    <BadgeIndianRupee className="w-3.5 h-3.5 text-violet-500" />,
-            value:   stats ? fmtCurrency(stats.monthSales) : "—",
-            sub:     stats ? `${stats.monthCount} bills` : null,
-            loading: statsLoading,
-            accent:  "text-violet-700",
-          },
-          {
-            label:   "Today's Returns",
-            icon:    <RotateCcw className="w-3.5 h-3.5 text-orange-400" />,
-            value:   stats ? fmtCurrency(stats.todayReturns) : "—",
-            sub:     null,
-            loading: statsLoading,
-            accent:  "text-orange-600",
-          },
-          {
-            label:   "Credit Pending",
-            icon:    <CreditCard className="w-3.5 h-3.5 text-red-400" />,
-            value:   stats ? fmtCurrency(stats.pendingCredit) : "—",
-            sub:     null,
-            loading: statsLoading,
-            accent:  "text-red-600",
-          },
-        ].map(({ label, icon, value, sub, loading: ld, accent }) => (
-          <div key={label} className="flex-1 flex items-center gap-2 px-4 py-2.5 min-w-0">
-            <div className="flex-shrink-0">{icon}</div>
-            <div className="min-w-0">
-              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide whitespace-nowrap">{label}</p>
-              {ld ? (
-                <div className="h-4 w-16 bg-slate-200 animate-pulse rounded mt-0.5" />
-              ) : (
-                <p className={cn("text-[15px] font-bold leading-tight whitespace-nowrap", accent)}>{value}</p>
-              )}
-              {sub && !ld && (
-                <p className="text-[10px] text-slate-400 leading-tight">{sub}</p>
-              )}
+        {STAT_CONFIGS.map(({ label, Icon, iconCls, accent, getValue, getSub }) => {
+          const value = stats ? getValue(stats) : "—";
+          const sub   = stats ? getSub(stats)   : null;
+          return (
+            <div key={label} className="flex-1 flex items-center gap-2 px-4 py-2.5 min-w-0">
+              <Icon className={cn("w-3.5 h-3.5 flex-shrink-0", iconCls)} aria-hidden />
+              <div className="min-w-0">
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide whitespace-nowrap">{label}</p>
+                {statsLoading ? (
+                  <div className="h-4 w-16 bg-slate-200 animate-pulse rounded mt-0.5" />
+                ) : (
+                  <p className={cn("text-[15px] font-bold leading-tight whitespace-nowrap", accent)}>{value}</p>
+                )}
+                {sub && !statsLoading && (
+                  <p className="text-[10px] text-slate-400 leading-tight">{sub}</p>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {/* ── Filter toolbar ──────────────────────────────────────── */}

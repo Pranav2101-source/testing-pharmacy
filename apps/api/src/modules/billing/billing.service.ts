@@ -199,17 +199,26 @@ export class BillingService {
       totalAmount:    finalTotal,
     };
 
-    // Validate credit limit against the true final amount (after bill discount + adjustments)
-    if (input.customerId && input.paymentMode === "CREDIT") {
-      await this.validateCreditLimit(pharmacyId, input.customerId, finalTotal);
-    }
+    // Credit limit is now enforced atomically inside createInvoiceTransactional (step 4)
+    // via a conditional UPDATE that blocks when the limit would be exceeded. No pre-flight
+    // check is needed here — a check here would recreate the TOCTOU race it was meant to prevent.
 
     const settings = await this.getSettings(pharmacyId);
     const config   = (settings?.settings as typeof defaultInvoiceSettings) ?? defaultInvoiceSettings;
 
-    // Generator is called inside the transaction, AFTER the idempotency check.
-    // This prevents duplicate requests from advancing the Redis sequence counter
-    // and eliminates gaps caused by transactions that roll back before inserting.
+    // The generator is called INSIDE the transaction, after the idempotency
+    // check.  This prevents duplicate submissions (same idempotencyKey sent
+    // twice) from consuming two sequence numbers — the inner check returns
+    // early before the INCR fires.
+    //
+    // Gap behaviour on genuine failures: Redis INCR is not part of the Postgres
+    // transaction.  If the Postgres transaction fails after the INCR (e.g. a
+    // Serializable stock conflict), that sequence number is permanently consumed
+    // and a gap appears in the invoice series.  This is acceptable: gaps in
+    // invoice sequences are cosmetically annoying but legally permitted under
+    // Indian GST rules (cancelled/void numbers are allowed).  A DB-backed Postgres
+    // sequence would be fully transactional but requires a schema migration and
+    // complicates multi-year financial-year resets — not worth the trade-off here.
     const makeInvoiceNumber = async () => {
       const seq = await this.app.redis.incr(INVOICE_SEQUENCE_KEY(pharmacyId));
       return generateInvoiceNumber(
@@ -511,37 +520,15 @@ export class BillingService {
     await this.app.redis.del(settingsCacheKey(pharmacyId));
   }
 
-  // ── FIFO Batch ────────────────────────────────────────────────────────────
+  // ── FEFO Batch ────────────────────────────────────────────────────────────
 
-  async getFifoBatch(medicineId: string, pharmacyId: string, quantity: number) {
-    const batch = await this.repo.getFifoBatch(medicineId, pharmacyId, quantity);
+  async getFEFOBatch(medicineId: string, pharmacyId: string, quantity: number) {
+    const batch = await this.repo.getFEFOBatch(medicineId, pharmacyId, quantity);
     if (!batch) {
       throw AppError.notFound(`No stock available for medicine ${medicineId} with quantity ${quantity}`);
     }
     return batch;
   }
 
-  // ── Private helpers ───────────────────────────────────────────────────────
-
-  private async validateCreditLimit(
-    pharmacyId:  string,
-    customerId:  string,
-    invoiceTotal: number,
-  ) {
-    const customer = await this.app.prisma.customer.findFirst({
-      where:  { id: customerId, pharmacyId },
-      select: { creditLimit: true, creditUsed: true, customerType: true },
-    });
-
-    if (!customer)                          return;
-    if (customer.customerType !== "CREDIT") return;
-    if (customer.creditLimit <= 0)          return;
-
-    const available = customer.creditLimit - customer.creditUsed;
-    if (invoiceTotal > available + 0.01) {
-      throw AppError.unprocessable(
-        `Credit limit exceeded. Available: ₹${available.toFixed(2)}, required: ₹${invoiceTotal.toFixed(2)}`,
-      );
-    }
-  }
 }
+

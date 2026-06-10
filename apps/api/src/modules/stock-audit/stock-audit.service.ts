@@ -8,16 +8,21 @@ import type {
   ListSessionsQuery,
   UpdateItemInput,
 } from "./stock-audit.schema.js"
+import { AUDIT_SEQUENCE_KEY, generateAuditNumber } from "../billing/billing.constants.js"
 
 export class StockAuditService {
   private repo: StockAuditRepo
 
-  constructor(app: FastifyInstance) {
+  constructor(private app: FastifyInstance) {
     this.repo = new StockAuditRepo(app.prisma)
   }
 
   async createSession(pharmacyId: string, userId: string, input: CreateSessionInput) {
-    return this.repo.createSession(pharmacyId, userId, input)
+    // Generate session number via Redis INCR (daily IST key) to prevent the
+    // COUNT(*)-based race condition that produced duplicate AUDIT-YYYYMMDD-NNN numbers.
+    const seq           = await this.app.redis.incr(AUDIT_SEQUENCE_KEY(pharmacyId))
+    const sessionNumber = generateAuditNumber(seq)
+    return this.repo.createSession(pharmacyId, userId, sessionNumber, input)
   }
 
   async startSession(id: string, pharmacyId: string) {

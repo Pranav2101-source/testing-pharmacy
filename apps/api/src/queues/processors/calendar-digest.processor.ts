@@ -3,10 +3,11 @@ import { prisma } from "@pharmacy/database";
 import { connection, calendarDigestQueue } from "../queue.client.js";
 import { inAppNotify } from "../../lib/notifications.js";
 import { EVENT_TYPE_LABELS } from "../../modules/calendar/calendar.schema.js";
+import { onWorkerFailed } from "../on-worker-failed.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-new Worker(
+const calendarDigestWorker = new Worker(
   "calendar-digest",
   async (job) => {
     const { pharmacyId } = job.data as { pharmacyId?: string };
@@ -112,3 +113,4 @@ async function processPharmacy(pharmacyId: string, pharmacyName: string): Promis
     message: preview + more,
   });
 }
+onWorkerFailed(calendarDigestWorker);

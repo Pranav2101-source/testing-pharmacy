@@ -2,11 +2,12 @@ import type { FastifyInstance } from "fastify";
 import { QuotationsRepo } from "./quotations.repo.js";
 import type { CreateQuotationInput, UpdateQuotationInput, ListQuotationQuery, CompareQuotationsInput } from "./quotations.schema.js";
 import { AppError } from "../../lib/AppError.js";
+import { PO_SEQUENCE_KEY, generatePONumber } from "../billing/billing.constants.js";
 
 export class QuotationsService {
   private repo: QuotationsRepo;
 
-  constructor(app: FastifyInstance) {
+  constructor(private app: FastifyInstance) {
     this.repo = new QuotationsRepo(app.prisma);
   }
 
@@ -61,6 +62,9 @@ export class QuotationsService {
   }
 
   async convertToPO(id: string, pharmacyId: string, userId: string, notes?: string) {
-    return this.repo.convertToPO(id, pharmacyId, userId, notes);
+    // Generate PO number via Redis INCR (same race-safe pattern as purchases.service.ts)
+    const seq         = await this.app.redis.incr(PO_SEQUENCE_KEY(pharmacyId));
+    const orderNumber = generatePONumber(seq);
+    return this.repo.convertToPO(id, pharmacyId, userId, orderNumber, notes);
   }
 }

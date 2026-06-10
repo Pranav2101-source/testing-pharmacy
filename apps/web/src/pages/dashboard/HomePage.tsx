@@ -2,27 +2,32 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   IndianRupee, Package2, ShoppingCart, AlertTriangle,
-  FileText, Users, Clock, ArrowRight, CheckCircle2, XCircle,
+  FileText, Clock, ArrowRight, CheckCircle2, XCircle,
   RefreshCw, Loader2, RotateCcw, CreditCard, TrendingUp,
-  Plus, ClipboardList, Calendar, FilePlus,
+  Plus, ClipboardList, Calendar, FilePlus, Banknote,
+  Smartphone, Wallet, Flame, BadgePercent, BarChart2,
+  CircleAlert,
 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 // ─── Types ────────────────────────────────────────────────────────
+type PaymentBreakdownItem = { mode: string | null; total: number; count: number };
+
 type DashboardStats = {
-  todaySales:      number;
-  todayCount:      number;
-  todayCancelled:  number;
-  todayReturns:    number;
-  weekSales:       number;
-  weekCount:       number;
-  monthSales:      number;
-  monthCount:      number;
-  pendingCredit:   number;
-  lowStockCount:   number;
-  nearExpiryCount: number;
+  todaySales:       number;
+  todayCount:       number;
+  todayCancelled:   number;
+  todayReturns:     number;
+  last7DaysSales:   number;
+  last7DaysCount:   number;
+  monthSales:       number;
+  monthCount:       number;
+  pendingCredit:    number;
+  lowStockCount:    number;
+  nearExpiryCount:  number;
+  paymentBreakdown: PaymentBreakdownItem[];
 };
 
 type RecentInvoice = {
@@ -43,11 +48,21 @@ type LowStockItem = {
   medicine:     { name: string; genericName: string | null };
 };
 
+type EodData = {
+  gstCollected:    number;
+  topMedicines:    { medicineName: string; genericName: string | null; qtySold: number; revenue: number }[];
+  overdueGrnCount: number;
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────
 function fmt(n: number) {
   if (n >= 100000) return "₹" + (n / 100000).toFixed(1) + "L";
-  if (n >= 1000)   return "₹" + (n / 1000).toFixed(1) + "K";
+  if (n >= 1000)   return "₹" + (n / 1000).toFixed(1)   + "K";
   return "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 0 });
+}
+
+function fmtExact(n: number) {
+  return "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
 function timeAgo(iso: string) {
@@ -75,6 +90,18 @@ const fadeUp = (delay: number) => ({
   animate:    { opacity: 1, y: 0  },
   transition: { duration: 0.25, delay },
 });
+
+// Payment mode visual config
+const PAYMENT_MODE_CFG: Record<string, { label: string; bar: string; bg: string; text: string; icon: React.ElementType }> = {
+  CASH:   { label: "Cash",   bar: "bg-emerald-500", bg: "bg-emerald-50",  text: "text-emerald-700", icon: Banknote    },
+  UPI:    { label: "UPI",    bar: "bg-blue-500",    bg: "bg-blue-50",     text: "text-blue-700",    icon: Smartphone  },
+  CARD:   { label: "Card",   bar: "bg-violet-500",  bg: "bg-violet-50",   text: "text-violet-700",  icon: CreditCard  },
+  CREDIT: { label: "Credit", bar: "bg-amber-500",   bg: "bg-amber-50",    text: "text-amber-700",   icon: FileText    },
+  WALLET: { label: "Wallet", bar: "bg-indigo-500",  bg: "bg-indigo-50",   text: "text-indigo-700",  icon: Wallet      },
+};
+function getPaymentCfg(mode: string | null) {
+  return PAYMENT_MODE_CFG[mode ?? ""] ?? { label: mode ?? "Other", bar: "bg-slate-400", bg: "bg-slate-50", text: "text-slate-600", icon: IndianRupee };
+}
 
 // ─── Stat Card ────────────────────────────────────────────────────
 function StatCard({
@@ -106,8 +133,315 @@ function StatCard({
       </div>
     </div>
   );
-
   return href ? <Link to={href}>{inner}</Link> : <div>{inner}</div>;
+}
+
+// ─── EOD Summary Card ─────────────────────────────────────────────
+function EodSummaryCard({
+  stats, eodData, loading,
+}: {
+  stats:   DashboardStats | null;
+  eodData: EodData | null;
+  loading: boolean;
+}) {
+  const hasData = stats && stats.todayCount > 0;
+  const netRevenue = (stats?.todaySales ?? 0) - (stats?.todayReturns ?? 0);
+
+  // Payment breakdown: sorted by amount desc, compute percentages
+  const breakdown = (stats?.paymentBreakdown ?? [])
+    .filter(p => (p.total ?? 0) > 0)
+    .sort((a, b) => b.total - a.total);
+  const breakdownTotal = breakdown.reduce((s, p) => s + p.total, 0);
+  const cashAmount = breakdown.find(p => p.mode === "CASH")?.total ?? 0;
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      {/* Card header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-gradient-to-r from-slate-50 to-white">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-md bg-blue-100 flex items-center justify-center">
+            <BarChart2 className="w-3.5 h-3.5 text-blue-600" strokeWidth={1.9} />
+          </div>
+          <h2 className="text-[13px] font-black text-slate-800">Today's Summary</h2>
+        </div>
+        <Link to="/dashboard/reports" className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-700 font-semibold">
+          Full Report <ArrowRight className="w-3 h-3" />
+        </Link>
+      </div>
+
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-100">
+          {[0, 1, 2].map(i => (
+            <div key={i} className="p-4 space-y-2">
+              <div className="h-4 w-24 skeleton rounded" />
+              <div className="h-8 w-32 skeleton rounded" />
+              <div className="h-3 w-20 skeleton rounded" />
+              <div className="h-3 w-28 skeleton rounded" />
+            </div>
+          ))}
+        </div>
+      ) : !hasData ? (
+        /* Empty state — no sales yet today */
+        <div className="flex flex-col items-center justify-center py-10 text-slate-400 gap-2">
+          <BarChart2 className="w-10 h-10 text-slate-200" strokeWidth={1.3} />
+          <p className="text-[13px] font-semibold text-slate-500">No sales yet today</p>
+          <p className="text-[12px] text-slate-400">Summary will appear once you create your first bill.</p>
+          <Link
+            to="/dashboard/billing/new"
+            className="mt-1 flex items-center gap-1.5 text-[12px] font-bold text-blue-600 hover:text-blue-700"
+          >
+            <FilePlus className="w-3.5 h-3.5" />
+            Create a bill
+          </Link>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_1.4fr_1fr] divide-y md:divide-y-0 md:divide-x divide-slate-100">
+
+          {/* ── Column 1: Revenue ── */}
+          <div className="p-4">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Revenue</p>
+
+            {/* Net Revenue — big hero number */}
+            <div className="mb-3">
+              <p className="text-[28px] font-black text-slate-800 tabnum leading-none">
+                {fmtExact(netRevenue)}
+              </p>
+              <p className="text-[11px] text-slate-400 font-medium mt-0.5">Net revenue today</p>
+            </div>
+
+            {/* Detail rows */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[12px]">
+                <span className="text-slate-500">Gross Sales</span>
+                <span className="font-semibold text-slate-700 tabnum">{fmtExact(stats?.todaySales ?? 0)}</span>
+              </div>
+              {(stats?.todayReturns ?? 0) > 0 && (
+                <div className="flex items-center justify-between text-[12px]">
+                  <span className="text-slate-500 flex items-center gap-1">
+                    <RotateCcw className="w-3 h-3" /> Returns
+                  </span>
+                  <span className="font-semibold text-red-600 tabnum">−{fmtExact(stats?.todayReturns ?? 0)}</span>
+                </div>
+              )}
+              {(eodData?.gstCollected ?? 0) > 0 && (
+                <div className="flex items-center justify-between text-[12px]">
+                  <span className="text-slate-500 flex items-center gap-1">
+                    <BadgePercent className="w-3 h-3" /> GST Collected
+                  </span>
+                  <span className="font-semibold text-slate-600 tabnum">{fmtExact(eodData?.gstCollected ?? 0)}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Bill count footer */}
+            <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center gap-1.5 text-[11px] text-slate-400">
+              <FileText className="w-3 h-3 flex-shrink-0" />
+              <span>{stats?.todayCount} bill{stats?.todayCount !== 1 ? "s" : ""}</span>
+              {(stats?.todayCancelled ?? 0) > 0 && (
+                <>
+                  <span className="text-slate-200">·</span>
+                  <span className="text-red-400">{stats?.todayCancelled} cancelled</span>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* ── Column 2: Payment Split ── */}
+          <div className="p-4">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Payment Methods</p>
+
+            {breakdown.length === 0 ? (
+              <p className="text-[12px] text-slate-400 italic">No payment data</p>
+            ) : (
+              <div className="space-y-2.5">
+                {breakdown.map(p => {
+                  const cfg = getPaymentCfg(p.mode);
+                  const pct = breakdownTotal > 0 ? Math.round((p.total / breakdownTotal) * 100) : 0;
+                  return (
+                    <div key={p.mode ?? "other"}>
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-1.5">
+                          <cfg.icon className={cn("w-3 h-3", cfg.text)} strokeWidth={1.9} />
+                          <span className="text-[12px] font-medium text-slate-700">{cfg.label}</span>
+                          <span className="text-[10px] text-slate-400 tabnum">{p.count} bill{p.count !== 1 ? "s" : ""}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[12px] font-bold text-slate-700 tabnum">{fmtExact(p.total)}</span>
+                          <span className="text-[10px] text-slate-400 tabnum w-7 text-right">{pct}%</span>
+                        </div>
+                      </div>
+                      <div className="w-full h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                        <div
+                          className={cn("h-full rounded-full transition-all duration-500", cfg.bar)}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Cash in drawer callout */}
+            {cashAmount > 0 && (
+              <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                  <Banknote className="w-3.5 h-3.5 text-emerald-500" />
+                  Cash in drawer
+                </div>
+                <span className="text-[13px] font-black text-emerald-700 tabnum">{fmtExact(cashAmount)}</span>
+              </div>
+            )}
+          </div>
+
+          {/* ── Column 3: Alerts ── */}
+          <div className="p-4">
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Action Items</p>
+
+            <div className="space-y-2">
+              {/* Low Stock */}
+              <Link
+                to="/dashboard/inventory"
+                className={cn(
+                  "flex items-center justify-between rounded-lg px-2.5 py-2 transition-colors group",
+                  (stats?.lowStockCount ?? 0) > 0
+                    ? "bg-red-50 hover:bg-red-100"
+                    : "bg-slate-50 hover:bg-slate-100",
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <Package2 className={cn("w-3.5 h-3.5", (stats?.lowStockCount ?? 0) > 0 ? "text-red-500" : "text-slate-400")} strokeWidth={1.9} />
+                  <span className={cn("text-[12px] font-medium", (stats?.lowStockCount ?? 0) > 0 ? "text-red-700" : "text-slate-500")}>
+                    {(stats?.lowStockCount ?? 0) > 0 ? `${stats?.lowStockCount} Low Stock` : "Stock levels OK"}
+                  </span>
+                </div>
+                <ArrowRight className="w-3 h-3 text-slate-300 group-hover:text-slate-500 transition-colors" />
+              </Link>
+
+              {/* Near Expiry */}
+              {(stats?.nearExpiryCount ?? 0) > 0 && (
+                <Link
+                  to="/dashboard/inventory"
+                  className="flex items-center justify-between rounded-lg px-2.5 py-2 bg-amber-50 hover:bg-amber-100 transition-colors group"
+                >
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-500" strokeWidth={1.9} />
+                    <span className="text-[12px] font-medium text-amber-700">
+                      {stats?.nearExpiryCount} Near Expiry
+                    </span>
+                  </div>
+                  <ArrowRight className="w-3 h-3 text-slate-300 group-hover:text-slate-500 transition-colors" />
+                </Link>
+              )}
+
+              {/* Pending Credit */}
+              {(stats?.pendingCredit ?? 0) > 0 && (
+                <Link
+                  to="/dashboard/billing"
+                  className="flex items-center justify-between rounded-lg px-2.5 py-2 bg-blue-50 hover:bg-blue-100 transition-colors group"
+                >
+                  <div className="flex items-center gap-2">
+                    <CreditCard className="w-3.5 h-3.5 text-blue-500" strokeWidth={1.9} />
+                    <span className="text-[12px] font-medium text-blue-700">
+                      {fmt(stats?.pendingCredit ?? 0)} Credit Due
+                    </span>
+                  </div>
+                  <ArrowRight className="w-3 h-3 text-slate-300 group-hover:text-slate-500 transition-colors" />
+                </Link>
+              )}
+
+              {/* Overdue GRN Payments */}
+              {(eodData?.overdueGrnCount ?? 0) > 0 && (
+                <Link
+                  to="/dashboard/purchase"
+                  className="flex items-center justify-between rounded-lg px-2.5 py-2 bg-orange-50 hover:bg-orange-100 transition-colors group"
+                >
+                  <div className="flex items-center gap-2">
+                    <CircleAlert className="w-3.5 h-3.5 text-orange-500" strokeWidth={1.9} />
+                    <span className="text-[12px] font-medium text-orange-700">
+                      {eodData?.overdueGrnCount} Overdue Payments
+                    </span>
+                  </div>
+                  <ArrowRight className="w-3 h-3 text-slate-300 group-hover:text-slate-500 transition-colors" />
+                </Link>
+              )}
+
+              {/* All clear state */}
+              {(stats?.lowStockCount ?? 0) === 0 &&
+               (stats?.nearExpiryCount ?? 0) === 0 &&
+               (stats?.pendingCredit ?? 0) === 0 &&
+               (eodData?.overdueGrnCount ?? 0) === 0 && (
+                <div className="flex items-center gap-2 rounded-lg px-2.5 py-2 bg-emerald-50">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" strokeWidth={1.9} />
+                  <span className="text-[12px] font-medium text-emerald-700">All clear — no pending actions</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Top Medicines Card ───────────────────────────────────────────
+function TopMedicinesCard({ eodData, loading }: { eodData: EodData | null; loading: boolean }) {
+  const items = eodData?.topMedicines ?? [];
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mt-4">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">
+        <div className="flex items-center gap-2">
+          <div className="w-6 h-6 rounded-md bg-orange-50 flex items-center justify-center">
+            <Flame className="w-3.5 h-3.5 text-orange-500" strokeWidth={1.9} />
+          </div>
+          <h2 className="text-[13px] font-black text-slate-800">Top Medicines Today</h2>
+        </div>
+        <Link to="/dashboard/reports" className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-700 font-semibold">
+          Analytics <ArrowRight className="w-3 h-3" />
+        </Link>
+      </div>
+
+      {loading ? (
+        <div className="p-3 space-y-2.5">
+          {[0,1,2].map(i => (
+            <div key={i} className="flex items-center gap-2">
+              <div className="w-5 h-5 skeleton rounded" />
+              <div className="flex-1 h-3 skeleton rounded" />
+              <div className="w-10 h-3 skeleton rounded" />
+            </div>
+          ))}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-8 text-slate-400">
+          <Flame className="w-7 h-7 text-slate-200 mb-1.5" strokeWidth={1.4} />
+          <p className="text-[12px] font-medium">No sales yet</p>
+        </div>
+      ) : (
+        <div className="divide-y divide-slate-50">
+          {items.map((item, i) => (
+            <div key={i} className="flex items-center gap-2.5 px-4 py-2.5">
+              <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-500 text-[10px] font-black flex items-center justify-center flex-shrink-0 tabnum">
+                {i + 1}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-[12px] font-semibold text-slate-800 truncate leading-tight">
+                  {item.medicineName}
+                </p>
+                {item.genericName && (
+                  <p className="text-[10px] text-slate-400 truncate">{item.genericName}</p>
+                )}
+              </div>
+              <div className="flex-shrink-0 text-right">
+                <p className="text-[12px] font-bold text-slate-700 tabnum">{item.qtySold} qty</p>
+                <p className="text-[10px] text-slate-400 tabnum">{fmt(item.revenue)}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Page ─────────────────────────────────────────────────────────
@@ -123,6 +457,8 @@ export default function DashboardHomePage() {
   const [billsLoading, setBillsLoading] = useState(true);
   const [lowStock,     setLowStock]     = useState<LowStockItem[]>([]);
   const [stockLoading, setStockLoading] = useState(true);
+  const [eodData,      setEodData]      = useState<EodData | null>(null);
+  const [eodLoading,   setEodLoading]   = useState(true);
   const [refreshKey,   setRefreshKey]   = useState(0);
 
   useEffect(() => {
@@ -151,6 +487,14 @@ export default function DashboardHomePage() {
       .finally(() => setStockLoading(false));
   }, [refreshKey]);
 
+  useEffect(() => {
+    setEodLoading(true);
+    api.get("/reports/eod/summary")
+      .then(({ data }) => setEodData(data.data))
+      .catch(() => setEodData(null))
+      .finally(() => setEodLoading(false));
+  }, [refreshKey]);
+
   const STAT_CARDS = [
     {
       label:       "Today's Sales",
@@ -163,9 +507,9 @@ export default function DashboardHomePage() {
       href:        "/dashboard/billing",
     },
     {
-      label:       "This Week",
-      value:       stats ? fmt(stats.weekSales) : "—",
-      sub:         stats ? `${stats.weekCount} bills` : null,
+      label:       "Last 7 Days",
+      value:       stats ? fmt(stats.last7DaysSales) : "—",
+      sub:         stats ? `${stats.last7DaysCount} bills` : null,
       icon:        TrendingUp,
       iconBg:      "bg-blue-50",
       iconColor:   "text-blue-600",
@@ -215,12 +559,12 @@ export default function DashboardHomePage() {
   ];
 
   const QUICK_ACTIONS = [
-    { href: "/dashboard/billing/new",  label: "New Bill",       icon: FilePlus,     kbd: "F2",  primary: true  },
-    { href: "/dashboard/purchase",     label: "Purchase Order", icon: ShoppingCart, kbd: null,  primary: false },
-    { href: "/dashboard/inventory",    label: "Check Inventory",icon: Package2,     kbd: null,  primary: false },
-    { href: "/dashboard/stock-audit",  label: "Stock Audit",    icon: ClipboardList,kbd: null,  primary: false },
-    { href: "/dashboard/billing",      label: "All Bills",      icon: FileText,     kbd: null,  primary: false },
-    { href: "/dashboard/reports",      label: "Reports",        icon: TrendingUp,   kbd: null,  primary: false },
+    { href: "/dashboard/billing/new",  label: "New Bill",        icon: FilePlus,     kbd: "F2",  primary: true  },
+    { href: "/dashboard/purchase",     label: "Purchase Order",  icon: ShoppingCart, kbd: null,  primary: false },
+    { href: "/dashboard/inventory",    label: "Check Inventory", icon: Package2,     kbd: null,  primary: false },
+    { href: "/dashboard/stock-audit",  label: "Stock Audit",     icon: ClipboardList,kbd: null,  primary: false },
+    { href: "/dashboard/billing",      label: "All Bills",       icon: FileText,     kbd: null,  primary: false },
+    { href: "/dashboard/reports",      label: "Reports",         icon: TrendingUp,   kbd: null,  primary: false },
   ];
 
   return (
@@ -287,14 +631,22 @@ export default function DashboardHomePage() {
           ))}
         </div>
 
+        {/* ── EOD Summary ──────────────────────────────────── */}
+        <motion.div {...fadeUp(0.20)}>
+          <EodSummaryCard
+            stats={stats}
+            eodData={eodData}
+            loading={statsLoading || eodLoading}
+          />
+        </motion.div>
+
         {/* ── Two-column section ───────────────────────────── */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
 
           {/* Today's Bills */}
-          <motion.div {...fadeUp(0.22)} className="xl:col-span-2">
+          <motion.div {...fadeUp(0.26)} className="xl:col-span-2">
             <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
 
-              {/* Card header */}
               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">
                 <div className="flex items-center gap-2">
                   <div className="w-6 h-6 rounded-md bg-blue-50 flex items-center justify-center">
@@ -326,7 +678,6 @@ export default function DashboardHomePage() {
                 </div>
               ) : (
                 <div className="divide-y divide-slate-50">
-                  {/* Table head */}
                   <div className="grid grid-cols-[1fr_auto_auto_auto] gap-3 px-4 py-2 bg-slate-50/60">
                     <span className="ent-table-th text-left rounded-none border-0 py-0 text-[10px]">Customer</span>
                     <span className="ent-table-th rounded-none border-0 py-0 text-[10px]">Bill No.</span>
@@ -367,11 +718,11 @@ export default function DashboardHomePage() {
             </div>
           </motion.div>
 
-          {/* Low Stock + Near Expiry */}
-          <motion.div {...fadeUp(0.26)}>
-            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden h-full">
+          {/* Right column: Low Stock + Top Medicines */}
+          <motion.div {...fadeUp(0.30)}>
 
-              {/* Card header */}
+            {/* Low Stock */}
+            <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">
                 <div className="flex items-center gap-2">
                   <div className="w-6 h-6 rounded-md bg-amber-50 flex items-center justify-center">
@@ -394,7 +745,7 @@ export default function DashboardHomePage() {
                   <Loader2 className="w-5 h-5 animate-spin text-blue-300" />
                 </div>
               ) : lowStock.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-10 text-slate-400">
+                <div className="flex flex-col items-center justify-center py-8 text-slate-400">
                   <CheckCircle2 className="w-8 h-8 text-emerald-200 mb-2" strokeWidth={1.4} />
                   <p className="text-[13px] font-medium">All stock levels OK</p>
                 </div>
@@ -435,7 +786,6 @@ export default function DashboardHomePage() {
                 </div>
               )}
 
-              {/* Quick reorder CTA */}
               {!stockLoading && lowStock.length > 0 && (
                 <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/50">
                   <Link
@@ -448,6 +798,10 @@ export default function DashboardHomePage() {
                 </div>
               )}
             </div>
+
+            {/* Top Medicines Today */}
+            <TopMedicinesCard eodData={eodData} loading={eodLoading} />
+
           </motion.div>
 
         </div>

@@ -13,6 +13,9 @@ export const poItemSchema = z.object({
   purchaseRate: z.number().positive(),
   mrp:          z.number().positive(),
   gstRate:      z.number().refine((v) => (GST_RATES as readonly number[]).includes(v), "GST must be 0, 5, 12, or 18"),
+}).refine((d) => d.mrp >= d.purchaseRate, {
+  message: "MRP must be greater than or equal to purchase rate",
+  path:    ["mrp"],
 });
 
 export const createPOSchema = z.object({
@@ -67,6 +70,9 @@ export const grnItemSchema = z.object({
   mrp:              z.number().positive(),
   discount:         z.number().min(0).max(100).default(0),
   gstRate:          z.number().refine((v) => (GST_RATES as readonly number[]).includes(v), "GST must be 0, 5, 12, or 18"),
+}).refine((d) => d.mrp >= d.purchaseRate, {
+  message: "MRP must be greater than or equal to purchase rate",
+  path:    ["mrp"],
 });
 
 export const createGRNSchema = z.object({
@@ -76,6 +82,18 @@ export const createGRNSchema = z.object({
   supplierInvoiceDate: z.string().datetime().optional(),
   notes:               z.string().max(1000).optional(),
   items:               z.array(grnItemSchema).min(1),
+  // Set to true when the purchaser knowingly accepts near-expiry stock
+  // (e.g. bought at a discount).  Without this flag the API rejects any
+  // item expiring within NEAR_EXPIRY_DAYS to prevent accidental purchases.
+  allowNearExpiry:     z.boolean().default(false),
+});
+
+export const updateGRNSchema = z.object({
+  supplierInvoiceNo:   z.string().optional(),
+  supplierInvoiceDate: z.string().datetime().optional(),
+  notes:               z.string().max(1000).optional(),
+  items:               z.array(grnItemSchema).min(1).optional(),
+  allowNearExpiry:     z.boolean().default(false),
 });
 
 export const listGRNQuerySchema = z.object({
@@ -95,6 +113,7 @@ export const autoSuggestQuerySchema = z.object({
   supplierId:    z.string().optional(),
 });
 
+export type UpdateGRNInput       = z.infer<typeof updateGRNSchema>;
 export type POItemInput          = z.infer<typeof poItemSchema>;
 export type CreatePOInput        = z.infer<typeof createPOSchema>;
 export type UpdatePOInput        = z.infer<typeof updatePOSchema>;

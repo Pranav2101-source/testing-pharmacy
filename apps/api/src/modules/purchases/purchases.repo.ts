@@ -7,13 +7,8 @@ export class PurchasesRepo {
 
   // ── Purchase Orders ──────────────────────────────────────────────────────
 
-  private async nextPONumber(pharmacyId: string, tx: Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">): Promise<string> {
-    const count = await tx.purchaseOrder.count({ where: { pharmacyId } });
-    const year  = new Date().getFullYear();
-    return `PO-${year}-${String(count + 1).padStart(5, "0")}`;
-  }
-
   async createPO(pharmacyId: string, userId: string, data: {
+    orderNumber:   string;
     supplierId:    string;
     invoiceNo?:    string;
     notes?:        string;
@@ -37,13 +32,11 @@ export class PurchasesRepo {
     totalAmount: number;
   }) {
     const po = await this.db.$transaction(async (tx) => {
-      const orderNumber = await this.nextPONumber(pharmacyId, tx);
-
       const created = await tx.purchaseOrder.create({
         data: {
           pharmacyId,
           supplierId:     data.supplierId,
-          orderNumber,
+          orderNumber:    data.orderNumber,
           invoiceNo:      data.invoiceNo,
           notes:          data.notes,
           expectedDate:   data.expectedDate,
@@ -221,10 +214,22 @@ export class PurchasesRepo {
 
   async cancelPO(id: string, pharmacyId: string, userId: string) {
     return this.db.$transaction(async (tx) => {
-      const existing = await tx.purchaseOrder.findFirst({ where: { id, pharmacyId }, select: { status: true } });
+      const existing = await tx.purchaseOrder.findFirst({
+        where:  { id, pharmacyId },
+        select: { status: true, grns: { select: { status: true } } },
+      });
       if (!existing) throw AppError.notFound("Purchase order not found");
-      if (["RECEIVED", "CANCELLED"].includes(existing.status)) {
-        throw AppError.unprocessable(`Cannot cancel a ${existing.status} purchase order`);
+      if (existing.status === "RECEIVED") {
+        throw AppError.unprocessable("This order has already been fully received and cannot be cancelled.");
+      }
+      if (existing.status === "CANCELLED") {
+        throw AppError.unprocessable("This order is already cancelled.");
+      }
+      const hasConfirmedGRN = existing.grns.some((g) => g.status === "CONFIRMED");
+      if (hasConfirmedGRN) {
+        throw AppError.unprocessable(
+          "This order cannot be cancelled because stock has already been received against it. Please cancel the GRN first, then try again.",
+        );
       }
 
       const updated = await tx.purchaseOrder.update({
@@ -300,13 +305,8 @@ export class PurchasesRepo {
 
   // ── GRN ──────────────────────────────────────────────────────────────────
 
-  private async nextGRNNumber(pharmacyId: string, tx: Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">): Promise<string> {
-    const count = await tx.goodsReceiptNote.count({ where: { pharmacyId } });
-    const year  = new Date().getFullYear();
-    return `GRN-${year}-${String(count + 1).padStart(5, "0")}`;
-  }
-
   async createGRN(pharmacyId: string, userId: string, data: {
+    grnNumber:            string;
     supplierId:           string;
     purchaseOrderId?:     string;
     supplierInvoiceNo?:   string;
@@ -332,34 +332,33 @@ export class PurchasesRepo {
     totalGst:    number;
     totalAmount: number;
   }) {
-    // Duplicate supplier invoice guard — checked before transaction to give a readable error
-    if (data.supplierInvoiceNo) {
-      const duplicate = await this.db.goodsReceiptNote.findFirst({
-        where: {
-          pharmacyId,
-          supplierId:        data.supplierId,
-          supplierInvoiceNo: data.supplierInvoiceNo,
-          status:            { not: "CANCELLED" },
-        },
-        select: { grnNumber: true, status: true },
-      });
-      if (duplicate) {
-        throw AppError.conflict(
-          `Supplier invoice "${data.supplierInvoiceNo}" is already recorded as GRN ${duplicate.grnNumber} (${duplicate.status}). ` +
-          `Check for duplicate entry.`,
-        );
-      }
-    }
-
     return this.db.$transaction(async (tx) => {
-      const grnNumber = await this.nextGRNNumber(pharmacyId, tx);
+      // Duplicate supplier invoice guard moved INSIDE the Serializable transaction.
+      // Two concurrent creates with the same supplierInvoiceNo previously both passed
+      // the pre-transaction check (TOCTOU) and produced duplicate GRN records.
+      if (data.supplierInvoiceNo) {
+        const duplicate = await tx.goodsReceiptNote.findFirst({
+          where: {
+            pharmacyId,
+            supplierId:        data.supplierId,
+            supplierInvoiceNo: data.supplierInvoiceNo,
+            status:            { not: "CANCELLED" },
+          },
+          select: { grnNumber: true, status: true },
+        });
+        if (duplicate) {
+          throw AppError.conflict(
+            `Supplier invoice "${data.supplierInvoiceNo}" is already saved as GRN ${duplicate.grnNumber}. You may be adding the same delivery twice.`,
+          );
+        }
+      }
 
       const grn = await tx.goodsReceiptNote.create({
         data: {
           pharmacyId,
           supplierId:          data.supplierId,
           purchaseOrderId:     data.purchaseOrderId,
-          grnNumber,
+          grnNumber:           data.grnNumber,
           supplierInvoiceNo:   data.supplierInvoiceNo,
           supplierInvoiceDate: data.supplierInvoiceDate,
           notes:               data.notes,
@@ -382,7 +381,86 @@ export class PurchasesRepo {
       });
 
       return grn;
-    });
+    }, { isolationLevel: "Serializable" });
+  }
+
+  async updateGRN(id: string, pharmacyId: string, userId: string, data: {
+    supplierInvoiceNo?:   string;
+    supplierInvoiceDate?: Date;
+    notes?:               string;
+    items?: {
+      medicineId:   string;
+      medicineName: string;
+      batchNumber:  string;
+      expiryDate:   Date;
+      orderedQty?:  number;
+      receivedQty:  number;
+      freeQty:      number;
+      purchaseRate: number;
+      mrp:          number;
+      discount:     number;
+      gstRate:      number;
+      cgst:         number;
+      sgst:         number;
+      amount:       number;
+    }[];
+    subtotal?:    number;
+    totalGst?:    number;
+    totalAmount?: number;
+  }) {
+    return this.db.$transaction(async (tx) => {
+      const existing = await tx.goodsReceiptNote.findFirst({
+        where:  { id, pharmacyId },
+        select: { status: true, supplierId: true },
+      });
+      if (!existing) throw AppError.notFound("This GRN could not be found. It may have already been deleted.");
+      if (existing.status !== "DRAFT") throw AppError.unprocessable("Only GRNs that have not been confirmed yet can be edited.");
+
+      if (data.supplierInvoiceNo) {
+        const duplicate = await tx.goodsReceiptNote.findFirst({
+          where: {
+            pharmacyId,
+            supplierId:        existing.supplierId,
+            supplierInvoiceNo: data.supplierInvoiceNo,
+            status:            { not: "CANCELLED" },
+            NOT:               { id },
+          },
+          select: { grnNumber: true },
+        });
+        if (duplicate) {
+          throw AppError.conflict(
+            `Supplier invoice "${data.supplierInvoiceNo}" is already recorded as GRN ${duplicate.grnNumber}.`,
+          );
+        }
+      }
+
+      if (data.items) {
+        await tx.gRNItem.deleteMany({ where: { grnId: id } });
+      }
+
+      const updated = await tx.goodsReceiptNote.update({
+        where: { id },
+        data: {
+          supplierInvoiceNo:   data.supplierInvoiceNo,
+          supplierInvoiceDate: data.supplierInvoiceDate,
+          notes:               data.notes,
+          subtotal:            data.subtotal,
+          totalGst:            data.totalGst,
+          totalAmount:         data.totalAmount,
+          ...(data.items ? { items: { create: data.items } } : {}),
+        },
+        include: {
+          supplier: { select: { id: true, name: true } },
+          items:    { include: { medicine: { select: { name: true } } } },
+        },
+      });
+
+      await tx.auditLog.create({
+        data: { pharmacyId, userId, action: "UPDATE", entity: "GRN", entityId: id, newData: updated as unknown as Prisma.InputJsonValue },
+      });
+
+      return updated;
+    }, { isolationLevel: "Serializable" });
   }
 
   async confirmGRN(id: string, pharmacyId: string, userId: string) {
@@ -402,74 +480,136 @@ export class PurchasesRepo {
         const paymentDueDate = new Date(confirmedAt);
         paymentDueDate.setDate(paymentDueDate.getDate() + grn.supplier.creditDays);
 
-        // Atomically update stock for each GRN item (FEFO-aware upsert)
-        for (const item of grn.items) {
-          const conversionFactor = item.conversionFactor ?? 1;
-          const totalQty = (item.receivedQty + item.freeQty) * conversionFactor;
+        // ── Batch stock update — replaces the original N×4 sequential awaits ──
+        // Old approach: for each of N items → findFirst + update/create + createMovement + updateGRNItem
+        // New approach: 1 bulk read, 1 raw bulk UPDATE, 1 createMany for new batches, 1 createMany for movements,
+        //               1 raw bulk UPDATE for GRN items. Reduces lock-hold time from N×4 round-trips to ~6.
 
-          const existing = await tx.inventory.findFirst({
-            where:  { pharmacyId, medicineId: item.medicineId, batchNumber: item.batchNumber },
-            select: { id: true, quantity: true },
+        // Step A: compute total quantities per item
+        const itemQtys = grn.items.map((item) => ({
+          item,
+          totalQty: (item.receivedQty + item.freeQty) * (item.conversionFactor ?? 1),
+        }));
+
+        // Step B: read all existing inventory in one query
+        const existingInventory = await tx.inventory.findMany({
+          where: {
+            pharmacyId,
+            OR: itemQtys.map(({ item }) => ({ medicineId: item.medicineId, batchNumber: item.batchNumber })),
+          },
+          select: { id: true, medicineId: true, batchNumber: true, quantity: true },
+        });
+        const existingMap = new Map(existingInventory.map((e) => [`${e.medicineId}::${e.batchNumber}`, e]));
+
+        type ToUpdate = { item: typeof grn.items[number]; totalQty: number; existing: { id: string; quantity: number } };
+        type ToCreate = { item: typeof grn.items[number]; totalQty: number; inventoryId?: string };
+        const toUpdate: ToUpdate[] = [];
+        const toCreate: ToCreate[] = [];
+
+        for (const { item, totalQty } of itemQtys) {
+          const existing = existingMap.get(`${item.medicineId}::${item.batchNumber}`);
+          if (existing) toUpdate.push({ item, totalQty, existing });
+          else          toCreate.push({ item, totalQty });
+        }
+
+        // Step C: bulk UPDATE existing inventory via a single CTE (no N round-trips)
+        if (toUpdate.length > 0) {
+          const ids   = toUpdate.map((r) => r.existing.id);
+          const qtys  = toUpdate.map((r) => r.totalQty);
+          const rates = toUpdate.map((r) => r.item.purchaseRate);
+          const mrps  = toUpdate.map((r) => r.item.mrp);
+          await tx.$executeRaw`
+            UPDATE inventory inv
+            SET    quantity      = inv.quantity + b.qty,
+                   "purchaseRate" = b.rate,
+                   mrp           = b.mrp,
+                   status        = 'ACTIVE'
+            FROM   (
+                     SELECT unnest(${ids}::text[])    AS id,
+                            unnest(${qtys}::int[])    AS qty,
+                            unnest(${rates}::float[]) AS rate,
+                            unnest(${mrps}::float[])  AS mrp
+                   ) AS b
+            WHERE  inv.id           = b.id
+              AND  inv."pharmacyId" = ${pharmacyId}::text
+          `;
+        }
+
+        // Step D: createMany for brand-new batches, then re-read their IDs
+        if (toCreate.length > 0) {
+          await tx.inventory.createMany({
+            data: toCreate.map(({ item, totalQty }) => ({
+              pharmacyId,
+              medicineId:   item.medicineId,
+              batchNumber:  item.batchNumber,
+              expiryDate:   item.expiryDate,
+              quantity:     totalQty,
+              purchaseRate: item.purchaseRate,
+              mrp:          item.mrp,
+              minimumStock: 10,
+              status:       "ACTIVE" as const,
+            })),
           });
-
-          let inventoryId: string;
-
-          if (existing) {
-            const quantityBefore = existing.quantity;
-            const quantityAfter  = quantityBefore + totalQty;
-            await tx.inventory.update({
-              where: { id: existing.id },
-              data:  { quantity: { increment: totalQty }, purchaseRate: item.purchaseRate, mrp: item.mrp, status: "ACTIVE" },
-            });
-            inventoryId = existing.id;
-
-            await tx.inventoryMovement.create({
-              data: {
-                pharmacyId, userId,
-                inventoryId:    existing.id,
-                type:           "PURCHASE",
-                direction:      "IN",
-                quantity:       totalQty,
-                quantityBefore,
-                quantityAfter,
-                referenceType:  "GRN",
-                referenceId:    grn.id,
-                notes:          `GRN ${grn.grnNumber}${item.freeQty > 0 ? ` (incl. ${item.freeQty} free)` : ""}`,
-              },
-            });
-          } else {
-            const created = await tx.inventory.create({
-              data: {
-                pharmacyId,
-                medicineId:   item.medicineId,
-                batchNumber:  item.batchNumber,
-                expiryDate:   item.expiryDate,
-                quantity:     totalQty,
-                purchaseRate: item.purchaseRate,
-                mrp:          item.mrp,
-                minimumStock: 10,
-                status:       "ACTIVE",
-              },
-            });
-            inventoryId = created.id;
-
-            await tx.inventoryMovement.create({
-              data: {
-                pharmacyId, userId,
-                inventoryId:    created.id,
-                type:           "PURCHASE",
-                direction:      "IN",
-                quantity:       totalQty,
-                quantityBefore: 0,
-                quantityAfter:  totalQty,
-                referenceType:  "GRN",
-                referenceId:    grn.id,
-                notes:          `GRN ${grn.grnNumber} — new batch`,
-              },
-            });
+          const created = await tx.inventory.findMany({
+            where: {
+              pharmacyId,
+              OR: toCreate.map(({ item }) => ({ medicineId: item.medicineId, batchNumber: item.batchNumber })),
+            },
+            select: { id: true, medicineId: true, batchNumber: true },
+          });
+          const createdMap = new Map(created.map((e) => [`${e.medicineId}::${e.batchNumber}`, e.id]));
+          for (const r of toCreate) {
+            r.inventoryId = createdMap.get(`${r.item.medicineId}::${r.item.batchNumber}`)!;
           }
+        }
 
-          await tx.gRNItem.update({ where: { id: item.id }, data: { inventoryId } });
+        // Step E: createMany for all inventory movements
+        await tx.inventoryMovement.createMany({
+          data: [
+            ...toUpdate.map(({ item, totalQty, existing }) => ({
+              pharmacyId, userId,
+              inventoryId:    existing.id,
+              type:           "PURCHASE" as const,
+              direction:      "IN" as const,
+              quantity:       totalQty,
+              quantityBefore: existing.quantity,
+              quantityAfter:  existing.quantity + totalQty,
+              referenceType:  "GRN",
+              referenceId:    grn.id,
+              notes:          `GRN ${grn.grnNumber}${item.freeQty > 0 ? ` (incl. ${item.freeQty} free)` : ""}`,
+            })),
+            ...toCreate.map(({ item, totalQty, inventoryId }) => ({
+              pharmacyId, userId,
+              inventoryId:    inventoryId!,
+              type:           "PURCHASE" as const,
+              direction:      "IN" as const,
+              quantity:       totalQty,
+              quantityBefore: 0,
+              quantityAfter:  totalQty,
+              referenceType:  "GRN",
+              referenceId:    grn.id,
+              notes:          `GRN ${grn.grnNumber} — new batch`,
+            })),
+          ],
+        });
+
+        // Step F: bulk UPDATE grnItems with resolved inventoryId via a single raw statement
+        const allPairs = [
+          ...toUpdate.map(({ item, existing }) => ({ grnItemId: item.id, inventoryId: existing.id })),
+          ...toCreate.map(({ item, inventoryId }) => ({ grnItemId: item.id, inventoryId: inventoryId! })),
+        ];
+        if (allPairs.length > 0) {
+          const grnItemIds   = allPairs.map((p) => p.grnItemId);
+          const inventoryIds = allPairs.map((p) => p.inventoryId);
+          await tx.$executeRaw`
+            UPDATE grn_items gi
+            SET    "inventoryId" = b."invId"
+            FROM   (
+                     SELECT unnest(${grnItemIds}::text[])   AS id,
+                            unnest(${inventoryIds}::text[]) AS "invId"
+                   ) AS b
+            WHERE  gi.id = b.id
+          `;
         }
 
         // Mark GRN confirmed — set payment due date (#16)
@@ -600,34 +740,35 @@ export class PurchasesRepo {
       _min:   { minimumStock: true },
     });
 
-    // Step 2: Get sales in last 30 days per medicine
-    const salesAgg = await this.db.invoiceItem.groupBy({
-      by:    ["medicineName"],
-      where: {
-        invoice: { pharmacyId, isCancelled: false, createdAt: { gte: thirtyDaysAgo } },
-      },
-      _sum: { quantity: true },
-    });
+    // Step 2: Get sales in last 30 days grouped by medicineId via the inventory FK.
+    // Previously grouped by `medicineName` (a snapshot string), which broke whenever
+    // a medicine was renamed — the old snapshot name wouldn't match the current master
+    // name, so sales for that medicine were silently dropped and it never appeared in
+    // suggestions.  Joining through inventory gives us the stable FK.
+    const salesAgg = await this.db.$queryRaw<{ medicineId: string; totalQty: number }[]>`
+      SELECT inv."medicineId", COALESCE(SUM(ii.quantity), 0)::int AS "totalQty"
+      FROM   invoice_items ii
+      JOIN   inventory     inv ON inv.id      = ii."inventoryId"
+      JOIN   invoices      i   ON i.id        = ii."invoiceId"
+      WHERE  i."pharmacyId"  = ${pharmacyId}
+        AND  i."isCancelled" = false
+        AND  i."createdAt"  >= ${thirtyDaysAgo}
+      GROUP  BY inv."medicineId"
+    `;
 
-    // Build medicine sales map — keyed by medicineId via inventory join
+    // Build medicine sales map keyed by medicineId
+    const salesByMedicineId = new Map<string, number>(
+      salesAgg.map((r) => [r.medicineId, r.totalQty]),
+    );
+
+    // Step 3: Fetch medicine names for the suggestion output
     const inventoryItems = await this.db.inventory.findMany({
-      where:   { pharmacyId, status: "ACTIVE" },
-      select:  { medicineId: true, medicine: { select: { id: true, name: true } } },
+      where:    { pharmacyId, status: "ACTIVE" },
+      select:   { medicineId: true, medicine: { select: { name: true } } },
       distinct: ["medicineId"],
     });
 
-    const medicineNameToId = new Map<string, string>();
-    for (const inv of inventoryItems) {
-      if (inv.medicine?.name) medicineNameToId.set(inv.medicine.name, inv.medicineId);
-    }
-
-    const salesByMedicineId = new Map<string, number>();
-    for (const sale of salesAgg) {
-      const id = medicineNameToId.get(sale.medicineName);
-      if (id) salesByMedicineId.set(id, (sale._sum.quantity ?? 0));
-    }
-
-    // Step 3: Compute suggestions
+    // Step 4: Compute suggestions
     const suggestions: {
       medicineId:        string;
       medicineName:      string;

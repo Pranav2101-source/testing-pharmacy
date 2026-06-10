@@ -30,12 +30,12 @@ function pwStrength(pw: string) {
   return { score, label: labels[score] ?? "Strong", color: colors[score] ?? "bg-emerald-500" };
 }
 
-function Field({ label, error, required, children }: {
-  label: string; error?: string; required?: boolean; children: React.ReactNode;
+function Field({ label, error, required, children, htmlFor }: {
+  label: string; error?: string; required?: boolean; children: React.ReactNode; htmlFor?: string;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="text-sm font-semibold text-slate-700">
+      <label htmlFor={htmlFor} className="text-sm font-semibold text-slate-700">
         {label}{required && <span className="text-red-400 ml-0.5">*</span>}
       </label>
       {children}
@@ -48,9 +48,10 @@ function Field({ label, error, required, children }: {
   );
 }
 
-function Input({ icon: Icon, placeholder, value, onChange, type = "text", error, right }: {
+function Input({ icon: Icon, placeholder, value, onChange, type = "text", error, right, id, name }: {
   icon: React.ElementType; placeholder: string; value: string;
   onChange: (v: string) => void; type?: string; error?: boolean; right?: React.ReactNode;
+  id?: string; name?: string;
 }) {
   return (
     <div className={cn(
@@ -61,6 +62,7 @@ function Input({ icon: Icon, placeholder, value, onChange, type = "text", error,
     )}>
       <Icon className={cn("w-4 h-4 flex-shrink-0", error ? "text-red-400" : "text-slate-400")} strokeWidth={1.8} />
       <input
+        id={id} name={name ?? id}
         type={type} placeholder={placeholder} value={value}
         onChange={e => onChange(e.target.value)}
         className="flex-1 text-sm text-slate-800 placeholder-slate-300 bg-transparent outline-none"
@@ -213,17 +215,17 @@ export default function RegisterPage() {
 
           {step === 1 && (
             <div className="space-y-4">
-              <Field label="Pharmacy Name" required error={errors.pharmacyName}>
-                <Input icon={Building2} placeholder="e.g. Radhika Medical Hall"
+              <Field label="Pharmacy Name" required error={errors.pharmacyName} htmlFor="reg-pharmacy-name">
+                <Input id="reg-pharmacy-name" icon={Building2} placeholder="e.g. Radhika Medical Hall"
                   value={pharmacyName} onChange={setPharmacyName} error={!!errors.pharmacyName} />
               </Field>
 
-              <Field label="Owner / Manager Name" required error={errors.ownerName}>
-                <Input icon={User} placeholder="Full name"
+              <Field label="Owner / Manager Name" required error={errors.ownerName} htmlFor="reg-owner-name">
+                <Input id="reg-owner-name" icon={User} placeholder="Full name"
                   value={ownerName} onChange={setOwnerName} error={!!errors.ownerName} />
               </Field>
 
-              <Field label="Mobile Number" required error={errors.phone}>
+              <Field label="Mobile Number" required error={errors.phone} htmlFor="reg-phone">
                 <div className={cn(
                   "flex items-center rounded-xl border overflow-hidden transition-all duration-150 bg-white",
                   errors.phone ? "border-red-300" : "border-slate-200 focus-within:border-blue-500 focus-within:ring-3 focus-within:ring-blue-100"
@@ -234,6 +236,7 @@ export default function RegisterPage() {
                   <div className="flex items-center gap-2 px-3 flex-1">
                     <Phone className="w-4 h-4 text-slate-400 flex-shrink-0" strokeWidth={1.8} />
                     <input
+                      id="reg-phone" name="phone"
                       type="tel" placeholder="98765 43210" value={phone} maxLength={10}
                       onChange={e => setPhone(e.target.value.replace(/\D/g, ""))}
                       className="flex-1 text-sm text-slate-800 placeholder-slate-300 bg-transparent outline-none py-0"
@@ -242,8 +245,8 @@ export default function RegisterPage() {
                 </div>
               </Field>
 
-              <Field label="City" error={errors.city}>
-                <Input icon={MapPin} placeholder="e.g. Ranchi" value={city} onChange={setCity} />
+              <Field label="City" error={errors.city} htmlFor="reg-city">
+                <Input id="reg-city" icon={MapPin} placeholder="e.g. Ranchi" value={city} onChange={setCity} />
               </Field>
 
               <button
@@ -264,14 +267,14 @@ export default function RegisterPage() {
 
           {step === 2 && (
             <div className="space-y-4">
-              <Field label="Email Address" required error={errors.email}>
-                <Input icon={Mail} placeholder="you@pharmacy.com"
+              <Field label="Email Address" required error={errors.email} htmlFor="reg-email">
+                <Input id="reg-email" icon={Mail} placeholder="you@pharmacy.com"
                   value={email} onChange={setEmail} type="email" error={!!errors.email} />
               </Field>
 
-              <Field label="Password" required error={errors.password}>
+              <Field label="Password" required error={errors.password} htmlFor="reg-password">
                 <Input
-                  icon={Lock} placeholder="Min. 8 characters"
+                  id="reg-password" icon={Lock} placeholder="Min. 8 characters"
                   value={password} onChange={setPassword}
                   type={showPw ? "text" : "password"} error={!!errors.password}
                   right={
@@ -298,9 +301,9 @@ export default function RegisterPage() {
                 )}
               </Field>
 
-              <Field label="Confirm Password" required error={errors.confirm}>
+              <Field label="Confirm Password" required error={errors.confirm} htmlFor="reg-confirm">
                 <Input
-                  icon={Lock} placeholder="Re-enter password"
+                  id="reg-confirm" icon={Lock} placeholder="Re-enter password"
                   value={confirm} onChange={setConfirm}
                   type={showCf ? "text" : "password"} error={!!errors.confirm}
                   right={
@@ -322,19 +325,19 @@ export default function RegisterPage() {
                 </button>
                 {showExtra && (
                   <div className="border-t border-slate-200 p-4 space-y-3">
-                    <Field label="GSTIN">
-                      <Input icon={Hash} placeholder="22AAAAA0000A1Z5" value={gstin} onChange={setGstin} />
+                    <Field label="GSTIN" htmlFor="reg-gstin">
+                      <Input id="reg-gstin" icon={Hash} placeholder="22AAAAA0000A1Z5" value={gstin} onChange={setGstin} />
                     </Field>
-                    <Field label="Drug License No.">
-                      <Input icon={Hash} placeholder="DL-XX-123456" value={drugLicense} onChange={setDrugLicense} />
+                    <Field label="Drug License No." htmlFor="reg-drug-license">
+                      <Input id="reg-drug-license" icon={Hash} placeholder="DL-XX-123456" value={drugLicense} onChange={setDrugLicense} />
                     </Field>
-                    <Field label="Address">
-                      <Input icon={MapPin} placeholder="Street, Area" value={address} onChange={setAddress} />
+                    <Field label="Address" htmlFor="reg-address">
+                      <Input id="reg-address" icon={MapPin} placeholder="Street, Area" value={address} onChange={setAddress} />
                     </Field>
                     <div className="grid grid-cols-2 gap-3">
-                      <Field label="State">
+                      <Field label="State" htmlFor="reg-state">
                         <div className="relative">
-                          <select value={stateVal} onChange={e => setStateVal(e.target.value)}
+                          <select id="reg-state" name="state" value={stateVal} onChange={e => setStateVal(e.target.value)}
                             className="w-full appearance-none pl-3 pr-7 py-3 text-sm text-slate-700 bg-white border border-slate-200 rounded-xl focus:border-blue-500 focus:ring-3 focus:ring-blue-100 outline-none transition-all">
                             <option value="">Select</option>
                             {STATES.map(s => <option key={s} value={s}>{s}</option>)}
@@ -342,8 +345,8 @@ export default function RegisterPage() {
                           <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
                         </div>
                       </Field>
-                      <Field label="Pincode">
-                        <input type="text" maxLength={6} placeholder="834001" value={pincode}
+                      <Field label="Pincode" htmlFor="reg-pincode">
+                        <input id="reg-pincode" name="pincode" type="text" maxLength={6} placeholder="834001" value={pincode}
                           onChange={e => setPincode(e.target.value.replace(/\D/g, ""))}
                           className="px-3.5 py-3 text-sm text-slate-700 bg-white border border-slate-200 rounded-xl focus:border-blue-500 focus:ring-3 focus:ring-blue-100 outline-none w-full transition-all" />
                       </Field>

@@ -176,10 +176,13 @@ export class InventoryRepo {
       });
       if (!item) throw AppError.notFound("Inventory item not found");
 
-      const updated = await tx.inventory.update({
-        where:   { id },
-        data:    { status: status as BatchStatus },
-        include: INVENTORY_INCLUDE,
+      // updateMany accepts arbitrary WHERE conditions (unlike update, which
+      // requires a unique-constraint selector).  Including pharmacyId ensures
+      // the write is tenant-scoped even if id were somehow reused across
+      // pharmacies — defense-in-depth on top of the findFirst check above.
+      await tx.inventory.updateMany({
+        where: { id, pharmacyId },
+        data:  { status: status as BatchStatus },
       });
 
       await tx.inventoryMovement.create({
@@ -197,6 +200,9 @@ export class InventoryRepo {
         },
       });
 
+      // Reload the full object with relations after the updateMany.
+      const updated = await tx.inventory.findFirst({ where: { id, pharmacyId }, include: INVENTORY_INCLUDE });
+      if (!updated) throw AppError.notFound("Inventory item not found after status update");
       return updated;
     });
   }
@@ -216,6 +222,13 @@ export class InventoryRepo {
       });
       if (!item) throw AppError.notFound("Inventory item not found");
 
+      // A zero-delta adjustment is a no-op — there is nothing to record and
+      // writing a movement with quantity=0 and direction="OUT" (the result of
+      // `params.delta > 0 ? "IN" : "OUT"`) would be misleading in the ledger.
+      if (params.delta === 0) {
+        return tx.inventory.findFirst({ where: { id: params.id, pharmacyId: params.pharmacyId }, include: INVENTORY_INCLUDE });
+      }
+
       const newQty = item.quantity + params.delta;
       if (newQty < 0) {
         throw AppError.unprocessable(
@@ -223,11 +236,12 @@ export class InventoryRepo {
         );
       }
 
-      const updated = await tx.inventory.update({
-        where:   { id: params.id },
-        data:    { quantity: newQty },
-        include: INVENTORY_INCLUDE,
+      await tx.inventory.updateMany({
+        where: { id: params.id, pharmacyId: params.pharmacyId },
+        data:  { quantity: newQty },
       });
+      const updated = await tx.inventory.findFirst({ where: { id: params.id, pharmacyId: params.pharmacyId }, include: INVENTORY_INCLUDE });
+      if (!updated) throw AppError.notFound("Inventory item not found after adjustment");
 
       await tx.inventoryMovement.create({
         data: {
@@ -303,6 +317,12 @@ export class InventoryRepo {
     items:      { inventoryId: string; quantity: number }[];
   }): Promise<{ inventoryId: string; available: number }[]> {
     return this.db.$transaction(async (tx) => {
+      // Serializable isolation prevents two concurrent sessions from both reading
+      // the same available stock, computing "no conflict", and then both writing
+      // reservations — which would let total reserved quantity exceed actual stock.
+      // The billing transaction at checkout enforces the hard stock floor, but
+      // surfacing the conflict here at reservation time gives users an early warning
+      // without them discovering the problem only when they hit "Confirm Bill".
       const now = new Date();
 
       // Expired reservation cleanup — scoped to this pharmacy to avoid cross-tenant writes.
@@ -399,6 +419,12 @@ export class InventoryRepo {
       ]);
 
       return results;
+    }, { isolationLevel: "Serializable" }).catch((err: { code?: string }) => {
+      if (err.code === "P2034") {
+        // Serializable conflict — another session updated the same stock concurrently.
+        throw Object.assign(new Error("Stock updated concurrently — please refresh and try again"), { statusCode: 409 });
+      }
+      throw err;
     });
   }
 

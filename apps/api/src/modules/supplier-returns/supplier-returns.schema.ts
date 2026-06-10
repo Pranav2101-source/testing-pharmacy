@@ -18,6 +18,10 @@ export const srItemSchema = z.object({
   expiryDate:   z.string().datetime(),
   quantity:     z.number().int().positive(),
   purchaseRate: z.number().positive(),
+  // gstRate is required to compute the GST-inclusive debit note amount.
+  // The pharmacy must include GST on returns so the supplier can issue a
+  // credit note with the correct tax reversal for ITC (Input Tax Credit) claims.
+  gstRate:      z.number().refine((v) => [0, 5, 12, 18].includes(v), "GST must be 0, 5, 12 or 18").default(12),
   reason:       z.enum(SUPPLIER_RETURN_REASONS).default("DAMAGED"),
 });
 

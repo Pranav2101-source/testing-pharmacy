@@ -37,36 +37,41 @@ const meilisearchPlugin: FastifyPluginAsync = async (fastify) => {
   //   2. Fetch only medicines updated after that cursor (or ALL on first run).
   //   3. Push in batches so large catalogs don't time out or OOM.
   //   4. Advance the cursor to syncedAt so the next restart is cheap.
+  // Run sync in the background — never block server startup.
+  // With a large catalogue (250k+) a full sync can take 30-60s; blocking onReady
+  // would hit Fastify's hook timeout and crash the server.
   fastify.addHook("onReady", async () => {
-    try {
-      const syncedAt    = new Date();
-      const cursorRaw   = await fastify.redis.get(SYNC_CURSOR_KEY);
-      const lastSyncedAt = cursorRaw ? new Date(cursorRaw) : null;
+    setImmediate(() => {
+      void (async () => {
+        try {
+          const syncedAt     = new Date();
+          const cursorRaw    = await fastify.redis.get(SYNC_CURSOR_KEY);
+          const lastSyncedAt = cursorRaw ? new Date(cursorRaw) : null;
 
-      const medicines = await fastify.prisma.medicine.findMany({
-        ...(lastSyncedAt ? { where: { updatedAt: { gt: lastSyncedAt } } } : {}),
-        orderBy: { updatedAt: "asc" },
-      });
+          const medicines = await fastify.prisma.medicine.findMany({
+            ...(lastSyncedAt ? { where: { updatedAt: { gt: lastSyncedAt } } } : {}),
+            orderBy: { updatedAt: "asc" },
+          });
 
-      if (medicines.length === 0) {
-        fastify.log.info("Meilisearch: index already up to date, nothing to sync");
-        return;
-      }
+          if (medicines.length === 0) {
+            fastify.log.info("Meilisearch: index already up to date, nothing to sync");
+            return;
+          }
 
-      // Push in batches to avoid single large HTTP requests
-      for (let i = 0; i < medicines.length; i += SYNC_BATCH_SIZE) {
-        await index.addDocuments(medicines.slice(i, i + SYNC_BATCH_SIZE));
-      }
+          for (let i = 0; i < medicines.length; i += SYNC_BATCH_SIZE) {
+            await index.addDocuments(medicines.slice(i, i + SYNC_BATCH_SIZE));
+          }
 
-      // Advance cursor only after all batches succeed
-      await fastify.redis.set(SYNC_CURSOR_KEY, syncedAt.toISOString());
+          await fastify.redis.set(SYNC_CURSOR_KEY, syncedAt.toISOString());
 
-      fastify.log.info(
-        `Meilisearch: synced ${medicines.length} medicine(s) ${lastSyncedAt ? `(delta since ${lastSyncedAt.toISOString()})` : "(full sync — first run)"}`,
-      );
-    } catch (err) {
-      fastify.log.warn({ err }, "Meilisearch sync failed — search may be stale");
-    }
+          fastify.log.info(
+            `Meilisearch: synced ${medicines.length} medicine(s) ${lastSyncedAt ? `(delta since ${lastSyncedAt.toISOString()})` : "(full sync — first run)"}`,
+          );
+        } catch (err) {
+          fastify.log.warn({ err }, "Meilisearch sync failed — search may be stale");
+        }
+      })();
+    });
   });
 };
 

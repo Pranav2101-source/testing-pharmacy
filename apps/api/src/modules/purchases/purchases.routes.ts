@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { PurchasesService } from "./purchases.service.js";
 import {
   createPOSchema, updatePOSchema, listPOQuerySchema, approvePOSchema, sharePOSchema,
-  createGRNSchema, listGRNQuerySchema, autoSuggestQuerySchema,
+  createGRNSchema, updateGRNSchema, listGRNQuerySchema, autoSuggestQuerySchema,
 } from "./purchases.schema.js";
 import { parseGRNCSV } from "./purchases.import.js";
 import { authenticate, requireOwner } from "../../middleware/auth.js";
@@ -91,6 +91,14 @@ const purchasesRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: grn });
   });
 
+  // PATCH /grn/:id — edit a DRAFT GRN (items, invoice number, notes)
+  app.patch("/grn/:id", { preHandler: ownerOnly }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const input  = updateGRNSchema.parse(req.body);
+    const grn    = await service.updateGRN(id, req.pharmacyId, req.user.sub, input);
+    return reply.send({ success: true, data: grn });
+  });
+
   // PATCH /grn/:id/confirm — DRAFT → CONFIRMED + stock update + set paymentDueDate
   app.patch("/grn/:id/confirm", { preHandler: ownerOnly }, async (req, reply) => {
     const { id } = req.params as { id: string };
@@ -122,13 +130,13 @@ const purchasesRoutes: FastifyPluginAsync = async (app) => {
     const data = await req.file();
     if (!data) return reply.status(400).send({ success: false, error: "No file uploaded" });
 
-    const { supplierId } = req.query as { supplierId?: string };
+    const { supplierId, allowNearExpiry } = req.query as { supplierId?: string; allowNearExpiry?: string };
     if (!supplierId) return reply.status(400).send({ success: false, error: "supplierId query param required" });
 
     const csvText = (await data.toBuffer()).toString("utf-8");
     const rows    = parseGRNCSV(csvText);
 
-    const result  = await service.importGRNFromCSV(req.pharmacyId, req.user.sub, supplierId, rows);
+    const result  = await service.importGRNFromCSV(req.pharmacyId, req.user.sub, supplierId, rows, allowNearExpiry === "true");
     return reply.status(201).send({ success: true, data: result });
   });
 };

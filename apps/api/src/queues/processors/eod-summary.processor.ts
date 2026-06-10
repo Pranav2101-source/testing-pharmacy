@@ -1,6 +1,7 @@
 import { Worker } from "bullmq";
 import { prisma } from "@pharmacy/database";
 import { connection, eodSummaryQueue } from "../queue.client.js";
+import { onWorkerFailed } from "../on-worker-failed.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 function buildHtml(data: {
@@ -82,9 +83,15 @@ export const eodSummaryWorker = new Worker(
     });
     if (!pharmacy) return;
 
-    const now        = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const dateStr    = todayStart.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+    const now = new Date();
+    // Use IST midnight as the day boundary — same logic as billing.repo getDashboardStats.
+    // Server runs UTC; using server-local Date(year,month,date) gives UTC midnight which
+    // is 5:30 AM IST, causing invoices from midnight–5:30 AM IST to be excluded.
+    const IST_OFFSET_MS       = 5.5 * 60 * 60 * 1000;
+    const istNow              = new Date(now.getTime() + IST_OFFSET_MS);
+    const istTodayMidnightUtc = new Date(Date.UTC(istNow.getUTCFullYear(), istNow.getUTCMonth(), istNow.getUTCDate()));
+    const todayStart          = new Date(istTodayMidnightUtc.getTime() - IST_OFFSET_MS);
+    const dateStr             = istTodayMidnightUtc.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 
     const [salesAgg, returnsAgg, paymentBreakdown, pendingCredit, cancelledCount] = await Promise.all([
       prisma.invoice.aggregate({
@@ -145,3 +152,4 @@ export const eodSummaryWorker = new Worker(
   },
   { connection, concurrency: 5 },
 );
+onWorkerFailed(eodSummaryWorker);

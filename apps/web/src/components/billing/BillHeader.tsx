@@ -2,9 +2,11 @@
 
 import { format } from "date-fns";
 import { Calendar, Stethoscope, ChevronDown } from "lucide-react";
-import { motion } from "framer-motion";
 import { useBillingStore } from "./useBillingStore";
 import { CustomerSearchCombobox } from "./CustomerSearchCombobox";
+
+// Computed once per session — bill date never changes mid-session
+const TODAY_LABEL = format(new Date(), "dd/MM/yyyy");
 
 const BILLING_FOR_OPTIONS = ["Self", "Counter", "Credit", "Insurance"] as const;
 
@@ -18,10 +20,7 @@ export function BillHeader() {
   const setMeta       = useBillingStore((s) => s.setMeta);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: -3 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.18 }}
+    <div
       className="flex items-stretch border-b border-slate-200 bg-white flex-shrink-0 overflow-x-auto no-scrollbar"
       style={{ minHeight: "var(--header-height, 60px)", maxHeight: "var(--header-height, 60px)" }}
     >
@@ -35,7 +34,7 @@ export function BillHeader() {
           </p>
           <button className="flex items-center gap-1 group">
             <span className="text-[14px] font-bold text-slate-800 tabnum leading-none">
-              {format(new Date(), "dd/MM/yyyy")}
+              {TODAY_LABEL}
             </span>
             <ChevronDown className="w-3 h-3 text-slate-300 group-hover:text-slate-600 transition-colors" />
           </button>
@@ -97,6 +96,6 @@ export function BillHeader() {
         </div>
       </div>
 
-    </motion.div>
+    </div>
   );
 }

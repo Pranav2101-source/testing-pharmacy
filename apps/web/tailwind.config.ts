@@ -67,7 +67,8 @@ const config: Config = {
         "float-slow": "float 6s ease-in-out infinite",
         "bounce-in":  "bounceIn 0.4s cubic-bezier(0.34,1.56,0.64,1)",
         "spin-slow":  "spin 8s linear infinite",
-        "ping-once":  "ping 0.6s cubic-bezier(0,0,0.2,1) forwards",
+        "ping-once":    "ping 0.6s cubic-bezier(0,0,0.2,1) forwards",
+        "amount-pop":   "amountPop 0.18s cubic-bezier(0.34,1.56,0.64,1)",
       },
       keyframes: {
         fadeIn:   { "0%": { opacity: "0" }, "100%": { opacity: "1" } },
@@ -79,6 +80,10 @@ const config: Config = {
           "0%":   { transform: "scale(0.9)", opacity: "0" },
           "60%":  { transform: "scale(1.04)", opacity: "1" },
           "100%": { transform: "scale(1)", opacity: "1" },
+        },
+        amountPop: {
+          "0%":   { transform: "scale(0.88)", opacity: "0.5" },
+          "100%": { transform: "scale(1)",    opacity: "1"   },
         },
       },
     },

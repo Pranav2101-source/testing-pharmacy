@@ -37,6 +37,7 @@ import pharmacyRoutes from "./modules/pharmacy/pharmacy.routes.js";
 
 import { env, allowedOrigins } from "./config/env.js";
 import { AppError } from "./lib/AppError.js";
+import { Prisma } from "@pharmacy/database";
 
 // ── Queue workers (import side-effect: registers each BullMQ Worker) ──────────
 import "./queues/processors/expiry-alert.processor.js";
@@ -47,6 +48,7 @@ import "./queues/processors/quotation-expiry.processor.js";
 import "./queues/processors/pending-credit.processor.js";
 import "./queues/processors/calendar-digest.processor.js";
 import "./queues/processors/post-invoice.processor.js";
+import "./queues/processors/reservation-cleanup.processor.js";
 
 import { setupScheduledJobs } from "./queues/scheduler.js";
 
@@ -164,14 +166,92 @@ export async function buildApp() {
 
   // ── Global error handler ──────────────────────────────────────────────────
   app.setErrorHandler((error, _request, reply) => {
+    // ── 1. Zod input validation errors ──────────────────────────────────────
     if (error instanceof ZodError) {
       return reply.status(400).send({
         success: false,
-        error:   "Validation failed",
+        error:   "Some information is missing or incorrect. Please check the form and try again.",
         details: error.flatten().fieldErrors,
       });
     }
 
+    // ── 2. Prisma known request errors ───────────────────────────────────────
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      switch (error.code) {
+        case "P2002": {
+          // Unique constraint — surface which field caused it if available.
+          const fields = (error.meta?.target as string[] | undefined)?.join(", ") ?? "field";
+          return reply.status(409).send({
+            success: false,
+            error:   `This ${fields} is already in use. Please use a different value.`,
+          });
+        }
+
+        case "P2025":
+          return reply.status(404).send({
+            success: false,
+            error:   "We couldn't find that item. It may have already been deleted.",
+          });
+
+        case "P2003":
+          return reply.status(409).send({
+            success: false,
+            error:   "One of the linked items (like a supplier or medicine) could not be found. Please check your selection and try again.",
+          });
+
+        case "P2034":
+          // Serialization conflict — two users updated the same record at the same time.
+          return reply.status(409).send({
+            success:   false,
+            error:     "Someone else updated this record at the same time. Please refresh the page and try again.",
+            retryable: true,
+          });
+
+        case "P2024":
+        case "P2028":
+          // Connection pool timeout / transaction timeout — transient capacity issue.
+          app.log.error(error, `[Prisma] ${error.code} — DB capacity/timeout`);
+          return reply.status(503).send({
+            success:   false,
+            error:     "The system is taking too long to respond. Please wait a moment and try again.",
+            retryable: true,
+          });
+
+        default:
+          app.log.error(error, `[Prisma] Unhandled error code ${error.code}`);
+          return reply.status(500).send({
+            success: false,
+            error:   "Something went wrong on our end. Please try again, or contact support if this keeps happening.",
+          });
+      }
+    }
+
+    // ── 3. Prisma client initialization / connection errors ──────────────────
+    if (
+      error instanceof Prisma.PrismaClientInitializationError ||
+      error instanceof Prisma.PrismaClientRustPanicError
+    ) {
+      app.log.error(error, "[Prisma] Critical database error");
+      return reply.status(503).send({
+        success:   false,
+        error:     "We're unable to connect to the database right now. Please try again in a few moments.",
+        retryable: true,
+      });
+    }
+
+    // ── 4. Redis / cache connection errors ───────────────────────────────────
+    // ioredis throws errors with ECONNREFUSED or "Connection is closed" when Redis is down.
+    const msg = (error as any)?.message ?? "";
+    if (msg.includes("ECONNREFUSED") || msg.includes("Connection is closed") || msg.includes("connect ETIMEDOUT")) {
+      app.log.error(error, "[Redis] Connection error");
+      return reply.status(503).send({
+        success:   false,
+        error:     "Our system is having trouble right now. Please try again in a moment.",
+        retryable: true,
+      });
+    }
+
+    // ── 5. Application errors and everything else ────────────────────────────
     const status: number =
       error instanceof AppError
         ? error.statusCode
@@ -183,7 +263,9 @@ export async function buildApp() {
 
     return reply.status(status).send({
       success: false,
-      error:   status >= 500 ? "Internal server error" : error.message,
+      error:   status >= 500
+        ? "Something went wrong on our end. Please try again, or contact support if this keeps happening."
+        : error.message,
     });
   });
 
