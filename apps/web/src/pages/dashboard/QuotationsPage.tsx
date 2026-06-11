@@ -91,10 +91,10 @@ function MedicineSearch({ onSelect }: { onSelect: (m: MedicineResult) => void })
     setLoading(true);
     const t = setTimeout(async () => {
       try {
-        const r = await api.get<{ success: boolean; data: { hits: MedicineResult[] } }>(
+        const r = await api.get<{ success: boolean; data: MedicineResult[] }>(
           `/medicines/search?q=${encodeURIComponent(q)}&limit=8`
         );
-        setResults(r.data.data.hits ?? []);
+        setResults(r.data.data ?? []);
         setOpen(true);
       } catch { setResults([]); }
       finally { setLoading(false); }
@@ -703,8 +703,8 @@ export default function QuotationsPage() {
   useEffect(() => { load(1, statusFilter); }, [statusFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    api.get<{ success: boolean; data: { items: Supplier[] } }>("/suppliers?limit=200")
-      .then(r => setSuppliers(r.data.data.items ?? []))
+    api.get<{ success: boolean; data: Supplier[] }>("/suppliers/all")
+      .then(r => setSuppliers(r.data.data ?? []))
       .catch(() => {});
   }, []);
 
