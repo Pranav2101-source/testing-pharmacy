@@ -25,9 +25,10 @@ const NAV_TABS: NavTab[] = [
 // Secondary modules surfaced under "More"
 type MoreItem = { href: string; label: string; description: string; icon: React.ElementType };
 const MORE_ITEMS: MoreItem[] = [
-  { href: "/dashboard/customers", label: "Customers", description: "Manage registered patients",   icon: Users        },
-  { href: "/dashboard/medicines", label: "Medicines",  description: "Global medicines catalogue",   icon: FlaskConical },
-  { href: "/dashboard/ginni",     label: "Ginni",      description: "AI assistant",                 icon: Zap          },
+  { href: "/dashboard/customers",   label: "Customers",   description: "Manage registered patients",        icon: Users        },
+  { href: "/dashboard/quotations",  label: "Quotations",  description: "Request & compare supplier prices", icon: FileText     },
+  { href: "/dashboard/medicines",   label: "Medicines",   description: "Global medicines catalogue",        icon: FlaskConical },
+  { href: "/dashboard/ginni",       label: "Ginni",       description: "AI assistant",                      icon: Zap          },
 ];
 
 type InventoryItem = { href: string; label: string; description: string; icon: React.ElementType };

@@ -43,6 +43,7 @@ const StockAuditPage      = lazy(() => import("./pages/dashboard/StockAuditPage"
 const StockAuditDetailPage = lazy(() => import("./pages/dashboard/StockAuditDetailPage"));
 const CalendarPage         = lazy(() => import("./pages/dashboard/CalendarPage"));
 const CustomersPage        = lazy(() => import("./pages/dashboard/CustomersPage"));
+const QuotationsPage       = lazy(() => import("./pages/dashboard/QuotationsPage"));
 
 // ─── Settings ─────────────────────────────────────────────────
 const SettingsPage           = lazy(() => import("./pages/dashboard/settings/SettingsPage"));
@@ -101,8 +102,9 @@ export function App() {
               <Route path="/dashboard/locations"             element={<LocationsPage />} />
               <Route path="/dashboard/stock-audit"           element={<StockAuditPage />} />
               <Route path="/dashboard/stock-audit/:id"       element={<StockAuditDetailPage />} />
-              <Route path="/dashboard/calendar"             element={<CalendarPage />} />
-              <Route path="/dashboard/customers"           element={<CustomersPage />} />
+              <Route path="/dashboard/calendar"              element={<CalendarPage />} />
+              <Route path="/dashboard/customers"            element={<CustomersPage />} />
+              <Route path="/dashboard/quotations"           element={<QuotationsPage />} />
 
               {/* Settings nested layout */}
               <Route element={<SettingsLayout />}>

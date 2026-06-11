@@ -602,6 +602,7 @@ function NewBillInner() {
         idempotencyKey:   idempotencyKeyRef.current,
         customerId:       (meta.customerId && meta.customerId !== "COUNTER") ? meta.customerId : undefined,
         doctorName:       meta.doctorName       || undefined,
+        prescriptionId:   meta.prescriptionId   || undefined,
         paymentMode:      meta.paymentMode,
         paymentStatus:    meta.paymentStatus,
         isInterstate:     meta.isInterstate,

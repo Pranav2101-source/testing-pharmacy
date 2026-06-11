@@ -1,7 +1,7 @@
 "use client";
 
 import { format } from "date-fns";
-import { Calendar, Stethoscope, ChevronDown } from "lucide-react";
+import { Calendar, Stethoscope, ChevronDown, FileText } from "lucide-react";
 import { useBillingStore } from "./useBillingStore";
 import { CustomerSearchCombobox } from "./CustomerSearchCombobox";
 
@@ -15,9 +15,10 @@ function Divider() {
 }
 
 export function BillHeader() {
-  const paymentStatus = useBillingStore((s) => s.meta.paymentStatus);
-  const doctorName    = useBillingStore((s) => s.meta.doctorName);
-  const setMeta       = useBillingStore((s) => s.setMeta);
+  const paymentStatus  = useBillingStore((s) => s.meta.paymentStatus);
+  const doctorName     = useBillingStore((s) => s.meta.doctorName);
+  const prescriptionId = useBillingStore((s) => s.meta.prescriptionId);
+  const setMeta        = useBillingStore((s) => s.setMeta);
 
   return (
     <div
@@ -79,7 +80,7 @@ export function BillHeader() {
       <Divider />
 
       {/* Doctor */}
-      <div className="flex items-center gap-2.5 px-4 py-2 flex-1 min-w-[200px] input-glow glow-focus">
+      <div className="flex items-center gap-2.5 px-4 py-2 flex-1 min-w-[180px] input-glow glow-focus">
         <Stethoscope className="w-4 h-4 text-slate-400 flex-shrink-0" strokeWidth={1.8} />
         <div className="min-w-0 flex-1">
           <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest leading-none mb-1.5">
@@ -90,6 +91,26 @@ export function BillHeader() {
             value={doctorName}
             onChange={(e) => setMeta({ doctorName: e.target.value })}
             placeholder="Name / Lic No."
+            autoComplete="off"
+            className="w-full text-[13px] font-medium text-slate-800 placeholder-slate-300 bg-transparent focus:outline-none leading-none"
+          />
+        </div>
+      </div>
+
+      <Divider />
+
+      {/* Prescription / Rx No. */}
+      <div className="flex items-center gap-2.5 px-4 py-2 flex-shrink-0 min-w-[160px] input-glow glow-focus">
+        <FileText className="w-4 h-4 text-slate-400 flex-shrink-0" strokeWidth={1.8} />
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest leading-none mb-1.5">
+            Rx No.
+          </p>
+          <input
+            type="text"
+            value={prescriptionId}
+            onChange={(e) => setMeta({ prescriptionId: e.target.value })}
+            placeholder="Prescription no."
             autoComplete="off"
             className="w-full text-[13px] font-medium text-slate-800 placeholder-slate-300 bg-transparent focus:outline-none leading-none"
           />

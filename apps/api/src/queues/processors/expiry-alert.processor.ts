@@ -94,11 +94,23 @@ export const expiryAlertWorker = new Worker(
     });
     if (!pharmacy) return;
 
+    const now       = new Date();
     const threshold = new Date(Date.now() + 90 * DAY_MS);
+
+    // Auto-mark truly expired batches (expiryDate < today) so they stop appearing
+    // in ACTIVE stock and inflate valuation / fast-moving reports.
+    const { count: expiredCount } = await prisma.inventory.updateMany({
+      where: { pharmacyId: pharmacy.id, status: "ACTIVE", expiryDate: { lt: now } },
+      data:  { status: "EXPIRED" },
+    });
+    if (expiredCount > 0) {
+      job.log(`[${pharmacy.name}] auto-expired ${expiredCount} batch(es)`);
+    }
+
     const expiring  = await prisma.inventory.findMany({
       where: {
         pharmacyId: pharmacy.id,
-        expiryDate: { lte: threshold },
+        expiryDate: { gte: now, lte: threshold },
         quantity:   { gt: 0 },
         status:     "ACTIVE",
       },
@@ -106,11 +118,19 @@ export const expiryAlertWorker = new Worker(
       orderBy: { expiryDate: "asc" },
     });
 
-    if (expiring.length === 0) return;
+    // Also include already-expired batches that still have stock (newly marked above)
+    const alreadyExpired = await prisma.inventory.findMany({
+      where: { pharmacyId: pharmacy.id, status: "EXPIRED", quantity: { gt: 0 } },
+      include: { medicine: { select: { name: true } } },
+      orderBy: { expiryDate: "asc" },
+    });
+
+    const allItems = [...alreadyExpired, ...expiring];
+    if (allItems.length === 0) return;
 
     const message =
       `Expiry Alert — ${pharmacy.name}\n\n` +
-      expiring
+      allItems
         .map((i) => {
           const d = daysUntil(i.expiryDate);
           return `${i.medicine.name} | Batch: ${i.batchNumber} | ${i.expiryDate.toISOString().split("T")[0]} | Qty: ${i.quantity} | ${d <= 0 ? "EXPIRED" : `${d}d left`}`;
@@ -118,12 +138,12 @@ export const expiryAlertWorker = new Worker(
         .join("\n");
 
     await notifyOwners(prisma, pharmacy.id, {
-      subject: `Expiry Alert: ${expiring.length} batch(es) — ${pharmacy.name}`,
+      subject: `Expiry Alert: ${allItems.length} batch(es) — ${pharmacy.name}`,
       message,
-      html:    buildHtml(expiring, pharmacy.name),
+      html:    buildHtml(allItems, pharmacy.name),
     });
 
-    job.log(`[${pharmacy.name}] expiry alert sent: ${expiring.length} items`);
+    job.log(`[${pharmacy.name}] expiry alert sent: ${allItems.length} items`);
   },
   { connection, concurrency: 5 },
 );
