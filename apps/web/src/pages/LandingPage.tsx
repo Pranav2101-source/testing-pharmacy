@@ -43,7 +43,7 @@ function useScrolled(threshold = 30) {
 // ─── Animation variants ───────────────────────────────────────
 const fadeUp = {
   hidden: { opacity: 0, y: 24 },
-  show:   { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] } },
+  show:   { opacity: 1, y: 0, transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] } },
 };
 const stagger = (delay = 0.07) => ({
   show: { transition: { staggerChildren: delay } },
@@ -316,7 +316,7 @@ function HeroSection() {
                     initial={{ y: 20, opacity: 0 }}
                     animate={{ y: 0,  opacity: 1 }}
                     exit={{   y: -20, opacity: 0 }}
-                    transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                    transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] }}
                     className="inline-block text-transparent bg-clip-text"
                     style={{ backgroundImage: "linear-gradient(90deg, #60a5fa, #818cf8, #a78bfa)" }}
                   >
@@ -362,7 +362,7 @@ function HeroSection() {
           <motion.div
             initial={{ opacity: 0, x: 40, y: 10 }}
             animate={{ opacity: 1, x: 0,  y: 0  }}
-            transition={{ duration: 0.7, delay: 0.3, ease: [0.22, 1, 0.36, 1] }}
+            transition={{ duration: 0.7, delay: 0.3, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] }}
             className="relative hidden lg:block"
           >
             {/* Glow behind mockup */}
@@ -441,10 +441,10 @@ function formatStat(v: number, suffix: string) {
 function StatsSection() {
   const ref  = useRef<HTMLDivElement>(null);
   const inView = useInView(ref, { once: true, margin: "-100px" });
-  const c0 = useCounter(STATS[0].value, 1600, inView);
-  const c1 = useCounter(STATS[1].value, 2000, inView);
-  const c2 = useCounter(STATS[2].value, 1200, inView);
-  const c3 = useCounter(STATS[3].value, 1400, inView);
+  const c0 = useCounter(STATS[0]!.value, 1600, inView);
+  const c1 = useCounter(STATS[1]!.value, 2000, inView);
+  const c2 = useCounter(STATS[2]!.value, 1200, inView);
+  const c3 = useCounter(STATS[3]!.value, 1400, inView);
   const counts = [c0, c1, c2, c3];
 
   return (
@@ -466,7 +466,7 @@ function StatsSection() {
                   <Icon className="w-5 h-5 text-brand-600" strokeWidth={1.8} />
                 </div>
                 <p className="text-3xl font-black text-slate-800 tabnum">
-                  {formatStat(counts[i], s.suffix)}
+                  {formatStat(counts[i] ?? 0, s.suffix)}
                 </p>
                 <p className="text-sm text-slate-500 font-medium mt-0.5">{s.label}</p>
               </motion.div>
@@ -644,6 +644,7 @@ function ShowcaseSection() {
   }, [paused, advance]);
 
   const slide = SLIDES[active];
+  if (!slide) return null;
 
   return (
     <section id="showcase" className="py-20 lg:py-28 bg-white overflow-hidden">
@@ -695,7 +696,7 @@ function ShowcaseSection() {
               initial={{ opacity: 0, x: 30 }}
               animate={{ opacity: 1, x: 0  }}
               exit={{   opacity: 0, x: -30 }}
-              transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+              transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] as [number, number, number, number] }}
               className="grid lg:grid-cols-2"
             >
               {/* Text panel */}
@@ -732,7 +733,7 @@ function ShowcaseSection() {
                   />
                 ) : (
                   <div className={cn("w-full h-full flex items-center justify-center bg-gradient-to-br min-h-[300px]", slide.accent)}>
-                    <span className="text-white/30 text-7xl font-black">{SLIDES[active].tag[0]}</span>
+                    <span className="text-white/30 text-7xl font-black">{slide.tag[0]}</span>
                   </div>
                 )}
                 {/* Overlay gradient for blending */}
@@ -929,6 +930,7 @@ const TESTIMONIALS = [
 
 function TestimonialsSection() {
   const [active, setActive] = useState(0);
+  const testimonial = TESTIMONIALS[active]!;
 
   useEffect(() => {
     const id = setInterval(() => setActive(i => (i + 1) % TESTIMONIALS.length), 4500);
@@ -965,18 +967,18 @@ function TestimonialsSection() {
             >
               <div className={cn(
                 "w-16 h-16 rounded-2xl bg-gradient-to-br flex items-center justify-center text-white font-black text-xl mx-auto mb-5",
-                TESTIMONIALS[active].color
+                testimonial.color
               )}>
-                {TESTIMONIALS[active].initials}
+                {testimonial.initials}
               </div>
               <div className="flex justify-center gap-0.5 mb-4">
                 {[...Array(5)].map((_, i) => <Star key={i} className="w-4 h-4 text-amber-400 fill-amber-400" />)}
               </div>
               <p className="text-xl text-slate-700 font-medium leading-relaxed italic mb-6">
-                &ldquo;{TESTIMONIALS[active].text}&rdquo;
+                &ldquo;{testimonial.text}&rdquo;
               </p>
-              <p className="font-black text-slate-800">{TESTIMONIALS[active].name}</p>
-              <p className="text-sm text-slate-400 mt-0.5">{TESTIMONIALS[active].pharmacy} · {TESTIMONIALS[active].city}</p>
+              <p className="font-black text-slate-800">{testimonial.name}</p>
+              <p className="text-sm text-slate-400 mt-0.5">{testimonial.pharmacy} · {testimonial.city}</p>
             </motion.div>
           </AnimatePresence>
         </div>

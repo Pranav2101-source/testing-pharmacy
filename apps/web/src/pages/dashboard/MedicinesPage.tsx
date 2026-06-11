@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/useToast";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -54,12 +55,12 @@ const SCHEDULES = ["OTC", "H", "H1", "X", "G"];
 const FORMS     = ["tablet", "capsule", "syrup", "injection", "cream", "drops", "sachet", "gel", "powder", "inhaler", "suspension", "lotion", "ointment", "patch", "spray"];
 const GST_RATES = ["0", "5", "12", "18"];
 
-const SCHEDULE_CFG: Record<string, { cls: string }> = {
-  OTC: { cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  H:   { cls: "bg-amber-50   text-amber-700   border-amber-200"   },
-  H1:  { cls: "bg-orange-50  text-orange-700  border-orange-200"  },
-  X:   { cls: "bg-red-50     text-red-600     border-red-200"     },
-  G:   { cls: "bg-blue-50    text-blue-600    border-blue-200"    },
+const SCHEDULE_CFG: Record<string, { cls: string; title: string }> = {
+  OTC: { cls: "bg-emerald-50 text-emerald-700 border-emerald-200", title: "Over the Counter — no prescription required"                           },
+  H:   { cls: "bg-amber-50   text-amber-700   border-amber-200",   title: "Schedule H — prescription required; must record sale"                  },
+  H1:  { cls: "bg-orange-50  text-orange-700  border-orange-200",  title: "Schedule H1 — stricter control; maintain sales register"               },
+  X:   { cls: "bg-red-50     text-red-600     border-red-200",     title: "Schedule X — psychotropic/narcotic; licence + register mandatory"     },
+  G:   { cls: "bg-blue-50    text-blue-600    border-blue-200",    title: "Schedule G — caution label required; medical supervision recommended"  },
 };
 
 // ─── Small reusable field ─────────────────────────────────────────────────────
@@ -110,12 +111,12 @@ const REQUIRED_COLS = ["name"] as const;
 const ALL_COLS = ["name","genericName","manufacturer","composition","category","schedule","hsnCode","gstRate","form","strength","unit","packSize"] as const;
 
 type ParsedRow = Record<string, string>;
-type PreviewRow = ParsedRow & { _valid: boolean; _error?: string };
+type PreviewRow = { [key: string]: string | boolean | undefined; _valid: boolean; _error?: string };
 
 function parseCSV(text: string): ParsedRow[] {
   const lines = text.trim().split(/\r?\n/);
   if (lines.length < 2) return [];
-  const headers = lines[0].split(",").map((h) => h.trim().replace(/^"|"$/g, ""));
+  const headers = lines[0]!.split(",").map((h) => h.trim().replace(/^"|"$/g, ""));
   return lines.slice(1).map((line) => {
     const vals = line.split(",").map((v) => v.trim().replace(/^"|"$/g, ""));
     const row: ParsedRow = {};
@@ -161,19 +162,22 @@ function BulkUploadModal({ onClose, onDone }: { onClose: () => void; onDone: () 
   }
 
   async function submit() {
+    const str = (v: string | boolean | undefined) =>
+      typeof v === "string" ? v.trim() || undefined : undefined;
+
     const validRows = rows.filter((r) => r._valid).map((r) => ({
-      name:         r.name?.trim()         || undefined,
-      genericName:  r.genericName?.trim()  || undefined,
-      manufacturer: r.manufacturer?.trim() || undefined,
-      composition:  r.composition?.trim()  || undefined,
-      category:     r.category?.trim()     || undefined,
-      schedule:     r.schedule?.trim()     || undefined,
-      hsnCode:      r.hsnCode?.trim()      || undefined,
+      name:         str(r.name),
+      genericName:  str(r.genericName),
+      manufacturer: str(r.manufacturer),
+      composition:  str(r.composition),
+      category:     str(r.category),
+      schedule:     str(r.schedule),
+      hsnCode:      str(r.hsnCode),
       gstRate:      r.gstRate ? Number(r.gstRate) : 12,
-      form:         r.form?.trim()         || undefined,
-      strength:     r.strength?.trim()     || undefined,
-      unit:         r.unit?.trim()         || undefined,
-      packSize:     r.packSize?.trim()     || undefined,
+      form:         str(r.form),
+      strength:     str(r.strength),
+      unit:         str(r.unit),
+      packSize:     str(r.packSize),
     }));
     setUploading(true);
     try {
@@ -244,16 +248,27 @@ function BulkUploadModal({ onClose, onDone }: { onClose: () => void; onDone: () 
               <div className="mt-4 flex items-center justify-between bg-slate-50 rounded-xl px-4 py-3">
                 <div>
                   <p className="text-[13px] font-semibold text-slate-700">Need the template?</p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">Download the CSV template with the correct column headers</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">Download a CSV with the correct column headers pre-filled</p>
                 </div>
-                <a
-                  to="/medicine-template.csv"
-                  download
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sample = [
+                      "Dolo 650","Paracetamol","Micro Labs","Paracetamol 650mg",
+                      "Analgesic","OTC","30049099","12","tablet","650mg","strip","15 tablets",
+                    ];
+                    const csv = [ALL_COLS.join(","), sample.join(",")].join("\n");
+                    const blob = new Blob([csv], { type: "text/csv" });
+                    const url  = URL.createObjectURL(blob);
+                    const a    = document.createElement("a");
+                    a.href     = url; a.download = "medicine-template.csv"; a.click();
+                    URL.revokeObjectURL(url);
+                  }}
                   className="flex items-center gap-1.5 text-[12px] font-semibold text-blue-600 hover:text-blue-700 border border-blue-200 hover:border-blue-300 rounded-lg px-3 py-1.5 transition-colors"
                 >
                   <Download className="w-3.5 h-3.5" />
                   Download
-                </a>
+                </button>
               </div>
 
               {/* Column guide */}
@@ -403,7 +418,7 @@ function MedicineModal({
 }: {
   medicine: Medicine | null;
   onClose: () => void;
-  onSaved: (m: Medicine) => void;
+  onSaved: (m: Medicine, isNew: boolean) => void;
 }) {
   const [form,    setForm]    = useState<FormState>(
     medicine
@@ -451,7 +466,7 @@ function MedicineModal({
       const { data } = medicine
         ? await api.patch(`/medicines/${medicine.id}`, body)
         : await api.post("/medicines", body);
-      onSaved(data.data);
+      onSaved(data.data, !medicine);
     } catch (err: any) {
       setError(err?.response?.data?.error ?? "Failed to save medicine.");
     } finally {
@@ -565,6 +580,7 @@ function MedicineModal({
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function MedicinesPage() {
+  const toast = useToast();
   const [medicines,   setMedicines]   = useState<Medicine[]>([]);
   const [total,       setTotal]       = useState(0);
   const [totalPages,  setTotalPages]  = useState(1);
@@ -581,7 +597,6 @@ export default function MedicinesPage() {
   const [modal,       setModal]       = useState<"add" | "edit" | "bulk" | null>(null);
   const [editing,     setEditing]     = useState<Medicine | null>(null);
   const [reindexing,  setReindexing]  = useState(false);
-  const [reindexMsg,  setReindexMsg]  = useState<string | null>(null);
 
   const filterRef = useRef<HTMLDivElement>(null);
 
@@ -620,12 +635,13 @@ export default function MedicinesPage() {
     return () => clearTimeout(t);
   }, [fetch]);
 
-  function handleSaved(saved: Medicine) {
+  function handleSaved(saved: Medicine, isNew: boolean) {
     setMedicines((prev) => {
       const idx = prev.findIndex((m) => m.id === saved.id);
       if (idx >= 0) { const next = [...prev]; next[idx] = saved; return next; }
       return [saved, ...prev];
     });
+    toast.success(isNew ? `${saved.name} added successfully` : `${saved.name} updated`);
     setModal(null);
     setEditing(null);
   }
@@ -635,21 +651,28 @@ export default function MedicinesPage() {
       const { data } = m.isActive
         ? await api.delete(`/medicines/${m.id}`)
         : await api.patch(`/medicines/${m.id}/activate`);
-      handleSaved(data.data);
-    } catch {/* ignore */}
+      const updated = data.data;
+      const idx = medicines.findIndex((x) => x.id === updated.id);
+      if (idx >= 0) {
+        setMedicines((prev) => { const next = [...prev]; next[idx] = updated; return next; });
+      } else {
+        fetch();
+      }
+      toast.success(m.isActive ? `${m.name} deactivated` : `${m.name} activated`);
+    } catch {
+      toast.error("Failed to update medicine status");
+    }
   }
 
   async function runReindex() {
     setReindexing(true);
-    setReindexMsg(null);
     try {
       const { data } = await api.post("/medicines/reindex");
-      setReindexMsg(`✓ Indexed ${data.data.indexed} medicines to Meilisearch`);
+      toast.success(`Search index refreshed — ${data.data.indexed} medicines indexed`);
     } catch {
-      setReindexMsg("Failed to reindex.");
+      toast.error("Failed to refresh search index");
     } finally {
       setReindexing(false);
-      setTimeout(() => setReindexMsg(null), 4000);
     }
   }
 
@@ -681,17 +704,14 @@ export default function MedicinesPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          {reindexMsg && (
-            <span className="text-[12px] text-emerald-600 font-medium">{reindexMsg}</span>
-          )}
           <button
             onClick={runReindex}
             disabled={reindexing}
-            title="Sync all medicines to Meilisearch search index"
+            title="Refresh search index so newly added medicines appear instantly in search"
             className="flex items-center gap-1.5 text-slate-500 hover:text-blue-600 text-[12px] font-medium border border-slate-200 hover:border-blue-300 rounded-md px-3 py-1.5 transition-colors disabled:opacity-50"
           >
             <RefreshCw className={cn("w-3.5 h-3.5", reindexing && "animate-spin")} />
-            Sync Search
+            Refresh Index
           </button>
           <span className="text-[12px] text-slate-400">{total} medicines</span>
         </div>
@@ -839,8 +859,8 @@ export default function MedicinesPage() {
                 <tr
                   key={m.id}
                   className={cn(
-                    "border-b border-slate-100 hover:bg-blue-50/30 transition-colors group",
-                    !m.isActive && "opacity-50",
+                    "border-b border-slate-100 hover:bg-blue-50/30 transition-colors",
+                    !m.isActive && "bg-slate-50/60",
                   )}
                 >
                   <td className="px-4 py-3 text-[13px] font-semibold text-slate-800 max-w-[180px]">
@@ -860,10 +880,13 @@ export default function MedicinesPage() {
                   </td>
                   <td className="px-4 py-3">
                     {m.schedule ? (
-                      <span className={cn(
-                        "inline-flex items-center text-[11px] font-bold border rounded-full px-2 py-0.5 whitespace-nowrap",
-                        SCHEDULE_CFG[m.schedule]?.cls ?? "bg-slate-50 text-slate-600 border-slate-200",
-                      )}>
+                      <span
+                        title={SCHEDULE_CFG[m.schedule]?.title}
+                        className={cn(
+                          "inline-flex items-center text-[11px] font-bold border rounded-full px-2 py-0.5 whitespace-nowrap cursor-help",
+                          SCHEDULE_CFG[m.schedule]?.cls ?? "bg-slate-50 text-slate-600 border-slate-200",
+                        )}
+                      >
                         {m.schedule}
                       </span>
                     ) : <span className="text-slate-300 text-[13px]">—</span>}
@@ -882,22 +905,22 @@ export default function MedicinesPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex items-center gap-1">
                       <button
                         onClick={() => { setEditing(m); setModal("edit"); }}
-                        title="Edit"
+                        title="Edit medicine"
                         className="w-7 h-7 rounded-md hover:bg-blue-100 flex items-center justify-center text-slate-400 hover:text-blue-600 transition-colors"
                       >
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
                       <button
                         onClick={() => toggleActive(m)}
-                        title={m.isActive ? "Deactivate" : "Activate"}
+                        title={m.isActive ? "Deactivate medicine" : "Activate medicine"}
                         className={cn(
                           "w-7 h-7 rounded-md flex items-center justify-center transition-colors",
                           m.isActive
-                            ? "hover:bg-red-50   text-slate-400 hover:text-red-500"
-                            : "hover:bg-emerald-50 text-slate-400 hover:text-emerald-600",
+                            ? "hover:bg-red-50   text-slate-300 hover:text-red-500"
+                            : "hover:bg-emerald-50 text-slate-300 hover:text-emerald-600",
                         )}
                       >
                         {m.isActive ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}

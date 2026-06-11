@@ -47,7 +47,7 @@ export const pendingCreditWorker = new Worker(
         where:  { isActive: true },
         select: { id: true },
       });
-      await Promise.all(
+      const results = await Promise.allSettled(
         pharmacies.map((p) =>
           pendingCreditQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
             removeOnComplete: { count: 1 },
@@ -55,7 +55,9 @@ export const pendingCreditWorker = new Worker(
           }),
         ),
       );
-      job.log(`Dispatched ${pharmacies.length} pending-credit job(s)`);
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) job.log(`Warning: ${failed} pharmacy job(s) failed to enqueue`);
+      job.log(`Dispatched ${pharmacies.length - failed}/${pharmacies.length} pending-credit job(s)`);
       return;
     }
 
@@ -101,6 +103,6 @@ export const pendingCreditWorker = new Worker(
 
     job.log(`[${pharmacy.name}] pending-credit digest: ${pending.length} invoices ₹${total.toFixed(2)}`);
   },
-  { connection, concurrency: 5 },
+  { connection, concurrency: 5, drainDelay: 300, stalledInterval: 300_000 },
 );
 onWorkerFailed(pendingCreditWorker);

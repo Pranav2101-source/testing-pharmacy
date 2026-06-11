@@ -83,13 +83,13 @@ export async function buildApp() {
   await app.register(meilisearchPlugin);
   await app.register(multipart, { limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB max CSV
 
-  // Global rate limit backed by Redis — counts are shared across all API
-  // instances so a client cannot bypass the limit by hitting different pods.
+  // Global rate limit — Redis-backed in production (shared across pods); in-memory in dev
+  // to avoid burning Upstash free-tier quota on every local API call.
   await app.register(rateLimit, {
     global:     true,
     max:        200,
     timeWindow: "1 minute",
-    redis:      app.redis,
+    ...(env.NODE_ENV === "production" && { redis: app.redis }),
     keyGenerator: (req) => req.ip,
   });
 
@@ -266,6 +266,8 @@ export async function buildApp() {
       error:   status >= 500
         ? "Something went wrong on our end. Please try again, or contact support if this keeps happening."
         : error.message,
+      // Forward structured payload (e.g. conflicts array from stock reservation)
+      ...(error instanceof AppError && error.data ? error.data : {}),
     });
   });
 

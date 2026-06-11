@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PrivateRoute } from "./router/PrivateRoute";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ToastProvider } from "./hooks/useToast";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 120_000 } },
@@ -66,6 +67,7 @@ function PageLoader() {
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
+    <ToastProvider>
     <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <Suspense fallback={<PageLoader />}>
         <Routes>
@@ -125,6 +127,7 @@ export function App() {
         </Routes>
       </Suspense>
     </BrowserRouter>
+    </ToastProvider>
     </QueryClientProvider>
   );
 }

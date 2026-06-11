@@ -35,7 +35,12 @@ export class SupplierReturnsService {
 
     // Generate return number via Redis INCR — same race-safe pattern as invoices.
     // COUNT(*)-based generation produced duplicate numbers under concurrent requests.
-    const seq          = await this.app.redis.incr(SR_SEQUENCE_KEY(pharmacyId));
+    let seq: number;
+    try {
+      seq = await this.app.redis.incr(SR_SEQUENCE_KEY(pharmacyId));
+    } catch {
+      throw AppError.internal("We couldn't generate a return number right now. Please try again in a moment.");
+    }
     const returnNumber = generateSRNumber(seq);
 
     return this.repo.create(pharmacyId, userId, {

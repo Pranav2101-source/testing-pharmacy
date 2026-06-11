@@ -45,7 +45,7 @@ export const grnOverdueWorker = new Worker(
         where:  { isActive: true },
         select: { id: true },
       });
-      await Promise.all(
+      const results = await Promise.allSettled(
         pharmacies.map((p) =>
           grnOverdueQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
             removeOnComplete: { count: 1 },
@@ -53,7 +53,9 @@ export const grnOverdueWorker = new Worker(
           }),
         ),
       );
-      job.log(`Dispatched ${pharmacies.length} grn-overdue job(s)`);
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) job.log(`Warning: ${failed} pharmacy job(s) failed to enqueue`);
+      job.log(`Dispatched ${pharmacies.length - failed}/${pharmacies.length} grn-overdue job(s)`);
       return;
     }
 
@@ -97,6 +99,6 @@ export const grnOverdueWorker = new Worker(
 
     job.log(`[${pharmacy.name}] GRN overdue alert: ${overdue.length} invoices`);
   },
-  { connection, concurrency: 5 },
+  { connection, concurrency: 5, drainDelay: 300, stalledInterval: 300_000 },
 );
 onWorkerFailed(grnOverdueWorker);

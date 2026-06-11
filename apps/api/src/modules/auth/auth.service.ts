@@ -133,7 +133,8 @@ export class AuthService {
     const newVersion = await this.repo.rotateTokenVersion(user.id);
 
     // Evict the cached tokenVersion so authenticate picks up the new one immediately.
-    await this.app.redis.del(tokenVersionKey(user.id));
+    // Best-effort — if Redis is down the old version expires via TTL.
+    try { await this.app.redis.del(tokenVersionKey(user.id)); } catch { /* best-effort */ }
 
     return this.signTokens(user.id, user.pharmacyId, user.role, user.email, newVersion);
   }
@@ -170,7 +171,9 @@ export class AuthService {
         <p style="font-size:18px;font-weight:bold;letter-spacing:2px">${plainToken}</p>
         <p>If you didn't request this, ignore this email — your password won't change.</p>`,
       text: `Hi ${user.name},\n\nYour password reset token: ${plainToken}\n\nExpires in ${env.PASSWORD_RESET_TOKEN_TTL}.`,
-    }).catch(() => {});
+    }).catch((err: unknown) => {
+      this.app.log.warn({ err, userId: user.id }, "Password reset email failed to send — token was still saved in DB");
+    });
   }
 
   // ── Reset password ────────────────────────────────────────────────────────
@@ -192,7 +195,7 @@ export class AuthService {
     await this.repo.consumePasswordResetToken(user.id, newPasswordHash);
 
     // Evict the tokenVersion cache so all existing access tokens are rejected immediately.
-    await this.app.redis.del(tokenVersionKey(user.id));
+    try { await this.app.redis.del(tokenVersionKey(user.id)); } catch { /* best-effort */ }
   }
 
   // ── Logout ────────────────────────────────────────────────────────────────
@@ -201,7 +204,7 @@ export class AuthService {
     // Incrementing tokenVersion server-side invalidates all outstanding tokens for
     // this user — both the current access token and any refresh tokens in other tabs.
     await this.repo.rotateTokenVersion(userId);
-    await this.app.redis.del(tokenVersionKey(userId));
+    try { await this.app.redis.del(tokenVersionKey(userId)); } catch { /* best-effort */ }
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────

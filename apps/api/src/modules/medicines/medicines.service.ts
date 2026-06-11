@@ -33,7 +33,7 @@ export class MedicinesService {
   // Bust the default-query cache entry (page 1, no filters) that most users hit.
   // Other query combos expire via TTL.
   private async bustListCache() {
-    await this.app.redis.del(medicinesListKey({ page: 1, limit: 100, isActive: true }));
+    try { await this.app.redis.del(medicinesListKey({ page: 1, limit: 100, isActive: true })); } catch { /* best-effort */ }
   }
 
   private async syncOne(medicine: Record<string, unknown>) {
@@ -89,12 +89,13 @@ export class MedicinesService {
       isActive: query.isActive,
     };
     const cacheKey = medicinesListKey(params);
-    const cached   = await this.app.redis.get(cacheKey);
+    let cached: string | null = null;
+    try { cached = await this.app.redis.get(cacheKey); } catch { /* Redis unavailable — skip cache */ }
     if (cached) {
       try { return JSON.parse(cached); } catch { /* corrupt — fall through */ }
     }
     const result = await this.repo.list(params);
-    await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", MEDICINES_CACHE_TTL_S);
+    try { await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", MEDICINES_CACHE_TTL_S); } catch { /* best-effort */ }
     return result;
   }
 

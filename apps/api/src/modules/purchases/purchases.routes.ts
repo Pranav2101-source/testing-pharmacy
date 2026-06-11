@@ -127,16 +127,25 @@ const purchasesRoutes: FastifyPluginAsync = async (app) => {
   // medicines catalog; unmatched names are returned as errors.
 
   app.post("/grn/import", { preHandler: ownerOnly }, async (req, reply) => {
-    const data = await req.file();
+    let data;
+    try {
+      data = await req.file();
+    } catch {
+      return reply.status(400).send({ success: false, error: "Invalid multipart request" });
+    }
     if (!data) return reply.status(400).send({ success: false, error: "No file uploaded" });
 
     const { supplierId, allowNearExpiry } = req.query as { supplierId?: string; allowNearExpiry?: string };
     if (!supplierId) return reply.status(400).send({ success: false, error: "supplierId query param required" });
 
-    const csvText = (await data.toBuffer()).toString("utf-8");
-    const rows    = parseGRNCSV(csvText);
-
-    const result  = await service.importGRNFromCSV(req.pharmacyId, req.user.sub, supplierId, rows, allowNearExpiry === "true");
+    let csvText: string;
+    try {
+      csvText = (await data.toBuffer()).toString("utf-8");
+    } catch {
+      return reply.status(413).send({ success: false, error: "File too large or unreadable" });
+    }
+    const rows   = parseGRNCSV(csvText);
+    const result = await service.importGRNFromCSV(req.pharmacyId, req.user.sub, supplierId, rows, allowNearExpiry === "true");
     return reply.status(201).send({ success: true, data: result });
   });
 };

@@ -37,6 +37,7 @@ export const RETURN_SEQUENCE_KEY  = (pharmacyId: string) =>
 export const PO_SEQUENCE_KEY  = (pharmacyId: string) => `po:seq:${pharmacyId}:${currentFinancialYear()}`;
 export const GRN_SEQUENCE_KEY = (pharmacyId: string) => `grn:seq:${pharmacyId}:${currentFinancialYear()}`;
 export const SR_SEQUENCE_KEY  = (pharmacyId: string) => `sr:seq:${pharmacyId}:${currentFinancialYear()}`;
+export const QT_SEQUENCE_KEY  = (pharmacyId: string) => `qt:seq:${pharmacyId}:${currentFinancialYear()}`;
 
 // Audit sessions use a daily key (IST date) so the three-digit suffix stays
 // human-readable within a single day, matching the original AUDIT-YYYYMMDD-NNN format.
@@ -62,4 +63,5 @@ function fyShort(): string {
 export const generatePONumber    = (seq: number) => `PO/${fyShort()}/${String(seq).padStart(5, "0")}`;
 export const generateGRNNumber   = (seq: number) => `GRN/${fyShort()}/${String(seq).padStart(5, "0")}`;
 export const generateSRNumber    = (seq: number) => `SR/${fyShort()}/${String(seq).padStart(5, "0")}`;
+export const generateQTNumber    = (seq: number) => `QT/${fyShort()}/${String(seq).padStart(5, "0")}`;
 export const generateAuditNumber = (seq: number) => `AUDIT-${istDateString()}-${String(seq).padStart(3, "0")}`;

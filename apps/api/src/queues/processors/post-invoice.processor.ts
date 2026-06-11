@@ -65,6 +65,7 @@ export const postInvoiceWorker = new Worker(
   {
     connection,
     concurrency: 5,
+    stalledInterval: 60_000,
   },
 );
 onWorkerFailed(postInvoiceWorker);

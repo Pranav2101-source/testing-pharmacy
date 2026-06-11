@@ -57,7 +57,15 @@ export async function authenticate(
   const { redis, prisma } = request.server;
 
   let currentVersion: number;
-  const cached = await redis.get(cacheKey);
+
+  // Redis cache for token version — fall back to DB on cache miss or Redis error
+  // (e.g. connection refused, rate limit exceeded on free-tier plans).
+  let cached: string | null = null;
+  try {
+    cached = await redis.get(cacheKey);
+  } catch {
+    // Redis unavailable — skip cache, go straight to DB
+  }
 
   if (cached !== null) {
     currentVersion = parseInt(cached, 10);
@@ -70,7 +78,10 @@ export async function authenticate(
       return void reply.status(401).send({ success: false, error: "Unauthorized" });
     }
     currentVersion = user.tokenVersion;
-    await redis.set(cacheKey, String(currentVersion), "EX", TOKEN_VERSION_TTL_S);
+    // Best-effort cache write — ignore errors
+    try {
+      await redis.set(cacheKey, String(currentVersion), "EX", TOKEN_VERSION_TTL_S);
+    } catch { /* Redis unavailable — next request will hit DB again */ }
   }
 
   if (tokenVersion !== currentVersion) {

@@ -1,16 +1,10 @@
-import type { PrismaClient, Prisma } from "@pharmacy/database";
+import type { PrismaClient, Prisma, QuotationStatus } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 
 export class QuotationsRepo {
   constructor(private db: PrismaClient) {}
 
-  private async nextQNumber(pharmacyId: string, tx: Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">): Promise<string> {
-    const count = await tx.quotation.count({ where: { pharmacyId } });
-    const year  = new Date().getFullYear();
-    return `QT-${year}-${String(count + 1).padStart(5, "0")}`;
-  }
-
-  async create(pharmacyId: string, userId: string, data: {
+  async create(pharmacyId: string, userId: string, quotationNumber: string, data: {
     supplierId: string;
     validUntil?: Date;
     notes?:     string;
@@ -28,8 +22,6 @@ export class QuotationsRepo {
     return this.db.$transaction(async (tx) => {
       const supplier = await tx.supplier.findFirst({ where: { id: data.supplierId, pharmacyId }, select: { id: true } });
       if (!supplier) throw AppError.notFound("Supplier not found");
-
-      const quotationNumber = await this.nextQNumber(pharmacyId, tx);
 
       const quotation = await tx.quotation.create({
         data: {
@@ -110,14 +102,14 @@ export class QuotationsRepo {
     });
   }
 
-  async updateStatus(id: string, pharmacyId: string, userId: string, status: string) {
+  async updateStatus(id: string, pharmacyId: string, userId: string, status: QuotationStatus) {
     return this.db.$transaction(async (tx) => {
       const existing = await tx.quotation.findFirst({ where: { id, pharmacyId }, select: { status: true } });
       if (!existing) throw AppError.notFound("Quotation not found");
 
       const updated = await tx.quotation.update({
         where: { id },
-        data:  { status: status as any },
+        data:  { status },
         include: { supplier: { select: { id: true, name: true } }, items: true },
       });
 
@@ -143,14 +135,14 @@ export class QuotationsRepo {
     page:        number;
     limit:       number;
     supplierId?: string;
-    status?:     string;
+    status?:     QuotationStatus;
     from?:       Date;
     to?:         Date;
   }) {
     const where: Prisma.QuotationWhereInput = {
       pharmacyId,
       ...(params.supplierId ? { supplierId: params.supplierId } : {}),
-      ...(params.status     ? { status: params.status as any } : {}),
+      ...(params.status     ? { status: params.status } : {}),
       ...(params.from || params.to
         ? { createdAt: { ...(params.from ? { gte: params.from } : {}), ...(params.to ? { lte: params.to } : {}) } }
         : {}),

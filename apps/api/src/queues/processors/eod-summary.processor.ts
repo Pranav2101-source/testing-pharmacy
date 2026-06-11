@@ -65,7 +65,7 @@ export const eodSummaryWorker = new Worker(
         where:  { isActive: true },
         select: { id: true },
       });
-      await Promise.all(
+      const results = await Promise.allSettled(
         pharmacies.map((p) =>
           eodSummaryQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
             removeOnComplete: { count: 1 },
@@ -73,7 +73,9 @@ export const eodSummaryWorker = new Worker(
           }),
         ),
       );
-      job.log(`Dispatched ${pharmacies.length} eod-summary job(s)`);
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) job.log(`Warning: ${failed} pharmacy job(s) failed to enqueue`);
+      job.log(`Dispatched ${pharmacies.length - failed}/${pharmacies.length} eod-summary job(s)`);
       return;
     }
 
@@ -150,6 +152,6 @@ export const eodSummaryWorker = new Worker(
 
     job.log(`[${pharmacy.name}] EOD summary sent: ₹${totalSales.toFixed(2)} in ${invoiceCount} invoices`);
   },
-  { connection, concurrency: 5 },
+  { connection, concurrency: 5, drainDelay: 300, stalledInterval: 300_000 },
 );
 onWorkerFailed(eodSummaryWorker);

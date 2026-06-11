@@ -6,7 +6,7 @@ import { notifyOwners } from "../../lib/notifications.js";
 
 type LowStockRow = { medicineName: string; batchNumber: string; quantity: number; minimumStock: number };
 
-function buildHtml(outOfStock: LowStockRow[], low: LowStockRow[], pharmacyName: string): string {
+function buildHtml(outOfStock: LowStockRow[], low: LowStockRow[], pharmacyName: string, truncated = false): string {
   const rows = (items: LowStockRow[], label: string, color: string) =>
     items.map((i) =>
       `<tr>
@@ -35,6 +35,7 @@ function buildHtml(outOfStock: LowStockRow[], low: LowStockRow[], pharmacyName: 
   return `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;max-width:700px;margin:0 auto;padding:20px">
     <h2 style="color:#1a1a1a">Stock Alert — ${pharmacyName}</h2>
     <p style="color:#555">${outOfStock.length + low.length} item(s) need restocking.</p>
+    ${truncated ? `<p style="color:#d97706;font-weight:600">⚠️ This report shows the first ${outOfStock.length + low.length} items. Log in to view the full list.</p>` : ""}
     ${table(outOfStock, "⛔ Out of Stock", "#dc2626")}
     ${table(low, "🟡 Low Stock", "#d97706")}
     <hr style="margin-top:32px">
@@ -52,7 +53,7 @@ export const lowStockAlertWorker = new Worker(
         where:  { isActive: true },
         select: { id: true },
       });
-      await Promise.all(
+      const results = await Promise.allSettled(
         pharmacies.map((p) =>
           lowStockAlertQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
             removeOnComplete: { count: 1 },
@@ -60,7 +61,9 @@ export const lowStockAlertWorker = new Worker(
           }),
         ),
       );
-      job.log(`Dispatched ${pharmacies.length} low-stock-alert job(s)`);
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) job.log(`Warning: ${failed} pharmacy job(s) failed to enqueue`);
+      job.log(`Dispatched ${pharmacies.length - failed}/${pharmacies.length} low-stock-alert job(s)`);
       return;
     }
 
@@ -70,6 +73,7 @@ export const lowStockAlertWorker = new Worker(
     });
     if (!pharmacy) return;
 
+    const ALERT_LIMIT = 200;
     const lowStock = await prisma.$queryRaw<LowStockRow[]>`
       SELECT m.name AS "medicineName", i."batchNumber", i.quantity, i."minimumStock"
       FROM inventory i
@@ -78,10 +82,11 @@ export const lowStockAlertWorker = new Worker(
         AND i.status = 'ACTIVE'
         AND i.quantity <= i."minimumStock"
       ORDER BY i.quantity ASC
-      LIMIT 50
+      LIMIT ${ALERT_LIMIT}
     `;
 
     if (lowStock.length === 0) return;
+    const truncated = lowStock.length === ALERT_LIMIT;
 
     const outOfStock = lowStock.filter((i) => i.quantity === 0);
     const low        = lowStock.filter((i) => i.quantity > 0);
@@ -96,13 +101,13 @@ export const lowStockAlertWorker = new Worker(
     ].filter(Boolean).join("\n\n");
 
     await notifyOwners(prisma, pharmacy.id, {
-      subject: `Stock Alert: ${lowStock.length} item(s) need restocking — ${pharmacy.name}`,
-      message: `Stock Alert for ${pharmacy.name}\n\n${lines}`,
-      html:    buildHtml(outOfStock, low, pharmacy.name),
+      subject: `Stock Alert: ${lowStock.length}${truncated ? "+" : ""} item(s) need restocking — ${pharmacy.name}`,
+      message: `Stock Alert for ${pharmacy.name}\n\n${lines}${truncated ? "\n\n⚠️ Report truncated — log in to view all." : ""}`,
+      html:    buildHtml(outOfStock, low, pharmacy.name, truncated),
     });
 
     job.log(`[${pharmacy.name}] low-stock alert sent for ${lowStock.length} items`);
   },
-  { connection, concurrency: 5 },
+  { connection, concurrency: 5, drainDelay: 300, stalledInterval: 300_000 },
 );
 onWorkerFailed(lowStockAlertWorker);

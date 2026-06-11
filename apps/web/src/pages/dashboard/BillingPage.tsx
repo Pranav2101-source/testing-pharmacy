@@ -9,7 +9,7 @@ import {
   Plus, Lightbulb, RefreshCw, ChevronRight, Search, Calendar,
   ChevronDown, SlidersHorizontal, Loader2, ArrowUpDown,
   ArrowUp, ArrowDown, FileX, AlertCircle, TrendingUp, RotateCcw,
-  BadgeIndianRupee, CreditCard,
+  BadgeIndianRupee, CreditCard, X,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -554,20 +554,55 @@ export default function BillingDashboardPage() {
           </AnimatePresence>
         </div>
 
-        {/* More filters */}
-        <button className={cn(
-          "flex items-center gap-1.5 border rounded-md bg-white px-3 h-[30px] text-[13px] font-medium hover:bg-slate-50 transition-colors whitespace-nowrap shadow-sm",
-          activeFilterCount > 0 ? "border-blue-300 text-blue-600" : "border-slate-200 text-slate-600"
-        )}>
-          <SlidersHorizontal className="w-3.5 h-3.5" />
-          More Filters
-          {activeFilterCount > 0 && (
-            <span className="text-[11px] font-bold bg-blue-100 text-blue-700 rounded-full px-1.5 leading-[18px]">
-              {activeFilterCount}
+        {/* Active filter count badge */}
+        {activeFilterCount > 0 && (
+          <span className="flex items-center gap-1 text-[11px] font-semibold text-blue-600 bg-blue-50 border border-blue-200 rounded-full px-2.5 py-0.5">
+            <SlidersHorizontal className="w-3 h-3" />
+            {activeFilterCount} filter{activeFilterCount > 1 ? "s" : ""} active
+          </span>
+        )}
+      </div>
+
+      {/* ── Active filter chips ─────────────────────────────────── */}
+      {activeFilterCount > 0 && (
+        <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-slate-100 bg-blue-50/40 flex-shrink-0 flex-wrap">
+          <span className="text-[11px] font-semibold text-slate-400 mr-1">Filters:</span>
+
+          {billSearch && (
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-white border border-blue-200 text-blue-700 rounded-full px-2.5 py-0.5">
+              Bill No.: <span className="font-bold">{billSearch}</span>
+              <button onClick={() => { setBillSearch(""); setPage(1); }} className="ml-0.5 hover:text-red-500 transition-colors">
+                <X className="w-3 h-3" />
+              </button>
             </span>
           )}
-        </button>
-      </div>
+
+          {nameSearch && (
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-white border border-blue-200 text-blue-700 rounded-full px-2.5 py-0.5">
+              Name: <span className="font-bold">{nameSearch}</span>
+              <button onClick={() => { setNameSearch(""); setPage(1); }} className="ml-0.5 hover:text-red-500 transition-colors">
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          )}
+
+          {amountFilter !== "all" && (
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-white border border-blue-200 text-blue-700 rounded-full px-2.5 py-0.5">
+              Amount: <span className="font-bold">{AMOUNT_SHORT[amountFilter]}</span>
+              <button onClick={() => { setAmountFilter("all"); setPage(1); }} className="ml-0.5 hover:text-red-500 transition-colors">
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          )}
+
+          <button
+            onClick={() => { setBillSearch(""); setNameSearch(""); setAmountFilter("all"); setPage(1); }}
+            className="text-[11px] font-semibold text-red-500 hover:text-red-600 ml-auto transition-colors"
+          >
+            Clear all
+          </button>
+        </div>
+      )}
 
       {/* ── Table ──────────────────────────────────────────────── */}
       <div className="flex-1 overflow-auto min-h-0">

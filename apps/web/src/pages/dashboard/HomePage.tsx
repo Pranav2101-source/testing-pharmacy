@@ -465,7 +465,7 @@ export default function DashboardHomePage() {
     setStatsLoading(true);
     api.get("/billing/dashboard/stats")
       .then(({ data }) => setStats(data.data))
-      .catch(() => {})
+      .catch((err: unknown) => console.error("[Dashboard] stats fetch failed", err))
       .finally(() => setStatsLoading(false));
   }, [refreshKey]);
 
@@ -475,7 +475,7 @@ export default function DashboardHomePage() {
     const e = new Date(); e.setHours(23, 59, 59, 999);
     api.get("/billing", { params: { page: 1, limit: 8, from: s.toISOString(), to: e.toISOString() } })
       .then(({ data }) => setRecentBills(data.data.items ?? []))
-      .catch(() => setRecentBills([]))
+      .catch((err: unknown) => { console.error("[Dashboard] recent bills fetch failed", err); setRecentBills([]); })
       .finally(() => setBillsLoading(false));
   }, [refreshKey]);
 
@@ -483,7 +483,7 @@ export default function DashboardHomePage() {
     setStockLoading(true);
     api.get("/inventory", { params: { lowStock: true, limit: 6 } })
       .then(({ data }) => setLowStock(data.data.items ?? []))
-      .catch(() => setLowStock([]))
+      .catch((err: unknown) => { console.error("[Dashboard] low-stock fetch failed", err); setLowStock([]); })
       .finally(() => setStockLoading(false));
   }, [refreshKey]);
 
@@ -491,7 +491,7 @@ export default function DashboardHomePage() {
     setEodLoading(true);
     api.get("/reports/eod/summary")
       .then(({ data }) => setEodData(data.data))
-      .catch(() => setEodData(null))
+      .catch((err: unknown) => { console.error("[Dashboard] EOD summary fetch failed", err); setEodData(null); })
       .finally(() => setEodLoading(false));
   }, [refreshKey]);
 

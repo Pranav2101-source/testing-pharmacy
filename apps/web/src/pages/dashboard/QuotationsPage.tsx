@@ -675,6 +675,7 @@ export default function QuotationsPage() {
   const [total,         setTotal]         = useState(0);
   const [page,          setPage]          = useState(1);
   const [loading,       setLoading]       = useState(true);
+  const [loadError,     setLoadError]     = useState(false);
   const [statusFilter,  setStatusFilter]  = useState<QStatus | "ALL">("ALL");
   const [suppliers,     setSuppliers]     = useState<Supplier[]>([]);
   const [showCreate,    setShowCreate]    = useState(false);
@@ -687,6 +688,7 @@ export default function QuotationsPage() {
 
   const load = useCallback(async (pg = 1, status: QStatus | "ALL" = statusFilter) => {
     setLoading(true);
+    setLoadError(false);
     try {
       const params = new URLSearchParams({ page: String(pg), limit: String(LIMIT) });
       if (status !== "ALL") params.set("status", status);
@@ -696,7 +698,7 @@ export default function QuotationsPage() {
       setQuotations(r.data.data.items);
       setTotal(r.data.data.total);
       setPage(pg);
-    } catch { }
+    } catch { setLoadError(true); }
     finally { setLoading(false); }
   }, [statusFilter]);
 
@@ -709,8 +711,10 @@ export default function QuotationsPage() {
   }, []);
 
   async function openDetail(q: Quotation) {
-    const r = await api.get<{ success: boolean; data: Quotation }>(`/quotations/${q.id}`);
-    setDetail(r.data.data);
+    try {
+      const r = await api.get<{ success: boolean; data: Quotation }>(`/quotations/${q.id}`);
+      setDetail(r.data.data);
+    } catch { /* drawer stays closed; list row click silently fails */ }
   }
 
   function toggleSelect(id: string) {
@@ -789,6 +793,12 @@ export default function QuotationsPage() {
 
           {loading ? (
             <div className="flex items-center justify-center py-16"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+          ) : loadError ? (
+            <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+              <AlertTriangle className="w-8 h-8 text-red-300 mb-3" />
+              <p className="text-[14px] font-semibold text-slate-600">Failed to load quotations</p>
+              <button onClick={() => load(page)} className="mt-3 text-[12px] text-blue-600 hover:underline font-medium">Retry</button>
+            </div>
           ) : quotations.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-slate-400">
               <FileText className="w-10 h-10 text-slate-200 mb-3" strokeWidth={1.2} />

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { CustomersRepo } from "./customers.repo.js";
+import { AppError } from "../../lib/AppError.js";
 import type {
   CreateCustomerInput,
   UpdateCustomerInput,
@@ -55,11 +56,7 @@ export class CustomersService {
 
   async getById(id: string, pharmacyId: string) {
     const customer = await this.repo.getById(id, pharmacyId);
-    if (!customer) {
-      const err = new Error("Customer not found");
-      (err as any).statusCode = 404;
-      throw err;
-    }
+    if (!customer) throw AppError.notFound("Customer not found");
     return customer;
   }
 

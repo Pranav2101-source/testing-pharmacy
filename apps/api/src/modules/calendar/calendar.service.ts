@@ -136,7 +136,9 @@ export class CalendarService {
     inAppNotify(this.app.prisma, pharmacyId, {
       subject: `📅 ${typeLabel}: ${input.title}`,
       message: `Scheduled for ${dateStr}${input.description ? ` — ${input.description}` : ""}`,
-    }).catch(() => {});
+    }).catch((err: unknown) => {
+      this.app.log.debug({ err }, "Calendar event in-app notification failed");
+    });
 
     return event;
   }

@@ -368,7 +368,9 @@ export class InventoryRepo {
 
       for (const item of params.items) {
         const inv = inventoryMap.get(item.inventoryId);
-        if (!inv) continue;
+        if (!inv) {
+          throw AppError.notFound(`Inventory item not found or not active: ${item.inventoryId}`);
+        }
         const thisSessionQty   = existingMap.get(item.inventoryId) ?? 0;
         const reservedByOthers = Math.max(0, inv.reservedQuantity - thisSessionQty);
         const available        = inv.quantity - reservedByOthers;
@@ -377,7 +379,7 @@ export class InventoryRepo {
       }
 
       if (conflicts.length > 0) {
-        throw Object.assign(new Error("Insufficient unreserved stock"), { statusCode: 409, conflicts });
+        throw AppError.conflict("Insufficient unreserved stock", { conflicts });
       }
 
       const expiresAt = new Date(Date.now() + RESERVATION_TTL_MS);
@@ -422,7 +424,7 @@ export class InventoryRepo {
     }, { isolationLevel: "Serializable" }).catch((err: { code?: string }) => {
       if (err.code === "P2034") {
         // Serializable conflict — another session updated the same stock concurrently.
-        throw Object.assign(new Error("Stock updated concurrently — please refresh and try again"), { statusCode: 409 });
+        throw AppError.conflict("Stock updated concurrently — please refresh and try again");
       }
       throw err;
     });

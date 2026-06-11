@@ -22,7 +22,7 @@ export class SuppliersService {
   }
 
   private async bustSuppliersCache(pharmacyId: string) {
-    await this.app.redis.del(suppliersListKey(pharmacyId, { page: 1, limit: 50 }));
+    try { await this.app.redis.del(suppliersListKey(pharmacyId, { page: 1, limit: 50 })); } catch { /* best-effort */ }
   }
 
   async createSupplier(pharmacyId: string, input: CreateSupplierInput) {
@@ -48,12 +48,14 @@ export class SuppliersService {
   async list(pharmacyId: string, query: ListSuppliersQuery) {
     const params   = { page: query.page, limit: query.limit, search: query.search?.trim() || undefined };
     const cacheKey = suppliersListKey(pharmacyId, params);
-    const cached   = await this.app.redis.get(cacheKey);
-    if (cached) {
-      try { return JSON.parse(cached); } catch { /* corrupt — fall through */ }
-    }
+    try {
+      const cached = await this.app.redis.get(cacheKey);
+      if (cached) {
+        try { return JSON.parse(cached); } catch { /* corrupt — fall through */ }
+      }
+    } catch { /* Redis unavailable — fall through to DB */ }
     const result = await this.repo.list(pharmacyId, params.page, params.limit, params.search);
-    await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", SUPPLIERS_CACHE_TTL_S);
+    try { await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", SUPPLIERS_CACHE_TTL_S); } catch { /* best-effort */ }
     return result;
   }
 

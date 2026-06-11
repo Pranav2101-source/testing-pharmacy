@@ -11,6 +11,12 @@ const log = pino({
     : {}),
 });
 
+// Per-worker flag: true while we've already logged a rate-limit hit and set a
+// resume timer.  Prevents the tight BullMQ error-retry loop from flooding the
+// terminal — BullMQ doesn't back off on errors, so without this every failed
+// poll would emit an error event and log a multi-KB Buffer dump.
+const pausedForRateLimit = new Set<string>();
+
 /**
  * Attach a `failed` event listener that emits a structured ERROR log whenever
  * a BullMQ job exhausts all its retry attempts.
@@ -38,14 +44,39 @@ export function onWorkerFailed(worker: Worker): void {
         jobName:      job.name,
         attemptsMade: job.attemptsMade,
         data:         job.data,
-        err,
+        err:          (err as Error).message,
       },
       `[BullMQ] Job "${job.name}" permanently failed on queue "${worker.name}" after ${job.attemptsMade} attempt(s)`,
     );
   });
 
-  // Also log Worker-level errors (connection drops, Redis failures)
-  worker.on("error", (err) => {
-    log.error({ queue: worker.name, err }, `[BullMQ] Worker error on queue "${worker.name}"`);
+  // Worker-level errors (connection drops, Redis rate-limit, etc.)
+  worker.on("error", (err: Error) => {
+    if (err.message.includes("max requests limit exceeded")) {
+      // BullMQ retries immediately on error (drainDelay only applies to empty
+      // queues).  Without this guard the tight loop logs a multi-KB Buffer dump
+      // every few ms until the daily quota resets.
+      if (!pausedForRateLimit.has(worker.name)) {
+        pausedForRateLimit.add(worker.name);
+        log.warn(
+          { queue: worker.name },
+          `[BullMQ] Redis rate limit hit on "${worker.name}" — suppressing further errors for 5 min`,
+        );
+        // Best-effort pause; may itself fail if Redis is unavailable — that's fine.
+        Promise.resolve(worker.pause()).catch(() => {});
+        setTimeout(() => {
+          pausedForRateLimit.delete(worker.name);
+          Promise.resolve(worker.resume()).catch(() => {});
+        }, 5 * 60 * 1000);
+      }
+      // else: already handling — swallow the repeated error silently
+    } else {
+      // For non-rate-limit errors log only the message, not the full serialised
+      // Error which can include enormous command.args Buffer arrays from ioredis.
+      log.error(
+        { queue: worker.name, err: err.message },
+        `[BullMQ] Worker error on queue "${worker.name}"`,
+      );
+    }
   });
 }

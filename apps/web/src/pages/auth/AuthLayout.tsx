@@ -191,8 +191,7 @@ export default function AuthLayout() {
 
         <div className="relative z-10 border-t flex-shrink-0"
           style={{ borderColor: "rgba(255,255,255,0.08)", background: "rgba(0,0,0,0.18)" }}>
-          <div className="grid grid-cols-3 divide-x px-10 xl:px-14 py-5"
-            style={{ divideColor: "rgba(255,255,255,0.07)" }}>
+          <div className="grid grid-cols-3 divide-x divide-white/[0.07] px-10 xl:px-14 py-5">
             {TRUST.map(({ icon: Icon, title, desc }) => (
               <div key={title} className="flex items-start gap-3 px-4 first:pl-0 last:pr-0">
                 <div className="w-8 h-8 rounded-lg bg-blue-600/30 flex items-center justify-center flex-shrink-0">

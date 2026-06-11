@@ -14,7 +14,7 @@ export const quotationExpiryWorker = new Worker(
         where:  { isActive: true },
         select: { id: true },
       });
-      await Promise.all(
+      const results = await Promise.allSettled(
         pharmacies.map((p) =>
           quotationExpiryQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
             removeOnComplete: { count: 1 },
@@ -22,7 +22,9 @@ export const quotationExpiryWorker = new Worker(
           }),
         ),
       );
-      job.log(`Dispatched ${pharmacies.length} quotation-expiry job(s)`);
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) job.log(`Warning: ${failed} pharmacy job(s) failed to enqueue`);
+      job.log(`Dispatched ${pharmacies.length - failed}/${pharmacies.length} quotation-expiry job(s)`);
       return;
     }
 
@@ -66,6 +68,6 @@ export const quotationExpiryWorker = new Worker(
 
     job.log(`[${pharmacy.name}] quotation-expiry alert: ${expiring.length} quotations`);
   },
-  { connection, concurrency: 5 },
+  { connection, concurrency: 5, drainDelay: 300, stalledInterval: 300_000 },
 );
 onWorkerFailed(quotationExpiryWorker);

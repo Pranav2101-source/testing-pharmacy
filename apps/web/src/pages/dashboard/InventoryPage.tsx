@@ -3,10 +3,11 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Layers, BookOpen, Bell, Search, Loader2, FileX, AlertCircle,
   Plus, X, Check, AlertTriangle, Clock, TrendingDown, ArrowUp, ArrowDown,
-  ShieldAlert, Skull, MinusCircle, PlusCircle, SlidersHorizontal,
+  ShieldAlert, Skull, MinusCircle, PlusCircle, Info,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/useToast";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -113,40 +114,47 @@ function daysUntil(d: string) {
 
 // ─── Adjustment Reason Codes ──────────────────────────────────────────────────
 
+// Ordered by daily frequency of use in a pharmacy
 const ADJUSTMENT_REASONS = [
-  { value: "CORRECTION",      label: "Correction",       hint: "Fix counting error"          },
-  { value: "DAMAGE",          label: "Damage",           hint: "Physically damaged items"    },
-  { value: "EXPIRY_WRITEOFF", label: "Expiry Write-off", hint: "Remove expired stock"        },
-  { value: "STOCK_COUNT",     label: "Stock Count",      hint: "After physical count"        },
-  { value: "THEFT",           label: "Theft/Loss",       hint: "Missing / stolen"            },
-  { value: "BREAKAGE",        label: "Breakage",         hint: "Broken units"                },
-  { value: "OPENING_BALANCE", label: "Opening Balance",  hint: "Initial stock entry"         },
-  { value: "TRANSFER",        label: "Transfer",         hint: "Move to/from another store"  },
-  { value: "OTHER",           label: "Other",            hint: "Other reason"                },
+  { value: "STOCK_COUNT",     label: "Physical Count",   hint: "After counting actual shelf stock"  },
+  { value: "CORRECTION",      label: "Correction",       hint: "Fix a data entry mistake"           },
+  { value: "DAMAGE",          label: "Damage",           hint: "Physically damaged — cannot sell"   },
+  { value: "EXPIRY_WRITEOFF", label: "Expiry Write-off", hint: "Remove expired batch from stock"    },
+  { value: "BREAKAGE",        label: "Breakage",         hint: "Broken vials, tablets, strips"      },
+  { value: "THEFT",           label: "Theft / Loss",     hint: "Missing or stolen items"            },
+  { value: "TRANSFER",        label: "Transfer",         hint: "Move stock to / from another store" },
+  { value: "OPENING_BALANCE", label: "Opening Balance",  hint: "First-time entry for this batch"    },
+  { value: "OTHER",           label: "Other",            hint: "Describe in notes below"            },
 ] as const;
 
 // ─── Stock Adjustment Modal ───────────────────────────────────────────────────
 
-function AdjustStockModal({ item, onClose, onDone }: {
+function AdjustStockModal({ item, onClose, onDone, onToast }: {
   item: InventoryItem; onClose: () => void; onDone: () => void;
+  onToast: (msg: string, variant: "success" | "error") => void;
 }) {
   const [mode,   setMode]   = useState<"add" | "remove">("add");
   const [qty,    setQty]    = useState(1);
-  const [type,   setType]   = useState<string>("CORRECTION");
+  const [type,   setType]   = useState<string>("STOCK_COUNT");
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (qty <= 0) { setError("Quantity must be positive"); return; }
-    if (!reason.trim()) { setError("Reason is required"); return; }
+    if (qty <= 0) { setError("Quantity must be a positive number"); return; }
+    if (mode === "remove" && qty > item.quantity) {
+      setError(`Cannot remove ${qty} — only ${item.quantity} in stock`); return;
+    }
+    if (!reason.trim()) { setError("Notes are required"); return; }
     setSaving(true); setError(null);
     try {
       const delta = mode === "add" ? qty : -qty;
       await api.patch(`/inventory/${item.id}/adjust`, { delta, reason, type });
+      onToast(`Stock updated — ${item.medicine.name} (Batch ${item.batchNumber})`, "success");
       onDone();
     } catch (err: any) {
+      // Keep error inline inside the modal so the user can correct and retry
       setError(err?.response?.data?.error ?? "Failed to adjust stock");
     } finally { setSaving(false); }
   }
@@ -250,8 +258,9 @@ function AdjustStockModal({ item, onClose, onDone }: {
 
 // ─── Batch Status Modal ────────────────────────────────────────────────────────
 
-function BatchStatusModal({ item, onClose, onDone }: {
+function BatchStatusModal({ item, onClose, onDone, onToast }: {
   item: InventoryItem; onClose: () => void; onDone: () => void;
+  onToast: (msg: string, variant: "success" | "error") => void;
 }) {
   const [status, setStatus] = useState<BatchStatus>(item.status);
   const [reason, setReason] = useState("");
@@ -264,8 +273,10 @@ function BatchStatusModal({ item, onClose, onDone }: {
     setSaving(true); setError(null);
     try {
       await api.patch(`/inventory/${item.id}/status`, { status, reason });
+      onToast(`Batch status updated to ${BATCH_STATUS_CFG[status].label}`, "success");
       onDone();
     } catch (err: any) {
+      // Keep error inline so user can see it and retry without losing their input
       setError(err?.response?.data?.error ?? "Failed to update status");
     } finally { setSaving(false); }
   }
@@ -327,6 +338,7 @@ function BatchStatusModal({ item, onClose, onDone }: {
 // ─── Tab: Batches ──────────────────────────────────────────────────────────────
 
 function BatchesTab() {
+  const toast = useToast();
   const [items,      setItems]      = useState<InventoryItem[]>([]);
   const [total,      setTotal]      = useState(0);
   const [page,       setPage]       = useState(1);
@@ -354,7 +366,11 @@ function BatchesTab() {
       setItems(data.data.items);
       setTotal(data.data.total);
       setTotalPages(Math.ceil(data.data.total / 20));
-    } catch { setError("Failed to load inventory"); }
+    } catch {
+      setError("Failed to load inventory");
+      setItems([]);
+      setTotalPages(1);
+    }
     finally  { setLoading(false); }
   }, [page, search, status, inStock, lowStock, nearExpiry]);
 
@@ -400,7 +416,18 @@ function BatchesTab() {
         <table className="w-full border-collapse">
           <thead className="sticky top-0 bg-white z-10">
             <tr className="border-b border-slate-200">
-              {["Medicine","Batch No.","Expiry","Stock","Reserved","MRP","Buy Rate","Location","Status",""].map((h) => (
+              {["Medicine","Batch No.","Expiry","Stock"].map((h) => (
+                <th key={h} className="px-4 py-3 text-left text-[12px] font-semibold text-blue-600 whitespace-nowrap">{h}</th>
+              ))}
+              <th className="px-4 py-3 text-left text-[12px] font-semibold text-blue-600 whitespace-nowrap">
+                <span className="inline-flex items-center gap-1">
+                  Reserved
+                  <span title="Units held for pending sales / in-progress billing. Automatically released when the bill is finalised or cancelled." className="cursor-help">
+                    <Info className="w-3 h-3 text-slate-400" />
+                  </span>
+                </span>
+              </th>
+              {["MRP","Buy Rate","Location","Status","Actions"].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-[12px] font-semibold text-blue-600 whitespace-nowrap">{h}</th>
               ))}
             </tr>
@@ -417,7 +444,7 @@ function BatchesTab() {
               const isNE = days <= 90 && days > 0;
               const isEx = days <= 0;
               return (
-                <tr key={item.id} className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors group">
+                <tr key={item.id} className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors">
                   <td className="px-4 py-3">
                     <p className="text-[13px] font-semibold text-slate-800 max-w-[160px] truncate">{item.medicine.name}</p>
                     {item.medicine.genericName && <p className="text-[11px] text-slate-400 truncate">{item.medicine.genericName}</p>}
@@ -451,13 +478,13 @@ function BatchesTab() {
                   </td>
                   <td className="px-4 py-3"><StatusBadge status={item.status} /></td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex items-center gap-1">
                       <button onClick={() => setAdjustModal(item)}
-                        className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 border border-emerald-200 hover:border-emerald-300 rounded-md px-2 py-1 transition-colors">
+                        className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 border border-emerald-200 hover:border-emerald-300 bg-emerald-50/50 hover:bg-emerald-50 rounded-md px-2 py-1 transition-colors">
                         Adjust
                       </button>
                       <button onClick={() => setStatusModal(item)}
-                        className="text-[11px] font-semibold text-blue-600 hover:text-blue-700 border border-blue-200 hover:border-blue-300 rounded-md px-2 py-1 transition-colors">
+                        className="text-[11px] font-semibold text-blue-600 hover:text-blue-700 border border-blue-200 hover:border-blue-300 bg-blue-50/50 hover:bg-blue-50 rounded-md px-2 py-1 transition-colors">
                         Status
                       </button>
                     </div>
@@ -483,10 +510,14 @@ function BatchesTab() {
 
       <AnimatePresence>
         {statusModal && (
-          <BatchStatusModal item={statusModal} onClose={() => setStatusModal(null)} onDone={() => { setStatusModal(null); load(); }} />
+          <BatchStatusModal item={statusModal} onClose={() => setStatusModal(null)}
+            onDone={() => { setStatusModal(null); load(); }}
+            onToast={(msg, v) => v === "success" ? toast.success(msg) : toast.error(msg)} />
         )}
         {adjustModal && (
-          <AdjustStockModal item={adjustModal} onClose={() => setAdjustModal(null)} onDone={() => { setAdjustModal(null); load(); }} />
+          <AdjustStockModal item={adjustModal} onClose={() => setAdjustModal(null)}
+            onDone={() => { setAdjustModal(null); load(); }}
+            onToast={(msg, v) => v === "success" ? toast.success(msg) : toast.error(msg)} />
         )}
       </AnimatePresence>
     </div>
@@ -504,8 +535,10 @@ function LedgerTab() {
   const [direction,  setDirection]  = useState<"" | "IN" | "OUT">("");
   const [type,       setType]       = useState("");
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   const load = useCallback(async () => {
-    setLoading(true);
+    setLoading(true); setLoadError(null);
     try {
       const params: Record<string, string | number> = { page, limit: 50 };
       if (direction) params.direction = direction;
@@ -514,7 +547,9 @@ function LedgerTab() {
       setEntries(data.data.movements);
       setTotal(data.data.total);
       setTotalPages(Math.ceil(data.data.total / 50));
-    } catch {/* */}
+    } catch {
+      setLoadError("Failed to load ledger. Check your connection and try again.");
+    }
     finally { setLoading(false); }
   }, [page, direction, type]);
 
@@ -553,6 +588,12 @@ function LedgerTab() {
           <tbody>
             {loading ? (
               <tr><td colSpan={9} className="py-24 text-center"><Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" /></td></tr>
+            ) : loadError ? (
+              <tr><td colSpan={9} className="py-24 text-center">
+                <AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-2" />
+                <p className="text-[13px] text-red-500 font-medium mb-2">{loadError}</p>
+                <button onClick={load} className="text-[12px] text-blue-600 hover:underline">Retry</button>
+              </td></tr>
             ) : entries.length === 0 ? (
               <tr><td colSpan={9} className="py-24 text-center"><FileX className="w-10 h-10 text-slate-200 mx-auto mb-3" /><p className="text-slate-500 text-[14px] font-medium">No movements yet</p></td></tr>
             ) : entries.map((e) => (
@@ -623,27 +664,42 @@ const STOCK_TIER_CFG: Record<StockTier, { label: string; badgeCls: string }> = {
 
 // ─── Tab: Alerts ───────────────────────────────────────────────────────────────
 
+const ALERTS_PAGE_SIZE = 25;
+
 function AlertsTab() {
   const [expiryItems, setExpiryItems] = useState<ExpiryAlert[]>([]);
   const [lowItems,    setLowItems]    = useState<StockAlert[]>([]);
   const [loading,     setLoading]     = useState(true);
+  const [loadError,   setLoadError]   = useState<string | null>(null);
   const [expiryFilter, setExpiryFilter] = useState<ExpiryTier | "">("");
+  const [expiryPage,  setExpiryPage]  = useState(1);
+  const [stockPage,   setStockPage]   = useState(1);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      try {
-        const [ex, lw] = await Promise.all([
-          api.get("/inventory/alerts/expiry"),
-          api.get("/inventory/alerts/low-stock"),
-        ]);
-        setExpiryItems(ex.data.data);
-        setLowItems(lw.data.data);
-      } catch {/* */} finally { setLoading(false); }
-    })();
+  const loadAlerts = useCallback(async () => {
+    setLoading(true); setLoadError(null);
+    try {
+      const [ex, lw] = await Promise.all([
+        api.get("/inventory/alerts/expiry"),
+        api.get("/inventory/alerts/low-stock"),
+      ]);
+      setExpiryItems(ex.data.data ?? []);
+      setLowItems(lw.data.data ?? []);
+    } catch {
+      setLoadError("Failed to load alerts. Check your connection and try again.");
+    } finally { setLoading(false); }
   }, []);
 
+  useEffect(() => { loadAlerts(); }, [loadAlerts]);
+
   if (loading) return <div className="flex items-center justify-center py-24"><Loader2 className="w-7 h-7 animate-spin text-blue-400" /></div>;
+
+  if (loadError) return (
+    <div className="flex flex-col items-center justify-center py-24 gap-3">
+      <AlertCircle className="w-8 h-8 text-red-300" />
+      <p className="text-[13px] text-red-500 font-medium">{loadError}</p>
+      <button onClick={loadAlerts} className="text-[12px] text-blue-600 hover:underline">Retry</button>
+    </div>
+  );
 
   const filteredExpiry = expiryFilter ? expiryItems.filter((i) => i.tier === expiryFilter) : expiryItems;
 
@@ -653,6 +709,12 @@ function AlertsTab() {
     WARNING:  expiryItems.filter((i) => i.tier === "WARNING").length,
     NOTICE:   expiryItems.filter((i) => i.tier === "NOTICE").length,
   };
+
+  const expiryTotalPages = Math.max(1, Math.ceil(filteredExpiry.length / ALERTS_PAGE_SIZE));
+  const pagedExpiry = filteredExpiry.slice((expiryPage - 1) * ALERTS_PAGE_SIZE, expiryPage * ALERTS_PAGE_SIZE);
+
+  const stockTotalPages = Math.max(1, Math.ceil(lowItems.length / ALERTS_PAGE_SIZE));
+  const pagedStock = lowItems.slice((stockPage - 1) * ALERTS_PAGE_SIZE, stockPage * ALERTS_PAGE_SIZE);
 
   const thCls = "px-4 py-2.5 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wide";
 
@@ -672,7 +734,7 @@ function AlertsTab() {
             {(["", "EXPIRED", "CRITICAL", "WARNING", "NOTICE"] as const).map((tier) => {
               const count = tier === "" ? expiryItems.length : expiryCounts[tier];
               return (
-                <button key={tier} onClick={() => setExpiryFilter(tier)}
+                <button key={tier} onClick={() => { setExpiryFilter(tier); setExpiryPage(1); }}
                   className={cn("text-[11px] font-bold px-2.5 py-0.5 rounded-full border transition-all",
                     expiryFilter === tier ? "bg-slate-800 text-white border-slate-800" : "bg-white text-slate-500 border-slate-200 hover:border-slate-300"
                   )}>
@@ -695,7 +757,7 @@ function AlertsTab() {
                 {["Severity","Medicine","Batch","Expiry Date","Days Left","Stock","Location"].map((h) => <th key={h} className={thCls}>{h}</th>)}
               </tr></thead>
               <tbody>
-                {filteredExpiry.map((item) => {
+                {pagedExpiry.map((item) => {
                   const cfg = EXPIRY_TIER_CFG[item.tier];
                   return (
                     <tr key={item.id} className={cn("border-b border-slate-100 last:border-0 transition-colors hover:brightness-95", cfg.rowCls)}>
@@ -718,6 +780,20 @@ function AlertsTab() {
                 })}
               </tbody>
             </table>
+            {filteredExpiry.length > ALERTS_PAGE_SIZE && (
+              <div className="flex items-center justify-between px-4 py-2.5 border-t border-slate-100 bg-slate-50/60">
+                <span className="text-[12px] text-slate-500">
+                  Showing <span className="font-semibold text-slate-700">{(expiryPage - 1) * ALERTS_PAGE_SIZE + 1}–{Math.min(expiryPage * ALERTS_PAGE_SIZE, filteredExpiry.length)}</span> of <span className="font-semibold text-slate-700">{filteredExpiry.length}</span>
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button onClick={() => setExpiryPage((p) => Math.max(1, p - 1))} disabled={expiryPage === 1}
+                    className="px-3 py-1 rounded-lg border border-slate-200 text-[12px] font-medium hover:bg-white disabled:opacity-40">‹ Prev</button>
+                  <span className="text-[12px] text-slate-500 font-medium px-3 py-1 bg-white border border-slate-200 rounded-lg">{expiryPage} / {expiryTotalPages}</span>
+                  <button onClick={() => setExpiryPage((p) => Math.min(expiryTotalPages, p + 1))} disabled={expiryPage === expiryTotalPages}
+                    className="px-3 py-1 rounded-lg border border-slate-200 text-[12px] font-medium hover:bg-white disabled:opacity-40">Next ›</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -741,7 +817,7 @@ function AlertsTab() {
                 {["Status","Medicine","Batch","Stock","Reorder Level","Min Stock","MRP"].map((h) => <th key={h} className={thCls}>{h}</th>)}
               </tr></thead>
               <tbody>
-                {lowItems.map((item) => {
+                {pagedStock.map((item) => {
                   const cfg = STOCK_TIER_CFG[item.tier];
                   return (
                     <tr key={item.id} className="border-b border-slate-100 last:border-0 hover:bg-red-50/10 transition-colors">
@@ -762,6 +838,20 @@ function AlertsTab() {
                 })}
               </tbody>
             </table>
+            {lowItems.length > ALERTS_PAGE_SIZE && (
+              <div className="flex items-center justify-between px-4 py-2.5 border-t border-slate-100 bg-slate-50/60">
+                <span className="text-[12px] text-slate-500">
+                  Showing <span className="font-semibold text-slate-700">{(stockPage - 1) * ALERTS_PAGE_SIZE + 1}–{Math.min(stockPage * ALERTS_PAGE_SIZE, lowItems.length)}</span> of <span className="font-semibold text-slate-700">{lowItems.length}</span>
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button onClick={() => setStockPage((p) => Math.max(1, p - 1))} disabled={stockPage === 1}
+                    className="px-3 py-1 rounded-lg border border-slate-200 text-[12px] font-medium hover:bg-white disabled:opacity-40">‹ Prev</button>
+                  <span className="text-[12px] text-slate-500 font-medium px-3 py-1 bg-white border border-slate-200 rounded-lg">{stockPage} / {stockTotalPages}</span>
+                  <button onClick={() => setStockPage((p) => Math.min(stockTotalPages, p + 1))} disabled={stockPage === stockTotalPages}
+                    className="px-3 py-1 rounded-lg border border-slate-200 text-[12px] font-medium hover:bg-white disabled:opacity-40">Next ›</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

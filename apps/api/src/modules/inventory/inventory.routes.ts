@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { InventoryService } from "./inventory.service.js";
+import { AppError } from "../../lib/AppError.js";
 import {
   addStockSchema, adjustStockSchema, reserveStockSchema,
   updateBatchStatusSchema, listInventoryQuerySchema, listLedgerQuerySchema,
@@ -97,9 +98,8 @@ const inventoryRoutes: FastifyPluginAsync = async (app) => {
       const result = await service.upsertReservations(req.pharmacyId, input);
       return reply.send({ success: true, data: result });
     } catch (err: unknown) {
-      const e = err as { statusCode?: number; message?: string; conflicts?: unknown };
-      if (e.statusCode === 409) {
-        return reply.status(409).send({ success: false, error: e.message, conflicts: e.conflicts });
+      if (err instanceof AppError && err.statusCode === 409) {
+        return reply.status(409).send({ success: false, error: err.message, ...(err.data ?? {}) });
       }
       throw err;
     }

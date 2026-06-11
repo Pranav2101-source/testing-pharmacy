@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { QuotationsRepo } from "./quotations.repo.js";
 import type { CreateQuotationInput, UpdateQuotationInput, ListQuotationQuery, CompareQuotationsInput } from "./quotations.schema.js";
 import { AppError } from "../../lib/AppError.js";
-import { PO_SEQUENCE_KEY, generatePONumber } from "../billing/billing.constants.js";
+import { PO_SEQUENCE_KEY, generatePONumber, QT_SEQUENCE_KEY, generateQTNumber } from "../billing/billing.constants.js";
 
 export class QuotationsService {
   private repo: QuotationsRepo;
@@ -12,7 +12,14 @@ export class QuotationsService {
   }
 
   async create(pharmacyId: string, userId: string, input: CreateQuotationInput) {
-    return this.repo.create(pharmacyId, userId, {
+    let seq: number;
+    try {
+      seq = await this.app.redis.incr(QT_SEQUENCE_KEY(pharmacyId));
+    } catch {
+      throw AppError.internal("We couldn't generate a quotation number right now. Please try again in a moment.");
+    }
+    const quotationNumber = generateQTNumber(seq);
+    return this.repo.create(pharmacyId, userId, quotationNumber, {
       supplierId: input.supplierId,
       validUntil: input.validUntil ? new Date(input.validUntil) : undefined,
       notes:      input.notes,
@@ -63,7 +70,12 @@ export class QuotationsService {
 
   async convertToPO(id: string, pharmacyId: string, userId: string, notes?: string) {
     // Generate PO number via Redis INCR (same race-safe pattern as purchases.service.ts)
-    const seq         = await this.app.redis.incr(PO_SEQUENCE_KEY(pharmacyId));
+    let seq: number;
+    try {
+      seq = await this.app.redis.incr(PO_SEQUENCE_KEY(pharmacyId));
+    } catch {
+      throw AppError.internal("We couldn't generate an order number right now. Please try again in a moment.");
+    }
     const orderNumber = generatePONumber(seq);
     return this.repo.convertToPO(id, pharmacyId, userId, orderNumber, notes);
   }

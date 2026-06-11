@@ -41,12 +41,16 @@ export class InventoryService {
       status:     query.status,
     };
     const cacheKey = inventoryListKey(pharmacyId, params);
-    const cached   = await this.app.redis.get(cacheKey);
-    if (cached) {
-      try { return JSON.parse(cached); } catch { /* corrupt — fall through */ }
-    }
+    try {
+      const cached = await this.app.redis.get(cacheKey);
+      if (cached) {
+        try { return JSON.parse(cached); } catch { /* corrupt — fall through */ }
+      }
+    } catch { /* Redis unavailable — fall through to DB */ }
     const result = await this.repo.list(pharmacyId, params);
-    await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", INVENTORY_CACHE_TTL_S);
+    try {
+      await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", INVENTORY_CACHE_TTL_S);
+    } catch { /* best-effort cache */ }
     return result;
   }
 

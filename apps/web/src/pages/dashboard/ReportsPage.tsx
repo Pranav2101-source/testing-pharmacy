@@ -210,10 +210,11 @@ function MarginBadge({ pct }: { pct: number }) {
 }
 
 // ─── Tab: Sales ───────────────────────────────────────────────────
-function SalesTab() {
-  const [period, setPeriod]       = useState<Period>("week");
-  const [customFrom, setCustomFrom] = useState(toInputDate(new Date()));
-  const [customTo,   setCustomTo]   = useState(toInputDate(new Date()));
+function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setCustomTo }: {
+  period: Period; setPeriod: (p: Period) => void;
+  customFrom: string; setCustomFrom: (v: string) => void;
+  customTo: string; setCustomTo: (v: string) => void;
+}) {
   const [chartDays,  setChartDays]  = useState<DailySalesPoint[]>([]);
   const [chartLoading, setChartLoading] = useState(true);
   const [fastItems, setFastItems]   = useState<FastMovingItem[]>([]);
@@ -373,7 +374,7 @@ function InventoryTab() {
 
   useEffect(() => {
     api.get<{ success: boolean; data: ExpiryItem[] }>("/reports/expiry")
-      .then(r => setExpiryItems(r.data.data))
+      .then(r => setExpiryItems(r.data.data ?? []))
       .catch(() => {})
       .finally(() => setExpiryLoad(false));
 
@@ -600,11 +601,11 @@ function InventoryTab() {
 }
 
 // ─── Tab: Purchases ───────────────────────────────────────────────
-function PurchasesTab() {
-  const now = new Date();
-  const [period, setPeriod]       = useState<Period>("month");
-  const [customFrom, setCustomFrom] = useState(toInputDate(new Date(now.getFullYear(), now.getMonth(), 1)));
-  const [customTo,   setCustomTo]   = useState(toInputDate(now));
+function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setCustomTo }: {
+  period: Period; setPeriod: (p: Period) => void;
+  customFrom: string; setCustomFrom: (v: string) => void;
+  customTo: string; setCustomTo: (v: string) => void;
+}) {
   const [items, setItems]           = useState<CostAnalysisItem[]>([]);
   const [loading, setLoading]       = useState(false);
   const [sortKey, setSortKey]       = useState<"cost" | "margin" | "qty">("cost");
@@ -995,6 +996,12 @@ export default function ReportsPage() {
   const [tab, setTab] = useState<ReportTab>("sales");
   const active = MAIN_TABS.find(t => t.id === tab)!;
 
+  // Shared period state — persists across tab switches
+  const now = new Date();
+  const [period,     setPeriod]     = useState<Period>("week");
+  const [customFrom, setCustomFrom] = useState(toInputDate(new Date(now.getFullYear(), now.getMonth(), 1)));
+  const [customTo,   setCustomTo]   = useState(toInputDate(now));
+
   return (
     <div className="h-full overflow-y-auto bg-slate-50/50">
       <div className="max-w-[1400px] mx-auto px-6 py-6 space-y-5">
@@ -1026,9 +1033,21 @@ export default function ReportsPage() {
 
         {/* Tab content */}
         <div>
-          {tab === "sales"      && <SalesTab />}
+          {tab === "sales"      && (
+            <SalesTab
+              period={period} setPeriod={setPeriod}
+              customFrom={customFrom} setCustomFrom={setCustomFrom}
+              customTo={customTo} setCustomTo={setCustomTo}
+            />
+          )}
           {tab === "inventory"  && <InventoryTab />}
-          {tab === "purchases"  && <PurchasesTab />}
+          {tab === "purchases"  && (
+            <PurchasesTab
+              period={period} setPeriod={setPeriod}
+              customFrom={customFrom} setCustomFrom={setCustomFrom}
+              customTo={customTo} setCustomTo={setCustomTo}
+            />
+          )}
           {tab === "compliance" && <ComplianceTab />}
         </div>
 

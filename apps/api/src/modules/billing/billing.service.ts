@@ -42,8 +42,10 @@ export class BillingService {
   // the next billing op sees the updated config within 5 minutes at most.
 
   private async getSettings(pharmacyId: string): ReturnType<BillingRepo["getSettings"]> {
-    const key    = settingsCacheKey(pharmacyId);
-    const cached = await this.app.redis.get(key);
+    const key = settingsCacheKey(pharmacyId);
+    let cached: string | null = null;
+    try { cached = await this.app.redis.get(key); } catch { /* Redis unavailable — skip cache */ }
+
     if (cached) {
       try {
         return JSON.parse(cached) as Awaited<ReturnType<BillingRepo["getSettings"]>>;
@@ -54,7 +56,7 @@ export class BillingService {
 
     const settings = await this.repo.getSettings(pharmacyId);
     if (settings) {
-      await this.app.redis.set(key, JSON.stringify(settings), "EX", SETTINGS_CACHE_TTL_S);
+      try { await this.app.redis.set(key, JSON.stringify(settings), "EX", SETTINGS_CACHE_TTL_S); } catch { /* best-effort */ }
     }
     return settings;
   }
@@ -220,7 +222,12 @@ export class BillingService {
     // sequence would be fully transactional but requires a schema migration and
     // complicates multi-year financial-year resets — not worth the trade-off here.
     const makeInvoiceNumber = async () => {
-      const seq = await this.app.redis.incr(INVOICE_SEQUENCE_KEY(pharmacyId));
+      let seq: number;
+      try {
+        seq = await this.app.redis.incr(INVOICE_SEQUENCE_KEY(pharmacyId));
+      } catch {
+        throw AppError.internal("We couldn't generate an invoice number right now. Please try again in a moment.");
+      }
       return generateInvoiceNumber(
         config.numbering.prefix,
         seq,
@@ -385,7 +392,12 @@ export class BillingService {
     const returnWindowDays = config.policy?.returnWindowDays ?? defaultInvoiceSettings.policy!.returnWindowDays;
 
     const makeReturnNumber = async () => {
-      const seq = await this.app.redis.incr(RETURN_SEQUENCE_KEY(pharmacyId));
+      let seq: number;
+      try {
+        seq = await this.app.redis.incr(RETURN_SEQUENCE_KEY(pharmacyId));
+      } catch {
+        throw AppError.internal("We couldn't generate a return number right now. Please try again in a moment.");
+      }
       return generateInvoiceNumber(
         (config.numbering.prefix ?? "INV") + "-RET",
         seq,
@@ -464,13 +476,14 @@ export class BillingService {
   // ── Dashboard Stats ───────────────────────────────────────────────────────
 
   async getDashboardStats(pharmacyId: string): Promise<DashboardStats> {
-    const key    = statsCacheKey(pharmacyId);
-    const cached = await this.app.redis.get(key);
+    const key = statsCacheKey(pharmacyId);
+    let cached: string | null = null;
+    try { cached = await this.app.redis.get(key); } catch { /* Redis unavailable — skip cache */ }
     if (cached) {
       try { return JSON.parse(cached) as DashboardStats; } catch { /* corrupt — fall through */ }
     }
     const stats = await this.repo.getDashboardStats(pharmacyId);
-    await this.app.redis.set(key, JSON.stringify(stats), "EX", STATS_CACHE_TTL_S);
+    try { await this.app.redis.set(key, JSON.stringify(stats), "EX", STATS_CACHE_TTL_S); } catch { /* best-effort */ }
     return stats;
   }
 
@@ -510,14 +523,14 @@ export class BillingService {
     });
 
     // Bust the settings cache so next billing op picks up the new config
-    await this.app.redis.del(settingsCacheKey(pharmacyId));
+    try { await this.app.redis.del(settingsCacheKey(pharmacyId)); } catch { /* best-effort */ }
     return result;
   }
 
   // ── Settings cache invalidation ───────────────────────────────────────────
 
   async invalidateSettingsCache(pharmacyId: string) {
-    await this.app.redis.del(settingsCacheKey(pharmacyId));
+    try { await this.app.redis.del(settingsCacheKey(pharmacyId)); } catch { /* best-effort */ }
   }
 
   // ── FEFO Batch ────────────────────────────────────────────────────────────

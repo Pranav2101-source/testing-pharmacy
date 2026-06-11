@@ -66,6 +66,6 @@ export const reservationCleanupWorker = new Worker(
 
     job.log(`Released ${totalReleased} expired reservation(s) across ${byPharmacy.size} pharmacy/pharmacies`);
   },
-  { connection, concurrency: 1 },
+  { connection, concurrency: 1, drainDelay: 300, stalledInterval: 300_000 },
 );
 onWorkerFailed(reservationCleanupWorker);

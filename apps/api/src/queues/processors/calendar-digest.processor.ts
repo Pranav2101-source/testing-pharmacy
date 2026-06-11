@@ -17,7 +17,7 @@ const calendarDigestWorker = new Worker(
         where:  { isActive: true },
         select: { id: true },
       });
-      await Promise.all(
+      const results = await Promise.allSettled(
         pharmacies.map((p) =>
           calendarDigestQueue.add(`pharmacy:${p.id}`, { pharmacyId: p.id }, {
             removeOnComplete: { count: 1 },
@@ -25,7 +25,9 @@ const calendarDigestWorker = new Worker(
           }),
         ),
       );
-      job.log(`Dispatched ${pharmacies.length} calendar-digest job(s)`);
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) job.log(`Warning: ${failed} pharmacy job(s) failed to enqueue`);
+      job.log(`Dispatched ${pharmacies.length - failed}/${pharmacies.length} calendar-digest job(s)`);
       return;
     }
 
@@ -37,7 +39,7 @@ const calendarDigestWorker = new Worker(
 
     await processPharmacy(pharmacy.id, pharmacy.name);
   },
-  { connection, concurrency: 5 },
+  { connection, concurrency: 5, drainDelay: 300, stalledInterval: 300_000 },
 );
 
 async function processPharmacy(pharmacyId: string, pharmacyName: string): Promise<void> {

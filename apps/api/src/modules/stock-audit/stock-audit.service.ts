@@ -20,7 +20,12 @@ export class StockAuditService {
   async createSession(pharmacyId: string, userId: string, input: CreateSessionInput) {
     // Generate session number via Redis INCR (daily IST key) to prevent the
     // COUNT(*)-based race condition that produced duplicate AUDIT-YYYYMMDD-NNN numbers.
-    const seq           = await this.app.redis.incr(AUDIT_SEQUENCE_KEY(pharmacyId))
+    let seq: number
+    try {
+      seq = await this.app.redis.incr(AUDIT_SEQUENCE_KEY(pharmacyId))
+    } catch {
+      throw AppError.internal("We couldn't generate an audit number right now. Please try again in a moment.")
+    }
     const sessionNumber = generateAuditNumber(seq)
     return this.repo.createSession(pharmacyId, userId, sessionNumber, input)
   }
