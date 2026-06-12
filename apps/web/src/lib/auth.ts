@@ -1,3 +1,5 @@
+import { useState, useEffect } from "react";
+
 // Persists the logged-in user's profile to localStorage so any component
 // can read it synchronously without an extra API call.
 
@@ -34,10 +36,12 @@ const REFRESH_KEY = "refresh_token";
 
 export function storeUser(user: StoredUser): void {
   localStorage.setItem(KEY, JSON.stringify(user));
+  window.dispatchEvent(new Event("auth:change"));
 }
 
 export function clearUser(): void {
   localStorage.removeItem(KEY);
+  window.dispatchEvent(new Event("auth:change"));
 }
 
 // ── Token storage ─────────────────────────────────────────────────────────────
@@ -95,10 +99,21 @@ function formatRole(raw: string): string {
 }
 
 export function useCurrentUser() {
-  const u            = getStored();
-  const name         = u?.name         ?? "User";
-  const rawRole      = u?.role         ?? "STAFF";
-  const pharmacyName = u?.pharmacyName ?? "Pharmacy";
+  const [user, setUser] = useState<StoredUser | null>(getStored);
+
+  useEffect(() => {
+    function sync() { setUser(getStored()); }
+    window.addEventListener("auth:change", sync);
+    window.addEventListener("storage",    sync);
+    return () => {
+      window.removeEventListener("auth:change", sync);
+      window.removeEventListener("storage",    sync);
+    };
+  }, []);
+
+  const name         = user?.name         ?? "User";
+  const rawRole      = user?.role         ?? "STAFF";
+  const pharmacyName = user?.pharmacyName ?? "Pharmacy";
 
   return {
     name,

@@ -1,6 +1,6 @@
 
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Users,
@@ -27,45 +27,38 @@ import {
   Phone,
   Mail,
   AlertTriangle,
+  CreditCard,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api-client";
+import { useToast } from "@/hooks/useToast";
+import { getStoredUser } from "@/lib/auth";
 
 // ─── Types ────────────────────────────────────────────────────
-type Role = "OWNER" | "PHARMACIST";
+type Role = "OWNER" | "MANAGER" | "PHARMACIST" | "CASHIER";
 
 interface StaffMember {
   id:          string;
   name:        string;
   email:       string;
-  phone:       string;
+  phone:       string | null;
   role:        Role;
   isActive:    boolean;
   lastLoginAt: string | null;
   createdAt:   string;
 }
 
-// ─── Mock data — replace with API calls ──────────────────────
-const INIT_STAFF: StaffMember[] = [
-  {
-    id: "1", name: "Pranav Sharma",   email: "pranav@checkup.com",  phone: "9876543210",
-    role: "OWNER",       isActive: true,  lastLoginAt: new Date().toISOString(),                      createdAt: "2025-01-15",
-  },
-  {
-    id: "2", name: "Anjali Singh",    email: "anjali@checkup.com",  phone: "9123456789",
-    role: "PHARMACIST",  isActive: true,  lastLoginAt: new Date(Date.now() - 86_400_000).toISOString(), createdAt: "2025-03-10",
-  },
-  {
-    id: "3", name: "Rohit Verma",     email: "rohit@checkup.com",   phone: "9988776655",
-    role: "PHARMACIST",  isActive: false, lastLoginAt: new Date(Date.now() - 9 * 86_400_000).toISOString(), createdAt: "2025-06-01",
-  },
-  {
-    id: "4", name: "Priya Mishra",    email: "priya@checkup.com",   phone: "8765432100",
-    role: "PHARMACIST",  isActive: true,  lastLoginAt: null,                                          createdAt: "2026-04-22",
-  },
-];
-
 // ─── Role config ──────────────────────────────────────────────
-const ROLE_CONFIG = {
+const ROLE_CONFIG: Record<Role, {
+  label:       string;
+  badgeCls:    string;
+  iconBg:      string;
+  iconColor:   string;
+  icon:        React.ElementType;
+  description: string;
+  permissions: { icon: React.ElementType; label: string; granted: boolean }[];
+}> = {
   OWNER: {
     label: "Owner", badgeCls: "bg-purple-50 text-purple-700 border-purple-200",
     iconBg: "bg-purple-100", iconColor: "text-purple-600", icon: Crown,
@@ -79,6 +72,21 @@ const ROLE_CONFIG = {
       { icon: Settings,    label: "Account & Settings",   granted: true  },
       { icon: ShieldCheck, label: "Audit Logs",           granted: true  },
       { icon: Lock,        label: "Delete & Deactivate",  granted: true  },
+    ],
+  },
+  MANAGER: {
+    label: "Manager", badgeCls: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    iconBg: "bg-emerald-100", iconColor: "text-emerald-600", icon: ShieldCheck,
+    description: "Billing, inventory, reports, and purchase operations.",
+    permissions: [
+      { icon: BarChart2,   label: "Billing & Invoicing",  granted: true  },
+      { icon: Package,     label: "Inventory Management", granted: true  },
+      { icon: FileText,    label: "Purchase Orders",      granted: true  },
+      { icon: Users,       label: "Staff Management",     granted: false },
+      { icon: BarChart2,   label: "Reports & Analytics",  granted: true  },
+      { icon: Settings,    label: "Account & Settings",   granted: false },
+      { icon: ShieldCheck, label: "Audit Logs",           granted: false },
+      { icon: Lock,        label: "Delete & Deactivate",  granted: false },
     ],
   },
   PHARMACIST: {
@@ -96,7 +104,24 @@ const ROLE_CONFIG = {
       { icon: Lock,        label: "Delete & Deactivate",  granted: false },
     ],
   },
+  CASHIER: {
+    label: "Cashier", badgeCls: "bg-amber-50 text-amber-700 border-amber-200",
+    iconBg: "bg-amber-100", iconColor: "text-amber-600", icon: CreditCard,
+    description: "Billing and basic inventory lookup only.",
+    permissions: [
+      { icon: BarChart2,   label: "Billing & Invoicing",  granted: true  },
+      { icon: Package,     label: "Inventory Management", granted: false },
+      { icon: FileText,    label: "Purchase Orders",      granted: false },
+      { icon: Users,       label: "Staff Management",     granted: false },
+      { icon: BarChart2,   label: "Reports & Analytics",  granted: false },
+      { icon: Settings,    label: "Account & Settings",   granted: false },
+      { icon: ShieldCheck, label: "Audit Logs",           granted: false },
+      { icon: Lock,        label: "Delete & Deactivate",  granted: false },
+    ],
+  },
 } as const;
+
+const ALL_ROLES: Role[] = ["OWNER", "MANAGER", "PHARMACIST", "CASHIER"];
 
 // ─── Helpers ──────────────────────────────────────────────────
 function initials(name: string) {
@@ -122,6 +147,10 @@ function timeAgo(iso: string | null) {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+function errMsg(err: unknown): string {
+  return (err as Error)?.message || "Something went wrong";
 }
 
 // ─── Role badge ───────────────────────────────────────────────
@@ -190,8 +219,8 @@ function FormField({
 }
 
 // ─── Row actions menu ─────────────────────────────────────────
-function RowActions({ member, onEdit, onToggle }: {
-  member: StaffMember; onEdit: () => void; onToggle: () => void;
+function RowActions({ member, onEdit, onToggle, isSelf, isOwner }: {
+  member: StaffMember; onEdit: () => void; onToggle: () => void; isSelf: boolean; isOwner: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -217,26 +246,35 @@ function RowActions({ member, onEdit, onToggle }: {
             transition={{ duration: 0.12 }}
             className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl border border-slate-100 shadow-card-lg py-1 z-20"
           >
-            <button
-              onClick={() => { onEdit(); setOpen(false); }}
-              className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-            >
-              <Edit2 className="w-3.5 h-3.5 text-slate-400" strokeWidth={1.8} />
-              Edit Details
-            </button>
-            <div className="my-1 border-t border-slate-100" />
-            <button
-              onClick={() => { onToggle(); setOpen(false); }}
-              className={cn(
-                "w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium transition-colors",
-                member.isActive ? "text-red-500 hover:bg-red-50" : "text-emerald-600 hover:bg-emerald-50"
-              )}
-            >
-              {member.isActive
-                ? <><UserX     className="w-3.5 h-3.5" strokeWidth={1.8} /> Deactivate</>
-                : <><UserCheck className="w-3.5 h-3.5" strokeWidth={1.8} /> Reactivate</>
-              }
-            </button>
+            {isOwner && (
+              <button
+                onClick={() => { onEdit(); setOpen(false); }}
+                className="w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                <Edit2 className="w-3.5 h-3.5 text-slate-400" strokeWidth={1.8} />
+                Edit Details
+              </button>
+            )}
+            {isOwner && !isSelf && (
+              <>
+                <div className="my-1 border-t border-slate-100" />
+                <button
+                  onClick={() => { onToggle(); setOpen(false); }}
+                  className={cn(
+                    "w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium transition-colors",
+                    member.isActive ? "text-red-500 hover:bg-red-50" : "text-emerald-600 hover:bg-emerald-50"
+                  )}
+                >
+                  {member.isActive
+                    ? <><UserX     className="w-3.5 h-3.5" strokeWidth={1.8} /> Deactivate</>
+                    : <><UserCheck className="w-3.5 h-3.5" strokeWidth={1.8} /> Reactivate</>
+                  }
+                </button>
+              </>
+            )}
+            {!isOwner && (
+              <div className="px-3.5 py-2 text-xs text-slate-400 italic">View only</div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -263,10 +301,12 @@ function FilterSelect({ value, onChange, options }: {
 }
 
 // ─── Add / Edit Drawer ────────────────────────────────────────
-function StaffDrawer({ member, onClose, onSave }: {
-  member: StaffMember | null;
-  onClose: () => void;
-  onSave:  (data: Omit<StaffMember, "id" | "lastLoginAt" | "createdAt"> & { password?: string }) => void;
+function StaffDrawer({ member, onClose, onSave, saving, isLastOwner }: {
+  member:       StaffMember | null;
+  onClose:      () => void;
+  onSave:       (data: { name: string; email: string; phone: string; role: Role; isActive: boolean; password?: string }) => Promise<void>;
+  saving:       boolean;
+  isLastOwner:  boolean;
 }) {
   const isEdit = member !== null;
   const [name,     setName]     = useState(member?.name  ?? "");
@@ -294,10 +334,10 @@ function StaffDrawer({ member, onClose, onSave }: {
     return Object.keys(e).length === 0;
   }
 
-  function handleSubmit(ev: React.FormEvent) {
-    ev.preventDefault();
-    if (!validate()) return;
-    onSave({
+  async function handleSubmit(ev?: React.FormEvent) {
+    ev?.preventDefault();
+    if (!validate() || saving) return;
+    await onSave({
       name: name.trim(), email: email.trim().toLowerCase(),
       phone: phone.trim(), role, isActive: member?.isActive ?? true,
       ...(password ? { password } : {}),
@@ -357,28 +397,42 @@ function StaffDrawer({ member, onClose, onSave }: {
           {/* Role selector */}
           <div className="flex flex-col gap-1.5">
             <label className="text-xs font-semibold text-slate-600">Role <span className="text-red-400">*</span></label>
+            {isLastOwner && (
+              <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 flex items-center gap-1.5">
+                <Lock className="w-3 h-3 flex-shrink-0" strokeWidth={2} />
+                You are the only owner — role cannot be changed.
+              </p>
+            )}
             <div className="grid grid-cols-2 gap-3">
-              {(["OWNER", "PHARMACIST"] as Role[]).map((r) => {
-                const cfg  = ROLE_CONFIG[r];
-                const Icon = cfg.icon;
-                const sel  = role === r;
+              {(isEdit ? ALL_ROLES : ALL_ROLES.filter((r) => r !== "OWNER")).map((r) => {
+                const cfg      = ROLE_CONFIG[r];
+                const Icon     = cfg.icon;
+                const sel      = role === r;
+                const locked   = isLastOwner && r !== "OWNER";
                 return (
                   <button
-                    type="button" key={r} onClick={() => setRole(r)}
+                    type="button" key={r}
+                    onClick={() => { if (!locked) setRole(r); }}
+                    disabled={locked}
                     className={cn(
                       "relative flex flex-col items-start gap-2 p-3.5 rounded-xl border-2 text-left transition-all",
-                      sel ? "border-brand-500 bg-brand-50" : "border-slate-200 hover:border-slate-300 bg-white"
+                      locked  ? "border-slate-100 bg-slate-50 opacity-40 cursor-not-allowed" :
+                      sel     ? "border-brand-500 bg-brand-50" :
+                                "border-slate-200 hover:border-slate-300 bg-white"
                     )}
                   >
-                    <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center", sel ? "bg-brand-100" : cfg.iconBg)}>
-                      <Icon className={cn("w-4 h-4", sel ? "text-brand-600" : cfg.iconColor)} strokeWidth={1.8} />
+                    <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center", sel && !locked ? "bg-brand-100" : cfg.iconBg)}>
+                      <Icon className={cn("w-4 h-4", sel && !locked ? "text-brand-600" : cfg.iconColor)} strokeWidth={1.8} />
                     </div>
                     <div>
-                      <p className={cn("text-xs font-bold", sel ? "text-brand-700" : "text-slate-700")}>{cfg.label}</p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">{r === "OWNER" ? "Full access" : "Billing & ops"}</p>
+                      <p className={cn("text-xs font-bold", sel && !locked ? "text-brand-700" : "text-slate-700")}>{cfg.label}</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5 leading-tight">{cfg.description.split(".")[0]}</p>
                     </div>
-                    {sel && (
+                    {sel && !locked && (
                       <CheckCircle2 className="w-3.5 h-3.5 text-brand-500 absolute top-2.5 right-2.5" strokeWidth={2.2} />
+                    )}
+                    {locked && (
+                      <Lock className="w-3 h-3 text-slate-300 absolute top-2.5 right-2.5" strokeWidth={2} />
                     )}
                   </button>
                 );
@@ -414,13 +468,15 @@ function StaffDrawer({ member, onClose, onSave }: {
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-slate-100 flex gap-3">
-          <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors">
+          <button type="button" onClick={onClose} disabled={saving} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50">
             Cancel
           </button>
           <button
-            onClick={handleSubmit as any}
-            className="flex-1 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-[0.97] text-sm font-semibold text-white shadow-card-md transition-all duration-75"
+            onClick={() => handleSubmit()}
+            disabled={saving}
+            className="flex-1 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-[0.97] text-sm font-semibold text-white shadow-card-md transition-all duration-75 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           >
+            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
             {isEdit ? "Save Changes" : "Create Staff"}
           </button>
         </div>
@@ -430,15 +486,15 @@ function StaffDrawer({ member, onClose, onSave }: {
 }
 
 // ─── Confirm dialog ───────────────────────────────────────────
-function ConfirmDialog({ member, onConfirm, onCancel }: {
-  member: StaffMember; onConfirm: () => void; onCancel: () => void;
+function ConfirmDialog({ member, onConfirm, onCancel, saving }: {
+  member: StaffMember; onConfirm: () => void; onCancel: () => void; saving: boolean;
 }) {
   const reactivate = !member.isActive;
   return (
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
-      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+      onClick={(e) => { if (e.target === e.currentTarget && !saving) onCancel(); }}
     >
       <motion.div
         initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }}
@@ -455,17 +511,22 @@ function ConfirmDialog({ member, onConfirm, onCancel }: {
         <p className="text-xs text-slate-500 text-center mt-2 leading-relaxed">
           {reactivate
             ? <><strong>{member.name}</strong> will regain access to the system.</>
-            : <><strong>{member.name}</strong> will lose all access. You can reactivate them later.</>
+            : <><strong>{member.name}</strong> will lose all access immediately. You can reactivate them later.</>
           }
         </p>
         <div className="flex gap-3 mt-6">
-          <button onClick={onCancel} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors">
+          <button onClick={onCancel} disabled={saving} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50">
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            className={cn("flex-1 py-2.5 rounded-xl text-sm font-semibold text-white transition-colors", reactivate ? "bg-emerald-500 hover:bg-emerald-600" : "bg-red-500 hover:bg-red-600")}
+            disabled={saving}
+            className={cn(
+              "flex-1 py-2.5 rounded-xl text-sm font-semibold text-white transition-colors disabled:opacity-60 flex items-center justify-center gap-2",
+              reactivate ? "bg-emerald-500 hover:bg-emerald-600" : "bg-red-500 hover:bg-red-600"
+            )}
           >
+            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
             {reactivate ? "Yes, Reactivate" : "Yes, Deactivate"}
           </button>
         </div>
@@ -475,8 +536,13 @@ function ConfirmDialog({ member, onConfirm, onCancel }: {
 }
 
 // ─── Members Tab ──────────────────────────────────────────────
-function MembersTab({ staff, onEdit, onToggle }: {
-  staff: StaffMember[]; onEdit: (m: StaffMember) => void; onToggle: (m: StaffMember) => void;
+function MembersTab({ staff, loading, currentUserId, isOwner, onEdit, onToggle }: {
+  staff:         StaffMember[];
+  loading:       boolean;
+  currentUserId: string;
+  isOwner:       boolean;
+  onEdit:        (m: StaffMember) => void;
+  onToggle:      (m: StaffMember) => void;
 }) {
   const [search,       setSearch]       = useState("");
   const [roleFilter,   setRoleFilter]   = useState<Role | "ALL">("ALL");
@@ -485,11 +551,20 @@ function MembersTab({ staff, onEdit, onToggle }: {
   const filtered = staff.filter((m) => {
     const q = search.toLowerCase();
     return (
-      (!q || m.name.toLowerCase().includes(q) || m.email.toLowerCase().includes(q) || m.phone.includes(q)) &&
+      (!q || m.name.toLowerCase().includes(q) || m.email.toLowerCase().includes(q) || (m.phone ?? "").includes(q)) &&
       (roleFilter   === "ALL" || m.role === roleFilter) &&
       (statusFilter === "ALL" || (statusFilter === "active" ? m.isActive : !m.isActive))
     );
   });
+
+  if (loading) {
+    return (
+      <div className="flex flex-col items-center justify-center py-32 gap-3">
+        <Loader2 className="w-8 h-8 text-brand-400 animate-spin" />
+        <p className="text-sm text-slate-400">Loading staff…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -504,10 +579,16 @@ function MembersTab({ staff, onEdit, onToggle }: {
           />
         </div>
         <FilterSelect value={roleFilter} onChange={(v) => setRoleFilter(v as any)} options={[
-          { value: "ALL", label: "All Roles" }, { value: "OWNER", label: "Owner" }, { value: "PHARMACIST", label: "Pharmacist" },
+          { value: "ALL",        label: "All Roles"   },
+          { value: "OWNER",      label: "Owner"       },
+          { value: "MANAGER",    label: "Manager"     },
+          { value: "PHARMACIST", label: "Pharmacist"  },
+          { value: "CASHIER",    label: "Cashier"     },
         ]} />
         <FilterSelect value={statusFilter} onChange={(v) => setStatusFilter(v as any)} options={[
-          { value: "ALL", label: "All Status" }, { value: "active", label: "Active" }, { value: "inactive", label: "Inactive" },
+          { value: "ALL",      label: "All Status" },
+          { value: "active",   label: "Active"     },
+          { value: "inactive", label: "Inactive"   },
         ]} />
       </div>
 
@@ -536,43 +617,53 @@ function MembersTab({ staff, onEdit, onToggle }: {
               </tr>
             </thead>
             <tbody>
-                {filtered.map((member) => (
-                  <tr
-                    key={member.id}
-                    className={cn("border-b border-slate-50 hover:bg-slate-50/60 transition-colors", !member.isActive && "opacity-55")}
-                  >
-                    {/* Member */}
-                    <td className="px-5 py-3.5">
-                      <div className="flex items-center gap-3">
-                        <div
-                          className="w-9 h-9 rounded-xl flex items-center justify-center text-white text-xs font-black flex-shrink-0 shadow-inner"
-                          style={{ background: avatarColor(member.name) }}
-                        >
-                          {initials(member.name)}
-                        </div>
-                        <div>
-                          <p className="text-sm font-semibold text-slate-800">{member.name}</p>
-                          <p className="text-[11px] text-slate-400">{member.email}</p>
-                        </div>
+              {filtered.map((member) => (
+                <tr
+                  key={member.id}
+                  className={cn("border-b border-slate-50 hover:bg-slate-50/60 transition-colors", !member.isActive && "opacity-55")}
+                >
+                  <td className="px-5 py-3.5">
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="w-9 h-9 rounded-xl flex items-center justify-center text-white text-xs font-black flex-shrink-0 shadow-inner"
+                        style={{ background: avatarColor(member.name) }}
+                      >
+                        {initials(member.name)}
                       </div>
-                    </td>
-                    <td className="px-5 py-3.5 text-center">
-                      <span className="text-xs text-slate-600">{member.phone || "—"}</span>
-                    </td>
-                    <td className="px-5 py-3.5 text-center">
-                      <RoleBadge role={member.role} />
-                    </td>
-                    <td className="px-5 py-3.5 text-center">
-                      <StatusBadge active={member.isActive} />
-                    </td>
-                    <td className="px-5 py-3.5 text-center">
-                      <span className="text-[11px] text-slate-400">{timeAgo(member.lastLoginAt)}</span>
-                    </td>
-                    <td className="px-5 py-3.5 text-right">
-                      <RowActions member={member} onEdit={() => onEdit(member)} onToggle={() => onToggle(member)} />
-                    </td>
-                  </tr>
-                ))}
+                      <div>
+                        <p className="text-sm font-semibold text-slate-800">
+                          {member.name}
+                          {member.id === currentUserId && (
+                            <span className="ml-1.5 text-[9px] font-bold text-brand-500 bg-brand-50 border border-brand-200 px-1.5 py-0.5 rounded-full align-middle">You</span>
+                          )}
+                        </p>
+                        <p className="text-[11px] text-slate-400">{member.email}</p>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-5 py-3.5 text-center">
+                    <span className="text-xs text-slate-600">{member.phone || "—"}</span>
+                  </td>
+                  <td className="px-5 py-3.5 text-center">
+                    <RoleBadge role={member.role} />
+                  </td>
+                  <td className="px-5 py-3.5 text-center">
+                    <StatusBadge active={member.isActive} />
+                  </td>
+                  <td className="px-5 py-3.5 text-center">
+                    <span className="text-[11px] text-slate-400">{timeAgo(member.lastLoginAt)}</span>
+                  </td>
+                  <td className="px-5 py-3.5 text-right">
+                    <RowActions
+                      member={member}
+                      isSelf={member.id === currentUserId}
+                      isOwner={isOwner}
+                      onEdit={() => onEdit(member)}
+                      onToggle={() => onToggle(member)}
+                    />
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}
@@ -598,22 +689,27 @@ function RolesTab() {
       <div>
         <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1">System Roles</p>
         <p className="text-xs text-slate-400 leading-relaxed">
-          Checkup Pharmacy has two built-in roles. Roles define what each staff member can access and perform within the system.
+          Checkup Pharmacy has four built-in roles. Roles define what each staff member can access and perform within the system.
         </p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        {(["OWNER", "PHARMACIST"] as Role[]).map((role, i) => {
+        {ALL_ROLES.map((role, i) => {
           const cfg  = ROLE_CONFIG[role];
           const Icon = cfg.icon;
+          const headerBg: Record<Role, string> = {
+            OWNER:      "bg-purple-50/60",
+            MANAGER:    "bg-emerald-50/60",
+            PHARMACIST: "bg-blue-50/40",
+            CASHIER:    "bg-amber-50/40",
+          };
           return (
             <motion.div
               key={role}
               initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.07 }}
               className="bg-white rounded-2xl border border-slate-100 shadow-card overflow-hidden"
             >
-              {/* Card header */}
-              <div className={cn("px-5 py-4 flex items-center gap-3 border-b border-slate-100", role === "OWNER" ? "bg-purple-50/60" : "bg-blue-50/40")}>
+              <div className={cn("px-5 py-4 flex items-center gap-3 border-b border-slate-100", headerBg[role])}>
                 <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center", cfg.iconBg)}>
                   <Icon className={cn("w-5 h-5", cfg.iconColor)} strokeWidth={1.8} />
                 </div>
@@ -626,7 +722,6 @@ function RolesTab() {
                 </div>
               </div>
 
-              {/* Permissions */}
               <div className="p-5 space-y-2">
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Permissions</p>
                 {cfg.permissions.map(({ icon: PIcon, label, granted }) => (
@@ -647,7 +742,6 @@ function RolesTab() {
         })}
       </div>
 
-      {/* Info note */}
       <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-2xl">
         <ShieldAlert className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" strokeWidth={1.8} />
         <div>
@@ -661,40 +755,93 @@ function RolesTab() {
 
 // ─── Page ─────────────────────────────────────────────────────
 export default function StaffPage() {
-  const [staff,         setStaff]         = useState<StaffMember[]>(INIT_STAFF);
+  const toast       = useToast();
+  const currentUser = getStoredUser();
+  const isOwner     = currentUser?.role === "OWNER";
+
+  const [staff,         setStaff]         = useState<StaffMember[]>([]);
+  const [loading,       setLoading]       = useState(true);
+  const [saving,        setSaving]        = useState(false);
   const [activeTab,     setActiveTab]     = useState<"members" | "roles">("members");
   const [drawerOpen,    setDrawerOpen]    = useState(false);
   const [editTarget,    setEditTarget]    = useState<StaffMember | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<StaffMember | null>(null);
 
+  const loadStaff = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.get<{ success: boolean; data: StaffMember[] }>("/staff");
+      setStaff(res.data.data);
+    } catch (err) {
+      toast.error("Failed to load staff: " + errMsg(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadStaff(); }, [loadStaff]);
+
   const stats = {
-    total:       staff.length,
-    active:      staff.filter((s) => s.isActive).length,
-    owners:      staff.filter((s) => s.role === "OWNER").length,
-    pharmacists: staff.filter((s) => s.role === "PHARMACIST").length,
+    total:   staff.length,
+    active:  staff.filter((s) => s.isActive).length,
+    owners:  staff.filter((s) => s.role === "OWNER").length,
+    staff:   staff.filter((s) => s.role !== "OWNER").length,
   };
 
-  function handleSave(data: Omit<StaffMember, "id" | "lastLoginAt" | "createdAt"> & { password?: string }) {
-    if (editTarget) {
-      // TODO: PATCH /api/staff/:id
-      setStaff((prev) => prev.map((s) => s.id === editTarget.id ? { ...s, ...data } : s));
-    } else {
-      // TODO: POST /api/staff
-      setStaff((prev) => [...prev, { id: String(Date.now()), lastLoginAt: null, createdAt: new Date().toISOString().slice(0, 10), ...data }]);
+  async function handleSave(data: { name: string; email: string; phone: string; role: Role; isActive: boolean; password?: string }) {
+    setSaving(true);
+    try {
+      if (editTarget) {
+        const res = await api.patch<{ success: boolean; data: StaffMember }>(`/staff/${editTarget.id}`, {
+          name:  data.name,
+          phone: data.phone || undefined,
+          role:  data.role,
+        });
+        setStaff((prev) => prev.map((s) => s.id === editTarget.id ? { ...s, ...res.data.data } : s));
+        toast.success(`${data.name} updated successfully`);
+      } else {
+        const res = await api.post<{ success: boolean; data: StaffMember }>("/staff", {
+          name:     data.name,
+          email:    data.email,
+          phone:    data.phone || undefined,
+          role:     data.role,
+          password: data.password,
+        });
+        setStaff((prev) => [...prev, res.data.data]);
+        toast.success(`${data.name} added to your team`);
+      }
+      setDrawerOpen(false);
+      setEditTarget(null);
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setSaving(false);
     }
-    setDrawerOpen(false);
-    setEditTarget(null);
   }
 
-  function handleToggle(m: StaffMember) {
-    // TODO: DELETE /api/staff/:id (deactivate) or PATCH /api/staff/:id { isActive: true }
-    setStaff((prev) => prev.map((s) => s.id === m.id ? { ...s, isActive: !s.isActive } : s));
-    setConfirmTarget(null);
+  async function handleToggle(m: StaffMember) {
+    setSaving(true);
+    try {
+      if (m.isActive) {
+        await api.delete(`/staff/${m.id}`);
+        setStaff((prev) => prev.map((s) => s.id === m.id ? { ...s, isActive: false } : s));
+        toast.success(`${m.name} has been deactivated`);
+      } else {
+        const res = await api.patch<{ success: boolean; data: StaffMember }>(`/staff/${m.id}`, { isActive: true });
+        setStaff((prev) => prev.map((s) => s.id === m.id ? { ...s, ...res.data.data } : s));
+        toast.success(`${m.name} has been reactivated`);
+      }
+      setConfirmTarget(null);
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setSaving(false);
+    }
   }
 
   const TABS = [
-    { id: "members" as const, label: "Staff Members",      count: stats.total },
-    { id: "roles"   as const, label: "Roles & Permissions", count: 2          },
+    { id: "members" as const, label: "Staff Members",       count: stats.total },
+    { id: "roles"   as const, label: "Roles & Permissions", count: 4           },
   ];
 
   return (
@@ -709,22 +856,24 @@ export default function StaffPage() {
             <h1 className="text-lg font-bold text-slate-800">Staff Management</h1>
             <p className="text-sm text-slate-400 mt-0.5">Manage your pharmacy team and their access levels</p>
           </div>
-          <button
-            onClick={() => { setEditTarget(null); setDrawerOpen(true); }}
-            className="flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 active:scale-[0.97] text-sm font-bold text-white rounded-xl shadow-card-md transition-all duration-75"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add Staff
-          </button>
+          {isOwner && (
+            <button
+              onClick={() => { setEditTarget(null); setDrawerOpen(true); }}
+              className="flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 active:scale-[0.97] text-sm font-bold text-white rounded-xl shadow-card-md transition-all duration-75"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add Staff
+            </button>
+          )}
         </div>
 
         {/* Stats row */}
         <div className="grid grid-cols-4 gap-3 mb-5">
           {[
-            { label: "Total Staff",   value: stats.total,       color: "bg-brand-600"   },
-            { label: "Active",        value: stats.active,      color: "bg-emerald-500" },
-            { label: "Owners",        value: stats.owners,      color: "bg-purple-500"  },
-            { label: "Pharmacists",   value: stats.pharmacists, color: "bg-blue-500"    },
+            { label: "Total Staff", value: stats.total,   color: "bg-brand-600"   },
+            { label: "Active",      value: stats.active,  color: "bg-emerald-500" },
+            { label: "Owners",      value: stats.owners,  color: "bg-purple-500"  },
+            { label: "Other Staff", value: stats.staff,   color: "bg-blue-500"    },
           ].map((s, i) => (
             <motion.div
               key={s.label}
@@ -735,7 +884,7 @@ export default function StaffPage() {
                 <Users className="w-4 h-4 text-white" strokeWidth={1.8} />
               </div>
               <div>
-                <p className="text-xl font-black text-slate-800 leading-none">{s.value}</p>
+                <p className="text-xl font-black text-slate-800 leading-none">{loading ? "—" : s.value}</p>
                 <p className="text-[10px] text-slate-400 mt-0.5">{s.label}</p>
               </div>
             </motion.div>
@@ -773,7 +922,14 @@ export default function StaffPage() {
         <AnimatePresence mode="wait">
           {activeTab === "members" ? (
             <motion.div key="members" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.1 }} className="h-full bg-white flex flex-col">
-              <MembersTab staff={staff} onEdit={(m) => { setEditTarget(m); setDrawerOpen(true); }} onToggle={(m) => setConfirmTarget(m)} />
+              <MembersTab
+                staff={staff}
+                loading={loading}
+                currentUserId={currentUser?.id ?? ""}
+                isOwner={isOwner}
+                onEdit={(m) => { setEditTarget(m); setDrawerOpen(true); }}
+                onToggle={(m) => setConfirmTarget(m)}
+              />
             </motion.div>
           ) : (
             <motion.div key="roles" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.1 }} className="h-full overflow-y-auto">
@@ -783,12 +939,17 @@ export default function StaffPage() {
         </AnimatePresence>
       </div>
 
-      {/* ── Drawer ──────────────────────────────────────────── */}
+      {/* ── Drawer (owner-only) ─────────────────────────────── */}
       <AnimatePresence>
-        {drawerOpen && (
+        {drawerOpen && isOwner && (
           <StaffDrawer
             member={editTarget}
-            onClose={() => { setDrawerOpen(false); setEditTarget(null); }}
+            saving={saving}
+            isLastOwner={
+              editTarget?.role === "OWNER" &&
+              staff.filter((s) => s.role === "OWNER" && s.isActive).length <= 1
+            }
+            onClose={() => { if (!saving) { setDrawerOpen(false); setEditTarget(null); } }}
             onSave={handleSave}
           />
         )}
@@ -799,6 +960,7 @@ export default function StaffPage() {
         {confirmTarget && (
           <ConfirmDialog
             member={confirmTarget}
+            saving={saving}
             onConfirm={() => handleToggle(confirmTarget)}
             onCancel={() => setConfirmTarget(null)}
           />

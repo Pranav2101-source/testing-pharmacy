@@ -11,6 +11,7 @@ import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { isSupportStaff } from "@/lib/auth";
 import { useToast } from "@/hooks/useToast";
+import { useSupportStream } from "@/hooks/useSupportStream";
 import { TicketStatusBadge, type TicketStatus } from "@/components/support/TicketStatusBadge";
 import { NewTicketModal } from "@/components/support/NewTicketModal";
 
@@ -88,6 +89,9 @@ export default function SupportTicketsPage() {
   const toast    = useToast();
   // Computed at render time so hot-reloads and session changes are reflected correctly.
   const isAgent  = isSupportStaff();
+
+  // Live updates via SSE — invalidates react-query cache on ticket events
+  useSupportStream();
 
   const [search,       setSearch]       = useState("");
   const [statusFilter, setStatusFilter] = useState<TicketStatus | "">("");

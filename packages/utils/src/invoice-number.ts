@@ -15,11 +15,13 @@ export function generateInvoiceNumber(
   prefix: string,
   sequence: number,
   useFinancialYear: boolean,
-  date: Date = new Date()
+  date: Date = new Date(),
+  separator: string = "/",
+  counterLength: number = 6,
 ): string {
-  const paddedSeq = String(sequence).padStart(6, "0");
+  const paddedSeq = String(sequence).padStart(counterLength, "0");
   if (useFinancialYear) {
-    return `${prefix}/${getFinancialYear(date)}/${paddedSeq}`;
+    return `${prefix}${separator}${getFinancialYear(date)}${separator}${paddedSeq}`;
   }
-  return `${prefix}/${paddedSeq}`;
+  return `${prefix}${separator}${paddedSeq}`;
 }

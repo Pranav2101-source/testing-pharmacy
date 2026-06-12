@@ -4,8 +4,10 @@ import {
   createMedicineSchema,
   updateMedicineSchema,
   listMedicinesQuerySchema,
+  upsertOverrideSchema,
 } from "./medicines.schema.js";
 import { authenticate, requireOwner, requireRole } from "../../middleware/auth.js";
+import { resolvePharmacy } from "../../middleware/tenant.js";
 
 const medicinesRoutes: FastifyPluginAsync = async (app) => {
   const service = new MedicinesService(app);
@@ -17,6 +19,8 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
   // operations are restricted to the platform team.
   const owner   = [authenticate, requireOwner];
   const platformAdmin = [authenticate, requireRole("PLATFORM_ADMIN")];
+  const scoped       = [authenticate, resolvePharmacy];
+  const ownerScoped  = [authenticate, resolvePharmacy, requireOwner];
 
   // ── Fast fuzzy search via Meilisearch (used by billing POS) ─────────────
   app.get("/search", { preHandler: auth }, async (req, reply) => {
@@ -116,6 +120,28 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
     const { id }   = req.params as { id: string };
     const medicine = await service.reactivate(id);
     return reply.send({ success: true, data: medicine });
+  });
+
+  // ── Per-pharmacy overrides (GST / standing discount) ─────────────────────
+  // The catalog is global; these let an owner adjust values for THEIR pharmacy
+  // only. Registered before /:id — Fastify matches static segments first.
+
+  app.get("/overrides", { preHandler: scoped }, async (req, reply) => {
+    const data = await service.listOverrides(req.pharmacyId);
+    return reply.send({ success: true, data });
+  });
+
+  app.put("/:id/override", { preHandler: ownerScoped }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const input  = upsertOverrideSchema.parse(req.body);
+    const data   = await service.upsertOverride(req.pharmacyId, id, input);
+    return reply.send({ success: true, data });
+  });
+
+  app.delete("/:id/override", { preHandler: ownerScoped }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    await service.deleteOverride(req.pharmacyId, id);
+    return reply.send({ success: true, data: null });
   });
 
   // ── Generic substitution alternatives (pharmacy-specific stock data) ─────

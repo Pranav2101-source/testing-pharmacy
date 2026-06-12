@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Layers, BookOpen, Bell, Search, Loader2, FileX, AlertCircle,
   Plus, X, Check, AlertTriangle, Clock, TrendingDown, ArrowUp, ArrowDown,
-  ShieldAlert, Skull, MinusCircle, PlusCircle, Info,
+  ShieldAlert, Skull, MinusCircle, PlusCircle, Info, Printer, ShoppingCart,
 } from "lucide-react";
+import { BarcodeLabelModal } from "@/components/BarcodeLabelModal";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
@@ -350,8 +352,9 @@ function BatchesTab() {
   const [inStock,    setInStock]    = useState(false);
   const [lowStock,   setLowStock]   = useState(false);
   const [nearExpiry, setNearExpiry] = useState(false);
-  const [statusModal, setStatusModal] = useState<InventoryItem | null>(null);
-  const [adjustModal, setAdjustModal] = useState<InventoryItem | null>(null);
+  const [statusModal,      setStatusModal]      = useState<InventoryItem | null>(null);
+  const [adjustModal,      setAdjustModal]      = useState<InventoryItem | null>(null);
+  const [barcodePrintItem, setBarcodePrintItem] = useState<InventoryItem | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
@@ -487,6 +490,10 @@ function BatchesTab() {
                         className="text-[11px] font-semibold text-blue-600 hover:text-blue-700 border border-blue-200 hover:border-blue-300 bg-blue-50/50 hover:bg-blue-50 rounded-md px-2 py-1 transition-colors">
                         Status
                       </button>
+                      <button onClick={() => setBarcodePrintItem(item)} title="Print barcode label"
+                        className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
+                        <Printer className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -520,6 +527,19 @@ function BatchesTab() {
             onToast={(msg, v) => v === "success" ? toast.success(msg) : toast.error(msg)} />
         )}
       </AnimatePresence>
+
+      {barcodePrintItem && (
+        <BarcodeLabelModal
+          item={{
+            medicineName: barcodePrintItem.medicine.name,
+            genericName:  barcodePrintItem.medicine.genericName,
+            batchNumber:  barcodePrintItem.batchNumber,
+            expiryDate:   barcodePrintItem.expiryDate,
+            mrp:          barcodePrintItem.mrp,
+          }}
+          onClose={() => setBarcodePrintItem(null)}
+        />
+      )}
     </div>
   );
 }
@@ -667,6 +687,7 @@ const STOCK_TIER_CFG: Record<StockTier, { label: string; badgeCls: string }> = {
 const ALERTS_PAGE_SIZE = 25;
 
 function AlertsTab() {
+  const navigate = useNavigate();
   const [expiryItems, setExpiryItems] = useState<ExpiryAlert[]>([]);
   const [lowItems,    setLowItems]    = useState<StockAlert[]>([]);
   const [loading,     setLoading]     = useState(true);
@@ -814,7 +835,7 @@ function AlertsTab() {
           <div className="border border-slate-200 rounded-xl overflow-hidden">
             <table className="w-full">
               <thead className="bg-slate-50"><tr className="border-b border-slate-200">
-                {["Status","Medicine","Batch","Stock","Reorder Level","Min Stock","MRP"].map((h) => <th key={h} className={thCls}>{h}</th>)}
+                {["Status","Medicine","Batch","Stock","Reorder Level","Min Stock","MRP",""].map((h) => <th key={h} className={thCls}>{h}</th>)}
               </tr></thead>
               <tbody>
                 {pagedStock.map((item) => {
@@ -833,6 +854,16 @@ function AlertsTab() {
                       <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{(item as any).reorderLevel ?? "—"}</td>
                       <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{item.minimumStock}</td>
                       <td className="px-4 py-3 text-[12px] text-slate-600 tabular-nums">₹{item.mrp.toFixed(2)}</td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => navigate(
+                            `/dashboard/purchase?create-po=1&medicineId=${encodeURIComponent(item.medicine.id)}&medicine=${encodeURIComponent(item.medicine.name)}&gstRate=${item.medicine.gstRate}`
+                          )}
+                          className="flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg px-2.5 py-1 transition-colors whitespace-nowrap"
+                        >
+                          <ShoppingCart className="w-3 h-3" />Create PO
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}

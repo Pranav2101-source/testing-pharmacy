@@ -181,6 +181,7 @@ export class CustomersRepo {
         name:            true,
         phone:           true,
         email:           true,
+        address:         true,
         customerType:    true,
         defaultDiscount: true,
         creditLimit:     true,

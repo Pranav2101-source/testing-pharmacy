@@ -21,8 +21,10 @@ const ITEM_INCLUDE = {
       expiryDate: true,
       quantity: true,
       location: true,
+      mrp: true,
+      purchaseRate: true,
       medicine: { select: { id: true, name: true, genericName: true, form: true, strength: true } },
-      shelf: { select: { id: true, code: true, rack: { select: { id: true, code: true, name: true } } } },
+      shelf: { select: { id: true, code: true, level: true, rack: { select: { id: true, code: true, name: true } } } },
     },
   },
 } as const
@@ -43,12 +45,12 @@ export class StockAuditRepo {
   async createSession(pharmacyId: string, userId: string, sessionNumber: string, data: CreateSessionInput) {
     return this.db.$transaction(async (tx: TxClient) => {
       const activeInventory = await tx.inventory.findMany({
-        where:  { pharmacyId, status: "ACTIVE", quantity: { gt: 0 } },
+        where:  { pharmacyId, status: "ACTIVE" },
         select: { id: true, quantity: true },
       })
 
       if (activeInventory.length === 0)
-        throw AppError.unprocessable("No active inventory items to audit")
+        throw AppError.unprocessable("No active inventory batches found. Add inventory before running a stock audit.")
 
       return tx.stockAuditSession.create({
         data: {
@@ -87,10 +89,12 @@ export class StockAuditRepo {
       if (!session) throw AppError.notFound("Audit session not found")
       throw AppError.conflict(`Cannot start a session in ${session.status} status`)
     }
-    return this.db.stockAuditSession.findFirst({
+    const updated = await this.db.stockAuditSession.findFirst({
       where:   { id, pharmacyId },
       include: { items: { include: ITEM_INCLUDE }, _count: { select: { items: true } } },
     })
+    if (!updated) throw AppError.notFound("Audit session not found after start")
+    return updated
   }
 
   // ── Update item ─────────────────────────────────────────────────────────────
@@ -107,9 +111,10 @@ export class StockAuditRepo {
     return this.db.stockAuditItem.update({
       where: { id: itemId },
       data: {
-        countedQty:  data.countedQty,
-        varianceQty: data.countedQty - item.expectedQty,
-        notes:       data.notes,
+        ...(data.countedQty !== undefined
+          ? { countedQty: data.countedQty, varianceQty: data.countedQty - item.expectedQty }
+          : {}),
+        ...(data.notes !== undefined ? { notes: data.notes } : {}),
       },
       include: ITEM_INCLUDE,
     })
@@ -298,7 +303,9 @@ export class StockAuditRepo {
         },
       })
 
-      return tx.stockAuditSession.findFirst({ where: { id, pharmacyId } })
+      const cancelled = await tx.stockAuditSession.findFirst({ where: { id, pharmacyId } })
+      if (!cancelled) throw AppError.notFound("Audit session not found after cancel")
+      return cancelled
     })
   }
 

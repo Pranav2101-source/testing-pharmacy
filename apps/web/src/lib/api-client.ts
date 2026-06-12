@@ -1,7 +1,7 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from "axios";
 import { clearSession, getAccessToken, getRefreshToken, storeTokens } from "./auth";
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api";
+const BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api/v1";
 
 export const api = axios.create({
   baseURL: BASE_URL,
@@ -111,11 +111,11 @@ api.interceptors.response.use(
     }
 
     // ── All other errors: normalise message from backend response ──────────
-    // The backend always returns { success: false, error: "..." }.
-    // Promote the server's error string onto err.message so every catch block
-    // can simply read (err as Error).message without digging into err.response.
+    // Our format:    { success: false, error: "<actual message>" }
+    // Fastify native: { statusCode, error: "Unprocessable Entity", message: "<actual message>" }
+    // Prefer `.message` (specific) over `.error` (may be the HTTP status phrase).
     const serverMsg: string | undefined =
-      err.response.data?.error ?? err.response.data?.message;
+      err.response.data?.message ?? err.response.data?.error;
     if (serverMsg) err.message = serverMsg;
 
     return Promise.reject(err);

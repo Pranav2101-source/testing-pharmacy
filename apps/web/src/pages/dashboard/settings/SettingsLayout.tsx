@@ -1,9 +1,10 @@
 import { Link, useLocation, Outlet } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Building2, FileText, CreditCard, KeyRound, ArrowLeft, Users, Receipt, FileOutput } from "lucide-react";
+import { Building2, FileText, CreditCard, KeyRound, ArrowLeft, Users, Receipt, FileOutput, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
+  { href: "/dashboard/settings/my-profile",       label: "My Profile",        icon: User       },
   { href: "/dashboard/settings/pharmacy-profile", label: "Pharmacy Profile",  icon: Building2  },
   { href: "/dashboard/settings/documents",        label: "Documents & Legal", icon: FileText   },
   { href: "/dashboard/settings/staff",            label: "Staff Management",  icon: Users      },

@@ -3,12 +3,13 @@ import { SuppliersRepo } from "./suppliers.repo.js";
 import { InventoryRepo } from "../inventory/inventory.repo.js";
 import type { CreateSupplierInput, UpdateSupplierInput, ListSuppliersQuery, CreatePurchaseOrderInput } from "./suppliers.schema.js";
 import { AppError } from "../../lib/AppError.js";
+import { TtlCache } from "../../lib/ttl-cache.js";
 
-// Supplier lists change infrequently — 2-minute cache reduces repeated identical
-// queries during the purchase/GRN workflow where the list is often re-fetched.
+// 2-minute cache reduces repeated identical queries during purchase/GRN workflow.
 const SUPPLIERS_CACHE_TTL_S = 120;
+const suppliersCache = new TtlCache<string, unknown>();
 const suppliersListKey = (pharmacyId: string, params: object) =>
-  `suppliers:list:${pharmacyId}:${JSON.stringify(params)}`;
+  `${pharmacyId}:${JSON.stringify(params)}`;
 
 export class SuppliersService {
   private repo:          SuppliersRepo;
@@ -21,13 +22,13 @@ export class SuppliersService {
     this.inventoryRepo = new InventoryRepo(app.prisma);
   }
 
-  private async bustSuppliersCache(pharmacyId: string) {
-    try { await this.app.redis.del(suppliersListKey(pharmacyId, { page: 1, limit: 50 })); } catch { /* best-effort */ }
+  private bustSuppliersCache(pharmacyId: string): void {
+    suppliersCache.delete(suppliersListKey(pharmacyId, { page: 1, limit: 50 }));
   }
 
   async createSupplier(pharmacyId: string, input: CreateSupplierInput) {
     const supplier = await this.repo.create(pharmacyId, input);
-    void this.bustSuppliersCache(pharmacyId);
+    this.bustSuppliersCache(pharmacyId);
     return supplier;
   }
 
@@ -35,7 +36,7 @@ export class SuppliersService {
     const existing = await this.repo.getById(id, pharmacyId);
     if (!existing) throw AppError.notFound("Supplier not found");
     const supplier = await this.repo.update(id, pharmacyId, input);
-    void this.bustSuppliersCache(pharmacyId);
+    this.bustSuppliersCache(pharmacyId);
     return supplier;
   }
 
@@ -48,14 +49,11 @@ export class SuppliersService {
   async list(pharmacyId: string, query: ListSuppliersQuery) {
     const params   = { page: query.page, limit: query.limit, search: query.search?.trim() || undefined };
     const cacheKey = suppliersListKey(pharmacyId, params);
-    try {
-      const cached = await this.app.redis.get(cacheKey);
-      if (cached) {
-        try { return JSON.parse(cached); } catch { /* corrupt — fall through */ }
-      }
-    } catch { /* Redis unavailable — fall through to DB */ }
+    const cached   = suppliersCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
     const result = await this.repo.list(pharmacyId, params.page, params.limit, params.search);
-    try { await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", SUPPLIERS_CACHE_TTL_S); } catch { /* best-effort */ }
+    suppliersCache.set(cacheKey, result, SUPPLIERS_CACHE_TTL_S);
     return result;
   }
 

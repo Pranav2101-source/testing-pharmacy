@@ -8,15 +8,19 @@ import type { InvoiceSettingsConfig } from "@pharmacy/types";
 // ─── Data shape ───────────────────────────────────────────────────────────────
 
 export type PrintInvoiceData = {
-  invoiceNumber:  string;
-  createdAt:      string;
-  customerName?:  string;
-  customerPhone?: string;
-  doctorName?:    string;
-  paymentMode:    string;
-  paymentStatus:  string;
-  isInterstate?:  boolean;
-  cashierName?:   string;
+  invoiceNumber:    string;
+  createdAt:        string;
+  customerName?:    string;
+  customerPhone?:   string;
+  customerAddress?: string;
+  uhid?:            string;
+  abha?:            string;
+  prescriptionNo?:  string;
+  doctorName?:      string;
+  paymentMode:      string;
+  paymentStatus:    string;
+  isInterstate?:    boolean;
+  cashierName?:     string;
   items: Array<{
     medicineName:  string;
     hsnCode:       string | null;
@@ -243,9 +247,13 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
               )}
             </div>
             <div style={{ lineHeight: "1.8", fontSize: "9.5px" }}>
-              {pat.showName   && invoice.customerName  && <p><strong>Patient:</strong> {invoice.customerName}</p>}
-              {pat.showMobile && invoice.customerPhone && <p><strong>Phone:</strong>   {invoice.customerPhone}</p>}
-              {pat.showDoctor && invoice.doctorName    && <p><strong>Doctor:</strong>  {invoice.doctorName}</p>}
+              {pat.showName           && invoice.customerName    && <p><strong>Patient:</strong>    {invoice.customerName}</p>}
+              {pat.showMobile         && invoice.customerPhone   && <p><strong>Phone:</strong>      {invoice.customerPhone}</p>}
+              {pat.showAddress        && invoice.customerAddress && <p><strong>Address:</strong>    {invoice.customerAddress}</p>}
+              {pat.showUhid           && invoice.uhid            && <p><strong>UHID:</strong>       {invoice.uhid}</p>}
+              {pat.showAbha           && invoice.abha            && <p><strong>ABHA:</strong>       {invoice.abha}</p>}
+              {pat.showDoctor         && invoice.doctorName      && <p><strong>Doctor:</strong>     {invoice.doctorName}</p>}
+              {pat.showPrescriptionNo && invoice.prescriptionNo  && <p><strong>Rx No:</strong>      {invoice.prescriptionNo}</p>}
             </div>
           </div>
 

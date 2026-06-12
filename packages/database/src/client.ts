@@ -151,6 +151,10 @@ const createClient = () => {
         gstRate:    { needs: { gstRate: true },    compute: (q) => q.gstRate.toNumber() },
         discount:   { needs: { discount: true },   compute: (q) => q.discount.toNumber() },
       },
+      pharmacyMedicineOverride: {
+        gstRate:            { needs: { gstRate: true },            compute: (o) => o.gstRate === null ? null : o.gstRate.toNumber() },
+        defaultDiscountPct: { needs: { defaultDiscountPct: true }, compute: (o) => o.defaultDiscountPct === null ? null : o.defaultDiscountPct.toNumber() },
+      },
     },
   });
 };

@@ -3,6 +3,7 @@ import { PurchasesService } from "./purchases.service.js";
 import {
   createPOSchema, updatePOSchema, listPOQuerySchema, approvePOSchema, sharePOSchema,
   createGRNSchema, updateGRNSchema, listGRNQuerySchema, autoSuggestQuerySchema,
+  fromReorderSchema,
 } from "./purchases.schema.js";
 import { parseGRNCSV } from "./purchases.import.js";
 import { authenticate, requireOwner } from "../../middleware/auth.js";
@@ -25,6 +26,13 @@ const purchasesRoutes: FastifyPluginAsync = async (app) => {
   app.post("/orders", { preHandler: auth }, async (req, reply) => {
     const input = createPOSchema.parse(req.body);
     const po    = await service.createPO(req.pharmacyId, req.user.sub, req.user.role, input);
+    return reply.status(201).send({ success: true, data: po });
+  });
+
+  // POST /orders/from-reorder — bulk reorder suggestions → draft PO
+  app.post("/orders/from-reorder", { preHandler: auth }, async (req, reply) => {
+    const input = fromReorderSchema.parse(req.body);
+    const po    = await service.createPOFromReorder(req.pharmacyId, req.user.sub, req.user.role, input);
     return reply.status(201).send({ success: true, data: po });
   });
 

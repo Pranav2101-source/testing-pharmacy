@@ -47,7 +47,8 @@ ALTER COLUMN "totalAmount" SET DATA TYPE DECIMAL(12,2),
 ALTER COLUMN "returnedAmount" SET DATA TYPE DECIMAL(12,2),
 ALTER COLUMN "igst" SET DATA TYPE DECIMAL(12,2);
 
--- AlterTable
+-- AlterTable (catalogMrp was added via db push on Neon — create it if missing before altering type)
+ALTER TABLE "medicines" ADD COLUMN IF NOT EXISTS "catalogMrp" DOUBLE PRECISION;
 ALTER TABLE "medicines" ALTER COLUMN "gstRate" SET DATA TYPE DECIMAL(12,2),
 ALTER COLUMN "catalogMrp" SET DATA TYPE DECIMAL(12,2);
 

@@ -3,6 +3,7 @@ import { PurchasesRepo } from "./purchases.repo.js";
 import type {
   CreatePOInput, UpdatePOInput, ListPOQuery, ApprovePOInput, SharePOInput,
   CreateGRNInput, UpdateGRNInput, ListGRNQuery, AutoSuggestQuery,
+  FromReorderInput,
 } from "./purchases.schema.js";
 import type { ImportedGRNRow } from "./purchases.import.js";
 import { AppError } from "../../lib/AppError.js";
@@ -77,6 +78,28 @@ export class PurchasesService {
       subtotal,
       totalGst,
       totalAmount: subtotal + totalGst,
+    });
+  }
+
+  async createPOFromReorder(pharmacyId: string, userId: string, userRole: string, input: FromReorderInput) {
+    // Placeholder batch details — filled in by the GRN flow when stock actually arrives
+    const placeholderExpiry = new Date(Date.now() + 365 * 86_400_000).toISOString();
+
+    const itemsForPO = input.items.map((item) => ({
+      medicineId:   item.medicineId,
+      medicineName: item.medicineName,
+      batchNumber:  "PENDING",
+      expiryDate:   placeholderExpiry,
+      quantity:     item.quantity,
+      purchaseRate: item.purchaseRate,
+      mrp:          item.mrp,
+      gstRate:      item.gstRate,
+    }));
+
+    return this.createPO(pharmacyId, userId, userRole, {
+      supplierId: input.supplierId,
+      notes:      input.notes ?? "Auto-generated from reorder suggestions",
+      items:      itemsForPO,
     });
   }
 

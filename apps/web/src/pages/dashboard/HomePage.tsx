@@ -11,7 +11,7 @@ import {
 import { Link, useNavigate, Navigate } from "react-router-dom";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
-import { isSupportStaff } from "@/lib/auth";
+import { isSupportStaff, getStoredUser } from "@/lib/auth";
 
 // ─── Types ────────────────────────────────────────────────────────
 type PaymentBreakdownItem = { mode: string | null; total: number; count: number };
@@ -562,13 +562,15 @@ export default function DashboardHomePage() {
     },
   ];
 
+  const _userRole = getStoredUser()?.role ?? "";
+  const _canViewReports = _userRole === "OWNER" || _userRole === "MANAGER";
   const QUICK_ACTIONS = [
     { href: "/dashboard/billing/new",  label: "New Bill",        icon: FilePlus,     kbd: "F2",  primary: true  },
     { href: "/dashboard/purchase",     label: "Purchase Order",  icon: ShoppingCart, kbd: null,  primary: false },
     { href: "/dashboard/inventory",    label: "Check Inventory", icon: Package2,     kbd: null,  primary: false },
     { href: "/dashboard/stock-audit",  label: "Stock Audit",     icon: ClipboardList,kbd: null,  primary: false },
     { href: "/dashboard/billing",      label: "All Bills",       icon: FileText,     kbd: null,  primary: false },
-    { href: "/dashboard/reports",      label: "Reports",         icon: TrendingUp,   kbd: null,  primary: false },
+    ...(_canViewReports ? [{ href: "/dashboard/reports", label: "Reports", icon: TrendingUp, kbd: null, primary: false }] : []),
   ];
 
   return (

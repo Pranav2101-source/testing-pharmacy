@@ -5,9 +5,11 @@ import { pipeline } from "stream/promises";
 import { join, extname } from "path";
 import { randomBytes } from "crypto";
 import { authenticate, requireRole } from "../../middleware/auth.js";
+import type { JwtPayload } from "../../middleware/auth.js";
 import { resolvePharmacy } from "../../middleware/tenant.js";
 import { SupportService } from "./support.service.js";
 import { AppError } from "../../lib/AppError.js";
+import { registerConn, removeConn } from "./support.sse.js";
 import {
   createTicketSchema,
   updateStatusSchema,
@@ -263,6 +265,64 @@ const supportRoutes: FastifyPluginAsync = async (app) => {
     const { isActive } = req.body as { isActive: boolean };
     const agent       = await service.toggleAgent(id, !!isActive);
     return reply.send({ success: true, data: agent });
+  });
+
+  // ── GET /stream ───────────────────────────────────────────────────────────────
+  // Server-Sent Events endpoint for real-time ticket updates. Auth via query param
+  // because the browser's EventSource API does not support custom headers.
+
+  app.get("/stream", async (req, reply) => {
+    const { token } = req.query as { token?: string };
+    if (!token) {
+      return reply.status(401).send({ success: false, error: "Unauthorized" });
+    }
+
+    let payload: JwtPayload;
+    try {
+      payload = app.jwt.verify<JwtPayload>(token);
+    } catch {
+      return reply.status(401).send({ success: false, error: "Unauthorized" });
+    }
+
+    if (payload.type !== "access") {
+      return reply.status(401).send({ success: false, error: "Unauthorized" });
+    }
+
+    const dbUser = await app.prisma.user.findUnique({
+      where:  { id: payload.sub },
+      select: { tokenVersion: true, isActive: true },
+    });
+    if (!dbUser?.isActive || dbUser.tokenVersion !== payload.tokenVersion) {
+      return reply.status(401).send({ success: false, error: "Unauthorized" });
+    }
+
+    // Disable idle timeout — this is a long-lived streaming connection.
+    req.raw.setTimeout(0);
+    reply.raw.setTimeout(0);
+
+    reply.raw.setHeader("Content-Type",      "text/event-stream");
+    reply.raw.setHeader("Cache-Control",     "no-cache");
+    reply.raw.setHeader("Connection",        "keep-alive");
+    reply.raw.setHeader("X-Accel-Buffering", "no"); // disable nginx proxy buffering
+    reply.raw.flushHeaders();
+
+    const connId = registerConn(payload.sub, payload.role, reply.raw);
+
+    // Heartbeat every 25 s keeps the connection alive through load balancers
+    // and browsers that would otherwise close an idle SSE stream.
+    const heartbeat = setInterval(() => {
+      try { reply.raw.write(": heartbeat\n\n"); } catch { clearInterval(heartbeat); }
+    }, 25_000);
+
+    reply.raw.write(`event: connected\ndata: ${JSON.stringify({ connId })}\n\n`);
+
+    await new Promise<void>((resolve) => {
+      req.raw.on("close", () => {
+        clearInterval(heartbeat);
+        removeConn(connId);
+        resolve();
+      });
+    });
   });
 };
 

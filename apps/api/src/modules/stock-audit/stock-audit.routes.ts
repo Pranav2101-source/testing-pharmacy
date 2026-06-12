@@ -16,7 +16,7 @@ const stockAuditRoutes: FastifyPluginAsync = async (app) => {
   const svc = new StockAuditService(app)
 
   app.post("/", { preHandler: auth }, async (req, reply) => {
-    const body = createSessionSchema.parse(req.body)
+    const body = createSessionSchema.parse(req.body ?? {})
     const session = await svc.createSession(req.pharmacyId, req.user.sub, body)
     return reply.status(201).send({ success: true, data: session })
   })
@@ -41,7 +41,7 @@ const stockAuditRoutes: FastifyPluginAsync = async (app) => {
 
   app.patch("/:id/items/:itemId", { preHandler: auth }, async (req, reply) => {
     const { id, itemId } = req.params as { id: string; itemId: string }
-    const body = updateItemSchema.parse(req.body)
+    const body = updateItemSchema.parse(req.body ?? {})
     const item = await svc.updateItem(id, itemId, req.pharmacyId, body)
     return reply.send({ success: true, data: item })
   })

@@ -7,6 +7,7 @@ import {
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api-client";
 import { invalidateInvoicePrintConfigCache } from "@/lib/useInvoicePrintConfig";
+import { getStoredUser, storeUser } from "@/lib/auth";
 
 // ─── Reusable field ───────────────────────────────────────────────────────────
 
@@ -119,6 +120,12 @@ export default function PharmacyProfilePage() {
       await api.put("/pharmacy", form);
       // Bust the print config cache so next bill print reflects new pharmacy data
       invalidateInvoicePrintConfigCache();
+      // Sync pharmacyName in localStorage so TopNav and useCurrentUser reflect
+      // the new name immediately without requiring a page reload.
+      const stored = getStoredUser();
+      if (stored && form.name.trim()) {
+        storeUser({ ...stored, pharmacyName: form.name.trim() });
+      }
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch {

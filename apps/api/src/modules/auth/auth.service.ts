@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { AuthRepo } from "./auth.repo.js";
 import type { LoginInput, RegisterInput, RefreshInput, ForgotPasswordInput, ResetPasswordInput } from "./auth.schema.js";
 import type { JwtPayload, UserRole } from "../../middleware/auth.js";
-import { tokenVersionKey } from "../../middleware/auth.js";
+import { invalidateTokenVersion } from "../../middleware/auth.js";
 import { AppError } from "../../lib/AppError.js";
 import { env } from "../../config/env.js";
 import { notifyOwners } from "../../lib/notifications.js";
@@ -134,8 +134,7 @@ export class AuthService {
     const newVersion = await this.repo.rotateTokenVersion(user.id);
 
     // Evict the cached tokenVersion so authenticate picks up the new one immediately.
-    // Best-effort — if Redis is down the old version expires via TTL.
-    try { await this.app.redis.del(tokenVersionKey(user.id)); } catch { /* best-effort */ }
+    invalidateTokenVersion(user.id);
 
     return this.signTokens(user.id, user.pharmacyId, user.role, user.email, newVersion);
   }
@@ -196,7 +195,7 @@ export class AuthService {
     await this.repo.consumePasswordResetToken(user.id, newPasswordHash);
 
     // Evict the tokenVersion cache so all existing access tokens are rejected immediately.
-    try { await this.app.redis.del(tokenVersionKey(user.id)); } catch { /* best-effort */ }
+    invalidateTokenVersion(user.id);
   }
 
   // ── Logout ────────────────────────────────────────────────────────────────
@@ -205,7 +204,7 @@ export class AuthService {
     // Incrementing tokenVersion server-side invalidates all outstanding tokens for
     // this user — both the current access token and any refresh tokens in other tabs.
     await this.repo.rotateTokenVersion(userId);
-    try { await this.app.redis.del(tokenVersionKey(userId)); } catch { /* best-effort */ }
+    invalidateTokenVersion(userId);
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────

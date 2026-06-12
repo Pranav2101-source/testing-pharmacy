@@ -9,9 +9,10 @@ declare module "fastify" {
   }
 }
 
-// Redis key that tracks the last time we successfully pushed medicines to Meilisearch.
-// Storing it per-environment prevents a staging restart from poisoning prod's cursor.
-const SYNC_CURSOR_KEY = `meilisearch:medicines:lastSyncedAt:${env.NODE_ENV}`;
+// In-process cursor for incremental Meilisearch sync. Resets to null on restart,
+// triggering a full sync — acceptable for pharmacy-sized catalogs (< 10k medicines).
+// For very large catalogs, consider persisting this in a DB settings table.
+let lastSyncedAt: Date | null = null;
 
 // Batch size for addDocuments — keeps individual Meilisearch requests under ~5 MB
 const SYNC_BATCH_SIZE = 500;
@@ -56,10 +57,7 @@ const meilisearchPlugin: FastifyPluginAsync = async (fastify) => {
     setImmediate(() => {
       void (async () => {
         try {
-          const syncedAt     = new Date();
-          const cursorRaw    = await fastify.redis.get(SYNC_CURSOR_KEY);
-          const lastSyncedAt = cursorRaw ? new Date(cursorRaw) : null;
-
+          const syncedAt  = new Date();
           const medicines = await fastify.prisma.medicine.findMany({
             ...(lastSyncedAt ? { where: { updatedAt: { gt: lastSyncedAt } } } : {}),
             orderBy: { updatedAt: "asc" },
@@ -74,10 +72,10 @@ const meilisearchPlugin: FastifyPluginAsync = async (fastify) => {
             await index.addDocuments(medicines.slice(i, i + SYNC_BATCH_SIZE));
           }
 
-          await fastify.redis.set(SYNC_CURSOR_KEY, syncedAt.toISOString());
+          lastSyncedAt = syncedAt; // advance cursor for the next hot reload
 
           fastify.log.info(
-            `Meilisearch: synced ${medicines.length} medicine(s) ${lastSyncedAt ? `(delta since ${lastSyncedAt.toISOString()})` : "(full sync — first run)"}`,
+            `Meilisearch: synced ${medicines.length} medicine(s) ${lastSyncedAt ? `(delta since ${lastSyncedAt.toISOString()})` : "(full sync)"}`,
           );
         } catch (err) {
           fastify.log.warn({ err }, "Meilisearch sync failed — search may be stale");

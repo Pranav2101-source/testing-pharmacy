@@ -1,5 +1,6 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { env } from "../config/env.js";
+import { TtlCache } from "../lib/ttl-cache.js";
 
 export type UserRole = "OWNER" | "MANAGER" | "PHARMACIST" | "CASHIER" | "SUPPORT_AGENT" | "PLATFORM_ADMIN";
 
@@ -19,22 +20,28 @@ declare module "@fastify/jwt" {
   }
 }
 
-// Redis key that caches a user's current tokenVersion.
-// TTL is derived from JWT_EXPIRES_IN so the cache never outlives a valid token,
-// regardless of how the env var is configured.
-export const tokenVersionKey = (userId: string) => `user:tv:${userId}`;
-
 function parseTtlToSeconds(ttl: string): number {
   const match = ttl.match(/^(\d+)(m|h|d)$/);
-  if (!match) return 15 * 60; // fallback: 15 min
+  if (!match) return 15 * 60;
   const n    = parseInt(match[1]!, 10);
   const unit = match[2];
   if (unit === "m") return n * 60;
   if (unit === "h") return n * 60 * 60;
-  return n * 24 * 60 * 60; // days
+  return n * 24 * 60 * 60;
 }
 
 const TOKEN_VERSION_TTL_S = parseTtlToSeconds(env.JWT_EXPIRES_IN);
+
+// In-process token version cache. Eliminates a DB round-trip on every
+// authenticated request. Eviction on logout/password-change is synchronous —
+// no network hop required (compare: Redis del was async + could fail).
+// Cache miss falls through to Prisma and re-populates transparently.
+const tokenVersionCache = new TtlCache<string, number>();
+
+// Exported so auth.service.ts can invalidate on logout / password change.
+export function invalidateTokenVersion(userId: string): void {
+  tokenVersionCache.delete(userId);
+}
 
 export async function authenticate(
   request: FastifyRequest,
@@ -49,28 +56,12 @@ export async function authenticate(
     return void reply.status(401).send({ success: false, error: "Unauthorized" });
   }
 
-  // Verify tokenVersion — ensures logout and password-reset actually revoke tokens.
-  // Redis cache avoids a DB hit on every request; a cache miss falls through to Prisma
-  // and re-populates the cache. Worst-case revocation latency = TOKEN_VERSION_TTL_S.
   const { sub: userId, tokenVersion } = request.user;
-  const cacheKey = tokenVersionKey(userId);
-  const { redis, prisma } = request.server;
 
-  let currentVersion: number;
+  let currentVersion = tokenVersionCache.get(userId);
 
-  // Redis cache for token version — fall back to DB on cache miss or Redis error
-  // (e.g. connection refused, rate limit exceeded on free-tier plans).
-  let cached: string | null = null;
-  try {
-    cached = await redis.get(cacheKey);
-  } catch {
-    // Redis unavailable — skip cache, go straight to DB
-  }
-
-  if (cached !== null) {
-    currentVersion = parseInt(cached, 10);
-  } else {
-    const user = await prisma.user.findUnique({
+  if (currentVersion === undefined) {
+    const user = await request.server.prisma.user.findUnique({
       where:  { id: userId },
       select: { tokenVersion: true, isActive: true },
     });
@@ -78,10 +69,7 @@ export async function authenticate(
       return void reply.status(401).send({ success: false, error: "Unauthorized" });
     }
     currentVersion = user.tokenVersion;
-    // Best-effort cache write — ignore errors
-    try {
-      await redis.set(cacheKey, String(currentVersion), "EX", TOKEN_VERSION_TTL_S);
-    } catch { /* Redis unavailable — next request will hit DB again */ }
+    tokenVersionCache.set(userId, currentVersion, TOKEN_VERSION_TTL_S);
   }
 
   if (tokenVersion !== currentVersion) {
@@ -92,10 +80,6 @@ export async function authenticate(
 /**
  * Factory that returns a preHandler which passes only if the authenticated
  * user holds one of the specified roles. Must come AFTER `authenticate`.
- *
- * Usage:
- *   const owner   = [authenticate, resolvePharmacy, requireRole("OWNER")];
- *   const manager = [authenticate, resolvePharmacy, requireRole("OWNER", "MANAGER")];
  */
 export function requireRole(...roles: UserRole[]) {
   return async function roleGuard(
@@ -112,8 +96,5 @@ export function requireRole(...roles: UserRole[]) {
   };
 }
 
-/** Convenience: only OWNER may proceed. */
-export const requireOwner = requireRole("OWNER");
-
-/** OWNER or MANAGER — for admin-level operations that don't need full owner access. */
+export const requireOwner   = requireRole("OWNER");
 export const requireManager = requireRole("OWNER", "MANAGER");

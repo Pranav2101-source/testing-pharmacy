@@ -13,20 +13,22 @@ import type {
 import type { InvoiceLineItem, DashboardStats } from "./billing.types.js";
 import { AppError } from "../../lib/AppError.js";
 import { notifyOwners } from "../../lib/notifications.js";
-import { postInvoiceQueue } from "../../queues/queue.client.js";
+import { enqueuePostInvoice } from "../../queues/queue.client.js";
+import { TtlCache } from "../../lib/ttl-cache.js";
 
 const MAX_PAGE_LIMIT = 100;
 
-// Invoice settings change rarely (at most once per financial year). Cache in
-// Redis for 5 minutes so each billing operation doesn't need a DB round-trip.
+// Invoice settings change rarely (at most once per financial year). Cache for
+// 5 minutes so each billing operation avoids a DB round-trip.
 const SETTINGS_CACHE_TTL_S = 300;
-const settingsCacheKey = (pharmacyId: string) => `billing:settings:${pharmacyId}`;
 
-// Dashboard stats are eventually-consistent by nature — a 30-second-old revenue
-// figure is acceptable. Cache in Redis; invalidate explicitly on invoice writes
-// so the UI refreshes immediately after a sale without waiting for TTL expiry.
+// Dashboard stats: 30-second TTL; invalidated immediately on invoice writes
+// so the UI refreshes after a sale without waiting for TTL expiry.
 const STATS_CACHE_TTL_S = 30;
-const statsCacheKey = (pharmacyId: string) => `dashboard:stats:${pharmacyId}`;
+
+// Module-level singletons — one cache per concern, keyed by pharmacyId.
+const settingsCache = new TtlCache<string, Awaited<ReturnType<BillingRepo["getSettings"]>>>();
+const statsCache    = new TtlCache<string, DashboardStats>();
 
 export class BillingService {
   private repo: BillingRepo;
@@ -41,22 +43,11 @@ export class BillingService {
   // the next billing op sees the updated config within 5 minutes at most.
 
   private async getSettings(pharmacyId: string): ReturnType<BillingRepo["getSettings"]> {
-    const key = settingsCacheKey(pharmacyId);
-    let cached: string | null = null;
-    try { cached = await this.app.redis.get(key); } catch { /* Redis unavailable — skip cache */ }
-
-    if (cached) {
-      try {
-        return JSON.parse(cached) as Awaited<ReturnType<BillingRepo["getSettings"]>>;
-      } catch {
-        // Corrupt cache entry — fall through to DB
-      }
-    }
+    const cached = settingsCache.get(pharmacyId);
+    if (cached !== undefined) return cached;
 
     const settings = await this.repo.getSettings(pharmacyId);
-    if (settings) {
-      try { await this.app.redis.set(key, JSON.stringify(settings), "EX", SETTINGS_CACHE_TTL_S); } catch { /* best-effort */ }
-    }
+    if (settings) settingsCache.set(pharmacyId, settings, SETTINGS_CACHE_TTL_S);
     return settings;
   }
 
@@ -88,7 +79,7 @@ export class BillingService {
     // 3 separate customer fetches later in the flow.
     let isInterstate = input.isInterstate;
 
-    const [pharmacyState, customerForIgst] = await Promise.all([
+    const [pharmacyState, customerForIgst, medicineOverrides] = await Promise.all([
       this.app.prisma.pharmacy.findUnique({
         where:  { id: pharmacyId },
         select: { state: true, name: true },
@@ -102,7 +93,15 @@ export class BillingService {
             select: { state: true, name: true, phone: true },
           })
         : Promise.resolve(null),
+      // Per-pharmacy GST overrides — applied over the global catalog rate
+      this.repo.getMedicineOverrides(pharmacyId, [...new Set(batches.map((b) => b.medicine.id))]),
     ]);
+
+    const overrideGstRate = new Map(
+      medicineOverrides
+        .filter((o) => o.gstRate !== null)
+        .map((o) => [o.medicineId, o.gstRate as number]),
+    );
 
     if (pharmacyState?.state) {
       if (customerForIgst?.state) {
@@ -157,7 +156,8 @@ export class BillingService {
       // stale data (ignoring reservedQuantity from other sessions) and produce
       // misleading error messages under concurrent billing.
 
-      const gst = calcGstFromMrp(batch.mrp, item.quantity, item.discount, batch.medicine.gstRate, isInterstate);
+      const gstRate = overrideGstRate.get(batch.medicine.id) ?? batch.medicine.gstRate;
+      const gst = calcGstFromMrp(batch.mrp, item.quantity, item.discount, gstRate, isInterstate);
 
       lineItems.push({
         inventoryId:   item.inventoryId,
@@ -169,7 +169,7 @@ export class BillingService {
         purchaseRate:  batch.purchaseRate,
         quantity:      item.quantity,
         discount:      item.discount,
-        gstRate:       batch.medicine.gstRate,
+        gstRate,
         rate:          parseFloat((batch.mrp * (1 - item.discount / 100)).toFixed(2)),
         taxableAmount: gst.taxableAmount,
         cgst:          gst.cgst,
@@ -217,6 +217,9 @@ export class BillingService {
         seq,
         // financialYear is a string ("2025-26") in new configs, boolean in old ones
         !!config.numbering.financialYear,
+        new Date(),
+        config.numbering.separator  ?? "/",
+        config.numbering.counterLength ?? 6,
       );
 
     const invoice = await this.repo.createInvoiceTransactional({
@@ -232,6 +235,7 @@ export class BillingService {
         pharmacy:      { connect: { id: pharmacyId } },
         user:          { connect: { id: userId } },
         ...(input.customerId ? { customer: { connect: { id: input.customerId } } } : {}),
+        ...(input.doctorId   ? { doctor:   { connect: { id: input.doctorId   } } } : {}),
         // Snapshot — preserved even if the customer record changes later
         customerName:   customerForIgst?.name  ?? null,
         customerPhone:  customerForIgst?.phone ?? null,
@@ -282,31 +286,22 @@ export class BillingService {
 
     // ── Post-invoice side-effects ─────────────────────────────────────────────
 
-    // Enqueue post-invoice notifications (receipt, credit warning) in BullMQ.
-    // Fire-and-forget: the invoice is already committed; Redis enqueue latency
-    // must not delay the HTTP response. BullMQ persists the job and retries on failure.
-    void postInvoiceQueue.add(
-      "post-invoice",
-      {
-        pharmacyId,
-        invoiceId:     invoice.id,
-        invoiceNumber: invoice.invoiceNumber,
-        totalAmount:   totals.totalAmount,
-        paymentMode:   input.paymentMode,
-        customerId:    input.customerId ?? null,
-      },
-      {
-        attempts:         3,
-        backoff:          { type: "exponential", delay: 5_000 },
-        removeOnComplete: { count: 20 },
-        removeOnFail:     { count: 5 },
-      },
-    ).catch((err: unknown) => {
-      this.app.log.error(err, "post-invoice queue enqueue failed");
+    // Fire-and-forget: enqueue post-invoice notifications (receipt, credit warning).
+    // The invoice is already committed; pg-boss persists the job in Postgres and
+    // retries on failure — no Redis required, no network hop delays the response.
+    void enqueuePostInvoice({
+      pharmacyId,
+      invoiceId:     invoice.id,
+      invoiceNumber: invoice.invoiceNumber,
+      totalAmount:   totals.totalAmount,
+      paymentMode:   input.paymentMode,
+      customerId:    input.customerId ?? null,
+    }).catch((err: unknown) => {
+      this.app.log.error(err, "post-invoice enqueue failed");
     });
 
-    // Invalidate the dashboard stats cache so the next load reflects this sale.
-    void this.app.redis.del(statsCacheKey(pharmacyId));
+    // Evict dashboard stats so the next request reflects this sale immediately.
+    statsCache.delete(pharmacyId);
 
     return invoice;
   }
@@ -357,7 +352,7 @@ export class BillingService {
     auditMeta?: { ipAddress?: string; userAgent?: string },
   ) {
     const result = await this.repo.cancelInvoiceTransactional({ invoiceId: id, pharmacyId, userId, reason, auditMeta });
-    void this.app.redis.del(statsCacheKey(pharmacyId));
+    statsCache.delete(pharmacyId);
     return result;
   }
 
@@ -379,6 +374,9 @@ export class BillingService {
         (config.numbering.prefix ?? "INV") + "-RET",
         seq,
         !!config.numbering.financialYear,
+        new Date(),
+        config.numbering.separator  ?? "/",
+        config.numbering.counterLength ?? 6,
       );
 
     return this.repo.createReturnTransactional({
@@ -445,21 +443,18 @@ export class BillingService {
       });
     }
 
-    void this.app.redis.del(statsCacheKey(pharmacyId));
+    statsCache.delete(pharmacyId);
     return payment;
   }
 
   // ── Dashboard Stats ───────────────────────────────────────────────────────
 
   async getDashboardStats(pharmacyId: string): Promise<DashboardStats> {
-    const key = statsCacheKey(pharmacyId);
-    let cached: string | null = null;
-    try { cached = await this.app.redis.get(key); } catch { /* Redis unavailable — skip cache */ }
-    if (cached) {
-      try { return JSON.parse(cached) as DashboardStats; } catch { /* corrupt — fall through */ }
-    }
+    const cached = statsCache.get(pharmacyId);
+    if (cached !== undefined) return cached;
+
     const stats = await this.repo.getDashboardStats(pharmacyId);
-    try { await this.app.redis.set(key, JSON.stringify(stats), "EX", STATS_CACHE_TTL_S); } catch { /* best-effort */ }
+    statsCache.set(pharmacyId, stats, STATS_CACHE_TTL_S);
     return stats;
   }
 
@@ -499,14 +494,14 @@ export class BillingService {
     });
 
     // Bust the settings cache so next billing op picks up the new config
-    try { await this.app.redis.del(settingsCacheKey(pharmacyId)); } catch { /* best-effort */ }
+    settingsCache.delete(pharmacyId);
     return result;
   }
 
   // ── Settings cache invalidation ───────────────────────────────────────────
 
-  async invalidateSettingsCache(pharmacyId: string) {
-    try { await this.app.redis.del(settingsCacheKey(pharmacyId)); } catch { /* best-effort */ }
+  invalidateSettingsCache(pharmacyId: string): void {
+    settingsCache.delete(pharmacyId);
   }
 
   // ── FEFO Batch ────────────────────────────────────────────────────────────

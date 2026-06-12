@@ -7,14 +7,15 @@ import type {
 } from "./inventory.schema.js";
 import { AppError } from "../../lib/AppError.js";
 import { notifyOwners } from "../../lib/notifications.js";
+import { TtlCache } from "../../lib/ttl-cache.js";
 
-// Inventory changes on every sale (billing tx updates the DB directly, bypassing
-// this service), so we use a short TTL-only cache — no explicit invalidation.
-// 30 seconds keeps the list practically current while preventing redundant hits
-// when staff refresh the inventory screen between sales.
+// 30-second TTL keeps results practically current while absorbing rapid refreshes.
 const INVENTORY_CACHE_TTL_S = 30;
+
+// Compound string key: pharmacyId + serialized query params.
+const inventoryCache = new TtlCache<string, unknown>();
 const inventoryListKey = (pharmacyId: string, params: object) =>
-  `inventory:list:${pharmacyId}:${JSON.stringify(params)}`;
+  `${pharmacyId}:${JSON.stringify(params)}`;
 
 export class InventoryService {
   private repo: InventoryRepo;
@@ -29,6 +30,36 @@ export class InventoryService {
     return this.repo.upsertBatch(pharmacyId, { ...input, expiryDate: new Date(input.expiryDate) });
   }
 
+  // ── Per-pharmacy override overlay ─────────────────────────────────────────
+  // Billing checkout applies pharmacy GST overrides authoritatively; this
+  // overlay makes pharmacy-scoped inventory reads carry the same effective
+  // gstRate so the POS cart preview matches the final invoice. Overridden
+  // items are flagged (gstRateOverridden) and carry the standing discount.
+
+  private async applyMedicineOverrides(
+    pharmacyId: string,
+    items: Array<{ medicineId: string; medicine?: Record<string, unknown> | null }>,
+  ): Promise<void> {
+    if (items.length === 0) return;
+    const overrides = await this.repo.db.pharmacyMedicineOverride.findMany({
+      where: { pharmacyId, medicineId: { in: [...new Set(items.map((i) => i.medicineId))] } },
+    });
+    if (overrides.length === 0) return;
+
+    const byMedicine = new Map(overrides.map((o) => [o.medicineId, o]));
+    for (const item of items) {
+      const o = byMedicine.get(item.medicineId);
+      if (!o || !item.medicine) continue;
+      if (o.gstRate !== null) {
+        item.medicine["gstRate"]           = o.gstRate;
+        item.medicine["gstRateOverridden"] = true;
+      }
+      if (o.defaultDiscountPct !== null) {
+        item.medicine["defaultDiscountPct"] = o.defaultDiscountPct;
+      }
+    }
+  }
+
   async list(pharmacyId: string, query: ListInventoryQuery) {
     const params = {
       page:       query.page,
@@ -41,22 +72,21 @@ export class InventoryService {
       status:     query.status,
     };
     const cacheKey = inventoryListKey(pharmacyId, params);
-    try {
-      const cached = await this.app.redis.get(cacheKey);
-      if (cached) {
-        try { return JSON.parse(cached); } catch { /* corrupt — fall through */ }
-      }
-    } catch { /* Redis unavailable — fall through to DB */ }
+    const cached   = inventoryCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
     const result = await this.repo.list(pharmacyId, params);
-    try {
-      await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", INVENTORY_CACHE_TTL_S);
-    } catch { /* best-effort cache */ }
+    // Overlay BEFORE caching — cache key is pharmacy-scoped so cached entries
+    // carry that pharmacy's effective rates.
+    await this.applyMedicineOverrides(pharmacyId, result.items);
+    inventoryCache.set(cacheKey, result, INVENTORY_CACHE_TTL_S);
     return result;
   }
 
   async getById(id: string, pharmacyId: string) {
     const item = await this.repo.getById(id, pharmacyId);
     if (!item) throw AppError.notFound("Inventory item not found");
+    await this.applyMedicineOverrides(pharmacyId, [item]);
     return item;
   }
 

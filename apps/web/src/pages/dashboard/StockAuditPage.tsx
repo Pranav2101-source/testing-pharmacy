@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import {
   ClipboardList, Plus, X, Loader2, FileX, CheckCircle2,
-  Clock, AlertCircle, Ban, PlayCircle, ChevronRight,
+  Clock, AlertCircle, Ban, PlayCircle, ChevronRight, ArrowRight,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -13,28 +13,28 @@ import { cn } from "@/lib/utils";
 type AuditStatus = "DRAFT" | "IN_PROGRESS" | "COMPLETED" | "APPROVED" | "CANCELLED";
 
 type AuditSession = {
-  id:              string;
-  sessionNumber:   string;
-  status:          AuditStatus;
-  notes:           string | null;
-  createdAt:       string;
-  startedAt:       string | null;
-  completedAt:     string | null;
-  approvedAt:      string | null;
-  createdBy:       string;
-  countedItems:    number;
+  id:               string;
+  sessionNumber:    string;
+  status:           AuditStatus;
+  notes:            string | null;
+  createdAt:        string;
+  startedAt:        string | null;
+  completedAt:      string | null;
+  approvedAt:       string | null;
+  createdBy:        string;
+  countedItems:     number;
   itemsWithVariance: number;
-  _count:          { items: number };
+  _count:           { items: number };
 };
 
-// ─── Status config ──────────────────────────────────────────────────────────
+// ─── Status config ───────────────────────────────────────────────────────────
 
 const STATUS_CFG: Record<AuditStatus, { label: string; cls: string; icon: React.ElementType }> = {
-  DRAFT:       { label: "Draft",       cls: "bg-slate-100 text-slate-600",   icon: Clock        },
-  IN_PROGRESS: { label: "Counting",    cls: "bg-blue-50 text-blue-700",      icon: PlayCircle   },
-  COMPLETED:   { label: "Completed",   cls: "bg-amber-50 text-amber-700",    icon: AlertCircle  },
+  DRAFT:       { label: "Draft",       cls: "bg-slate-100 text-slate-600",    icon: Clock        },
+  IN_PROGRESS: { label: "Counting",    cls: "bg-blue-50 text-blue-700",       icon: PlayCircle   },
+  COMPLETED:   { label: "Needs Review",cls: "bg-amber-50 text-amber-700",     icon: AlertCircle  },
   APPROVED:    { label: "Approved",    cls: "bg-emerald-50 text-emerald-700", icon: CheckCircle2 },
-  CANCELLED:   { label: "Cancelled",   cls: "bg-red-50 text-red-600",        icon: Ban          },
+  CANCELLED:   { label: "Cancelled",   cls: "bg-red-50 text-red-600",         icon: Ban          },
 };
 
 function StatusBadge({ status }: { status: AuditStatus }) {
@@ -52,9 +52,17 @@ function fmt(d: string) {
   return new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+function duration(from: string, to: string | null) {
+  const ms = (to ? new Date(to) : new Date()).getTime() - new Date(from).getTime();
+  const h  = Math.floor(ms / 3600000);
+  const m  = Math.floor((ms % 3600000) / 60000);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 // ─── Create Session Modal ────────────────────────────────────────────────────
 
-function CreateAuditModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+function CreateAuditModal({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
   const [notes,  setNotes]  = useState("");
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState<string | null>(null);
@@ -63,10 +71,10 @@ function CreateAuditModal({ onClose, onDone }: { onClose: () => void; onDone: ()
     e.preventDefault();
     setSaving(true); setError(null);
     try {
-      await api.post("/stock-audit", { notes: notes || undefined });
-      onDone();
+      const res = await api.post("/stock-audit", { notes: notes || undefined });
+      onCreated(res.data.data.id);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to create audit session");
+      setError((err as Error).message || "Failed to create audit session");
     } finally { setSaving(false); }
   }
 
@@ -80,7 +88,7 @@ function CreateAuditModal({ onClose, onDone }: { onClose: () => void; onDone: ()
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
           <div>
             <h2 className="text-[15px] font-bold text-slate-900">New Stock Audit</h2>
-            <p className="text-[12px] text-slate-400 mt-0.5">A snapshot of all active inventory will be taken</p>
+            <p className="text-[12px] text-slate-400 mt-0.5">Snapshot all active batches and begin counting</p>
           </div>
           <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-slate-100 flex items-center justify-center">
             <X className="w-4 h-4 text-slate-400" />
@@ -90,15 +98,23 @@ function CreateAuditModal({ onClose, onDone }: { onClose: () => void; onDone: ()
         <form onSubmit={submit} className="p-6 space-y-4">
           {error && <div className="text-[12px] text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</div>}
 
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[12px] text-amber-800">
-            <strong>What happens:</strong> The system will snapshot the current quantity of every active inventory batch.
-            Staff will then enter actual counted quantities. Discrepancies are applied as stock adjustments upon approval.
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-2">
+            {[
+              "A snapshot of every active inventory batch is taken instantly",
+              "Staff physically count each batch and enter quantities",
+              "Discrepancies are reviewed, then applied as stock adjustments on approval",
+            ].map((s, i) => (
+              <div key={i} className="flex items-start gap-2 text-[12px] text-blue-800">
+                <span className="w-4 h-4 rounded-full bg-blue-200 text-blue-700 text-[10px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">{i + 1}</span>
+                {s}
+              </div>
+            ))}
           </div>
 
           <div>
-            <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Notes (optional)</label>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3}
-              placeholder="e.g. Month-end count, Post-Diwali audit…"
+            <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Reason / Notes (optional)</label>
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2}
+              placeholder="e.g. Monthly count, Post-Diwali audit, Surprise check…"
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 resize-none" />
           </div>
 
@@ -107,7 +123,7 @@ function CreateAuditModal({ onClose, onDone }: { onClose: () => void; onDone: ()
             <button type="submit" disabled={saving}
               className="px-4 py-2 text-[13px] font-semibold bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-60 transition-colors flex items-center gap-2">
               {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-              Start Audit
+              Create &amp; Open
             </button>
           </div>
         </form>
@@ -116,16 +132,118 @@ function CreateAuditModal({ onClose, onDone }: { onClose: () => void; onDone: ()
   );
 }
 
+// ─── Session Row ─────────────────────────────────────────────────────────────
+
+function SessionRow({ session, onClick }: { session: AuditSession; onClick: () => void }) {
+  const total   = session._count.items;
+  const counted = session.countedItems ?? 0;
+  const pct     = total > 0 ? Math.round((counted / total) * 100) : 0;
+  const isActive = session.status === "IN_PROGRESS";
+  const needsApproval = session.status === "COMPLETED";
+
+  return (
+    <tr
+      className={cn(
+        "cursor-pointer transition-colors group",
+        isActive      && "bg-blue-50/40 hover:bg-blue-50",
+        needsApproval && "bg-amber-50/30 hover:bg-amber-50/60",
+        !isActive && !needsApproval && "hover:bg-slate-50",
+      )}
+      onClick={onClick}
+    >
+      {/* Session number + notes */}
+      <td className="px-4 py-3.5">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[13px] font-bold text-slate-800">{session.sessionNumber}</span>
+          {isActive && (
+            <span className="text-[10px] font-bold text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded-full animate-pulse">LIVE</span>
+          )}
+        </div>
+        {session.notes && (
+          <div className="text-[11px] text-slate-400 mt-0.5 truncate max-w-[220px]">{session.notes}</div>
+        )}
+      </td>
+
+      {/* Status */}
+      <td className="px-4 py-3.5">
+        <StatusBadge status={session.status} />
+      </td>
+
+      {/* Progress */}
+      <td className="px-4 py-3.5">
+        {session.status !== "DRAFT" ? (
+          <div className="w-32">
+            <div className="flex justify-between text-[11px] text-slate-500 mb-1">
+              <span>{counted}/{total}</span>
+              <span className="font-semibold text-slate-700">{pct}%</span>
+            </div>
+            <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+              <div
+                className={cn("h-full rounded-full transition-all", pct === 100 ? "bg-emerald-500" : "bg-blue-500")}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          </div>
+        ) : (
+          <span className="text-[12px] text-slate-400">{total} items</span>
+        )}
+      </td>
+
+      {/* Variances */}
+      <td className="px-4 py-3.5">
+        {session.itemsWithVariance > 0 ? (
+          <span className="inline-flex items-center gap-1 text-[12px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+            {session.itemsWithVariance} variance{session.itemsWithVariance !== 1 ? "s" : ""}
+          </span>
+        ) : session.status === "APPROVED" ? (
+          <span className="inline-flex items-center gap-1 text-[12px] font-semibold text-emerald-600">
+            <CheckCircle2 className="w-3 h-3" /> No variance
+          </span>
+        ) : (
+          <span className="text-slate-300 text-[12px]">—</span>
+        )}
+      </td>
+
+      {/* Date + duration */}
+      <td className="px-4 py-3.5">
+        <div className="text-[12px] text-slate-600">{fmt(session.createdAt)}</div>
+        {session.startedAt && (
+          <div className="text-[11px] text-slate-400 mt-0.5">
+            {session.status === "APPROVED" || session.status === "COMPLETED"
+              ? `Took ${duration(session.startedAt, session.completedAt)}`
+              : `Running ${duration(session.startedAt, null)}`}
+          </div>
+        )}
+      </td>
+
+      {/* CTA */}
+      <td className="px-4 py-3.5">
+        {isActive ? (
+          <span className="inline-flex items-center gap-1 text-[12px] font-semibold text-blue-600 group-hover:gap-2 transition-all">
+            Resume <ArrowRight className="w-3.5 h-3.5" />
+          </span>
+        ) : needsApproval ? (
+          <span className="inline-flex items-center gap-1 text-[12px] font-semibold text-amber-600 group-hover:gap-2 transition-all">
+            Review <ArrowRight className="w-3.5 h-3.5" />
+          </span>
+        ) : (
+          <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-400 transition-colors" />
+        )}
+      </td>
+    </tr>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function StockAuditPage() {
   const navigate = useNavigate();
-  const [sessions,    setSessions]    = useState<AuditSession[]>([]);
-  const [loading,     setLoading]     = useState(true);
-  const [filter,      setFilter]      = useState<AuditStatus | "">("");
-  const [showCreate,  setShowCreate]  = useState(false);
-  const [page,        setPage]        = useState(1);
-  const [total,       setTotal]       = useState(0);
+  const [sessions,   setSessions]   = useState<AuditSession[]>([]);
+  const [loading,    setLoading]    = useState(true);
+  const [filter,     setFilter]     = useState<AuditStatus | "">("");
+  const [showCreate, setShowCreate] = useState(false);
+  const [page,       setPage]       = useState(1);
+  const [total,      setTotal]      = useState(0);
   const LIMIT = 20;
 
   const load = useCallback(async () => {
@@ -140,46 +258,81 @@ export default function StockAuditPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const totalPages = Math.ceil(total / LIMIT);
+  const totalPages   = Math.ceil(total / LIMIT);
+  const inProgress   = sessions.filter((s) => s.status === "IN_PROGRESS").length;
+  const needsApproval = sessions.filter((s) => s.status === "COMPLETED").length;
 
   return (
-    <div className="p-6 max-w-5xl mx-auto space-y-6">
-      {/* Header */}
+    <div className="p-6 max-w-5xl mx-auto space-y-5">
+
+      {/* ── Header ──────────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-[22px] font-bold text-slate-900">Stock Audit</h1>
           <p className="text-[13px] text-slate-500 mt-0.5">Physical inventory count sessions</p>
         </div>
         <button onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-[13px] font-semibold rounded-lg hover:bg-blue-700 transition-colors">
+          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-[13px] font-semibold rounded-xl hover:bg-blue-700 transition-colors shadow-sm">
           <Plus className="w-4 h-4" /> New Audit
         </button>
       </div>
 
-      {/* Filters */}
-      <div className="flex gap-2 flex-wrap">
-        {(["", "DRAFT", "IN_PROGRESS", "COMPLETED", "APPROVED", "CANCELLED"] as const).map((s) => (
+      {/* ── KPI chips ────────────────────────────────────────────────────────── */}
+      {!loading && (inProgress > 0 || needsApproval > 0) && (
+        <div className="flex gap-3 flex-wrap">
+          {inProgress > 0 && (
+            <button onClick={() => { setFilter("IN_PROGRESS"); setPage(1); }}
+              className="flex items-center gap-2 px-4 py-2.5 bg-blue-50 border border-blue-200 rounded-xl text-blue-700 text-[13px] font-semibold hover:bg-blue-100 transition-colors">
+              <PlayCircle className="w-4 h-4" />
+              {inProgress} count{inProgress > 1 ? "s" : ""} in progress
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+          {needsApproval > 0 && (
+            <button onClick={() => { setFilter("COMPLETED"); setPage(1); }}
+              className="flex items-center gap-2 px-4 py-2.5 bg-amber-50 border border-amber-200 rounded-xl text-amber-700 text-[13px] font-semibold hover:bg-amber-100 transition-colors">
+              <AlertCircle className="w-4 h-4" />
+              {needsApproval} awaiting approval
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ── Filter tabs ──────────────────────────────────────────────────────── */}
+      <div className="flex gap-1.5 flex-wrap">
+        {(["", "IN_PROGRESS", "COMPLETED", "DRAFT", "APPROVED", "CANCELLED"] as const).map((s) => (
           <button key={s} onClick={() => { setFilter(s); setPage(1); }}
-            className={cn("px-3 py-1.5 text-[12px] font-semibold rounded-lg border transition-all",
+            className={cn(
+              "px-3 py-1.5 text-[12px] font-semibold rounded-lg border transition-all",
               filter === s
                 ? "bg-blue-600 text-white border-blue-600"
-                : "bg-white text-slate-600 border-slate-200 hover:border-slate-300"
+                : "bg-white text-slate-600 border-slate-200 hover:border-slate-300 hover:bg-slate-50",
             )}>
-            {s === "" ? "All" : STATUS_CFG[s].label}
+            {s === "" ? "All Sessions" : STATUS_CFG[s].label}
           </button>
         ))}
       </div>
 
-      {/* Table */}
+      {/* ── Table ────────────────────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         {loading ? (
-          <div className="flex items-center justify-center h-48">
+          <div className="flex items-center justify-center h-52">
             <Loader2 className="w-6 h-6 text-slate-300 animate-spin" />
           </div>
         ) : sessions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-48 gap-2 text-slate-400">
-            <FileX className="w-8 h-8" />
-            <span className="text-[13px]">No audit sessions found</span>
+          <div className="flex flex-col items-center justify-center h-52 gap-3 text-slate-400">
+            <ClipboardList className="w-10 h-10 text-slate-200" />
+            <div className="text-center">
+              <p className="text-[14px] font-semibold text-slate-500">No audit sessions found</p>
+              <p className="text-[12px] text-slate-400 mt-0.5">
+                {filter ? `No sessions with status "${STATUS_CFG[filter as AuditStatus].label}"` : "Create your first audit to get started"}
+              </p>
+            </div>
+            {!filter && (
+              <button onClick={() => setShowCreate(true)}
+                className="text-[13px] font-semibold text-blue-600 hover:underline">Start New Audit</button>
+            )}
           </div>
         ) : (
           <table className="w-full text-[13px]">
@@ -187,35 +340,19 @@ export default function StockAuditPage() {
               <tr className="border-b border-slate-100 bg-slate-50">
                 <th className="text-left px-4 py-3 font-semibold text-slate-500 text-[11px] uppercase tracking-wide">Session</th>
                 <th className="text-left px-4 py-3 font-semibold text-slate-500 text-[11px] uppercase tracking-wide">Status</th>
-                <th className="text-left px-4 py-3 font-semibold text-slate-500 text-[11px] uppercase tracking-wide">Items</th>
+                <th className="text-left px-4 py-3 font-semibold text-slate-500 text-[11px] uppercase tracking-wide">Progress</th>
                 <th className="text-left px-4 py-3 font-semibold text-slate-500 text-[11px] uppercase tracking-wide">Variances</th>
-                <th className="text-left px-4 py-3 font-semibold text-slate-500 text-[11px] uppercase tracking-wide">Created</th>
+                <th className="text-left px-4 py-3 font-semibold text-slate-500 text-[11px] uppercase tracking-wide">Date</th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
               {sessions.map((session) => (
-                <tr key={session.id} className="hover:bg-slate-50 cursor-pointer transition-colors"
-                  onClick={() => navigate(`/dashboard/stock-audit/${session.id}`)}>
-                  <td className="px-4 py-3">
-                    <div className="font-semibold text-slate-800">{session.sessionNumber}</div>
-                    {session.notes && <div className="text-[11px] text-slate-400 mt-0.5 truncate max-w-[200px]">{session.notes}</div>}
-                  </td>
-                  <td className="px-4 py-3"><StatusBadge status={session.status} /></td>
-                  <td className="px-4 py-3">
-                    <span className="font-semibold text-slate-700">{session.countedItems ?? 0}</span>
-                    <span className="text-slate-400"> / {session._count.items}</span>
-                  </td>
-                  <td className="px-4 py-3">
-                    {session.itemsWithVariance > 0
-                      ? <span className="font-semibold text-amber-600">{session.itemsWithVariance}</span>
-                      : <span className="text-slate-400">—</span>}
-                  </td>
-                  <td className="px-4 py-3 text-slate-500">{fmt(session.createdAt)}</td>
-                  <td className="px-4 py-3">
-                    <ChevronRight className="w-4 h-4 text-slate-300" />
-                  </td>
-                </tr>
+                <SessionRow
+                  key={session.id}
+                  session={session}
+                  onClick={() => navigate(`/dashboard/stock-audit/${session.id}`)}
+                />
               ))}
             </tbody>
           </table>
@@ -223,13 +360,15 @@ export default function StockAuditPage() {
 
         {/* Pagination */}
         {totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100">
-            <span className="text-[12px] text-slate-400">Page {page} of {totalPages}</span>
+          <div className="flex items-center justify-between px-4 py-3 border-t border-slate-100 bg-slate-50/60">
+            <span className="text-[12px] text-slate-400">
+              Showing {(page - 1) * LIMIT + 1}–{Math.min(page * LIMIT, total)} of {total}
+            </span>
             <div className="flex gap-2">
               <button disabled={page === 1} onClick={() => setPage((p) => p - 1)}
-                className="px-3 py-1.5 text-[12px] font-medium border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors">Prev</button>
+                className="px-3 py-1.5 text-[12px] font-medium border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors">‹ Prev</button>
               <button disabled={page === totalPages} onClick={() => setPage((p) => p + 1)}
-                className="px-3 py-1.5 text-[12px] font-medium border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors">Next</button>
+                className="px-3 py-1.5 text-[12px] font-medium border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-40 transition-colors">Next ›</button>
             </div>
           </div>
         )}
@@ -239,7 +378,7 @@ export default function StockAuditPage() {
         {showCreate && (
           <CreateAuditModal
             onClose={() => setShowCreate(false)}
-            onDone={() => { setShowCreate(false); load(); }}
+            onCreated={(id) => { setShowCreate(false); navigate(`/dashboard/stock-audit/${id}`); }}
           />
         )}
       </AnimatePresence>

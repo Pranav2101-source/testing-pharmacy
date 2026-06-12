@@ -113,6 +113,24 @@ export const autoSuggestQuerySchema = z.object({
   supplierId:    z.string().optional(),
 });
 
+// ── Reorder → PO draft ───────────────────────────────────────────────────────
+
+export const fromReorderItemSchema = z.object({
+  medicineId:   z.string().min(1),
+  medicineName: z.string().min(1),
+  quantity:     z.number().int().positive(),
+  purchaseRate: z.number().positive(),
+  mrp:          z.number().positive(),
+  gstRate:      z.number().refine((v) => (GST_RATES as readonly number[]).includes(v), "GST must be 0, 5, 12, or 18"),
+});
+
+export const fromReorderSchema = z.object({
+  supplierId: z.string().min(1),
+  notes:      z.string().max(1000).optional(),
+  items:      z.array(fromReorderItemSchema).min(1),
+});
+
+export type FromReorderInput     = z.infer<typeof fromReorderSchema>;
 export type UpdateGRNInput       = z.infer<typeof updateGRNSchema>;
 export type POItemInput          = z.infer<typeof poItemSchema>;
 export type CreatePOInput        = z.infer<typeof createPOSchema>;

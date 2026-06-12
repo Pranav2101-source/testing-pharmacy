@@ -4,6 +4,7 @@ import { SupportRepo } from "./support.repo.js";
 import { AppError } from "../../lib/AppError.js";
 import { inAppNotify } from "../../lib/notifications.js";
 import { PLATFORM_PHARMACY_ID } from "../../config/constants.js";
+import { notifyAgents, notifyAll } from "./support.sse.js";
 import type {
   CreateTicketInput,
   UpdateStatusInput,
@@ -59,6 +60,8 @@ export class SupportService {
       subject: `New Ticket ${ticketNumber}`,
       message: `New support ticket raised: ${input.description.slice(0, 100)}`,
     });
+
+    notifyAgents("ticket:new", { ticketId: ticket.id, ticketNumber: ticket.ticketNumber, status: ticket.status });
 
     return ticket;
   }
@@ -119,6 +122,8 @@ export class SupportService {
       message: `Your ticket status changed to: ${input.status.replace(/_/g, " ")}`,
     });
 
+    notifyAll("ticket:updated", { ticketId: updated.id, status: updated.status });
+
     return updated;
   }
 
@@ -166,6 +171,8 @@ export class SupportService {
         await this.repo.updateStatus(ticketId, "IN_PROGRESS");
       }
     }
+
+    notifyAll("message:new", { ticketId, messageId: message.id });
 
     return message;
   }

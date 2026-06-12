@@ -823,6 +823,24 @@ export class PurchasesRepo {
       return suggestions.filter((s) => supplierMedicines.has(s.medicineId));
     }
 
+    // Enrich with last known pricing from GRN items
+    const medicineIds = suggestions.map((s) => s.medicineId);
+    if (medicineIds.length > 0) {
+      const lastPrices = await this.db.gRNItem.findMany({
+        where:    { medicineId: { in: medicineIds }, grn: { pharmacyId, status: "CONFIRMED" } },
+        distinct: ["medicineId"],
+        orderBy:  { createdAt: "desc" },
+        select:   { medicineId: true, purchaseRate: true, mrp: true, gstRate: true },
+      });
+      const priceMap = new Map(lastPrices.map((p) => [p.medicineId, p]));
+      for (const s of suggestions) {
+        const p = priceMap.get(s.medicineId);
+        (s as any).lastPurchaseRate = p ? Number(p.purchaseRate) : 0;
+        (s as any).lastMrp          = p ? Number(p.mrp)          : 0;
+        (s as any).lastGstRate      = p ? Number(p.gstRate)       : 12;
+      }
+    }
+
     return suggestions.sort((a, b) => a.daysOfStock - b.daysOfStock);
   }
 }

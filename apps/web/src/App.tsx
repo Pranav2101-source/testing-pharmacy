@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { PrivateRoute } from "./router/PrivateRoute";
+import { RoleGuard } from "./router/RoleGuard";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ToastProvider } from "./hooks/useToast";
 
@@ -45,6 +46,8 @@ const StockAuditDetailPage = lazy(() => import("./pages/dashboard/StockAuditDeta
 const CalendarPage         = lazy(() => import("./pages/dashboard/CalendarPage"));
 const CustomersPage        = lazy(() => import("./pages/dashboard/CustomersPage"));
 const QuotationsPage       = lazy(() => import("./pages/dashboard/QuotationsPage"));
+const DoctorsPage          = lazy(() => import("./pages/dashboard/DoctorsPage"));
+const CashClosurePage      = lazy(() => import("./pages/dashboard/CashClosurePage"));
 
 // ─── Support ──────────────────────────────────────────────────
 const SupportTicketsPage   = lazy(() => import("./pages/dashboard/support/SupportTicketsPage"));
@@ -58,8 +61,9 @@ const DocumentsPage          = lazy(() => import("./pages/dashboard/settings/Doc
 const StaffSettingsPage      = lazy(() => import("./pages/dashboard/settings/StaffSettingsPage"));
 const PlansPage              = lazy(() => import("./pages/dashboard/settings/PlansPage"));
 const ChangePasswordPage     = lazy(() => import("./pages/dashboard/settings/ChangePasswordPage"));
-const InvoiceSettingsPage        = lazy(() => import("./pages/dashboard/settings/InvoiceSettingsPage"));
-const BillingPreferencesPage     = lazy(() => import("./pages/dashboard/settings/BillingPreferencesPage"));
+const InvoiceSettingsPage    = lazy(() => import("./pages/dashboard/settings/InvoiceSettingsPage"));
+const BillingPreferencesPage = lazy(() => import("./pages/dashboard/settings/BillingPreferencesPage"));
+const MyProfilePage          = lazy(() => import("./pages/dashboard/settings/MyProfilePage"));
 
 function PageLoader() {
   return (
@@ -102,32 +106,54 @@ export function App() {
               <Route path="/dashboard/medicines"             element={<MedicinesPage />} />
               <Route path="/dashboard/purchase"              element={<PurchasePage />} />
               <Route path="/dashboard/suppliers"             element={<SuppliersPage />} />
-              <Route path="/dashboard/reports"               element={<ReportsPage />} />
-              <Route path="/dashboard/staff"                 element={<StaffPage />} />
+
+              {/* Reports: owners + managers only (financial data) */}
+              <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} redirectTo="/dashboard" />}>
+                <Route path="/dashboard/reports"             element={<ReportsPage />} />
+              </Route>
+
+              <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} redirectTo="/dashboard" />}>
+                <Route path="/dashboard/staff"               element={<StaffPage />} />
+              </Route>
               <Route path="/dashboard/ginni"                 element={<GinniPage />} />
-              <Route path="/dashboard/integration"           element={<IntegrationPage />} />
-              <Route path="/dashboard/locations"             element={<LocationsPage />} />
+
+              {/* Integration + Locations: owner/manager setup pages */}
+              <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} redirectTo="/dashboard" />}>
+                <Route path="/dashboard/integration"         element={<IntegrationPage />} />
+                <Route path="/dashboard/locations"           element={<LocationsPage />} />
+              </Route>
               <Route path="/dashboard/stock-audit"           element={<StockAuditPage />} />
               <Route path="/dashboard/stock-audit/:id"       element={<StockAuditDetailPage />} />
               <Route path="/dashboard/calendar"              element={<CalendarPage />} />
               <Route path="/dashboard/customers"            element={<CustomersPage />} />
               <Route path="/dashboard/quotations"           element={<QuotationsPage />} />
+              <Route path="/dashboard/doctors"              element={<DoctorsPage />} />
+
+              {/* Owner/Manager only routes */}
+              <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} />}>
+                <Route path="/dashboard/cash-closure"       element={<CashClosurePage />} />
+              </Route>
 
               {/* Support — static routes must come before the dynamic :id segment */}
               <Route path="/dashboard/support"              element={<SupportTicketsPage />} />
               <Route path="/dashboard/support/agents"       element={<AgentsPage />} />
               <Route path="/dashboard/support/:id"          element={<TicketDetailPage />} />
 
-              {/* Settings nested layout */}
+              {/* Settings nested layout — pharmacy-profile and change-password open to all;
+                  everything else is owner/manager only */}
               <Route element={<SettingsLayout />}>
-                <Route path="/dashboard/settings"                      element={<Navigate to="/dashboard/settings/pharmacy-profile" replace />} />
-                <Route path="/dashboard/settings/pharmacy-profile"     element={<PharmacyProfilePage />} />
-                <Route path="/dashboard/settings/documents"            element={<DocumentsPage />} />
-                <Route path="/dashboard/settings/staff"                element={<StaffSettingsPage />} />
-                <Route path="/dashboard/settings/plans"                element={<PlansPage />} />
-                <Route path="/dashboard/settings/change-password"      element={<ChangePasswordPage />} />
-                <Route path="/dashboard/settings/invoice"              element={<InvoiceSettingsPage />} />
-                <Route path="/dashboard/settings/billing"             element={<BillingPreferencesPage />} />
+                <Route path="/dashboard/settings" element={<Navigate to="/dashboard/settings/my-profile" replace />} />
+                <Route path="/dashboard/settings/my-profile"       element={<MyProfilePage />} />
+                <Route path="/dashboard/settings/pharmacy-profile" element={<PharmacyProfilePage />} />
+                <Route path="/dashboard/settings/change-password"  element={<ChangePasswordPage />} />
+
+                <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} redirectTo="/dashboard/settings/pharmacy-profile" />}>
+                  <Route path="/dashboard/settings/documents" element={<DocumentsPage />} />
+                  <Route path="/dashboard/settings/staff"     element={<StaffSettingsPage />} />
+                  <Route path="/dashboard/settings/plans"     element={<PlansPage />} />
+                  <Route path="/dashboard/settings/invoice"   element={<InvoiceSettingsPage />} />
+                  <Route path="/dashboard/settings/billing"   element={<BillingPreferencesPage />} />
+                </Route>
               </Route>
             </Route>
           </Route>

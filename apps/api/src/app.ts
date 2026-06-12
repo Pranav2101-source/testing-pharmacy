@@ -9,8 +9,8 @@ import swaggerUi from "@fastify/swagger-ui";
 import { ZodError } from "zod";
 
 import prismaPlugin from "./plugins/prisma.js";
-import redisPlugin from "./plugins/redis.js";
 import meilisearchPlugin from "./plugins/meilisearch.js";
+import storagePlugin from "./plugins/storage.js";
 
 import authRoutes from "./modules/auth/auth.routes.js";
 import billingRoutes from "./modules/billing/billing.routes.js";
@@ -34,13 +34,15 @@ import locationsRoutes from "./modules/locations/locations.routes.js";
 import stockAuditRoutes from "./modules/stock-audit/stock-audit.routes.js";
 import calendarRoutes from "./modules/calendar/calendar.routes.js";
 import pharmacyRoutes from "./modules/pharmacy/pharmacy.routes.js";
-import supportRoutes from "./modules/support/support.routes.js";
+import supportRoutes    from "./modules/support/support.routes.js";
+import doctorsRoutes    from "./modules/doctors/doctors.routes.js";
+import cashClosureRoutes from "./modules/cash-closure/cash-closure.routes.js";
 
 import { env, allowedOrigins, trustProxyHops } from "./config/env.js";
 import { AppError } from "./lib/AppError.js";
 import { Prisma } from "@pharmacy/database";
 
-import { setupScheduledJobs } from "./queues/scheduler.js";
+import { startWorkers, setupScheduledJobs, boss } from "@pharmacy/jobs";
 
 export async function buildApp() {
   const app = Fastify({
@@ -62,7 +64,6 @@ export async function buildApp() {
 
   await app.register(cors, {
     origin: (origin, cb) => {
-      // Allow requests with no origin (server-to-server, curl, Postman)
       if (!origin) { cb(null, true); return; }
       if (allowedOrigins.includes(origin)) { cb(null, true); return; }
       cb(new Error(`CORS: origin ${origin} not allowed`), false);
@@ -70,19 +71,18 @@ export async function buildApp() {
     credentials: true,
   });
 
-  // ── Plugins (registered early so Redis is available to rate-limit) ────────
+  // ── Plugins ───────────────────────────────────────────────────────────────
   await app.register(prismaPlugin);
-  await app.register(redisPlugin);
+  await app.register(storagePlugin);
   await app.register(meilisearchPlugin);
-  await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB — support screen recordings
+  await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 
-  // Global rate limit — Redis-backed in production (shared across pods); in-memory in dev
-  // to avoid burning Upstash free-tier quota on every local API call.
+  // Rate limiting — in-memory (single-process). For multi-pod deployments,
+  // replace with a shared store (e.g. Upstash Redis) via the `redis` option.
   await app.register(rateLimit, {
-    global:     true,
-    max:        200,
-    timeWindow: "1 minute",
-    ...(env.NODE_ENV === "production" && { redis: app.redis }),
+    global:       true,
+    max:          200,
+    timeWindow:   "1 minute",
     keyGenerator: (req) => req.ip,
   });
 
@@ -108,11 +108,9 @@ export async function buildApp() {
   }
 
   // ── Routes ────────────────────────────────────────────────────────────────
-  // Auth routes get their own stricter rate limit (brute force / credential stuffing mitigation)
   await app.register(
     async (authApp) => {
       authApp.addHook("onRequest", async (req, reply) => {
-        // Only apply the tight limit to state-mutating auth endpoints
         const sensitiveRoutes = ["/login", "/register", "/forgot-password", "/reset-password"];
         const isSensitive = sensitiveRoutes.some((r) => req.url.endsWith(r));
         if (!isSensitive) return;
@@ -123,56 +121,57 @@ export async function buildApp() {
           // rateLimit exceeded — let the global handler return 429
         }
       });
-      await authApp.register(authRoutes, { prefix: "/api/auth" });
+      await authApp.register(authRoutes, { prefix: "/api/v1/auth" });
     },
     {},
   );
 
-  await app.register(billingRoutes,       { prefix: "/api/billing" });
-  await app.register(inventoryRoutes,     { prefix: "/api/inventory" });
-  await app.register(medicinesRoutes,     { prefix: "/api/medicines" });
-  await app.register(suppliersRoutes,     { prefix: "/api/suppliers" });
-  await app.register(purchasesRoutes,           { prefix: "/api/purchases" });
-  await app.register(supplierReturnsRoutes,     { prefix: "/api/supplier-returns" });
-  await app.register(supplierPaymentsRoutes,    { prefix: "/api/supplier-payments" });
-  await app.register(supplierCreditNotesRoutes, { prefix: "/api/supplier-credit-notes" });
-  await app.register(quotationsRoutes,          { prefix: "/api/quotations" });
-  await app.register(brandsRoutes,              { prefix: "/api/brands" });
-  await app.register(categoriesRoutes,    { prefix: "/api/categories" });
-  await app.register(reportsRoutes,       { prefix: "/api/reports" });
-  await app.register(staffRoutes,         { prefix: "/api/staff" });
-  await app.register(auditRoutes,         { prefix: "/api/audit" });
-  await app.register(uploadsRoutes,       { prefix: "/api/uploads" });
-  await app.register(notificationsRoutes, { prefix: "/api/notifications" });
-  await app.register(customersRoutes,     { prefix: "/api/customers" });
-  await app.register(locationsRoutes,     { prefix: "/api/locations" });
-  await app.register(stockAuditRoutes,    { prefix: "/api/stock-audit" });
-  await app.register(calendarRoutes,      { prefix: "/api/calendar" });
-  await app.register(pharmacyRoutes,      { prefix: "/api/pharmacy" });
-  await app.register(supportRoutes,       { prefix: "/api/support" });
+  await app.register(billingRoutes,             { prefix: "/api/v1/billing" });
+  await app.register(inventoryRoutes,           { prefix: "/api/v1/inventory" });
+  await app.register(medicinesRoutes,           { prefix: "/api/v1/medicines" });
+  await app.register(suppliersRoutes,           { prefix: "/api/v1/suppliers" });
+  await app.register(purchasesRoutes,           { prefix: "/api/v1/purchases" });
+  await app.register(supplierReturnsRoutes,     { prefix: "/api/v1/supplier-returns" });
+  await app.register(supplierPaymentsRoutes,    { prefix: "/api/v1/supplier-payments" });
+  await app.register(supplierCreditNotesRoutes, { prefix: "/api/v1/supplier-credit-notes" });
+  await app.register(quotationsRoutes,          { prefix: "/api/v1/quotations" });
+  await app.register(brandsRoutes,              { prefix: "/api/v1/brands" });
+  await app.register(categoriesRoutes,          { prefix: "/api/v1/categories" });
+  await app.register(reportsRoutes,             { prefix: "/api/v1/reports" });
+  await app.register(staffRoutes,               { prefix: "/api/v1/staff" });
+  await app.register(auditRoutes,               { prefix: "/api/v1/audit" });
+  await app.register(uploadsRoutes,             { prefix: "/api/v1/uploads" });
+  await app.register(notificationsRoutes,       { prefix: "/api/v1/notifications" });
+  await app.register(customersRoutes,           { prefix: "/api/v1/customers" });
+  await app.register(locationsRoutes,           { prefix: "/api/v1/locations" });
+  await app.register(stockAuditRoutes,          { prefix: "/api/v1/stock-audit" });
+  await app.register(calendarRoutes,            { prefix: "/api/v1/calendar" });
+  await app.register(pharmacyRoutes,            { prefix: "/api/v1/pharmacy" });
+  await app.register(supportRoutes,             { prefix: "/api/v1/support" });
+  await app.register(doctorsRoutes,             { prefix: "/api/v1/doctors" });
+  await app.register(cashClosureRoutes,         { prefix: "/api/v1/cash-closure" });
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/health", async () => ({ status: "ok", ts: new Date().toISOString() }));
 
   // ── Queue workers + scheduled jobs ───────────────────────────────────────
-  // Workers are skipped when DISABLE_QUEUES=true (dev with cloud Redis free tier).
-  // Each processor file is a side-effect import that creates a BullMQ Worker;
-  // workers poll Redis constantly and drain Upstash's 500k/day quota in minutes.
+  // pg-boss uses LISTEN/NOTIFY on the existing Postgres database — zero Redis
+  // usage, no external service required. Workers and schedules are skipped
+  // when DISABLE_QUEUES=true (e.g. CI, minimal dev environments).
   if (!env.DISABLE_QUEUES) {
-    await Promise.all([
-      import("./queues/processors/expiry-alert.processor.js"),
-      import("./queues/processors/low-stock-alert.processor.js"),
-      import("./queues/processors/grn-overdue.processor.js"),
-      import("./queues/processors/eod-summary.processor.js"),
-      import("./queues/processors/quotation-expiry.processor.js"),
-      import("./queues/processors/pending-credit.processor.js"),
-      import("./queues/processors/calendar-digest.processor.js"),
-      import("./queues/processors/post-invoice.processor.js"),
-      import("./queues/processors/reservation-cleanup.processor.js"),
-    ]);
-    setupScheduledJobs().catch((err) => app.log.error(err, "Failed to setup scheduled jobs"));
+    await startWorkers();
+    await setupScheduledJobs();
+
+    // Graceful shutdown: wait for in-flight jobs to finish before the process exits.
+    app.addHook("onClose", async () => {
+      await boss.stop().catch((err: unknown) => {
+        app.log.warn(err, "[pg-boss] error during shutdown");
+      });
+    });
+
+    app.log.info("[pg-boss] workers started, schedules registered");
   } else {
-    app.log.info("[Queues] DISABLE_QUEUES=true — skipping workers (dev mode, preserving Redis quota)");
+    app.log.info("[Queues] DISABLE_QUEUES=true — skipping job workers");
   }
 
   // ── Global error handler ──────────────────────────────────────────────────
@@ -190,7 +189,6 @@ export async function buildApp() {
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       switch (error.code) {
         case "P2002": {
-          // Unique constraint — surface which field caused it if available.
           const fields = (error.meta?.target as string[] | undefined)?.join(", ") ?? "field";
           return reply.status(409).send({
             success: false,
@@ -211,7 +209,6 @@ export async function buildApp() {
           });
 
         case "P2034":
-          // Serialization conflict — two users updated the same record at the same time.
           return reply.status(409).send({
             success:   false,
             error:     "Someone else updated this record at the same time. Please refresh the page and try again.",
@@ -220,7 +217,6 @@ export async function buildApp() {
 
         case "P2024":
         case "P2028":
-          // Connection pool timeout / transaction timeout — transient capacity issue.
           app.log.error(error, `[Prisma] ${error.code} — DB capacity/timeout`);
           return reply.status(503).send({
             success:   false,
@@ -250,19 +246,7 @@ export async function buildApp() {
       });
     }
 
-    // ── 4. Redis / cache connection errors ───────────────────────────────────
-    // ioredis throws errors with ECONNREFUSED or "Connection is closed" when Redis is down.
-    const msg = (error as any)?.message ?? "";
-    if (msg.includes("ECONNREFUSED") || msg.includes("Connection is closed") || msg.includes("connect ETIMEDOUT")) {
-      app.log.error(error, "[Redis] Connection error");
-      return reply.status(503).send({
-        success:   false,
-        error:     "Our system is having trouble right now. Please try again in a moment.",
-        retryable: true,
-      });
-    }
-
-    // ── 5. Application errors and everything else ────────────────────────────
+    // ── 4. Application errors and everything else ────────────────────────────
     const status: number =
       error instanceof AppError
         ? error.statusCode
@@ -277,7 +261,6 @@ export async function buildApp() {
       error:   status >= 500
         ? "Something went wrong on our end. Please try again, or contact support if this keeps happening."
         : error.message,
-      // Forward structured payload (e.g. conflicts array from stock reservation)
       ...(error instanceof AppError && error.data ? error.data : {}),
     });
   });

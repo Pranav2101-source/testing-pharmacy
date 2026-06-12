@@ -1,0 +1,106 @@
+import { useState, useCallback, useEffect } from "react";
+import { Loader2, FileX, RefreshCw, AlertTriangle, Eye } from "lucide-react";
+import { api } from "@/lib/api-client";
+import { cn } from "@/lib/utils";
+import type { GRN, Supplier } from "../types";
+import { fmtDate, currency, isOverdue, daysUntil } from "../utils";
+import { FilterBar } from "../components/FilterBar";
+import { Pagination } from "../components/Pagination";
+import { EmptyState } from "../components/EmptyState";
+
+export function PurchaseTab({ suppliers }: { suppliers: Supplier[] }) {
+  const [grns, setGRNs]           = useState<GRN[]>([]);
+  const [total, setTotal]         = useState(0);
+  const [page, setPage]           = useState(1);
+  const [loading, setLoading]     = useState(true);
+  const [search, setSearch]       = useState("");
+  const [supplierId, setSupp]     = useState("");
+  const [dateFrom, setFrom]       = useState("");
+  const [dateTo, setTo]           = useState("");
+  const [overdueOnly, setOverdue] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const p: Record<string, any> = { page, limit: 20, status: "CONFIRMED" };
+      if (search)      p.search     = search;
+      if (supplierId)  p.supplierId = supplierId;
+      if (dateFrom)    p.from       = new Date(dateFrom).toISOString();
+      if (dateTo)      p.to         = new Date(dateTo + "T23:59:59").toISOString();
+      if (overdueOnly) p.overdue    = true;
+      const { data } = await api.get("/purchases/grn", { params: p });
+      setGRNs(data.data.items); setTotal(data.data.total);
+    } catch {/* */} finally { setLoading(false); }
+  }, [page, search, supplierId, dateFrom, dateTo, overdueOnly]);
+
+  useEffect(() => { const t = setTimeout(load, search ? 350 : 0); return () => clearTimeout(t); }, [load]);
+
+  return (
+    <div className="flex flex-col h-full">
+      <FilterBar search={search} onSearch={(v) => { setSearch(v); setPage(1); }}
+        supplierId={supplierId} onSupplier={(v) => { setSupp(v); setPage(1); }} suppliers={suppliers}
+        dateFrom={dateFrom} dateTo={dateTo} onDateFrom={(v) => { setFrom(v); setPage(1); }} onDateTo={(v) => { setTo(v); setPage(1); }}
+        statusValue={overdueOnly ? "overdue" : ""}
+        onStatus={(v) => { setOverdue(v === "overdue"); setPage(1); }}
+        statusOptions={[{ value: "overdue", label: "Overdue Payment" }]}
+        rightSlot={
+          <button onClick={load} className="w-8 h-8 rounded-lg border border-slate-200 bg-white flex items-center justify-center text-slate-500 hover:bg-slate-100">
+            <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+          </button>
+        }
+      />
+
+      <div className="flex-1 overflow-auto min-h-0">
+        <table className="w-full border-collapse">
+          <thead className="sticky top-0 bg-white z-10 shadow-[0_1px_0_0_#e2e8f0]">
+            <tr>
+              {["Sr No.","GRN No.","Invoice No.","Entry Date","Bill Date","Distributor","Items","Bill Amt ₹","GST ₹","Payment Due",""].map((h) => (
+                <th key={h} className="px-4 py-3 text-left text-[12px] font-semibold text-slate-500 whitespace-nowrap">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={11} className="py-24 text-center"><Loader2 className="w-8 h-8 animate-spin text-blue-400 mx-auto" /></td></tr>
+            ) : grns.length === 0 ? (
+              <tr><td colSpan={11}>
+                <EmptyState icon={FileX} title="No purchase invoices found" desc="Confirmed GRNs will appear here" />
+              </td></tr>
+            ) : grns.map((grn, i) => {
+              const overdue     = isOverdue(grn.paymentDueDate);
+              const daysLeft    = daysUntil(grn.paymentDueDate);
+              return (
+                <tr key={grn.id} className={cn("border-b border-slate-100 hover:bg-blue-50/20 transition-colors", overdue && "bg-red-50/30")}>
+                  <td className="px-4 py-3 text-[12px] text-slate-400 tabular-nums">{(page - 1) * 20 + i + 1}</td>
+                  <td className="px-4 py-3 text-[13px] font-bold text-emerald-700">{grn.grnNumber}</td>
+                  <td className="px-4 py-3 text-[12px] text-slate-600">{grn.supplierInvoiceNo ?? "—"}</td>
+                  <td className="px-4 py-3 text-[12px] text-slate-500">{fmtDate(grn.createdAt)}</td>
+                  <td className="px-4 py-3 text-[12px] text-slate-500">{fmtDate(grn.confirmedAt)}</td>
+                  <td className="px-4 py-3 text-[13px] font-semibold text-slate-800">{grn.supplier.name}</td>
+                  <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{grn._count.items}</td>
+                  <td className="px-4 py-3 text-[13px] font-semibold text-slate-800 tabular-nums">{currency(grn.totalAmount)}</td>
+                  <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{currency(grn.totalGst)}</td>
+                  <td className="px-4 py-3">
+                    {grn.paymentDueDate ? (
+                      <div className={cn("text-[11px] font-semibold", overdue ? "text-red-600" : daysLeft !== null && daysLeft <= 7 ? "text-amber-600" : "text-slate-500")}>
+                        {overdue ? <span className="flex items-center gap-1"><AlertTriangle className="w-3 h-3" />Overdue {fmtDate(grn.paymentDueDate)}</span>
+                          : <span>{fmtDate(grn.paymentDueDate)}{daysLeft !== null && <span className="text-slate-400 font-normal ml-1">({daysLeft}d)</span>}</span>}
+                      </div>
+                    ) : "—"}
+                  </td>
+                  <td className="px-4 py-3">
+                    <button className="w-7 h-7 rounded-lg hover:bg-blue-50 flex items-center justify-center text-slate-400 hover:text-blue-600 transition-colors">
+                      <Eye className="w-3.5 h-3.5" />
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <Pagination page={page} totalPages={Math.ceil(total / 20) || 1} total={total} limit={20} onChange={setPage} />
+    </div>
+  );
+}

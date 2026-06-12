@@ -33,6 +33,23 @@ export const listMedicinesQuerySchema = z.object({
   isActive: z.enum(["true", "false"]).transform((v) => v === "true").optional(),
 });
 
-export type CreateMedicineInput = z.infer<typeof createMedicineSchema>;
-export type UpdateMedicineInput = z.infer<typeof updateMedicineSchema>;
-export type ListMedicinesQuery  = z.infer<typeof listMedicinesQuerySchema>;
+// Per-pharmacy override of catalog values. null clears a field back to the
+// catalog value; an override with nothing left should be DELETEd instead.
+export const upsertOverrideSchema = z
+  .object({
+    gstRate: z
+      .number()
+      .refine((v) => (GST_RATES as readonly number[]).includes(v), "GST must be 0, 5, 12, or 18")
+      .nullable()
+      .optional(),
+    defaultDiscountPct: z.number().min(0).max(100).nullable().optional(),
+    notes:              z.string().max(500).nullable().optional(),
+  })
+  .refine((v) => v.gstRate != null || v.defaultDiscountPct != null, {
+    message: "Set gstRate and/or defaultDiscountPct — use DELETE to remove an override",
+  });
+
+export type CreateMedicineInput  = z.infer<typeof createMedicineSchema>;
+export type UpdateMedicineInput  = z.infer<typeof updateMedicineSchema>;
+export type ListMedicinesQuery   = z.infer<typeof listMedicinesQuerySchema>;
+export type UpsertOverrideInput  = z.infer<typeof upsertOverrideSchema>;

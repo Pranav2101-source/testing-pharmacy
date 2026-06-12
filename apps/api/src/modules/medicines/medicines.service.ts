@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { MedicinesRepo } from "./medicines.repo.js";
-import type { CreateMedicineInput, UpdateMedicineInput, ListMedicinesQuery } from "./medicines.schema.js";
+import type { CreateMedicineInput, UpdateMedicineInput, ListMedicinesQuery, UpsertOverrideInput } from "./medicines.schema.js";
 import { AppError } from "../../lib/AppError.js";
+import { TtlCache } from "../../lib/ttl-cache.js";
 
 const INDEX       = "medicines";
 const BULK_CHUNK  = 50; // rows per Prisma transaction in bulkCreate
@@ -11,11 +12,10 @@ const SEARCH_ATTRS = [
   "unit", "packSize", "isActive",
 ];
 
-// Global catalog changes rarely — 5-minute cache significantly reduces Postgres
-// load on the medicines list screen, which every user hits on login.
+// 5-minute cache on the global catalog; medicines rarely change.
 const MEDICINES_CACHE_TTL_S = 300;
-const medicinesListKey = (params: object) =>
-  `medicines:list:${JSON.stringify(params)}`;
+const medicinesCache = new TtlCache<string, unknown>();
+const medicinesListKey = (params: object) => JSON.stringify(params);
 
 export class MedicinesService {
   private repo:  MedicinesRepo;
@@ -30,10 +30,8 @@ export class MedicinesService {
     this.log   = app.log;
   }
 
-  // Bust the default-query cache entry (page 1, no filters) that most users hit.
-  // Other query combos expire via TTL.
-  private async bustListCache() {
-    try { await this.app.redis.del(medicinesListKey({ page: 1, limit: 100, isActive: true })); } catch { /* best-effort */ }
+  private bustListCache(): void {
+    medicinesCache.delete(medicinesListKey({ page: 1, limit: 100, isActive: true }));
   }
 
   private async syncOne(medicine: Record<string, unknown>) {
@@ -53,7 +51,7 @@ export class MedicinesService {
     }
     const medicine = await this.repo.create(input);
     await this.syncOne(medicine as Record<string, unknown>);
-    void this.bustListCache();
+    this.bustListCache();
     return medicine;
   }
 
@@ -68,7 +66,7 @@ export class MedicinesService {
 
     const medicine = await this.repo.update(id, input);
     await this.syncOne(medicine as Record<string, unknown>);
-    void this.bustListCache();
+    this.bustListCache();
     return medicine;
   }
 
@@ -89,13 +87,11 @@ export class MedicinesService {
       isActive: query.isActive,
     };
     const cacheKey = medicinesListKey(params);
-    let cached: string | null = null;
-    try { cached = await this.app.redis.get(cacheKey); } catch { /* Redis unavailable — skip cache */ }
-    if (cached) {
-      try { return JSON.parse(cached); } catch { /* corrupt — fall through */ }
-    }
+    const cached   = medicinesCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+
     const result = await this.repo.list(params);
-    try { await this.app.redis.set(cacheKey, JSON.stringify(result), "EX", MEDICINES_CACHE_TTL_S); } catch { /* best-effort */ }
+    medicinesCache.set(cacheKey, result, MEDICINES_CACHE_TTL_S);
     return result;
   }
 
@@ -104,7 +100,7 @@ export class MedicinesService {
     if (!existing) throw AppError.notFound("Medicine not found");
     const medicine = await this.repo.update(id, { isActive: false });
     await this.syncOne(medicine as Record<string, unknown>);
-    void this.bustListCache();
+    this.bustListCache();
     return medicine;
   }
 
@@ -113,7 +109,7 @@ export class MedicinesService {
     if (!existing) throw AppError.notFound("Medicine not found");
     const medicine = await this.repo.update(id, { isActive: true });
     await this.syncOne(medicine as Record<string, unknown>);
-    void this.bustListCache();
+    this.bustListCache();
     return medicine;
   }
 
@@ -219,6 +215,26 @@ export class MedicinesService {
     return results;
   }
 
+  // ── Per-pharmacy overrides ────────────────────────────────────────────────
+  // The catalog is global and only PLATFORM_ADMIN can edit it; overrides let an
+  // owner adjust GST / standing discount for THEIR pharmacy without touching
+  // the shared record. Applied authoritatively at billing checkout.
+
+  async listOverrides(pharmacyId: string) {
+    return this.repo.listOverrides(pharmacyId);
+  }
+
+  async upsertOverride(pharmacyId: string, medicineId: string, input: UpsertOverrideInput) {
+    const medicine = await this.repo.getById(medicineId);
+    if (!medicine) throw AppError.notFound("Medicine not found");
+    return this.repo.upsertOverride(pharmacyId, medicineId, input);
+  }
+
+  async deleteOverride(pharmacyId: string, medicineId: string) {
+    const result = await this.repo.deleteOverride(pharmacyId, medicineId);
+    if (result.count === 0) throw AppError.notFound("No override exists for this medicine");
+  }
+
   async getAlternatives(id: string, pharmacyId: string) {
     const source = await this.repo.getById(id);
     if (!source) throw AppError.notFound("Medicine not found");
@@ -231,6 +247,15 @@ export class MedicinesService {
       strength:    source.strength,
       form:        source.form,
     });
+
+    // Per-pharmacy GST overrides — the drawer feeds items into the cart, so
+    // rates here must match what billing checkout will compute.
+    const overrides = await this.app.prisma.pharmacyMedicineOverride.findMany({
+      where: { pharmacyId, medicineId: { in: raw.map((m) => m.id) } },
+    });
+    const overrideGst = new Map(
+      overrides.filter((o) => o.gstRate !== null).map((o) => [o.medicineId, o.gstRate as number]),
+    );
 
     const LOW_STOCK_QTY = 10;
 
@@ -255,7 +280,7 @@ export class MedicinesService {
         form:         med.form,
         packSize:     med.packSize,
         hsnCode:      med.hsnCode,
-        gstRate:      med.gstRate,
+        gstRate:      overrideGst.get(med.id) ?? med.gstRate,
         brand:        med.brand,
         totalStock,
         mrp,

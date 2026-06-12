@@ -41,6 +41,14 @@ export class BillingRepo {
     });
   }
 
+  /** Per-pharmacy GST/discount overrides for the medicines being billed. */
+  async getMedicineOverrides(pharmacyId: string, medicineIds: string[]) {
+    if (medicineIds.length === 0) return [];
+    return this.db.pharmacyMedicineOverride.findMany({
+      where: { pharmacyId, medicineId: { in: medicineIds } },
+    });
+  }
+
   // ── Invoice settings ─────────────────────────────────────────────────────
 
   async getSettings(pharmacyId: string) {

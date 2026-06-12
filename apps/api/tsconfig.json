@@ -5,8 +5,10 @@
     "rootDir": "../../",
     "paths": {
       "@pharmacy/database": ["../../packages/database/src/client.ts"],
-      "@pharmacy/types": ["../../packages/types/src/index.ts"],
-      "@pharmacy/utils": ["../../packages/utils/src/index.ts"]
+      "@pharmacy/jobs":     ["../../packages/jobs/src/index.ts"],
+      "@pharmacy/mailer":   ["../../packages/mailer/src/index.ts"],
+      "@pharmacy/types":    ["../../packages/types/src/index.ts"],
+      "@pharmacy/utils":    ["../../packages/utils/src/index.ts"]
     }
   },
   "include": ["src/**/*"],

@@ -9,7 +9,8 @@ import type {
 } from "./locations.schema.js"
 
 const SHELF_INCLUDE = {
-  rack: { select: { id: true, code: true, name: true } },
+  rack:   { select: { id: true, code: true, name: true } },
+  _count: { select: { inventory: true } },
 } as const
 
 export class LocationsRepo {

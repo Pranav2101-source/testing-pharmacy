@@ -18,6 +18,7 @@ type SearchResult = {
   name:            string;
   phone:           string | null;
   email:           string | null;
+  address:         string | null;
   customerType:    string;
   defaultDiscount: number;
   creditLimit:     number;
@@ -140,6 +141,8 @@ export function CustomerSearchCombobox() {
       customerId:              c.id,
       customerName:            c.name,
       customerPhone:           c.phone ?? "",
+      customerAddress:         (c as SearchResult).address ?? "",
+      abha:                    (c as SearchResult).abhaNumber ?? "",
       customerDefaultDiscount: c.defaultDiscount,
       // Auto-apply the customer's default discount to the bill
       billDiscountPct:         c.defaultDiscount,
@@ -153,8 +156,10 @@ export function CustomerSearchCombobox() {
       customerId:              "",
       customerName:            "",
       customerPhone:           "",
+      customerAddress:         "",
+      abha:                    "",
       customerDefaultDiscount: 0,
-      billDiscountPct:         0,   // clear customer discount from bill
+      billDiscountPct:         0,
     });
     setQuery("");
     setTimeout(() => inputRef.current?.focus(), 10);
@@ -207,7 +212,7 @@ export function CustomerSearchCombobox() {
             ref={inputRef}
             type="text"
             value={query}
-            onChange={(e) => { setQuery(e.target.value); recalc(); setOpen(true); setActiveIndex(0); }}
+            onChange={(e) => { const v = e.target.value; setQuery(v); recalc(); setOpen(v.trim().length > 0); setActiveIndex(0); }}
             onFocus={() => { recalc(); if (query.trim()) setOpen(true); }}
             onKeyDown={handleKeyDown}
             placeholder="Customer Mobile / Name / Card Number"

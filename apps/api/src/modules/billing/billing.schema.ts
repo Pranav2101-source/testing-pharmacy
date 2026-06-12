@@ -12,6 +12,7 @@ export const invoiceItemSchema = z.object({
 
 export const createInvoiceSchema = z.object({
   customerId:       z.string().optional(),
+  doctorId:         z.string().optional(),
   doctorName:       z.string().max(200).optional(),
   prescriptionId:   z.string().optional(),
   paymentMode:      z.enum(PAYMENT_MODES).default("CASH"),

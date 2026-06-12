@@ -28,7 +28,10 @@ export type BillingMeta = {
   customerId:              string;
   customerName:            string;
   customerPhone:           string;
+  customerAddress:         string;
+  abha:                    string;
   customerDefaultDiscount: number;
+  doctorId:                string;
   doctorName:              string;
   prescriptionId:          string;  // Rx number — required for Schedule H medicines
   paymentMode:             "CASH" | "UPI" | "CARD" | "CREDIT";
@@ -58,7 +61,10 @@ const DEFAULT_META: BillingMeta = {
   customerId:              "",
   customerName:            "",
   customerPhone:           "",
+  customerAddress:         "",
+  abha:                    "",
   customerDefaultDiscount: 0,
+  doctorId:                "",
   doctorName:              "",
   prescriptionId:          "",
   paymentMode:             "CASH",

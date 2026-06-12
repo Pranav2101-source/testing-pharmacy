@@ -4,10 +4,14 @@ export const createSessionSchema = z.object({
   notes: z.string().max(500).trim().optional(),
 })
 
-export const updateItemSchema = z.object({
-  countedQty: z.number().int().min(0),
-  notes: z.string().max(500).trim().optional(),
-})
+export const updateItemSchema = z
+  .object({
+    countedQty: z.number().int().min(0).optional(),
+    notes:      z.string().max(500).trim().nullable().optional(),
+  })
+  .refine((d) => d.countedQty !== undefined || d.notes !== undefined, {
+    message: "At least one of countedQty or notes is required",
+  })
 
 export const completeSessionSchema = z.object({
   notes: z.string().max(500).trim().optional(),

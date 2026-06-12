@@ -7,7 +7,7 @@ import {
   Search, Phone, Truck, Calendar, ChevronDown, LogOut, Settings, Menu, X,
   Dot, QrCode, Coins, Send, Monitor, IndianRupee, Info, MapPin, Building2,
   Receipt, FilePlus, RotateCcw, BookmarkCheck, ClipboardList, Plus, Users,
-  MoreHorizontal, TicketCheck,
+  MoreHorizontal, TicketCheck, Stethoscope, Banknote,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCalendarTodayCount } from "@/components/calendar/useCalendarEvents";
@@ -26,16 +26,18 @@ const NAV_TABS: NavTab[] = [
 // Secondary modules surfaced under "More"
 type MoreItem = { href: string; label: string; description: string; icon: React.ElementType };
 const MORE_ITEMS: MoreItem[] = [
-  { href: "/dashboard/customers",   label: "Customers",   description: "Manage registered patients",        icon: Users        },
-  { href: "/dashboard/quotations",  label: "Quotations",  description: "Request & compare supplier prices", icon: FileText     },
-  { href: "/dashboard/medicines",   label: "Medicines",   description: "Global medicines catalogue",        icon: FlaskConical },
-  { href: "/dashboard/ginni",       label: "Ginni",       description: "AI assistant",                      icon: Zap          },
+  { href: "/dashboard/customers",    label: "Customers",    description: "Manage registered patients",        icon: Users        },
+  { href: "/dashboard/quotations",   label: "Quotations",   description: "Request & compare supplier prices", icon: FileText     },
+  { href: "/dashboard/medicines",    label: "Medicines",    description: "Global medicines catalogue",        icon: FlaskConical },
+  { href: "/dashboard/doctors",      label: "Doctors",      description: "Doctor master & prescription links", icon: Stethoscope  },
+  { href: "/dashboard/cash-closure", label: "Cash Closure", description: "Day-end cash reconciliation",       icon: Banknote     },
+  { href: "/dashboard/ginni",        label: "Ginni",        description: "AI assistant",                      icon: Zap          },
 ];
 
-type InventoryItem = { href: string; label: string; description: string; icon: React.ElementType };
+type InventoryItem = { href: string; label: string; description: string; icon: React.ElementType; requiredRoles?: string[] };
 const INVENTORY_ITEMS: InventoryItem[] = [
   { href: "/dashboard/inventory",   label: "Inventory",   description: "Stock levels & batches", icon: Package2      },
-  { href: "/dashboard/locations",   label: "Locations",   description: "Store shelf locations",  icon: MapPin        },
+  { href: "/dashboard/locations",   label: "Locations",   description: "Store shelf locations",  icon: MapPin,        requiredRoles: ["OWNER", "MANAGER"] },
   { href: "/dashboard/stock-audit", label: "Stock Audit", description: "Audit & reconcile stock",icon: ClipboardList },
 ];
 
@@ -81,10 +83,10 @@ const SALES_ITEMS: SalesItem[] = [
 
 const MENU_ITEMS: Array<{
   id: string; icon: React.ElementType; label: string;
-  extra?: string; extraType?: "blue" | "badge-new" | "coin"; href?: string;
+  extra?: string; extraType?: "blue" | "badge-new" | "coin"; href?: string; requiredRoles?: string[];
 }> = [
   { id: "settings",     icon: Settings,    label: "Account & Settings", href: "/dashboard/settings/pharmacy-profile" },
-  { id: "integration",  icon: Link2,       label: "Integrations",       href: "/dashboard/integration"               },
+  { id: "integration",  icon: Link2,       label: "Integrations",       href: "/dashboard/integration",               requiredRoles: ["OWNER", "MANAGER"] },
   { id: "qr",           icon: QrCode,      label: "Show QR",            extraType: "blue"     },
   { id: "coins",        icon: Coins,       label: "VitalCoins",         extraType: "coin"     },
   { id: "refer",        icon: Send,        label: "Refer & Earn"                               },
@@ -285,7 +287,7 @@ function ProfileDropdown() {
   const isSupport = isSupportStaff();
   const visibleItems = isSupport
     ? MENU_ITEMS.filter((item) => item.id === "settings")
-    : MENU_ITEMS;
+    : MENU_ITEMS.filter((item) => !item.requiredRoles || item.requiredRoles.includes(user.rawRole));
 
   return (
     <div ref={ref} className="relative">
@@ -609,8 +611,11 @@ const MoreNavDropdown = memo(function MoreNavDropdown({ pathname }: { pathname: 
 });
 
 // ─── Inventory Nav Dropdown ───────────────────────────────────────
-const InventoryNavDropdown = memo(function InventoryNavDropdown({ pathname }: { pathname: string }) {
+const InventoryNavDropdown = memo(function InventoryNavDropdown({ pathname, rawRole }: { pathname: string; rawRole: string }) {
   const { open, setOpen, ref } = useDropdown();
+  const visibleInventoryItems = INVENTORY_ITEMS.filter(
+    (item) => !item.requiredRoles || item.requiredRoles.includes(rawRole),
+  );
   const inventoryActive =
     pathname.startsWith("/dashboard/inventory") ||
     pathname.startsWith("/dashboard/locations") ||
@@ -648,7 +653,7 @@ const InventoryNavDropdown = memo(function InventoryNavDropdown({ pathname }: { 
             style={{ boxShadow: "0 16px 36px -6px rgba(0,0,0,0.18), 0 4px 12px -4px rgba(0,0,0,0.08)" }}
           >
             <div className="p-1.5">
-              {INVENTORY_ITEMS.map(({ href, label, description, icon: Icon }) => {
+              {visibleInventoryItems.map(({ href, label, description, icon: Icon }) => {
                 const active = pathname.startsWith(href);
                 return (
                   <Link
@@ -680,9 +685,12 @@ const InventoryNavDropdown = memo(function InventoryNavDropdown({ pathname }: { 
 });
 
 // ─── Mobile Menu ──────────────────────────────────────────────────
-function MobileMenu({ pathname }: { pathname: string }) {
+function MobileMenu({ pathname, rawRole }: { pathname: string; rawRole: string }) {
   const [open, setOpen] = useState(false);
   const brand = useCurrentUser();
+  const visibleInventoryItems = INVENTORY_ITEMS.filter(
+    (item) => !item.requiredRoles || item.requiredRoles.includes(rawRole),
+  );
   const [salesExpanded,     setSalesExpanded]     = useState(() => pathname.startsWith("/dashboard/billing"));
   const [inventoryExpanded, setInventoryExpanded] = useState(() =>
     pathname.startsWith("/dashboard/inventory") ||
@@ -829,7 +837,7 @@ function MobileMenu({ pathname }: { pathname: string }) {
                     {inventoryExpanded && (
                       <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.16 }} className="overflow-hidden">
                         <div className="ml-4 mt-0.5 mb-0.5 space-y-0.5 border-l border-white/10 pl-2.5">
-                          {INVENTORY_ITEMS.map(({ href, label, icon: Icon }) => {
+                          {visibleInventoryItems.map(({ href, label, icon: Icon }) => {
                             const active = pathname.startsWith(href);
                             return (
                               <Link key={href} to={href} onClick={() => setOpen(false)}
@@ -973,6 +981,7 @@ export function TopNav() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const brand    = useCurrentUser();
+  const { rawRole } = brand;
 
   // F2 = New Bill (global shortcut, pharmacy users only)
   useEffect(() => {
@@ -1024,7 +1033,7 @@ export function TopNav() {
         {NAV_TABS[0] && <NavItem tab={NAV_TABS[0]} pathname={pathname} />}
         <SalesNavDropdown pathname={pathname} />
         {NAV_TABS[1] && <NavItem tab={NAV_TABS[1]} pathname={pathname} />}
-        <InventoryNavDropdown pathname={pathname} />
+        <InventoryNavDropdown pathname={pathname} rawRole={rawRole} />
         <MoreNavDropdown pathname={pathname} />
       </nav>
 
@@ -1056,7 +1065,7 @@ export function TopNav() {
       <div className="flex items-center gap-1.5 md:hidden">
         <NotificationBell />
         <ProfileDropdown />
-        <MobileMenu pathname={pathname} />
+        <MobileMenu pathname={pathname} rawRole={rawRole} />
       </div>
 
       {/* Tablet */}
@@ -1064,7 +1073,7 @@ export function TopNav() {
         <NewBillBtn />
         <GlobalSearchBar />
         <ProfileDropdown />
-        <MobileMenu pathname={pathname} />
+        <MobileMenu pathname={pathname} rawRole={rawRole} />
       </div>
     </header>
   );

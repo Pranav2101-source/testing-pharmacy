@@ -13,6 +13,7 @@ import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { isSupportStaff, isPlatformAdmin, getStoredUser } from "@/lib/auth";
 import { useToast } from "@/hooks/useToast";
+import { useSupportStream } from "@/hooks/useSupportStream";
 import { TicketStatusBadge, type TicketStatus } from "@/components/support/TicketStatusBadge";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -557,6 +558,9 @@ export default function TicketDetailPage() {
   const isAgent  = isSupportStaff();
   const isAdmin  = isPlatformAdmin();
 
+  // SSE: push updates from server (new messages, status changes) without polling
+  useSupportStream(id);
+
   const [message,    setMessage]    = useState("");
   const [fileToSend, setFileToSend] = useState<File | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -566,7 +570,7 @@ export default function TicketDetailPage() {
   const { data: ticket, isLoading, error } = useQuery<Ticket>({
     queryKey: ["support-ticket", id],
     queryFn:  async () => (await api.get<{ data: Ticket }>(`/support/tickets/${id}`)).data.data,
-    refetchInterval: 20_000,
+    refetchInterval: 120_000, // SSE handles real-time; this is a fallback safety net
   });
 
   useEffect(() => {

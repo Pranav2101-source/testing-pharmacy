@@ -1,5 +1,5 @@
 import type { Db, Prisma, Medicine } from "@pharmacy/database";
-import type { CreateMedicineInput, UpdateMedicineInput } from "./medicines.schema.js";
+import type { CreateMedicineInput, UpdateMedicineInput, UpsertOverrideInput } from "./medicines.schema.js";
 
 // The generated Medicine type carries Prisma.Decimal for money fields; the
 // extended client (see packages/database client.ts) converts them to number.
@@ -152,6 +152,49 @@ export class MedicinesRepo {
     }
 
     return result;
+  }
+
+  // ── Per-pharmacy overrides ────────────────────────────────────────────────
+
+  async listOverrides(pharmacyId: string) {
+    return this.db.pharmacyMedicineOverride.findMany({
+      where:   { pharmacyId },
+      include: {
+        medicine: { select: { id: true, name: true, genericName: true, gstRate: true, hsnCode: true } },
+      },
+      orderBy: { updatedAt: "desc" },
+    });
+  }
+
+  async getOverride(pharmacyId: string, medicineId: string) {
+    return this.db.pharmacyMedicineOverride.findUnique({
+      where: { pharmacyId_medicineId: { pharmacyId, medicineId } },
+    });
+  }
+
+  async upsertOverride(pharmacyId: string, medicineId: string, data: UpsertOverrideInput) {
+    return this.db.pharmacyMedicineOverride.upsert({
+      where:  { pharmacyId_medicineId: { pharmacyId, medicineId } },
+      create: {
+        pharmacyId,
+        medicineId,
+        gstRate:            data.gstRate            ?? null,
+        defaultDiscountPct: data.defaultDiscountPct ?? null,
+        notes:              data.notes              ?? null,
+      },
+      update: {
+        // undefined = leave as-is, null = clear back to catalog value
+        ...(data.gstRate            !== undefined ? { gstRate:            data.gstRate }            : {}),
+        ...(data.defaultDiscountPct !== undefined ? { defaultDiscountPct: data.defaultDiscountPct } : {}),
+        ...(data.notes              !== undefined ? { notes:              data.notes }              : {}),
+      },
+    });
+  }
+
+  async deleteOverride(pharmacyId: string, medicineId: string) {
+    return this.db.pharmacyMedicineOverride.deleteMany({
+      where: { pharmacyId, medicineId },
+    });
   }
 
   /**

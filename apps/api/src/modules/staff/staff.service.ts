@@ -2,7 +2,7 @@ import bcrypt from "bcryptjs";
 import type { FastifyInstance } from "fastify";
 import type { CreateStaffInput, UpdateStaffInput } from "./staff.schema.js";
 import { AppError } from "../../lib/AppError.js";
-import { tokenVersionKey } from "../../middleware/auth.js";
+import { invalidateTokenVersion } from "../../middleware/auth.js";
 
 export class StaffService {
   constructor(private app: FastifyInstance) {}
@@ -23,14 +23,14 @@ export class StaffService {
         phone: input.phone,
         role:  input.role,
       },
-      select: { id: true, name: true, email: true, role: true, isActive: true, createdAt: true },
+      select: { id: true, name: true, email: true, phone: true, role: true, isActive: true, lastLoginAt: true, createdAt: true },
     });
   }
 
   async list(pharmacyId: string) {
     return this.app.prisma.user.findMany({
       where:   { pharmacyId },
-      select:  { id: true, name: true, email: true, phone: true, role: true, isActive: true, lastLoginAt: true },
+      select:  { id: true, name: true, email: true, phone: true, role: true, isActive: true, lastLoginAt: true, createdAt: true },
       orderBy: { name: "asc" },
     });
   }
@@ -49,13 +49,25 @@ export class StaffService {
     // new role.
     const roleChanged = input.role !== undefined && input.role !== target.role;
 
+    // Prevent stripping the last active owner of their role — same invariant
+    // as the deactivation guard. Without this check, a sole owner could change
+    // their own role to Pharmacist and leave the pharmacy unreachable.
+    if (roleChanged && target.role === "OWNER" && input.role !== "OWNER") {
+      const activeOwnerCount = await this.app.prisma.user.count({
+        where: { pharmacyId, role: "OWNER", isActive: true },
+      });
+      if (activeOwnerCount <= 1) {
+        throw AppError.conflict("Cannot change the role of the last active owner");
+      }
+    }
+
     const updated = await this.app.prisma.user.update({
       where:  { id, pharmacyId },
       data:   { ...input, ...(roleChanged ? { tokenVersion: { increment: 1 } } : {}) },
-      select: { id: true, name: true, email: true, role: true, isActive: true },
+      select: { id: true, name: true, email: true, phone: true, role: true, isActive: true },
     });
 
-    if (roleChanged) await this.evictTokenVersionCache(id);
+    if (roleChanged) this.evictTokenVersionCache(id);
 
     return updated;
   }
@@ -89,21 +101,12 @@ export class StaffService {
       data:  { isActive: false, tokenVersion: { increment: 1 } },
     });
 
-    await this.evictTokenVersionCache(id);
+    this.evictTokenVersionCache(id);
 
     return deactivated;
   }
 
-  /**
-   * Evict the cached tokenVersion so `authenticate` re-reads the DB on the next
-   * request from this user. Best-effort: if Redis is down the stale cache entry
-   * expires via its own TTL (bounded by JWT_EXPIRES_IN).
-   */
-  private async evictTokenVersionCache(userId: string): Promise<void> {
-    try {
-      await this.app.redis.del(tokenVersionKey(userId));
-    } catch {
-      this.app.log.warn({ userId }, "Failed to evict tokenVersion cache — revocation delayed until TTL expiry");
-    }
+  private evictTokenVersionCache(userId: string): void {
+    invalidateTokenVersion(userId);
   }
 }

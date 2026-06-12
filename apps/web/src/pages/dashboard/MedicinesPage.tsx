@@ -6,10 +6,12 @@ import {
   Plus, Search, SlidersHorizontal, ChevronDown, Loader2,
   FileX, AlertCircle, Pencil, PowerOff, Power, X, Check,
   RefreshCw, FlaskConical, Upload, Download, CheckCircle2, XCircle,
+  BadgePercent,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
+import { isPlatformAdmin } from "@/lib/auth";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +30,14 @@ type Medicine = {
   unit:         string | null;
   packSize:     string | null;
   isActive:     boolean;
+};
+
+// Per-pharmacy override of catalog values (gstRate/discount); null = catalog value
+type Override = {
+  medicineId:         string;
+  gstRate:            number | null;
+  defaultDiscountPct: number | null;
+  notes:              string | null;
 };
 
 type FormState = {
@@ -577,9 +587,165 @@ function MedicineModal({
   );
 }
 
+// ─── Pharmacy override modal ──────────────────────────────────────────────────
+// The catalog is global (platform-managed); this sets MY pharmacy's GST rate /
+// standing discount for one medicine without touching the shared record.
+
+function OverrideModal({
+  medicine,
+  override,
+  onClose,
+  onSaved,
+  onRemoved,
+}: {
+  medicine: Medicine;
+  override: Override | null;
+  onClose: () => void;
+  onSaved: (o: Override) => void;
+  onRemoved: (medicineId: string) => void;
+}) {
+  const [gstRate,  setGstRate]  = useState<string>(override?.gstRate != null ? String(override.gstRate) : "");
+  const [discount, setDiscount] = useState<string>(override?.defaultDiscountPct != null ? String(override.defaultDiscountPct) : "");
+  const [notes,    setNotes]    = useState<string>(override?.notes ?? "");
+  const [saving,   setSaving]   = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [error,    setError]    = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (gstRate === "" && discount === "") {
+      setError("Set a GST rate and/or a default discount — or remove the override.");
+      return;
+    }
+    const discountNum = discount === "" ? null : Number(discount);
+    if (discountNum !== null && (Number.isNaN(discountNum) || discountNum < 0 || discountNum > 100)) {
+      setError("Discount must be between 0 and 100.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      const { data } = await api.put(`/medicines/${medicine.id}/override`, {
+        gstRate:            gstRate === "" ? null : Number(gstRate),
+        defaultDiscountPct: discountNum,
+        notes:              notes.trim() || null,
+      });
+      onSaved(data.data);
+    } catch (err: any) {
+      setError(err?.response?.data?.error ?? "Failed to save override.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove() {
+    setRemoving(true);
+    setError(null);
+    try {
+      await api.delete(`/medicines/${medicine.id}/override`);
+      onRemoved(medicine.id);
+    } catch (err: any) {
+      setError(err?.response?.data?.error ?? "Failed to remove override.");
+      setRemoving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 10 }}
+        animate={{ opacity: 1, scale: 1,    y: 0  }}
+        exit={{   opacity: 0, scale: 0.96, y: 10  }}
+        transition={{ duration: 0.18 }}
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-md"
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-violet-50 flex items-center justify-center">
+              <BadgePercent className="w-4 h-4 text-violet-600" />
+            </div>
+            <div>
+              <h2 className="text-[15px] font-bold text-slate-900 leading-tight">Pharmacy Override</h2>
+              <p className="text-[12px] text-slate-500 leading-tight truncate max-w-[260px]">{medicine.name}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-slate-100 flex items-center justify-center transition-colors">
+            <X className="w-4 h-4 text-slate-500" />
+          </button>
+        </div>
+
+        <form onSubmit={submit} className="px-6 py-5 space-y-4">
+          <p className="text-[12px] text-slate-500 bg-slate-50 border border-slate-100 rounded-lg px-3 py-2">
+            Applies to <span className="font-semibold">your pharmacy only</span> — billing and the POS
+            will use these values instead of the shared catalog.
+          </p>
+
+          <Field label={`GST Rate (catalog: ${medicine.gstRate}%)`}>
+            <select
+              value={gstRate}
+              onChange={(e) => setGstRate(e.target.value)}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-colors bg-white"
+            >
+              <option value="">Use catalog rate ({medicine.gstRate}%)</option>
+              {GST_RATES.map((r) => <option key={r} value={r}>{r}%</option>)}
+            </select>
+          </Field>
+
+          <Field label="Default Discount % (pre-filled at POS)">
+            <Input value={discount} onChange={setDiscount} placeholder="e.g. 10 — leave blank for none" />
+          </Field>
+
+          <Field label="Notes (optional)">
+            <Input value={notes} onChange={setNotes} placeholder="Why this override exists" />
+          </Field>
+
+          {error && (
+            <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-[13px] text-red-600">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              {error}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+            {override ? (
+              <button
+                type="button"
+                onClick={remove}
+                disabled={removing}
+                className="text-[13px] text-red-500 hover:text-red-600 font-medium disabled:opacity-60 flex items-center gap-1.5"
+              >
+                {removing && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Remove override
+              </button>
+            ) : <div />}
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-5 py-2 rounded-lg border border-slate-200 text-[13px] text-slate-600 font-medium hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                className="px-6 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold transition-colors disabled:opacity-60 flex items-center gap-2"
+              >
+                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                Save Override
+              </button>
+            </div>
+          </div>
+        </form>
+      </motion.div>
+    </div>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 
 export default function MedicinesPage() {
+  const isAdmin = isPlatformAdmin();
   const toast = useToast();
   const [medicines,   setMedicines]   = useState<Medicine[]>([]);
   const [total,       setTotal]       = useState(0);
@@ -594,9 +760,11 @@ export default function MedicinesPage() {
   const [filterActive,   setFilterActive]   = useState<"" | "true" | "false">("");
   const [showFilters,    setShowFilters]     = useState(false);
 
-  const [modal,       setModal]       = useState<"add" | "edit" | "bulk" | null>(null);
+  const [modal,       setModal]       = useState<"add" | "edit" | "bulk" | "override" | null>(null);
   const [editing,     setEditing]     = useState<Medicine | null>(null);
   const [reindexing,  setReindexing]  = useState(false);
+  // medicineId → this pharmacy's override (loaded once; mutated by the modal)
+  const [overrides,   setOverrides]   = useState<Record<string, Override>>({});
 
   const filterRef = useRef<HTMLDivElement>(null);
 
@@ -634,6 +802,16 @@ export default function MedicinesPage() {
     const t = setTimeout(fetch, delay);
     return () => clearTimeout(t);
   }, [fetch]);
+
+  useEffect(() => {
+    api.get("/medicines/overrides")
+      .then(({ data }) => {
+        const map: Record<string, Override> = {};
+        for (const o of data.data as Override[]) map[o.medicineId] = o;
+        setOverrides(map);
+      })
+      .catch(() => { /* non-fatal — page still works without override badges */ });
+  }, []);
 
   function handleSaved(saved: Medicine, isNew: boolean) {
     setMedicines((prev) => {
@@ -704,15 +882,17 @@ export default function MedicinesPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            onClick={runReindex}
-            disabled={reindexing}
-            title="Refresh search index so newly added medicines appear instantly in search"
-            className="flex items-center gap-1.5 text-slate-500 hover:text-blue-600 text-[12px] font-medium border border-slate-200 hover:border-blue-300 rounded-md px-3 py-1.5 transition-colors disabled:opacity-50"
-          >
-            <RefreshCw className={cn("w-3.5 h-3.5", reindexing && "animate-spin")} />
-            Refresh Index
-          </button>
+          {isAdmin && (
+            <button
+              onClick={runReindex}
+              disabled={reindexing}
+              title="Refresh search index so newly added medicines appear instantly in search"
+              className="flex items-center gap-1.5 text-slate-500 hover:text-blue-600 text-[12px] font-medium border border-slate-200 hover:border-blue-300 rounded-md px-3 py-1.5 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5", reindexing && "animate-spin")} />
+              Refresh Index
+            </button>
+          )}
           <span className="text-[12px] text-slate-400">{total} medicines</span>
         </div>
       </div>
@@ -892,7 +1072,17 @@ export default function MedicinesPage() {
                     ) : <span className="text-slate-300 text-[13px]">—</span>}
                   </td>
                   <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap tabular-nums">
-                    {m.gstRate}%
+                    {overrides[m.id]?.gstRate != null ? (
+                      <span
+                        title={`Catalog ${m.gstRate}% — overridden for your pharmacy`}
+                        className="inline-flex items-center gap-1 text-violet-700 font-semibold cursor-help"
+                      >
+                        <span className="line-through text-slate-300 font-normal">{m.gstRate}%</span>
+                        {overrides[m.id]!.gstRate}%
+                      </span>
+                    ) : (
+                      <>{m.gstRate}%</>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <span className={cn(
@@ -906,25 +1096,39 @@ export default function MedicinesPage() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1">
+                      {isAdmin && (
+                        <button
+                          onClick={() => { setEditing(m); setModal("edit"); }}
+                          title="Edit medicine"
+                          className="w-7 h-7 rounded-md hover:bg-blue-100 flex items-center justify-center text-slate-400 hover:text-blue-600 transition-colors"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       <button
-                        onClick={() => { setEditing(m); setModal("edit"); }}
-                        title="Edit medicine"
-                        className="w-7 h-7 rounded-md hover:bg-blue-100 flex items-center justify-center text-slate-400 hover:text-blue-600 transition-colors"
-                      >
-                        <Pencil className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        onClick={() => toggleActive(m)}
-                        title={m.isActive ? "Deactivate medicine" : "Activate medicine"}
+                        onClick={() => { setEditing(m); setModal("override"); }}
+                        title={overrides[m.id] ? "Edit pharmacy override (GST / discount)" : "Set pharmacy override (GST / discount)"}
                         className={cn(
-                          "w-7 h-7 rounded-md flex items-center justify-center transition-colors",
-                          m.isActive
-                            ? "hover:bg-red-50   text-slate-300 hover:text-red-500"
-                            : "hover:bg-emerald-50 text-slate-300 hover:text-emerald-600",
+                          "w-7 h-7 rounded-md hover:bg-violet-100 flex items-center justify-center transition-colors",
+                          overrides[m.id] ? "text-violet-600" : "text-slate-300 hover:text-violet-600",
                         )}
                       >
-                        {m.isActive ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
+                        <BadgePercent className="w-3.5 h-3.5" />
                       </button>
+                      {isAdmin && (
+                        <button
+                          onClick={() => toggleActive(m)}
+                          title={m.isActive ? "Deactivate medicine" : "Activate medicine"}
+                          className={cn(
+                            "w-7 h-7 rounded-md flex items-center justify-center transition-colors",
+                            m.isActive
+                              ? "hover:bg-red-50   text-slate-300 hover:text-red-500"
+                              : "hover:bg-emerald-50 text-slate-300 hover:text-emerald-600",
+                          )}
+                        >
+                          {m.isActive ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -985,6 +1189,33 @@ export default function MedicinesPage() {
           <BulkUploadModal
             onClose={() => setModal(null)}
             onDone={() => { setModal(null); fetch(); }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ── Pharmacy Override Modal ───────────────────────────────── */}
+      <AnimatePresence>
+        {modal === "override" && editing && (
+          <OverrideModal
+            medicine={editing}
+            override={overrides[editing.id] ?? null}
+            onClose={() => { setModal(null); setEditing(null); }}
+            onSaved={(o) => {
+              setOverrides((prev) => ({ ...prev, [o.medicineId]: o }));
+              toast.success(`Override saved for ${editing.name}`);
+              setModal(null);
+              setEditing(null);
+            }}
+            onRemoved={(medicineId) => {
+              setOverrides((prev) => {
+                const next = { ...prev };
+                delete next[medicineId];
+                return next;
+              });
+              toast.success(`Override removed for ${editing.name}`);
+              setModal(null);
+              setEditing(null);
+            }}
           />
         )}
       </AnimatePresence>

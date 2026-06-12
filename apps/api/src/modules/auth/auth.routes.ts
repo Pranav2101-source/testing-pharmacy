@@ -65,6 +65,26 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     }
     return reply.send({ success: true, data: user });
   });
+
+  app.patch("/me", { preHandler: authenticate }, async (req, reply) => {
+    const { name } = req.body as { name?: string };
+    if (!name?.trim()) {
+      return reply.status(400).send({ success: false, error: "Name is required" });
+    }
+    const user = await app.prisma.user.update({
+      where:  { id: req.user.sub },
+      data:   { name: name.trim() },
+      select: {
+        id:         true,
+        name:       true,
+        email:      true,
+        role:       true,
+        pharmacyId: true,
+        pharmacy:   { select: { name: true } },
+      },
+    });
+    return reply.send({ success: true, data: user });
+  });
 };
 
 export default authRoutes;

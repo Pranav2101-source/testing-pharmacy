@@ -17,7 +17,9 @@ const envSchema = z.object({
 
   DATABASE_URL: z.string().min(1),
 
-  REDIS_URL: z.string().default("redis://localhost:6379"),
+  // Direct (non-pooled) connection — required for pg-boss (LISTEN/NOTIFY) and
+  // Prisma migrations. On Supabase: port 5432. On Neon: the non-pooler URL.
+  DIRECT_URL: z.string().min(1),
 
   MEILISEARCH_HOST:    z.string().default("http://localhost:7700"),
   MEILISEARCH_API_KEY: z.string().min(1),
@@ -45,18 +47,17 @@ const envSchema = z.object({
   SMTP_PASS: z.string().optional(),
   SMTP_FROM: z.string().default("noreply@checkup.app"),
 
-  R2_ACCOUNT_ID:       z.string().optional(),
-  R2_ACCESS_KEY_ID:    z.string().optional(),
-  R2_SECRET_ACCESS_KEY: z.string().optional(),
-  R2_BUCKET_NAME:      z.string().optional(),
-  R2_PUBLIC_URL:       z.string().optional(),
+  // Supabase Storage — service role key gives server-side access (bypasses RLS).
+  // SUPABASE_URL: Project URL from Supabase dashboard → Settings → API
+  // SUPABASE_SERVICE_ROLE_KEY: Secret key — never expose to the frontend.
+  SUPABASE_URL:              z.string().url(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  SUPABASE_STORAGE_BUCKET:   z.string().default("pharmacy-docs"),
 
   RAZORPAY_KEY_ID:     z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
 
-  // Set to true in development to skip BullMQ worker initialization.
-  // Workers poll Redis constantly — with a cloud Redis free tier (e.g. Upstash
-  // 500k/day) they exhaust the quota in minutes and crash the server.
+  // Set to true to skip pg-boss worker initialization (CI, minimal dev environments).
   DISABLE_QUEUES: z.coerce.boolean().default(false),
 });
 

@@ -11,18 +11,24 @@ import type { InvoiceSettingsConfig, PaperSize, InvoiceTheme, CustomField } from
 import { InvoicePrintView } from "@/components/billing/InvoicePrintView";
 import { ThermalReceiptView } from "@/components/billing/ThermalReceiptView";
 import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
+import { invalidateInvoicePrintConfigCache } from "@/lib/useInvoicePrintConfig";
 
 // ─── Mock data for the live preview ──────────────────────────────────────────
 
 const MOCK_INVOICE: PrintInvoiceData = {
-  invoiceNumber:  "INV/25-26/000042",
-  createdAt:      new Date().toISOString(),
-  customerName:   "Raju Sharma",
-  customerPhone:  "+91 99887 76655",
-  doctorName:     "Dr. Priya Mehta",
-  paymentMode:    "CASH",
-  paymentStatus:  "PAID",
-  isInterstate:   false,
+  invoiceNumber:    "INV/25-26/000042",
+  createdAt:        new Date().toISOString(),
+  customerName:     "Raju Sharma",
+  customerPhone:    "+91 99887 76655",
+  customerAddress:  "42, Shivaji Nagar, Pune 411005",
+  uhid:             "UHID-2025-00789",
+  abha:             "91-1234-5678-9012",
+  prescriptionNo:   "RX-2025-0042",
+  doctorName:       "Dr. Priya Mehta",
+  cashierName:      "Jitesh Kumar",
+  paymentMode:      "CASH",
+  paymentStatus:    "PAID",
+  isInterstate:     false,
   items: [
     {
       medicineName: "Paracetamol 500mg",
@@ -55,10 +61,10 @@ function mergeDefaults(partial: Partial<InvoiceSettingsConfig>): InvoiceSettings
     ...defaultInvoiceSettings,
     ...partial,
     branding:     { ...defaultInvoiceSettings.branding,     ...partial.branding     },
-    header:       { ...defaultInvoiceSettings.header,       ...partial.header       },
+    header:       { ...defaultInvoiceSettings.header,       ...partial.header,       showGstin: true },
     patient:      { ...defaultInvoiceSettings.patient,      ...partial.patient      },
-    columns:      { ...defaultInvoiceSettings.columns,      ...partial.columns      },
-    totals:       { ...defaultInvoiceSettings.totals,       ...partial.totals       },
+    columns:      { ...defaultInvoiceSettings.columns,      ...partial.columns,      showHsn: true, showGstRate: true, showTaxable: true },
+    totals:       { ...defaultInvoiceSettings.totals,       ...partial.totals,       showTaxable: true, showCgst: true, showSgst: true, showIgst: true, showGstBreakdown: true },
     footer:       { ...defaultInvoiceSettings.footer,       ...partial.footer       },
     numbering:    { ...defaultInvoiceSettings.numbering,    ...partial.numbering    },
     paper:        { ...defaultInvoiceSettings.paper,        ...partial.paper        },
@@ -119,10 +125,9 @@ function ToggleRow({
             value ? "bg-blue-600" : "bg-slate-200 hover:bg-slate-300"
           )}
         >
-          <motion.span
-            layout
-            transition={{ type: "spring", stiffness: 600, damping: 36 }}
-            className={cn("absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm", value ? "left-[18px]" : "left-0.5")}
+          <span
+            className="absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-200 will-change-transform"
+            style={{ transform: value ? "translateX(16px)" : "translateX(0)" }}
           />
         </button>
       )}
@@ -203,7 +208,10 @@ function NumberRow({ label, value, onChange, min, max }: { label: string; value:
       <span className="text-[13px] font-medium text-slate-700">{label}</span>
       <input
         type="number" value={value} min={min} max={max}
-        onChange={e => onChange(Number(e.target.value))}
+        onChange={e => {
+          const n = parseInt(e.target.value, 10);
+          if (!isNaN(n)) onChange(n);
+        }}
         className="w-20 border border-slate-200 rounded-lg px-3 py-1 text-[13px] text-right focus:outline-none focus:ring-2 focus:ring-blue-100"
       />
     </div>
@@ -261,7 +269,14 @@ export default function InvoiceSettingsPage() {
     setSaving(true);
     setError(null);
     try {
-      await api.put("/billing/settings", config);
+      // Strip currentSequence — it is managed server-side and must not be
+      // overwritten from the UI payload (would corrupt the invoice counter).
+      const { currentSequence: _seq, ...numberingToSave } = config.numbering;
+      const payload = { ...config, numbering: numberingToSave };
+      await api.put("/billing/settings", payload);
+      // Bust the module-level cache so BillingNewPage picks up the new config
+      // immediately on the next invoice print without a full page reload.
+      invalidateInvoicePrintConfigCache();
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch {
@@ -594,7 +609,10 @@ export default function InvoiceSettingsPage() {
           )}
 
           <button
-            onClick={() => setConfig(mergeDefaults({}))}
+            onClick={() => {
+              if (!window.confirm("Reset all invoice settings to defaults? This cannot be undone.")) return;
+              setConfig(mergeDefaults({}));
+            }}
             className="flex items-center gap-1.5 text-[12px] font-medium text-slate-500 border border-slate-200 hover:bg-slate-50 rounded-lg px-3 py-1.5 transition-colors"
           >
             <RefreshCw className="w-3.5 h-3.5" />
@@ -664,7 +682,7 @@ export default function InvoiceSettingsPage() {
           </div>
 
           {/* Scaled preview */}
-          <div className="flex-1 overflow-auto flex items-start justify-center p-8">
+          <div className="flex-1 overflow-y-auto overflow-x-hidden flex items-start justify-center p-8">
             {isThermal ? (
               <div className="shadow-2xl rounded-sm overflow-hidden">
                 <ThermalReceiptView invoice={MOCK_INVOICE} config={config} />

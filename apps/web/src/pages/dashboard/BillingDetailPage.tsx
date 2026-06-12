@@ -1,6 +1,6 @@
 
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense, lazy } from "react";
 import { Link, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -9,6 +9,11 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { useInvoicePrintConfig } from "@/lib/useInvoicePrintConfig";
+import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
+
+const InvoicePrintView  = lazy(() => import("@/components/billing/InvoicePrintView").then(m => ({ default: m.InvoicePrintView })));
+const ThermalReceiptView = lazy(() => import("@/components/billing/ThermalReceiptView").then(m => ({ default: m.ThermalReceiptView })));
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -25,6 +30,7 @@ type InvoiceItem = {
   gstRate: number;
   cgst: number;
   sgst: number;
+  igst: number;
   taxableAmount: number;
   amount: number;
 };
@@ -35,11 +41,14 @@ type Invoice = {
   createdAt: string;
   paymentMode: string;
   paymentStatus: string;
+  isInterstate: boolean;
+  prescriptionId: string | null;
   subtotal: number;
   discountAmount: number;
   taxableAmount: number;
   cgst: number;
   sgst: number;
+  igst: number;
   totalGst: number;
   totalAmount: number;
   isCancelled: boolean;
@@ -98,6 +107,8 @@ export default function BillDetailPage() {
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
 
+  const { config: printConfig, pharmacy: printPharmacy } = useInvoicePrintConfig();
+
   useEffect(() => {
     if (!id) return;
     setLoading(true);
@@ -147,13 +158,65 @@ export default function BillDetailPage() {
     );
   }
 
+  // ─── Map invoice to PrintInvoiceData for the print view ──────
+  const isThermal = printConfig.paper.size === "thermal80" || printConfig.paper.size === "thermal58";
+  const printData: PrintInvoiceData = invoice ? {
+    invoiceNumber:   invoice.invoiceNumber,
+    createdAt:       invoice.createdAt,
+    customerName:    invoice.customer?.name    || undefined,
+    customerPhone:   invoice.customer?.phone   || undefined,
+    prescriptionNo:  invoice.prescriptionId    || undefined,
+    doctorName:      invoice.doctorName        || undefined,
+    cashierName:     invoice.user.name         || undefined,
+    paymentMode:     invoice.paymentMode,
+    paymentStatus:   invoice.paymentStatus,
+    isInterstate:    invoice.isInterstate,
+    items: invoice.items.map(i => ({
+      medicineName:  i.medicineName,
+      hsnCode:       i.hsnCode,
+      batchNumber:   i.batchNumber,
+      expiryDate:    i.expiryDate,
+      mrp:           i.mrp,
+      quantity:      i.quantity,
+      discount:      i.discount,
+      gstRate:       i.gstRate,
+      rate:          i.rate,
+      taxableAmount: i.taxableAmount,
+      cgst:          i.cgst,
+      sgst:          i.sgst,
+      igst:          i.igst,
+      amount:        i.amount,
+    })),
+    subtotal:       invoice.subtotal,
+    discountAmount: invoice.discountAmount,
+    taxableAmount:  invoice.taxableAmount,
+    cgst:           invoice.cgst,
+    sgst:           invoice.sgst,
+    igst:           invoice.igst,
+    totalGst:       invoice.totalGst,
+    totalAmount:    invoice.totalAmount,
+  } : {} as PrintInvoiceData;
+
   // ─────────────────────────────────────────────────────────────
   return (
+    <>
+    {/* ── Print-only view — hidden on screen, shown when window.print() fires ── */}
+    {invoice && (
+      <div className="hidden print:block">
+        <Suspense fallback={null}>
+          {isThermal
+            ? <ThermalReceiptView invoice={printData} config={printConfig} pharmacy={printPharmacy} />
+            : <InvoicePrintView  invoice={printData} config={printConfig} pharmacy={printPharmacy} />
+          }
+        </Suspense>
+      </div>
+    )}
+
     <motion.div
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
-      className="flex flex-col h-full bg-[#f7f9fc] overflow-auto"
+      className="flex flex-col h-full bg-[#f7f9fc] overflow-auto print:hidden"
     >
       {/* ── Sub-nav ──────────────────────────────────────────── */}
       <div className="flex items-center justify-between px-5 h-[52px] bg-white border-b border-slate-200 flex-shrink-0 sticky top-0 z-10">
@@ -389,5 +452,6 @@ export default function BillDetailPage() {
 
       </div>
     </motion.div>
+    </>
   );
 }
