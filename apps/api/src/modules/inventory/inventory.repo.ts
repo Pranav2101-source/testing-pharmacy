@@ -1,4 +1,4 @@
-import { Prisma, type PrismaClient, type BatchStatus, type MovementType, type MovementDirection } from "@pharmacy/database";
+import { Prisma, type Db, type BatchStatus, type MovementType, type MovementDirection } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 import { env } from "../../config/env.js";
 
@@ -28,7 +28,7 @@ const INVENTORY_INCLUDE = {
 } as const;
 
 export class InventoryRepo {
-  constructor(readonly db: PrismaClient) {}
+  constructor(readonly db: Db) {}
 
   async upsertBatch(pharmacyId: string, data: {
     medicineId:   string;
@@ -461,7 +461,15 @@ export class InventoryRepo {
     const d90      = new Date(Date.now() +  90 * 86400_000);
 
     const items = await this.db.inventory.findMany({
-      where:   { pharmacyId, expiryDate: { lte: d90 }, quantity: { gt: 0 } },
+      // ACTIVE + EXPIRED only: the EXPIRED tier below must keep showing batches the
+      // auto-expire job has already flagged, but QUARANTINE/DAMAGED batches are
+      // handled through recall/adjustment flows and would only add noise here.
+      where: {
+        pharmacyId,
+        expiryDate: { lte: d90 },
+        quantity:   { gt: 0 },
+        status:     { in: ["ACTIVE", "EXPIRED"] },
+      },
       include: { medicine: { select: { name: true, genericName: true, form: true } } },
       orderBy: { expiryDate: "asc" },
     });
@@ -506,7 +514,11 @@ export class InventoryRepo {
   // ── FEFO batch selection (used by billing) ─────────────────────────────────
 
   async getFEFOBatch(medicineId: string, pharmacyId: string, quantity: number) {
-    return this.db.inventory.findFirst({
+    // Availability = quantity - reservedQuantity: stock held by other billing
+    // sessions is not offerable. Prisma cannot compare two columns in a where
+    // clause, so scan the earliest-expiring candidates and pick the first with
+    // enough unreserved stock (batches per medicine are rarely more than a few).
+    const candidates = await this.db.inventory.findMany({
       where: {
         pharmacyId,
         medicineId,
@@ -515,7 +527,9 @@ export class InventoryRepo {
         expiryDate: { gt: new Date() },
       },
       orderBy: { expiryDate: "asc" },
+      take:    25,
     });
+    return candidates.find((b) => b.quantity - b.reservedQuantity >= quantity) ?? null;
   }
 
   // ── Batch Recall ───────────────────────────────────────────────────────────

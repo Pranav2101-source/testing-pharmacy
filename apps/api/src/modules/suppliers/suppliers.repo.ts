@@ -1,8 +1,8 @@
-import type { PrismaClient, PurchaseStatus } from "@pharmacy/database";
+import type { Db, PurchaseStatus } from "@pharmacy/database";
 import type { CreateSupplierInput, UpdateSupplierInput } from "./suppliers.schema.js";
 
 export class SuppliersRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   async create(pharmacyId: string, data: CreateSupplierInput) {
     return this.db.supplier.create({ data: { pharmacyId, ...data } });
@@ -77,7 +77,7 @@ export class SuppliersRepo {
       recentGRNs: grns,
       summary: {
         totalOrders:   totals._count.id,
-        totalSpend:    totals._sum.totalAmount ?? 0,
+        totalSpend:    Number(totals._sum.totalAmount ?? 0),
       },
     };
   }

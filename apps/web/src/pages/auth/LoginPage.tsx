@@ -6,7 +6,7 @@ import { z } from "zod";
 import { motion, AnimatePresence } from "framer-motion";
 import { Mail, Lock, Eye, EyeOff, AlertCircle, ArrowRight, CheckCircle2, Shield, UserPlus } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { storeUser, type StoredUser } from "@/lib/auth";
+import { storeUser, storeTokens, type StoredUser } from "@/lib/auth";
 import { api } from "@/lib/api-client";
 
 const schema = z.object({
@@ -30,16 +30,20 @@ export default function LoginPage() {
     try {
       // Use the shared axios instance so interceptors (401 redirect, error
       // normalisation) apply here too — replacing the previous raw fetch call.
-      const res = await api.post<{ data: { tokens: { accessToken: string }; user: StoredUser } }>(
+      const res = await api.post<{ data: { tokens: { accessToken: string; refreshToken: string }; user: StoredUser } }>(
         "/auth/login",
         data,
       );
       const { tokens, user } = res.data.data;
-      localStorage.setItem("token", tokens.accessToken);
-      document.cookie = `auth-token=${tokens.accessToken}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
+      // Refresh token keeps the session alive past the 15-minute access token
+      // expiry — api-client silently renews on 401.
+      storeTokens(tokens.accessToken, tokens.refreshToken);
       storeUser(user);
       setSuccess(true);
-      setTimeout(() => navigate("/dashboard"), 600);
+      const dest = (user.role === "SUPPORT_AGENT" || user.role === "PLATFORM_ADMIN")
+        ? "/dashboard/support"
+        : "/dashboard";
+      setTimeout(() => navigate(dest), 600);
     } catch (err) {
       // axios normalises the backend error message onto err.message via the
       // response interceptor, so we don't need to dig into err.response.data.

@@ -1,8 +1,15 @@
-import type { PrismaClient, Prisma, Medicine } from "@pharmacy/database";
+import type { Db, Prisma, Medicine } from "@pharmacy/database";
 import type { CreateMedicineInput, UpdateMedicineInput } from "./medicines.schema.js";
 
+// The generated Medicine type carries Prisma.Decimal for money fields; the
+// extended client (see packages/database client.ts) converts them to number.
+export type MedicineRecord = Omit<Medicine, "gstRate" | "catalogMrp"> & {
+  gstRate:    number;
+  catalogMrp: number | null;
+};
+
 export class MedicinesRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   async create(data: CreateMedicineInput) {
     return this.db.medicine.create({ data });
@@ -31,10 +38,10 @@ export class MedicinesRepo {
    * If any other error occurs the entire chunk is rolled back.
    */
   async createManyInTransaction(rows: CreateMedicineInput[]): Promise<{
-    created: Medicine[];
+    created: MedicineRecord[];
     skipped: string[];
   }> {
-    const created: Medicine[] = [];
+    const created: MedicineRecord[] = [];
     const skipped: string[] = [];
 
     await this.db.$transaction(async (tx) => {

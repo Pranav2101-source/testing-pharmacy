@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { QuotationsRepo } from "./quotations.repo.js";
 import type { CreateQuotationInput, UpdateQuotationInput, ListQuotationQuery, CompareQuotationsInput } from "./quotations.schema.js";
 import { AppError } from "../../lib/AppError.js";
-import { PO_SEQUENCE_KEY, generatePONumber, QT_SEQUENCE_KEY, generateQTNumber } from "../billing/billing.constants.js";
+import { generatePONumber, generateQTNumber } from "../billing/billing.constants.js";
+import { nextSequenceValue } from "../../lib/sequences.js";
 
 export class QuotationsService {
   private repo: QuotationsRepo;
@@ -12,12 +13,8 @@ export class QuotationsService {
   }
 
   async create(pharmacyId: string, userId: string, input: CreateQuotationInput) {
-    let seq: number;
-    try {
-      seq = await this.app.redis.incr(QT_SEQUENCE_KEY(pharmacyId));
-    } catch {
-      throw AppError.internal("We couldn't generate a quotation number right now. Please try again in a moment.");
-    }
+    // Quotation number from the durable Postgres counter — race-safe, survives Redis restarts.
+    const seq             = await nextSequenceValue(this.app.prisma, pharmacyId, "QUOTATION");
     const quotationNumber = generateQTNumber(seq);
     return this.repo.create(pharmacyId, userId, quotationNumber, {
       supplierId: input.supplierId,
@@ -69,13 +66,8 @@ export class QuotationsService {
   }
 
   async convertToPO(id: string, pharmacyId: string, userId: string, notes?: string) {
-    // Generate PO number via Redis INCR (same race-safe pattern as purchases.service.ts)
-    let seq: number;
-    try {
-      seq = await this.app.redis.incr(PO_SEQUENCE_KEY(pharmacyId));
-    } catch {
-      throw AppError.internal("We couldn't generate an order number right now. Please try again in a moment.");
-    }
+    // PO number from the durable Postgres counter (same counter as purchases.service.ts).
+    const seq         = await nextSequenceValue(this.app.prisma, pharmacyId, "PURCHASE_ORDER");
     const orderNumber = generatePONumber(seq);
     return this.repo.convertToPO(id, pharmacyId, userId, orderNumber, notes);
   }

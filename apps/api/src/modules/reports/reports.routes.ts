@@ -1,6 +1,38 @@
 import type { FastifyPluginAsync } from "fastify";
+import { z } from "zod";
 import { authenticate } from "../../middleware/auth.js";
 import { resolvePharmacy } from "../../middleware/tenant.js";
+import { AppError } from "../../lib/AppError.js";
+
+// ── Query validation ──────────────────────────────────────────────────────────
+// Without these, `new Date("garbage")` produces Invalid Date, which Prisma treats
+// as matching nothing — reports silently return zeros instead of a 400. And
+// `parseInt("abc")` produces NaN, which crashes Prisma's `take`.
+
+const dateString = z
+  .string()
+  .refine((s) => !Number.isNaN(new Date(s).getTime()), { message: "Invalid date — use YYYY-MM-DD or ISO format" });
+
+const periodQuerySchema = z.object({ from: dateString, to: dateString });
+
+const MAX_PERIOD_DAYS = 731; // 2 years — guards against accidental full-history scans
+
+/**
+ * Parse and validate a from/to reporting period. Plain `to` dates (no time
+ * component) are extended to end-of-day so the last selected day is included.
+ */
+function parsePeriod(query: unknown): { from: Date; to: Date; fromRaw: string; toRaw: string } {
+  const parsed = periodQuerySchema.parse(query);
+  const from = new Date(parsed.from);
+  const to   = new Date(parsed.to);
+  if (!parsed.to.includes("T")) to.setUTCHours(23, 59, 59, 999);
+
+  if (from > to) throw AppError.badRequest("'from' date must be before 'to' date");
+  if (to.getTime() - from.getTime() > MAX_PERIOD_DAYS * 86_400_000) {
+    throw AppError.badRequest(`Reporting period cannot exceed ${MAX_PERIOD_DAYS} days`);
+  }
+  return { from, to, fromRaw: parsed.from, toRaw: parsed.to };
+}
 
 const reportsRoutes: FastifyPluginAsync = async (app) => {
   const preHandler = [authenticate, resolvePharmacy];
@@ -9,7 +41,9 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
 
   // Daily sales summary
   app.get("/sales/daily", { preHandler }, async (req, reply) => {
-    const { date } = req.query as Record<string, string>;
+    const { date } = z
+      .object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD").optional() })
+      .parse(req.query);
     // IST-aware day boundary — server runs UTC, IST = UTC+5:30
     const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
     const dateStr = date ?? new Date(Date.now() + IST_OFFSET_MS).toISOString().slice(0, 10);
@@ -32,23 +66,20 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
       data: {
         date:         dateStr,  // YYYY-MM-DD string, not a Date object
         invoiceCount: invoices,
-        revenue:      totalRevenue._sum.totalAmount ?? 0,
-        gstCollected: totalRevenue._sum.totalGst    ?? 0,
+        revenue:      Number(totalRevenue._sum.totalAmount ?? 0),
+        gstCollected: Number(totalRevenue._sum.totalGst    ?? 0),
       },
     });
   });
 
   // GST report for a period
   app.get("/gst", { preHandler }, async (req, reply) => {
-    const { from, to } = req.query as Record<string, string>;
-    if (!from || !to) {
-      return reply.status(400).send({ success: false, error: "from and to required" });
-    }
+    const { from, to } = parsePeriod(req.query);
 
     const result = await app.prisma.invoice.aggregate({
       where: {
         pharmacyId:  req.pharmacyId,
-        createdAt:   { gte: new Date(from), lte: new Date(to) },
+        createdAt:   { gte: from, lte: to },
         isCancelled: false,
       },
       _sum:   { subtotal: true, discountAmount: true, taxableAmount: true, cgst: true, sgst: true, totalGst: true, totalAmount: true },
@@ -60,11 +91,24 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
 
   // Expiry report
   app.get("/expiry", { preHandler }, async (req, reply) => {
-    const threshold = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+    const { days, limit } = z.object({
+      days:  z.coerce.number().int().min(1).max(365).default(90),
+      limit: z.coerce.number().int().min(1).max(1000).default(500),
+    }).parse(req.query);
+
+    const threshold = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
     const items = await app.prisma.inventory.findMany({
-      where:   { pharmacyId: req.pharmacyId, expiryDate: { lte: threshold } },
+      where: {
+        pharmacyId: req.pharmacyId,
+        expiryDate: { lte: threshold },
+        quantity:   { gt: 0 },
+        // QUARANTINE/DAMAGED batches are already out of circulation via recall
+        // or adjustment flows; listing them here would double-count the loss.
+        status:     { in: ["ACTIVE", "EXPIRED"] },
+      },
       include: { medicine: { select: { name: true } } },
       orderBy: { expiryDate: "asc" },
+      take:    limit,
     });
     return reply.send({ success: true, data: items });
   });
@@ -73,12 +117,9 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
 
   // Overall purchase summary for a period
   app.get("/purchases/summary", { preHandler }, async (req, reply) => {
-    const { from, to } = req.query as Record<string, string>;
-    if (!from || !to) {
-      return reply.status(400).send({ success: false, error: "from and to required" });
-    }
+    const { from, to, fromRaw, toRaw } = parsePeriod(req.query);
 
-    const dateFilter = { gte: new Date(from), lte: new Date(to) };
+    const dateFilter = { gte: from, lte: to };
 
     const [grnAgg, poAgg, topSuppliers, topItems, overdueCount] = await Promise.all([
       // Total spend from confirmed GRNs
@@ -126,22 +167,22 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({
       success: true,
       data: {
-        period: { from, to },
-        totalSpend:     grnAgg._sum.totalAmount ?? 0,
-        totalGstPaid:   grnAgg._sum.totalGst    ?? 0,
-        totalSubtotal:  grnAgg._sum.subtotal     ?? 0,
+        period: { from: fromRaw, to: toRaw },
+        totalSpend:     Number(grnAgg._sum.totalAmount ?? 0),
+        totalGstPaid:   Number(grnAgg._sum.totalGst    ?? 0),
+        totalSubtotal:  Number(grnAgg._sum.subtotal     ?? 0),
         invoiceCount:   grnAgg._count,
         overduePayments: overdueCount,
         poByStatus:     poAgg,
         topSuppliers:   topSuppliers.map((s) => ({
           supplierId:   s.supplierId,
           supplierName: supplierMap.get(s.supplierId) ?? "—",
-          totalSpend:   s._sum.totalAmount ?? 0,
+          totalSpend:   Number(s._sum.totalAmount ?? 0),
         })),
         topItems: topItems.map((i) => ({
           medicineName: i.medicineName,
           totalQty:     (i._sum.receivedQty ?? 0) + (i._sum.freeQty ?? 0),
-          totalSpend:   i._sum.amount ?? 0,
+          totalSpend:   Number(i._sum.amount ?? 0),
         })),
       },
     });
@@ -151,11 +192,8 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
   // Shows purchase price vs MRP margin per medicine
 
   app.get("/purchases/cost-analysis", { preHandler }, async (req, reply) => {
-    const { from, to, limit: limitStr } = req.query as Record<string, string>;
-    if (!from || !to) {
-      return reply.status(400).send({ success: false, error: "from and to required" });
-    }
-    const limit = Math.min(parseInt(limitStr ?? "50"), 100);
+    const { from, to, fromRaw, toRaw } = parsePeriod(req.query);
+    const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(100).default(50) }).parse(req.query);
 
     // Get GRN items in period
     const grnItems = await app.prisma.gRNItem.findMany({
@@ -163,7 +201,7 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
         grn: {
           pharmacyId:  req.pharmacyId,
           status:      "CONFIRMED",
-          confirmedAt: { gte: new Date(from), lte: new Date(to) },
+          confirmedAt: { gte: from, lte: to },
         },
       },
       select: {
@@ -242,7 +280,7 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({
       success: true,
       data: {
-        period:         { from, to },
+        period:         { from: fromRaw, to: toRaw },
         summary:        { totalCost, totalMRPValue, overallMarginPct: parseFloat(overallMargin.toFixed(2)) },
         items:          analysis,
       },
@@ -253,10 +291,10 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
   // Dispensing log for controlled/scheduled medicines (H, H1, X, G)
 
   app.get("/schedule-h", { preHandler }, async (req, reply) => {
-    const { from, to, schedule } = req.query as Record<string, string>;
-    if (!from || !to) {
-      return reply.status(400).send({ success: false, error: "from and to required" });
-    }
+    const { from, to } = parsePeriod(req.query);
+    const { schedule } = z.object({
+      schedule: z.enum(["H", "H1", "X", "G", "h", "h1", "x", "g"]).optional(),
+    }).parse(req.query);
 
     const scheduleFilter = schedule
       ? [schedule.toUpperCase()]
@@ -267,7 +305,7 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
         invoice: {
           pharmacyId:  req.pharmacyId,
           isCancelled: false,
-          createdAt:   { gte: new Date(from), lte: new Date(to) },
+          createdAt:   { gte: from, lte: to },
         },
         inventory: {
           medicine: { schedule: { in: scheduleFilter } },
@@ -302,13 +340,10 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
   // ── GST Report CSV Export (#31) ────────────────────────────────────────────
 
   app.get("/gst/export", { preHandler }, async (req, reply) => {
-    const { from, to } = req.query as Record<string, string>;
-    if (!from || !to) {
-      return reply.status(400).send({ success: false, error: "from and to required" });
-    }
+    const { from, to, fromRaw, toRaw } = parsePeriod(req.query);
 
     const invoices = await app.prisma.invoice.findMany({
-      where:   { pharmacyId: req.pharmacyId, isCancelled: false, createdAt: { gte: new Date(from), lte: new Date(to) } },
+      where:   { pharmacyId: req.pharmacyId, isCancelled: false, createdAt: { gte: from, lte: to } },
       include: { items: true },
       orderBy: { createdAt: "asc" },
     });
@@ -332,7 +367,7 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
     );
 
     const csv = header + rows.join("\n");
-    const filename = `gst-report-${from.slice(0, 10)}-to-${to.slice(0, 10)}.csv`;
+    const filename = `gst-report-${fromRaw.slice(0, 10)}-to-${toRaw.slice(0, 10)}.csv`;
     reply.header("Content-Type", "text/csv");
     reply.header("Content-Disposition", `attachment; filename="${filename}"`);
     return reply.send(csv);
@@ -341,16 +376,13 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
   // ── Fast-Moving & Slow-Moving Analysis (#32) ──────────────────────────────
 
   app.get("/analytics/fast-moving", { preHandler }, async (req, reply) => {
-    const { from, to, limit: limitStr } = req.query as Record<string, string>;
-    if (!from || !to) {
-      return reply.status(400).send({ success: false, error: "from and to required" });
-    }
-    const limit = Math.min(parseInt(limitStr ?? "20"), 50);
+    const { from, to, fromRaw, toRaw } = parsePeriod(req.query);
+    const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(50).default(20) }).parse(req.query);
 
     const grouped = await app.prisma.invoiceItem.groupBy({
       by:    ["inventoryId"],
       where: {
-        invoice: { pharmacyId: req.pharmacyId, isCancelled: false, createdAt: { gte: new Date(from), lte: new Date(to) } },
+        invoice: { pharmacyId: req.pharmacyId, isCancelled: false, createdAt: { gte: from, lte: to } },
       },
       _sum:    { quantity: true, amount: true },
       orderBy: { _sum: { quantity: "desc" } },
@@ -372,21 +404,20 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
       }),
     );
 
-    return reply.send({ success: true, data: { period: { from, to }, items: enriched } });
+    return reply.send({ success: true, data: { period: { from: fromRaw, to: toRaw }, items: enriched } });
   });
 
   app.get("/analytics/slow-moving", { preHandler }, async (req, reply) => {
-    const { from, to, limit: limitStr, minQty: minQtyStr } = req.query as Record<string, string>;
-    if (!from || !to) {
-      return reply.status(400).send({ success: false, error: "from and to required" });
-    }
-    const limit  = Math.min(parseInt(limitStr  ?? "20"), 50);
-    const minQty = parseInt(minQtyStr ?? "1");
+    const { from, to, fromRaw, toRaw } = parsePeriod(req.query);
+    const { limit, minQty } = z.object({
+      limit:  z.coerce.number().int().min(1).max(50).default(20),
+      minQty: z.coerce.number().int().min(0).default(1),
+    }).parse(req.query);
 
     const grouped = await app.prisma.invoiceItem.groupBy({
       by:    ["inventoryId"],
       where: {
-        invoice: { pharmacyId: req.pharmacyId, isCancelled: false, createdAt: { gte: new Date(from), lte: new Date(to) } },
+        invoice: { pharmacyId: req.pharmacyId, isCancelled: false, createdAt: { gte: from, lte: to } },
       },
       _sum:    { quantity: true, amount: true },
       having:  { quantity: { _sum: { gte: minQty } } },
@@ -409,14 +440,15 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
       }),
     );
 
-    return reply.send({ success: true, data: { period: { from, to }, items: enriched } });
+    return reply.send({ success: true, data: { period: { from: fromRaw, to: toRaw }, items: enriched } });
   });
 
   // ── Dead Stock Identification (#33) ───────────────────────────────────────
 
   app.get("/analytics/dead-stock", { preHandler }, async (req, reply) => {
-    const { days: daysStr } = req.query as Record<string, string>;
-    const days      = Math.max(1, parseInt(daysStr ?? "90"));
+    const { days } = z.object({
+      days: z.coerce.number().int().min(1).max(3650).default(90),
+    }).parse(req.query);
     const threshold = new Date(Date.now() - days * 86400_000);
 
     // Active inventory items that have had no SALE movement since threshold
@@ -457,7 +489,9 @@ const reportsRoutes: FastifyPluginAsync = async (app) => {
   // ── Inventory Valuation Report (#34) ──────────────────────────────────────
 
   app.get("/inventory/valuation", { preHandler }, async (req, reply) => {
-    const { groupBy = "medicine" } = req.query as Record<string, string>;
+    const { groupBy } = z.object({
+      groupBy: z.enum(["medicine", "category"]).default("medicine"),
+    }).parse(req.query);
 
     const items = await app.prisma.inventory.findMany({
       where:   { pharmacyId: req.pharmacyId, status: "ACTIVE" },

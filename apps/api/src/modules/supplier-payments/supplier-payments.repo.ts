@@ -1,10 +1,10 @@
-import type { PrismaClient, Prisma } from "@pharmacy/database";
+import type { Db, Prisma } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 
 export class SupplierPaymentsRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
-  private async nextPaymentNumber(pharmacyId: string, tx: Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">): Promise<string> {
+  private async nextPaymentNumber(pharmacyId: string, tx: Omit<Db, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">): Promise<string> {
     const count = await tx.supplierPayment.count({ where: { pharmacyId } });
     const year  = new Date().getFullYear();
     return `SP-${year}-${String(count + 1).padStart(5, "0")}`;
@@ -139,8 +139,8 @@ export class SupplierPaymentsRepo {
       }),
     ]);
 
-    const totalPurchased = grnTotal._sum.totalAmount ?? 0;
-    const totalPaid      = paymentTotal._sum.amount ?? 0;
+    const totalPurchased = Number(grnTotal._sum.totalAmount ?? 0);
+    const totalPaid      = Number(paymentTotal._sum.amount ?? 0);
     const outstanding    = totalPurchased - totalPaid;
     const overdueAmount  = overdueGRNs.reduce((sum, g) => sum + g.totalAmount, 0);
 

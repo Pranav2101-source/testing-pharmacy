@@ -41,3 +41,11 @@ prisma/migrations/dev
 scripts/data/*.csv
 scripts/data/*.xlsx
 scripts/data/import-report.txt
+
+# User-uploaded files (support attachments, prescriptions) — may contain
+# customer PHI; must NEVER be committed
+apps/api/uploads/
+uploads/
+
+# Local dev seed script with hardcoded credentials
+apps/api/scripts/_seed-admin.ts

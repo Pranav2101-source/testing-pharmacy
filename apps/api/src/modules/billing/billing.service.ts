@@ -11,7 +11,6 @@ import type {
   ListReturnsQuery,
 } from "./billing.schema.js";
 import type { InvoiceLineItem, DashboardStats } from "./billing.types.js";
-import { INVOICE_SEQUENCE_KEY, RETURN_SEQUENCE_KEY } from "./billing.constants.js";
 import { AppError } from "../../lib/AppError.js";
 import { notifyOwners } from "../../lib/notifications.js";
 import { postInvoiceQueue } from "../../queues/queue.client.js";
@@ -208,33 +207,17 @@ export class BillingService {
     const settings = await this.getSettings(pharmacyId);
     const config   = (settings?.settings as typeof defaultInvoiceSettings) ?? defaultInvoiceSettings;
 
-    // The generator is called INSIDE the transaction, after the idempotency
-    // check.  This prevents duplicate submissions (same idempotencyKey sent
-    // twice) from consuming two sequence numbers — the inner check returns
-    // early before the INCR fires.
-    //
-    // Gap behaviour on genuine failures: Redis INCR is not part of the Postgres
-    // transaction.  If the Postgres transaction fails after the INCR (e.g. a
-    // Serializable stock conflict), that sequence number is permanently consumed
-    // and a gap appears in the invoice series.  This is acceptable: gaps in
-    // invoice sequences are cosmetically annoying but legally permitted under
-    // Indian GST rules (cancelled/void numbers are allowed).  A DB-backed Postgres
-    // sequence would be fully transactional but requires a schema migration and
-    // complicates multi-year financial-year resets — not worth the trade-off here.
-    const makeInvoiceNumber = async () => {
-      let seq: number;
-      try {
-        seq = await this.app.redis.incr(INVOICE_SEQUENCE_KEY(pharmacyId));
-      } catch {
-        throw AppError.internal("We couldn't generate an invoice number right now. Please try again in a moment.");
-      }
-      return generateInvoiceNumber(
+    // The sequence is drawn from the document_sequences Postgres counter INSIDE
+    // the repo transaction, after the idempotency check — duplicate submissions
+    // never consume a number, and a rolled-back transaction returns its number
+    // (gapless). The service only supplies the formatting.
+    const formatInvoiceNumber = (seq: number) =>
+      generateInvoiceNumber(
         config.numbering.prefix,
         seq,
         // financialYear is a string ("2025-26") in new configs, boolean in old ones
         !!config.numbering.financialYear,
       );
-    };
 
     const invoice = await this.repo.createInvoiceTransactional({
       pharmacyId,
@@ -244,7 +227,7 @@ export class BillingService {
       totalAmount:           totals.totalAmount,
       paymentStatus:         input.paymentStatus,
       paymentMode:           input.paymentMode,
-      generateInvoiceNumber: makeInvoiceNumber,
+      formatInvoiceNumber,
       invoiceData: {
         pharmacy:      { connect: { id: pharmacyId } },
         user:          { connect: { id: userId } },
@@ -391,25 +374,18 @@ export class BillingService {
     const config       = (settings?.settings as typeof defaultInvoiceSettings) ?? defaultInvoiceSettings;
     const returnWindowDays = config.policy?.returnWindowDays ?? defaultInvoiceSettings.policy!.returnWindowDays;
 
-    const makeReturnNumber = async () => {
-      let seq: number;
-      try {
-        seq = await this.app.redis.incr(RETURN_SEQUENCE_KEY(pharmacyId));
-      } catch {
-        throw AppError.internal("We couldn't generate a return number right now. Please try again in a moment.");
-      }
-      return generateInvoiceNumber(
+    const formatReturnNumber = (seq: number) =>
+      generateInvoiceNumber(
         (config.numbering.prefix ?? "INV") + "-RET",
         seq,
         !!config.numbering.financialYear,
       );
-    };
 
     return this.repo.createReturnTransactional({
       pharmacyId,
       invoiceId,
       userId,
-      generateReturnNumber: makeReturnNumber,
+      formatReturnNumber,
       reason:               input.reason,
       idempotencyKey:    input.idempotencyKey,
       returnWindowDays,

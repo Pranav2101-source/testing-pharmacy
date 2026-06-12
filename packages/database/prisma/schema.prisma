@@ -49,8 +49,37 @@ model Pharmacy {
   shelves             Shelf[]
   stockAuditSessions  StockAuditSession[]
   calendarEvents      CalendarEvent[]
+  supportTickets      SupportTicket[]
+  documentSequences   DocumentSequence[]
 
   @@map("pharmacies")
+}
+
+// ─── Document Sequence ────────────────────────────────────────────────────────
+// Transactional per-pharmacy counters for all document numbers (invoices,
+// returns, POs, GRNs, supplier returns, quotations, stock audits). Replaces
+// Redis INCR, which loses its value on a Redis restart/eviction and then
+// produces numbers that collide with the unique (pharmacyId, number)
+// constraints. `period` scopes each counter to an Indian financial year
+// ("2025-2026") — or a single IST day ("20250612") for stock audits — so
+// numbering restarts automatically per GST rules.
+//
+// Increment with one atomic upsert (used inside the billing transaction, which
+// also makes invoice numbering GAPLESS — a rolled-back sale returns its number):
+//   INSERT ... VALUES (pharmacyId, kind, period, 1)
+//   ON CONFLICT DO UPDATE SET value = value + 1 RETURNING value
+
+model DocumentSequence {
+  pharmacyId String
+  kind       String // INVOICE | SALES_RETURN | PURCHASE_ORDER | GRN | SUPPLIER_RETURN | QUOTATION | STOCK_AUDIT
+  period     String // "2025-2026" (financial year) or "20250612" (IST day, audits)
+  value      Int      @default(0)
+  updatedAt  DateTime @updatedAt
+
+  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+
+  @@id([pharmacyId, kind, period])
+  @@map("document_sequences")
 }
 
 // ─── User (Staff) ────────────────────────────────────────────────────────────
@@ -83,7 +112,10 @@ model User {
   supplierPayments    SupplierPayment[]
   supplierCreditNotes SupplierCreditNote[]
   quotations          Quotation[]
-  calendarEvents      CalendarEvent[]     @relation("CalendarEventCreator")
+  calendarEvents      CalendarEvent[]      @relation("CalendarEventCreator")
+  ticketsRaised       SupportTicket[]      @relation("TicketRaisedBy")
+  ticketMessages      TicketMessage[]      @relation("TicketMessageSender")
+  supportAgent        SupportAgent?
 
   @@unique([pharmacyId, email])
   @@index([pharmacyId, role])
@@ -95,6 +127,8 @@ enum Role {
   MANAGER
   PHARMACIST
   CASHIER
+  SUPPORT_AGENT
+  PLATFORM_ADMIN
 }
 
 // ─── Medicine (Global — shared across all pharmacies) ────────────────────────
@@ -108,7 +142,7 @@ model Medicine {
   category     String?
   schedule     String? // OTC, H, X, G
   hsnCode      String?
-  gstRate      Float   @default(12)
+  gstRate      Decimal @default(12) @db.Decimal(12, 2)
   form         String? // tablet, syrup, injection, cream
   strength     String? // 500mg, 5ml
   unit         String? // strip, bottle, vial, tube
@@ -122,7 +156,7 @@ model Medicine {
   brand      Brand?      @relation(fields: [brandId], references: [id])
   barcode    String?
   boxSize    Int?        // strips per box; used with packSize for unit conversion
-  catalogMrp Float?      // 2022 reference price — pre-fills GRN form only, never used for billing
+  catalogMrp Decimal?    @db.Decimal(12, 2) // 2022 reference price — pre-fills GRN form only, never used for billing
 
   inventory           Inventory[]
   grnItems            GRNItem[]
@@ -186,8 +220,8 @@ model Inventory {
   expiryDate       DateTime
   quantity         Int
   reservedQuantity Int         @default(0)
-  purchaseRate     Float
-  mrp              Float
+  purchaseRate     Decimal     @db.Decimal(12, 2)
+  mrp              Decimal     @db.Decimal(12, 2)
   location         String?
   shelfId          String?
   minimumStock     Int         @default(10)
@@ -259,9 +293,9 @@ model Customer {
   abhaNumber      String?      // ABHA / Health ID / IPD / OPD number
   cardNumber      String?      // Pharmacy loyalty card (unique per pharmacy; NULLs are distinct)
   customerType    CustomerType @default(WALK_IN)
-  defaultDiscount Float        @default(0)  // auto-applied discount % shown at billing
-  creditLimit     Float        @default(0)
-  creditUsed      Float        @default(0)
+  defaultDiscount Decimal      @default(0) @db.Decimal(12, 2) // auto-applied discount % shown at billing
+  creditLimit     Decimal      @default(0) @db.Decimal(12, 2)
+  creditUsed      Decimal      @default(0) @db.Decimal(12, 2)
   notes           String?
   deletedAt       DateTime?    // soft delete — null = active
   createdById     String?      // ID of staff who created (stored as plain ID; preserved on user delete)
@@ -302,7 +336,7 @@ model Supplier {
   address      String?
   city         String?
   state        String?
-  creditLimit  Float   @default(0)
+  creditLimit  Decimal @default(0) @db.Decimal(12, 2)
   creditDays   Int     @default(30)
   paymentTerms String?
   isActive     Boolean @default(true)
@@ -335,9 +369,9 @@ model PurchaseOrder {
   approvedBy      String?
   approvedAt      DateTime?
   rejectionReason String?
-  subtotal        Float          @default(0)
-  totalGst        Float          @default(0)
-  totalAmount     Float          @default(0)
+  subtotal        Decimal        @default(0) @db.Decimal(12, 2)
+  totalGst        Decimal        @default(0) @db.Decimal(12, 2)
+  totalAmount     Decimal        @default(0) @db.Decimal(12, 2)
   notes           String?
   expectedDate    DateTime?
   orderedAt       DateTime       @default(now())
@@ -388,12 +422,12 @@ model PurchaseOrderItem {
   batchNumber     String
   expiryDate      DateTime
   quantity        Int
-  purchaseRate    Float
-  mrp             Float
-  gstRate         Float
-  cgst            Float
-  sgst            Float
-  amount          Float
+  purchaseRate    Decimal  @db.Decimal(12, 2)
+  mrp             Decimal  @db.Decimal(12, 2)
+  gstRate         Decimal  @db.Decimal(12, 2)
+  cgst            Decimal  @db.Decimal(12, 2)
+  sgst            Decimal  @db.Decimal(12, 2)
+  amount          Decimal  @db.Decimal(12, 2)
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   medicine      Medicine?     @relation(fields: [medicineId], references: [id])
@@ -420,15 +454,15 @@ model Invoice {
   paymentMode     PaymentMode   @default(CASH)
   paymentStatus   PaymentStatus @default(PAID)
   status          InvoiceStatus @default(COMPLETED)
-  subtotal        Float
-  discountAmount  Float         @default(0)
-  taxableAmount   Float
-  cgst            Float
-  sgst            Float
-  igst            Float         @default(0)
-  totalGst        Float
-  totalAmount     Float
-  returnedAmount  Float         @default(0)
+  subtotal        Decimal       @db.Decimal(12, 2)
+  discountAmount  Decimal       @default(0) @db.Decimal(12, 2)
+  taxableAmount   Decimal       @db.Decimal(12, 2)
+  cgst            Decimal       @db.Decimal(12, 2)
+  sgst            Decimal       @db.Decimal(12, 2)
+  igst            Decimal       @default(0) @db.Decimal(12, 2)
+  totalGst        Decimal       @db.Decimal(12, 2)
+  totalAmount     Decimal       @db.Decimal(12, 2)
+  returnedAmount  Decimal       @default(0) @db.Decimal(12, 2)
   isInterstate    Boolean       @default(false)
   notes           String?
   isCancelled     Boolean       @default(false)
@@ -489,16 +523,16 @@ model InvoiceItem {
   batchNumber   String
   expiryDate    DateTime
   quantity      Int
-  mrp           Float
-  rate          Float
-  purchaseRate  Float    @default(0)
-  discount      Float    @default(0)
-  gstRate       Float
-  cgst          Float
-  sgst          Float
-  igst          Float    @default(0)
-  taxableAmount Float
-  amount        Float
+  mrp           Decimal  @db.Decimal(12, 2)
+  rate          Decimal  @db.Decimal(12, 2)
+  purchaseRate  Decimal  @default(0) @db.Decimal(12, 2)
+  discount      Decimal  @default(0) @db.Decimal(12, 2)
+  gstRate       Decimal  @db.Decimal(12, 2)
+  cgst          Decimal  @db.Decimal(12, 2)
+  sgst          Decimal  @db.Decimal(12, 2)
+  igst          Decimal  @default(0) @db.Decimal(12, 2)
+  taxableAmount Decimal  @db.Decimal(12, 2)
+  amount        Decimal  @db.Decimal(12, 2)
 
   invoice   Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   inventory Inventory @relation(fields: [inventoryId], references: [id])
@@ -513,7 +547,7 @@ model InvoicePayment {
   id          String      @id @default(cuid())
   pharmacyId  String
   invoiceId   String
-  amount      Float
+  amount      Decimal     @db.Decimal(12, 2)
   paymentMode PaymentMode
   reference   String?
   notes       String?
@@ -539,14 +573,14 @@ model SalesReturn {
   reason         String?
   userId         String
   customerId     String?
-  subtotal       Float
-  discountAmount Float    @default(0)
-  taxableAmount  Float
-  cgst           Float
-  sgst           Float
-  igst           Float    @default(0)
-  totalGst       Float
-  totalAmount    Float
+  subtotal       Decimal  @db.Decimal(12, 2)
+  discountAmount Decimal  @default(0) @db.Decimal(12, 2)
+  taxableAmount  Decimal  @db.Decimal(12, 2)
+  cgst           Decimal  @db.Decimal(12, 2)
+  sgst           Decimal  @db.Decimal(12, 2)
+  igst           Decimal  @default(0) @db.Decimal(12, 2)
+  totalGst       Decimal  @db.Decimal(12, 2)
+  totalAmount    Decimal  @db.Decimal(12, 2)
   idempotencyKey String?
 
   createdAt DateTime @default(now())
@@ -580,15 +614,15 @@ model SalesReturnItem {
   batchNumber   String
   expiryDate    DateTime
   quantity      Int
-  mrp           Float
-  rate          Float
-  discount      Float             @default(0)
-  gstRate       Float
-  cgst          Float
-  sgst          Float
-  igst          Float             @default(0)
-  taxableAmount Float
-  amount        Float
+  mrp           Decimal           @db.Decimal(12, 2)
+  rate          Decimal           @db.Decimal(12, 2)
+  discount      Decimal           @default(0) @db.Decimal(12, 2)
+  gstRate       Decimal           @db.Decimal(12, 2)
+  cgst          Decimal           @db.Decimal(12, 2)
+  sgst          Decimal           @db.Decimal(12, 2)
+  igst          Decimal           @default(0) @db.Decimal(12, 2)
+  taxableAmount Decimal           @db.Decimal(12, 2)
+  amount        Decimal           @db.Decimal(12, 2)
   disposition   ReturnDisposition @default(RESTOCK)
 
   return    SalesReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
@@ -764,9 +798,9 @@ model GoodsReceiptNote {
   supplierInvoiceDate DateTime?
   status              GRNStatus @default(DRAFT)
   notes               String?
-  subtotal            Float     @default(0)
-  totalGst            Float     @default(0)
-  totalAmount         Float     @default(0)
+  subtotal            Decimal   @default(0) @db.Decimal(12, 2)
+  totalGst            Decimal   @default(0) @db.Decimal(12, 2)
+  totalAmount         Decimal   @default(0) @db.Decimal(12, 2)
   confirmedAt         DateTime?
   paymentDueDate      DateTime?
 
@@ -815,7 +849,7 @@ model SupplierReturn {
   debitNoteNo  String?
   status       SupplierReturnStatus @default(DRAFT)
   notes        String?
-  totalAmount  Float                @default(0)
+  totalAmount  Decimal              @default(0) @db.Decimal(12, 2)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -840,8 +874,8 @@ model SupplierReturnItem {
   batchNumber  String
   expiryDate   DateTime
   quantity     Int
-  purchaseRate Float
-  amount       Float
+  purchaseRate Decimal              @db.Decimal(12, 2)
+  amount       Decimal              @db.Decimal(12, 2)
   reason       SupplierReturnReason @default(DAMAGED)
 
   createdAt DateTime @default(now())
@@ -866,13 +900,13 @@ model GRNItem {
   freeQty           Int       @default(0)
   purchaseUnit      String    @default("UNIT") // BOX | STRIP | UNIT
   conversionFactor  Int       @default(1)      // base units per purchase unit
-  purchaseRate      Float
-  mrp               Float
-  discount          Float     @default(0)
-  gstRate           Float
-  cgst              Float
-  sgst              Float
-  amount            Float
+  purchaseRate      Decimal   @db.Decimal(12, 2)
+  mrp               Decimal   @db.Decimal(12, 2)
+  discount          Decimal   @default(0) @db.Decimal(12, 2)
+  gstRate           Decimal   @db.Decimal(12, 2)
+  cgst              Decimal   @db.Decimal(12, 2)
+  sgst              Decimal   @db.Decimal(12, 2)
+  amount            Decimal   @db.Decimal(12, 2)
   inventoryId       String?
 
   createdAt DateTime @default(now())
@@ -904,7 +938,7 @@ model SupplierPayment {
   supplierId    String
   grnId         String?
   paymentNumber String
-  amount        Float
+  amount        Decimal     @db.Decimal(12, 2)
   paymentMode   PaymentMode
   reference     String?
   notes         String?
@@ -934,7 +968,7 @@ model SupplierCreditNote {
   supplierId       String
   supplierReturnId String?
   creditNoteNumber String
-  amount           Float
+  amount           Decimal          @db.Decimal(12, 2)
   status           CreditNoteStatus @default(PENDING)
   notes            String?
   issuedAt         DateTime         @default(now())
@@ -1002,10 +1036,10 @@ model QuotationItem {
   medicineId   String
   medicineName String
   quantity     Int
-  quotedRate   Float?
-  mrp          Float?
-  gstRate      Float   @default(12)
-  discount     Float   @default(0)
+  quotedRate   Decimal? @db.Decimal(12, 2)
+  mrp          Decimal? @db.Decimal(12, 2)
+  gstRate      Decimal  @default(12) @db.Decimal(12, 2)
+  discount     Decimal  @default(0) @db.Decimal(12, 2)
   notes        String?
 
   quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
@@ -1110,6 +1144,122 @@ enum AuditSessionStatus {
   COMPLETED
   APPROVED
   CANCELLED
+}
+
+// ─── Support Module ───────────────────────────────────────────────────────────
+
+enum TicketStatus {
+  OPEN
+  ASSIGNED
+  IN_PROGRESS
+  PENDING_USER
+  RESOLVED
+  CLOSED
+}
+
+enum TicketLanguage {
+  HINDI
+  ENGLISH
+}
+
+enum AttachmentFileType {
+  IMAGE
+  VIDEO
+  DOCUMENT
+}
+
+model TicketCategory {
+  id        String  @id @default(cuid())
+  name      String  @unique
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+
+  tickets SupportTicket[]
+
+  @@map("ticket_categories")
+}
+
+model SupportAgent {
+  id             String    @id @default(cuid())
+  userId         String    @unique
+  isActive       Boolean   @default(true)
+  lastAssignedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User            @relation(fields: [userId], references: [id])
+  tickets SupportTicket[]
+
+  @@map("support_agents")
+}
+
+model SupportTicket {
+  id              String         @id @default(cuid())
+  ticketNumber    String         @unique
+  pharmacyId      String
+  raisedById      String
+  categoryId      String
+  customTitle     String?
+  assignedAgentId String?
+  status          TicketStatus   @default(OPEN)
+  language        TicketLanguage @default(ENGLISH)
+  description     String
+  mobile          String
+  altMobile       String?
+  resolvedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy      Pharmacy           @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  raisedBy      User               @relation("TicketRaisedBy", fields: [raisedById], references: [id])
+  assignedAgent SupportAgent?      @relation(fields: [assignedAgentId], references: [id])
+  category      TicketCategory     @relation(fields: [categoryId], references: [id])
+  messages      TicketMessage[]
+  attachments   TicketAttachment[]
+
+  @@index([pharmacyId, status])
+  @@index([pharmacyId, createdAt(sort: Desc)])
+  @@index([assignedAgentId, status])
+  @@map("support_tickets")
+}
+
+model TicketMessage {
+  id        String   @id @default(cuid())
+  ticketId  String
+  senderId  String
+  message   String
+
+  createdAt DateTime @default(now())
+
+  ticket      SupportTicket      @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sender      User               @relation("TicketMessageSender", fields: [senderId], references: [id])
+  attachments TicketAttachment[]
+
+  @@index([ticketId, createdAt])
+  @@map("ticket_messages")
+}
+
+model TicketAttachment {
+  id        String             @id @default(cuid())
+  ticketId  String
+  messageId String?
+  fileName  String
+  fileUrl   String
+  fileSize  Int
+  mimeType  String
+  fileType  AttachmentFileType
+
+  createdAt DateTime @default(now())
+
+  ticket  SupportTicket  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  message TicketMessage? @relation(fields: [messageId], references: [id])
+
+  @@index([ticketId])
+  @@map("ticket_attachments")
 }
 
 // ─── Calendar ─────────────────────────────────────────────────────────────────

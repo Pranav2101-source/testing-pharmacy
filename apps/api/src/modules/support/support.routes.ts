@@ -1,0 +1,269 @@
+import type { FastifyPluginAsync } from "fastify";
+import { createReadStream, createWriteStream, existsSync } from "fs";
+import { mkdir, stat, unlink } from "fs/promises";
+import { pipeline } from "stream/promises";
+import { join, extname } from "path";
+import { randomBytes } from "crypto";
+import { authenticate, requireRole } from "../../middleware/auth.js";
+import { resolvePharmacy } from "../../middleware/tenant.js";
+import { SupportService } from "./support.service.js";
+import { AppError } from "../../lib/AppError.js";
+import {
+  createTicketSchema,
+  updateStatusSchema,
+  addMessageSchema,
+  listTicketsQuerySchema,
+  createAgentSchema,
+  assignTicketSchema,
+} from "./support.schema.js";
+
+const UPLOAD_DIR = join(process.cwd(), "uploads", "support");
+const MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024; // 25 MB — accommodates screen recordings
+
+// Extension → accepted MIME types. Anything outside this list is rejected:
+// executables, HTML/SVG (stored-XSS vectors), archives, etc. have no legitimate
+// place in a support ticket.
+const ALLOWED_UPLOADS: Record<string, string[]> = {
+  ".jpg":  ["image/jpeg"],
+  ".jpeg": ["image/jpeg"],
+  ".png":  ["image/png"],
+  ".gif":  ["image/gif"],
+  ".webp": ["image/webp"],
+  ".mp4":  ["video/mp4"],
+  ".webm": ["video/webm"],
+  ".pdf":  ["application/pdf"],
+};
+
+const supportRoutes: FastifyPluginAsync = async (app) => {
+  const service = new SupportService(app);
+
+  // Ensure upload directory exists on startup
+  await mkdir(UPLOAD_DIR, { recursive: true });
+
+  const auth         = [authenticate, resolvePharmacy];
+  const agentAuth    = [authenticate, requireRole("SUPPORT_AGENT", "PLATFORM_ADMIN")];
+  const adminAuth    = [authenticate, requireRole("PLATFORM_ADMIN")];
+  const anyAuth      = [authenticate];
+
+  // ── GET /categories ─────────────────────────────────────────────────────────
+
+  app.get("/categories", { preHandler: anyAuth }, async (_req, reply) => {
+    const categories = await service.listCategories();
+    return reply.send({ success: true, data: categories });
+  });
+
+  // ── GET /stats ───────────────────────────────────────────────────────────────
+
+  app.get("/stats", { preHandler: agentAuth }, async (_req, reply) => {
+    const stats = await service.stats();
+    return reply.send({ success: true, data: stats });
+  });
+
+  // ── POST /tickets ─────────────────────────────────────────────────────────────
+  // Only pharmacy users raise tickets.
+
+  app.post("/tickets", { preHandler: auth }, async (req, reply) => {
+    const input  = createTicketSchema.parse(req.body);
+    const ticket = await service.createTicket(req.pharmacyId, req.user.sub, input);
+    return reply.status(201).send({ success: true, data: ticket });
+  });
+
+  // ── GET /tickets ──────────────────────────────────────────────────────────────
+  // Role-aware: support staff see all; pharmacy users see own.
+
+  app.get("/tickets", { preHandler: anyAuth }, async (req, reply) => {
+    const query   = listTicketsQuerySchema.parse(req.query);
+    const tickets = await service.listTickets(req.user.sub, req.user.role, query);
+    return reply.send({ success: true, data: tickets });
+  });
+
+  // ── GET /tickets/:id ──────────────────────────────────────────────────────────
+
+  app.get("/tickets/:id", { preHandler: anyAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const ticket = await service.getTicket(id, req.user.sub, req.user.role);
+    return reply.send({ success: true, data: ticket });
+  });
+
+  // ── PATCH /tickets/:id/status ─────────────────────────────────────────────────
+
+  app.patch("/tickets/:id/status", { preHandler: agentAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const input  = updateStatusSchema.parse(req.body);
+    const ticket = await service.updateStatus(id, req.user.sub, req.user.role, input);
+    return reply.send({ success: true, data: ticket });
+  });
+
+  // ── POST /tickets/:id/messages ────────────────────────────────────────────────
+
+  app.post("/tickets/:id/messages", { preHandler: anyAuth }, async (req, reply) => {
+    const { id }  = req.params as { id: string };
+    const input   = addMessageSchema.parse(req.body);
+    const message = await service.addMessage(id, req.user.sub, req.user.role, input);
+    return reply.status(201).send({ success: true, data: message });
+  });
+
+  // ── POST /tickets/:id/attachments ─────────────────────────────────────────────
+  // Accepts multipart: file + optional messageId field.
+
+  app.post("/tickets/:id/attachments", { preHandler: anyAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+
+    // Authorize BEFORE consuming the upload stream — a cross-pharmacy user gets
+    // a 403 without a single byte ever being written to disk.
+    await service.getTicket(id, req.user.sub, req.user.role);
+
+    const parts = req.parts({ limits: { fileSize: MAX_ATTACHMENT_SIZE, files: 1 } });
+
+    let storedName:   string | null = null;
+    let originalName  = "";
+    let mimeType      = "";
+    let wasTruncated  = false;
+    let messageId: string | undefined;
+
+    // Iterate ALL parts (no early break): multipart field order is not
+    // guaranteed, so a messageId field sent after the file must still be read.
+    for await (const part of parts) {
+      if (part.type === "field") {
+        if (part.fieldname === "messageId" && typeof part.value === "string" && part.value) {
+          messageId = part.value;
+        }
+        continue;
+      }
+
+      // Extra file parts beyond the first: drain so the stream completes, ignore.
+      if (storedName) {
+        part.file.resume();
+        continue;
+      }
+
+      const ext     = extname(part.filename ?? "").toLowerCase();
+      const allowed = ALLOWED_UPLOADS[ext];
+      if (!allowed || !allowed.includes(part.mimetype)) {
+        part.file.resume(); // drain before erroring so the connection closes cleanly
+        throw AppError.badRequest(
+          `File type not allowed. Accepted formats: ${Object.keys(ALLOWED_UPLOADS).join(", ")}`,
+        );
+      }
+
+      originalName = part.filename;
+      mimeType     = part.mimetype;
+      storedName   = `${randomBytes(12).toString("hex")}-${Date.now()}${ext}`;
+
+      // Stream straight to disk — never buffer the (up to 25 MB) file in memory.
+      await pipeline(part.file, createWriteStream(join(UPLOAD_DIR, storedName)));
+      wasTruncated = part.file.truncated;
+    }
+
+    if (!storedName) throw AppError.badRequest("No file uploaded");
+
+    const storedPath = join(UPLOAD_DIR, storedName);
+
+    // busboy silently truncates streams at the size limit rather than erroring —
+    // a truncated video/PDF is corrupt, so reject and clean up the partial file.
+    if (wasTruncated) {
+      await unlink(storedPath).catch(() => { /* best-effort cleanup */ });
+      throw AppError.badRequest(
+        `File exceeds the ${Math.floor(MAX_ATTACHMENT_SIZE / (1024 * 1024))} MB limit`,
+      );
+    }
+
+    const { size: fileSize } = await stat(storedPath);
+
+    const fileType = mimeType.startsWith("image/")
+      ? "IMAGE"
+      : mimeType.startsWith("video/")
+        ? "VIDEO"
+        : "DOCUMENT";
+
+    let attachment;
+    try {
+      attachment = await service.addAttachment(id, req.user.sub, req.user.role, {
+        fileName:  originalName,
+        fileUrl:   `/api/support/attachments/${storedName}`,
+        fileSize,
+        mimeType,
+        fileType:  fileType as "IMAGE" | "VIDEO" | "DOCUMENT",
+        messageId: messageId || undefined,
+      });
+    } catch (err) {
+      // DB write failed — remove the orphaned file so the upload dir can't fill
+      // with unreferenced (and now unreachable) blobs.
+      await unlink(storedPath).catch(() => { /* best-effort cleanup */ });
+      throw err;
+    }
+
+    return reply.status(201).send({ success: true, data: attachment });
+  });
+
+  // ── GET /attachments/:filename ────────────────────────────────────────────────
+  // Serve uploaded files. Access is ticket-scoped: support staff see everything,
+  // pharmacy users only files attached to their own pharmacy's tickets.
+
+  app.get("/attachments/:filename", { preHandler: anyAuth }, async (req, reply) => {
+    const { filename } = req.params as { filename: string };
+
+    // Reject (rather than sanitize) any filename containing path traversal or
+    // unexpected characters — stored names are always hex-timestamp-ext.
+    const safe = filename.replace(/[^a-zA-Z0-9._-]/g, "");
+    if (!safe || safe !== filename || safe.includes("..")) {
+      return reply.status(404).send({ success: false, error: "File not found" });
+    }
+
+    // Tenant authorization — throws 403 for cross-pharmacy access, 404 if the
+    // file has no DB record (e.g. orphaned or guessed filename).
+    const attachment = await service.getAttachmentForUser(safe, req.user.sub, req.user.role);
+
+    const full = join(UPLOAD_DIR, safe);
+    if (!existsSync(full)) {
+      return reply.status(404).send({ success: false, error: "File not found" });
+    }
+
+    // Images/videos render inline in the ticket UI; everything else (incl. PDF)
+    // downloads as an attachment so browsers never execute embedded content in
+    // the API's origin. nosniff stops MIME-sniffing a crafted file into HTML.
+    const isInline = attachment.mimeType.startsWith("image/") || attachment.mimeType.startsWith("video/");
+    const downloadName = attachment.fileName.replace(/["\r\n]/g, "");
+
+    reply.header("Content-Type", attachment.mimeType);
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("Content-Disposition", `${isInline ? "inline" : "attachment"}; filename="${downloadName}"`);
+    reply.header("Cache-Control", "private, max-age=86400");
+    return reply.send(createReadStream(full));
+  });
+
+  // ── PATCH /tickets/:id/assign ─────────────────────────────────────────────────
+
+  app.patch("/tickets/:id/assign", { preHandler: agentAuth }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const input  = assignTicketSchema.parse(req.body);
+    const ticket = await service.assignTicket(id, req.user.role, input);
+    return reply.send({ success: true, data: ticket });
+  });
+
+  // ── GET /agents ───────────────────────────────────────────────────────────────
+
+  app.get("/agents", { preHandler: adminAuth }, async (_req, reply) => {
+    const agents = await service.listAgents();
+    return reply.send({ success: true, data: agents });
+  });
+
+  // ── POST /agents ──────────────────────────────────────────────────────────────
+
+  app.post("/agents", { preHandler: adminAuth }, async (req, reply) => {
+    const input = createAgentSchema.parse(req.body);
+    const agent = await service.createAgent(input);
+    return reply.status(201).send({ success: true, data: agent });
+  });
+
+  // ── PATCH /agents/:id ─────────────────────────────────────────────────────────
+
+  app.patch("/agents/:id", { preHandler: adminAuth }, async (req, reply) => {
+    const { id }     = req.params as { id: string };
+    const { isActive } = req.body as { isActive: boolean };
+    const agent       = await service.toggleAgent(id, !!isActive);
+    return reply.send({ success: true, data: agent });
+  });
+};
+
+export default supportRoutes;

@@ -7,6 +7,7 @@ import {
   MapPin, Hash, ChevronDown, Shield,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { storeTokens } from "@/lib/auth";
 
 const step1Schema = z.object({
   pharmacyName: z.string().min(2, "Pharmacy name must be at least 2 characters"),
@@ -174,11 +175,10 @@ export default function RegisterPage() {
         }),
       });
       const json = await res.json() as {
-        success: boolean; data?: { accessToken: string }; error?: string;
+        success: boolean; data?: { accessToken: string; refreshToken: string }; error?: string;
       };
       if (!json.success || !json.data) { setApiErr(json.error ?? "Registration failed."); return; }
-      localStorage.setItem("token", json.data.accessToken);
-      document.cookie = `auth-token=${json.data.accessToken}; path=/; max-age=${7 * 24 * 60 * 60}; SameSite=Lax`;
+      storeTokens(json.data.accessToken, json.data.refreshToken);
       setSuccess(true);
       setTimeout(() => navigate("/dashboard"), 800);
     } catch {

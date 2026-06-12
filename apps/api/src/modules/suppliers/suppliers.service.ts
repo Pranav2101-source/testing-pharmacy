@@ -74,7 +74,7 @@ export class SuppliersService {
     const supplier = await this.repo.getById(id, pharmacyId);
     if (!supplier) throw AppError.notFound("Supplier not found");
 
-    const db          = (this as any).repo["db"] as import("@pharmacy/database").PrismaClient;
+    const db          = (this as any).repo["db"] as import("@pharmacy/database").Db;
     const dateFilter  = from && to
       ? { gte: new Date(from), lte: new Date(to) }
       : undefined;
@@ -102,7 +102,7 @@ export class SuppliersService {
 
     const totalGRNs    = grnAgg.length;
     const totalSpend   = grnAgg.reduce((s, g) => s + g.totalAmount, 0);
-    const totalPaid    = paymentAgg._sum.amount ?? 0;
+    const totalPaid    = Number(paymentAgg._sum.amount ?? 0);
     const outstanding  = totalSpend - totalPaid;
 
     // Overdue GRNs = payment due date in the past

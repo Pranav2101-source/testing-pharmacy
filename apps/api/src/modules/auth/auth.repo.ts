@@ -1,7 +1,7 @@
-import type { PrismaClient } from "@pharmacy/database";
+import type { Db } from "@pharmacy/database";
 
 export class AuthRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   async findUserByEmail(email: string, pharmacyId?: string) {
     return this.db.user.findFirst({

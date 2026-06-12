@@ -8,6 +8,13 @@ const envSchema = z.object({
   // Comma-separated list of allowed CORS origins — supports multiple frontends / mobile apps
   ALLOWED_ORIGINS: z.string().default("http://localhost:3000"),
 
+  // Number of reverse-proxy hops in front of the API (load balancer, CDN, etc.).
+  // Used for Fastify's trustProxy so req.ip resolves to the real client address.
+  // NEVER set higher than the actual hop count — extra hops let clients spoof
+  // their IP via X-Forwarded-For and bypass IP-keyed rate limits (incl. the
+  // login brute-force limit). Unset defaults: 1 in production, 0 in development.
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).optional(),
+
   DATABASE_URL: z.string().min(1),
 
   REDIS_URL: z.string().default("redis://localhost:6379"),
@@ -46,6 +53,11 @@ const envSchema = z.object({
 
   RAZORPAY_KEY_ID:     z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
+
+  // Set to true in development to skip BullMQ worker initialization.
+  // Workers poll Redis constantly — with a cloud Redis free tier (e.g. Upstash
+  // 500k/day) they exhaust the quota in minutes and crash the server.
+  DISABLE_QUEUES: z.coerce.boolean().default(false),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -67,3 +79,11 @@ export const allowedOrigins: string[] = env.ALLOWED_ORIGINS
   .split(",")
   .map((o) => o.trim())
   .filter(Boolean);
+
+/**
+ * Proxy hops to trust for client-IP resolution. Production platforms (Railway,
+ * Render, Fly, ALB) put exactly one proxy in front; local dev connects directly,
+ * where trusting any hop would let a client spoof X-Forwarded-For.
+ */
+export const trustProxyHops: number =
+  env.TRUST_PROXY_HOPS ?? (env.NODE_ENV === "production" ? 1 : 0);

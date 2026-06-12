@@ -1,7 +1,7 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
 import { env } from "../config/env.js";
 
-export type UserRole = "OWNER" | "MANAGER" | "PHARMACIST" | "CASHIER";
+export type UserRole = "OWNER" | "MANAGER" | "PHARMACIST" | "CASHIER" | "SUPPORT_AGENT" | "PLATFORM_ADMIN";
 
 export type JwtPayload = {
   sub:          string;

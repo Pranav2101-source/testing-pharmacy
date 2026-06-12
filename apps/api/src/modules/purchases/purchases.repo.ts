@@ -1,9 +1,9 @@
-import type { PrismaClient, Prisma } from "@pharmacy/database";
+import type { Db, Prisma } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
 export class PurchasesRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   // ── Purchase Orders ──────────────────────────────────────────────────────
 

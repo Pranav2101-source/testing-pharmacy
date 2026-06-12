@@ -5,12 +5,18 @@ import {
   updateMedicineSchema,
   listMedicinesQuerySchema,
 } from "./medicines.schema.js";
-import { authenticate, requireOwner } from "../../middleware/auth.js";
+import { authenticate, requireOwner, requireRole } from "../../middleware/auth.js";
 
 const medicinesRoutes: FastifyPluginAsync = async (app) => {
   const service = new MedicinesService(app);
   const auth    = [authenticate];
+  // The medicine catalog is GLOBAL (shared across every pharmacy). Pharmacy
+  // owners may ADD new medicines (additive — required for day-to-day GRN entry
+  // of new SKUs), but mutating or deleting an existing entry changes data that
+  // every other pharmacy bills against (name, gstRate, schedule), so those
+  // operations are restricted to the platform team.
   const owner   = [authenticate, requireOwner];
+  const platformAdmin = [authenticate, requireRole("PLATFORM_ADMIN")];
 
   // ── Fast fuzzy search via Meilisearch (used by billing POS) ─────────────
   app.get("/search", { preHandler: auth }, async (req, reply) => {
@@ -63,7 +69,7 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ── Bulk re-index all medicines to Meilisearch (run once after seed) ────
-  app.post("/reindex", { preHandler: owner }, async (_req, reply) => {
+  app.post("/reindex", { preHandler: platformAdmin }, async (_req, reply) => {
     const result = await service.reindex();
     return reply.send({ success: true, data: result });
   });
@@ -90,23 +96,23 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
     return reply.status(201).send({ success: true, data: medicine });
   });
 
-  // ── Update (owner only) ──────────────────────────────────────────────────
-  app.patch("/:id", { preHandler: owner }, async (req, reply) => {
+  // ── Update (platform admin only — mutates a record shared by all pharmacies) ──
+  app.patch("/:id", { preHandler: platformAdmin }, async (req, reply) => {
     const { id }   = req.params as { id: string };
     const input    = updateMedicineSchema.parse(req.body);
     const medicine = await service.update(id, input);
     return reply.send({ success: true, data: medicine });
   });
 
-  // ── Deactivate (soft delete, owner only) ────────────────────────────────
-  app.delete("/:id", { preHandler: owner }, async (req, reply) => {
+  // ── Deactivate (soft delete, platform admin only — hides it for ALL pharmacies) ──
+  app.delete("/:id", { preHandler: platformAdmin }, async (req, reply) => {
     const { id }   = req.params as { id: string };
     const medicine = await service.deactivate(id);
     return reply.send({ success: true, data: medicine });
   });
 
-  // ── Reactivate (owner only) ──────────────────────────────────────────────
-  app.patch("/:id/activate", { preHandler: owner }, async (req, reply) => {
+  // ── Reactivate (platform admin only) ─────────────────────────────────────
+  app.patch("/:id/activate", { preHandler: platformAdmin }, async (req, reply) => {
     const { id }   = req.params as { id: string };
     const medicine = await service.reactivate(id);
     return reply.send({ success: true, data: medicine });

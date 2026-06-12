@@ -1,8 +1,8 @@
-import type { PrismaClient, Prisma, QuotationStatus } from "@pharmacy/database";
+import type { Db, Prisma, QuotationStatus } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 
 export class QuotationsRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   async create(pharmacyId: string, userId: string, quotationNumber: string, data: {
     supplierId: string;

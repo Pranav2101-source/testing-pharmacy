@@ -1,8 +1,8 @@
-import type { PrismaClient, Prisma } from "@pharmacy/database";
+import type { Db, Prisma } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 
 export class SupplierReturnsRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   async create(pharmacyId: string, userId: string, data: {
     returnNumber: string;

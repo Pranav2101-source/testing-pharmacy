@@ -1,8 +1,8 @@
-import type { PrismaClient } from "@pharmacy/database";
+import type { Db } from "@pharmacy/database";
 import type { CreateCalendarEventInput, UpdateCalendarEventInput } from "./calendar.schema.js";
 
 export class CalendarRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   // ── Manual events (DB-stored) ─────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-import type { PrismaClient, Prisma } from "@pharmacy/database"
+import type { Db, Prisma } from "@pharmacy/database"
 import { AppError } from "../../lib/AppError.js"
 import type {
   ApproveSessionInput,
@@ -8,10 +8,10 @@ import type {
   UpdateItemInput,
 } from "./stock-audit.schema.js"
 
-// Prisma interactive-transaction client type (same as PrismaClient minus the
+// Prisma interactive-transaction client type (same as Db minus the
 // transaction-management methods — avoids `tx: any` which silently disables
 // all type checking inside the transaction body).
-type TxClient = Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">
+type TxClient = Omit<Db, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">
 
 const ITEM_INCLUDE = {
   inventory: {
@@ -28,7 +28,7 @@ const ITEM_INCLUDE = {
 } as const
 
 export class StockAuditRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   // ── Create session ──────────────────────────────────────────────────────────
   // Fix #5: Wrap snapshot read + session create in a SINGLE Serializable

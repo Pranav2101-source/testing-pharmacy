@@ -7,11 +7,12 @@ import {
   Search, Phone, Truck, Calendar, ChevronDown, LogOut, Settings, Menu, X,
   Dot, QrCode, Coins, Send, Monitor, IndianRupee, Info, MapPin, Building2,
   Receipt, FilePlus, RotateCcw, BookmarkCheck, ClipboardList, Plus, Users,
-  MoreHorizontal,
+  MoreHorizontal, TicketCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCalendarTodayCount } from "@/components/calendar/useCalendarEvents";
-import { useCurrentUser, clearUser } from "@/lib/auth";
+import { useCurrentUser, clearSession, isSupportStaff, isPlatformAdmin } from "@/lib/auth";
+import { api } from "@/lib/api-client";
 
 // ─── Types ────────────────────────────────────────────────────────
 type NavTab = { href: string; label: string; icon: React.ElementType };
@@ -87,7 +88,7 @@ const MENU_ITEMS: Array<{
   { id: "qr",           icon: QrCode,      label: "Show QR",            extraType: "blue"     },
   { id: "coins",        icon: Coins,       label: "VitalCoins",         extraType: "coin"     },
   { id: "refer",        icon: Send,        label: "Refer & Earn"                               },
-  { id: "support",      icon: Monitor,     label: "Support Tickets",    extra: "New", extraType: "badge-new" },
+  { id: "support",      icon: Monitor,     label: "Support Tickets",    extra: "New", extraType: "badge-new", href: "/dashboard/support" },
   { id: "zero",         icon: IndianRupee, label: "ZERO"                                       },
   { id: "shortcuts",    icon: Info,        label: "Shortcuts / Help"                           },
 ];
@@ -280,6 +281,11 @@ function ProfileDropdown() {
   const { open, setOpen, ref } = useDropdown();
   const navigate = useNavigate();
   const user = useCurrentUser();
+  // Support staff only see Account & Settings — all pharmacy-specific items are hidden.
+  const isSupport = isSupportStaff();
+  const visibleItems = isSupport
+    ? MENU_ITEMS.filter((item) => item.id === "settings")
+    : MENU_ITEMS;
 
   return (
     <div ref={ref} className="relative">
@@ -336,7 +342,7 @@ function ProfileDropdown() {
 
             {/* Right panel */}
             <div className="flex-1 bg-white py-1.5 flex flex-col">
-              {MENU_ITEMS.map(({ id, icon: Icon, label, extra, extraType, href }) => (
+              {visibleItems.map(({ id, icon: Icon, label, extra, extraType, href }) => (
                 <button
                   key={id}
                   role="menuitem"
@@ -383,9 +389,12 @@ function ProfileDropdown() {
                 role="menuitem"
                 onClick={() => {
                   setOpen(false);
-                  localStorage.removeItem("token");
-                  clearUser();
-                  document.cookie = "auth-token=; path=/; max-age=0; SameSite=Lax";
+                  // Revoke server-side first (bumps tokenVersion, killing all
+                  // outstanding tokens incl. other tabs). Fire-and-forget — the
+                  // request captures the token synchronously, so clearing
+                  // storage right after is safe even if the call is in flight.
+                  void api.post("/auth/logout").catch(() => { /* best-effort */ });
+                  clearSession();
                   navigate("/login");
                 }}
                 className="w-full flex items-center gap-2.5 px-3.5 py-2 text-[12px] text-red-500 hover:bg-red-50 transition-colors group"
@@ -898,14 +907,76 @@ function MobileMenu({ pathname }: { pathname: string }) {
   );
 }
 
+// ─── Support staff nav (agents / platform admin) ──────────────────
+function SupportNav() {
+  const { pathname } = useLocation();
+  const brand        = useCurrentUser();
+  const isAdmin      = isPlatformAdmin();
+
+  const SUPPORT_TABS: NavTab[] = [
+    { href: "/dashboard/support",        label: "Tickets", icon: TicketCheck },
+    ...(isAdmin ? [{ href: "/dashboard/support/agents", label: "Agents", icon: Users }] : []),
+  ];
+
+  return (
+    <header
+      role="banner"
+      className="sticky top-0 z-50 flex items-center gap-2 px-4 flex-shrink-0"
+      style={{
+        height: "var(--nav-height, 52px)",
+        background: "linear-gradient(135deg, #0a1a52 0%, #101e60 40%, #162870 100%)",
+        boxShadow: "0 2px 20px 0 rgba(8,13,45,0.45), 0 1px 0 0 rgba(255,255,255,0.05) inset",
+      }}
+    >
+      {/* Brand */}
+      <Link
+        to="/dashboard/support"
+        className="flex items-center gap-2 flex-shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-white/40 rounded-lg p-0.5"
+        aria-label="Checkup Support — dashboard"
+      >
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center ring-1 ring-white/20 flex-shrink-0 bg-gradient-to-br from-blue-400 via-indigo-500 to-purple-500 shadow-inner select-none">
+          <span className="text-white font-black text-[10px] leading-none tracking-tight">
+            {brand.pharmacyInitials}
+          </span>
+        </div>
+        <p className="text-white font-extrabold text-[14px] tracking-tight leading-none hidden sm:block truncate max-w-[160px]">
+          {brand.pharmacyName}
+        </p>
+      </Link>
+
+      <div className="h-5 w-px bg-white/15 flex-shrink-0 mx-0.5" />
+
+      <nav role="tablist" aria-label="Support navigation" className="hidden xl:flex items-center gap-0.5">
+        {SUPPORT_TABS.map((tab) => <NavItem key={tab.href} tab={tab} pathname={pathname} />)}
+      </nav>
+
+      <div className="flex-1" />
+
+      <div className="hidden md:flex items-center gap-1.5">
+        <GlobalSearchBar />
+        <div className="h-5 w-px bg-white/15 mx-1" />
+        <NotificationBell />
+        <div className="h-5 w-px bg-white/15 mx-1" />
+        <ProfileDropdown />
+      </div>
+
+      <div className="flex items-center gap-1.5 md:hidden">
+        <NotificationBell />
+        <ProfileDropdown />
+      </div>
+    </header>
+  );
+}
+
 // ─── TopNav — main export ─────────────────────────────────────────
 export function TopNav() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
-  const brand = useCurrentUser();
+  const brand    = useCurrentUser();
 
-  // F2 = New Bill (global shortcut)
+  // F2 = New Bill (global shortcut, pharmacy users only)
   useEffect(() => {
+    if (isSupportStaff()) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === "F2" && !e.ctrlKey && !e.metaKey && !e.altKey) {
         const tag = (e.target as HTMLElement).tagName;
@@ -917,6 +988,9 @@ export function TopNav() {
     window.addEventListener("keydown", handler, { passive: false });
     return () => window.removeEventListener("keydown", handler);
   }, [navigate]);
+
+  // Render a stripped-down nav for support staff — after all hooks
+  if (isSupportStaff()) return <SupportNav />;
 
   return (
     <header

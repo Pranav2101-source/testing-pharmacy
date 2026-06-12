@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import type { FastifyInstance } from "fastify";
 import type { CreateStaffInput, UpdateStaffInput } from "./staff.schema.js";
 import { AppError } from "../../lib/AppError.js";
+import { tokenVersionKey } from "../../middleware/auth.js";
 
 export class StaffService {
   constructor(private app: FastifyInstance) {}
@@ -41,11 +42,22 @@ export class StaffService {
     });
     if (!target) throw AppError.notFound("Staff member not found");
 
-    return this.app.prisma.user.update({
+    // A role change must take effect immediately, not after the current access
+    // token expires — otherwise a demoted user keeps their old privileges for up
+    // to JWT_EXPIRES_IN. Bumping tokenVersion invalidates every outstanding
+    // access + refresh token; the user is logged out and signs back in with the
+    // new role.
+    const roleChanged = input.role !== undefined && input.role !== target.role;
+
+    const updated = await this.app.prisma.user.update({
       where:  { id, pharmacyId },
-      data:   input,
+      data:   { ...input, ...(roleChanged ? { tokenVersion: { increment: 1 } } : {}) },
       select: { id: true, name: true, email: true, role: true, isActive: true },
     });
+
+    if (roleChanged) await this.evictTokenVersionCache(id);
+
+    return updated;
   }
 
   async deactivate(id: string, pharmacyId: string, requesterId: string) {
@@ -68,9 +80,30 @@ export class StaffService {
       }
     }
 
-    return this.app.prisma.user.update({
+    // Bump tokenVersion alongside deactivation so every outstanding token is
+    // rejected on the very next request (authenticate's Redis cache is evicted
+    // below). Without this, a deactivated user could keep working until their
+    // access token expired — the DB isActive check only runs on cache misses.
+    const deactivated = await this.app.prisma.user.update({
       where: { id, pharmacyId },
-      data:  { isActive: false },
+      data:  { isActive: false, tokenVersion: { increment: 1 } },
     });
+
+    await this.evictTokenVersionCache(id);
+
+    return deactivated;
+  }
+
+  /**
+   * Evict the cached tokenVersion so `authenticate` re-reads the DB on the next
+   * request from this user. Best-effort: if Redis is down the stale cache entry
+   * expires via its own TTL (bounded by JWT_EXPIRES_IN).
+   */
+  private async evictTokenVersionCache(userId: string): Promise<void> {
+    try {
+      await this.app.redis.del(tokenVersionKey(userId));
+    } catch {
+      this.app.log.warn({ userId }, "Failed to evict tokenVersion cache — revocation delayed until TTL expiry");
+    }
   }
 }

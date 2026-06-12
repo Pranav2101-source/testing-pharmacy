@@ -79,8 +79,9 @@ export class AuthService {
 
     await this.repo.updateLastLogin(user.id);
 
-    // Notify owner when a non-owner staff member logs in
-    if (user.role !== "OWNER") {
+    // Notify owner when a non-owner pharmacy staff member logs in.
+    // Skip for support team — they belong to the platform pharmacy which has no OWNER.
+    if (user.role !== "OWNER" && user.role !== "SUPPORT_AGENT" && user.role !== "PLATFORM_ADMIN") {
       const loginTime = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour12: true });
       void notifyOwners(this.app.prisma, user.pharmacyId, {
         subject: `👤 Staff login — ${user.name}`,

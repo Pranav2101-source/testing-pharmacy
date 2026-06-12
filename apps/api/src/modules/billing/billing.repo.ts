@@ -1,6 +1,7 @@
-import type { PrismaClient, Prisma, PaymentMode, PaymentStatus, InvoiceStatus } from "@pharmacy/database";
+import type { Db, Prisma, PaymentMode, PaymentStatus, InvoiceStatus } from "@pharmacy/database";
 import type { PendingMovement } from "./billing.types.js";
 import { AppError } from "../../lib/AppError.js";
+import { nextSequenceValue } from "../../lib/sequences.js";
 
 // ─── Shared include shapes ────────────────────────────────────────────────────
 
@@ -22,7 +23,7 @@ const RETURN_INCLUDE = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class BillingRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   // ── Inventory helpers ────────────────────────────────────────────────────
 
@@ -70,7 +71,7 @@ export class BillingRepo {
     pharmacyId:            string;
     userId:                string;
     invoiceData:           Omit<Prisma.InvoiceCreateInput, "invoiceNumber">;
-    generateInvoiceNumber: () => Promise<string>;
+    formatInvoiceNumber:   (seq: number) => string;
     stockDecrements:       { inventoryId: string; quantity: number; medicineName: string }[];
     idempotencyKey?:       string;
     customerId?:           string;
@@ -95,8 +96,11 @@ export class BillingRepo {
         if (existing) return { invoice: existing, isNew: false };
       }
 
-      // Generate invoice number only after confirming this is a new request.
-      const invoiceNumber = await params.generateInvoiceNumber();
+      // Draw the next invoice number only after confirming this is a new request.
+      // The Postgres counter increments INSIDE this transaction, so a rollback
+      // (stock conflict, credit limit) returns the number — numbering is gapless.
+      const seq           = await nextSequenceValue(tx, params.pharmacyId, "INVOICE");
+      const invoiceNumber = params.formatInvoiceNumber(seq);
 
       // Step 0.5 — release stock reservations (single raw SQL instead of N round-trips)
       if (params.idempotencyKey) {
@@ -126,6 +130,11 @@ export class BillingRepo {
       // UPDATE ... RETURNING gives us the post-update quantity atomically, so no
       // separate SELECT is needed. All decrements execute in one statement inside
       // the Serializable transaction, which also shortens the lock-hold window.
+      //
+      // The availability floor is (quantity - reservedQuantity), not raw quantity:
+      // stock reserved by OTHER billing sessions must not be sellable here. This
+      // session's own reservations were already released in step 0.5, so they
+      // never block its own checkout.
       type DecrRow = { id: string; qty_after: number; qty_dec: number };
       const inventoryIds = params.stockDecrements.map((i) => i.inventoryId);
       const quantities   = params.stockDecrements.map((i) => i.quantity);
@@ -140,7 +149,7 @@ export class BillingRepo {
           FROM   batch b
           WHERE  inv.id           = b.id
             AND  inv."pharmacyId" = ${params.pharmacyId}::text
-            AND  inv.quantity    >= b.qty
+            AND  (inv.quantity - inv."reservedQuantity") >= b.qty
           RETURNING inv.id, inv.quantity AS qty_after, b.qty AS qty_dec
         )
         SELECT * FROM upd
@@ -153,13 +162,18 @@ export class BillingRepo {
         const failed       = params.stockDecrements.find((i) => !succeededIds.has(i.inventoryId))!;
         const current      = await tx.inventory.findFirst({
           where:  { id: failed.inventoryId, pharmacyId: params.pharmacyId },
-          select: { quantity: true },
+          select: { quantity: true, reservedQuantity: true },
         });
-        throw current
-          ? AppError.conflict(
-              `Insufficient stock for "${failed.medicineName}": ${current.quantity} available, ${failed.quantity} requested`,
-            )
-          : AppError.notFound(`Inventory item not found: ${failed.inventoryId}`);
+        if (!current) {
+          throw AppError.notFound(`Inventory item not found: ${failed.inventoryId}`);
+        }
+        const available = Math.max(0, current.quantity - current.reservedQuantity);
+        const reservedNote = current.reservedQuantity > 0
+          ? ` (${current.reservedQuantity} reserved by another billing session)`
+          : "";
+        throw AppError.conflict(
+          `Insufficient stock for "${failed.medicineName}": ${available} available${reservedNote}, ${failed.quantity} requested`,
+        );
       }
 
       const movements: PendingMovement[] = decremented.map((row) => ({
@@ -209,7 +223,7 @@ export class BillingRepo {
         // The WHERE clause only matches when creditLimit is unlimited (≤ 0) OR when
         // the resulting creditUsed would remain within the limit (+0.01 for float tolerance).
         const updated = await tx.$queryRaw<{ creditUsed: number; creditLimit: number }[]>`
-          UPDATE customer
+          UPDATE customers
           SET    "creditUsed" = "creditUsed" + ${params.totalAmount}
           WHERE  id             = ${params.customerId!}
             AND  "pharmacyId"   = ${params.pharmacyId}
@@ -454,7 +468,7 @@ export class BillingRepo {
     pharmacyId:           string;
     invoiceId:            string;
     userId:               string;
-    generateReturnNumber: () => Promise<string>;
+    formatReturnNumber:   (seq: number) => string;
     reason:               string;
     idempotencyKey?:      string;
     returnWindowDays?:    number;
@@ -476,7 +490,9 @@ export class BillingRepo {
         if (existing) return existing;
       }
 
-      const returnNumber = await params.generateReturnNumber();
+      // Counter increments inside this transaction — gapless on rollback.
+      const returnSeq    = await nextSequenceValue(tx, params.pharmacyId, "SALES_RETURN");
+      const returnNumber = params.formatReturnNumber(returnSeq);
 
       const invoice = await tx.invoice.findFirst({
         where:   { id: params.invoiceId, pharmacyId: params.pharmacyId },
@@ -1095,17 +1111,26 @@ export class BillingRepo {
         _sum:   { totalAmount: true },
         _count: { id: true },
       }),
-      // Low stock — raw SQL needed: compare quantity to per-row minimumStock column
+      // Low stock — raw SQL needed: compare quantity to per-row minimumStock column.
+      // ACTIVE only: quarantined/damaged/expired batches aren't restockable signals.
       this.db.$queryRaw<[{ count: bigint }]>`
         SELECT COUNT(*) as count
         FROM inventory
         WHERE "pharmacyId" = ${pharmacyId}
+          AND status::text = 'ACTIVE'
           AND quantity > 0
           AND quantity <= "minimumStock"
       `,
-      // Near expiry
+      // Near expiry — ACTIVE and EXPIRED batches only (EXPIRED stays visible so the
+      // count matches the expiry-alerts screen); QUARANTINE/DAMAGED are excluded
+      // because they're already pulled from sale and handled via recall/adjustment.
       this.db.inventory.count({
-        where: { pharmacyId, expiryDate: { lte: nearExpiryThreshold }, quantity: { gt: 0 } },
+        where: {
+          pharmacyId,
+          expiryDate: { lte: nearExpiryThreshold },
+          quantity:   { gt: 0 },
+          status:     { in: ["ACTIVE", "EXPIRED"] },
+        },
       }),
     ]);
 
@@ -1113,15 +1138,15 @@ export class BillingRepo {
       todaySales:      parseFloat((todaySalesAgg._sum.totalAmount ?? 0).toFixed(2)),
       todayCount:      todaySalesAgg._count.id,
       todayCancelled:  todayCancelledCount,
-      todayReturns:    todayReturns._sum.totalAmount    ?? 0,
-      last7DaysSales:  weekInvoices._sum.totalAmount    ?? 0,
+      todayReturns:    Number(todayReturns._sum.totalAmount    ?? 0),
+      last7DaysSales:  Number(weekInvoices._sum.totalAmount    ?? 0),
       last7DaysCount:  weekInvoices._count.id,
-      monthSales:      monthInvoices._sum.totalAmount   ?? 0,
+      monthSales:      Number(monthInvoices._sum.totalAmount   ?? 0),
       monthCount:      monthInvoices._count.id,
-      pendingCredit:   pendingCredit._sum.totalAmount   ?? 0,
+      pendingCredit:   Number(pendingCredit._sum.totalAmount   ?? 0),
       paymentBreakdown: paymentBreakdown.map((p) => ({
         mode:  p.paymentMode,
-        total: p._sum.totalAmount ?? 0,
+        total: Number(p._sum.totalAmount ?? 0),
         count: p._count.id,
       })),
       lowStockCount:  Number(lowStockCount[0]?.count ?? 0),
@@ -1136,15 +1161,25 @@ export class BillingRepo {
   // expiryDate ASC, not by receipt/purchase date (FIFO).
 
   async getFEFOBatch(medicineId: string, pharmacyId: string, quantity: number) {
-    return this.db.inventory.findFirst({
+    // Only ACTIVE batches are sellable — QUARANTINE/EXPIRED/DAMAGED (e.g. after a
+    // batch recall) must never be suggested to the POS. Availability is
+    // (quantity - reservedQuantity): stock reserved by other billing sessions is
+    // not offerable. Prisma cannot compare two columns in a where clause, so we
+    // scan the earliest-expiring candidates and pick the first with enough
+    // unreserved stock (the candidate list is tiny — batches per medicine per
+    // pharmacy are rarely more than a handful).
+    const candidates = await this.db.inventory.findMany({
       where: {
         medicineId,
         pharmacyId,
+        status:     "ACTIVE",
         quantity:   { gte: quantity },
         expiryDate: { gt: new Date() },
       },
       orderBy: { expiryDate: "asc" },
       include: { medicine: true },
+      take:    25,
     });
+    return candidates.find((b) => b.quantity - b.reservedQuantity >= quantity) ?? null;
   }
 }

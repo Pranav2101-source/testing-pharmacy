@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@pharmacy/database"
+import type { Db } from "@pharmacy/database"
 import { AppError } from "../../lib/AppError.js"
 import type {
   CreateRackInput,
@@ -13,7 +13,7 @@ const SHELF_INCLUDE = {
 } as const
 
 export class LocationsRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   // ── Racks ──────────────────────────────────────────────────────────────────
 

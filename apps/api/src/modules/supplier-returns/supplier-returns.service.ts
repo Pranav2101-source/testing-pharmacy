@@ -2,7 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { SupplierReturnsRepo } from "./supplier-returns.repo.js";
 import type { CreateSRInput, ListSRQuery } from "./supplier-returns.schema.js";
 import { AppError } from "../../lib/AppError.js";
-import { SR_SEQUENCE_KEY, generateSRNumber } from "../billing/billing.constants.js";
+import { generateSRNumber } from "../billing/billing.constants.js";
+import { nextSequenceValue } from "../../lib/sequences.js";
 
 export class SupplierReturnsService {
   private repo: SupplierReturnsRepo;
@@ -33,14 +34,8 @@ export class SupplierReturnsService {
 
     const totalAmount = parseFloat(items.reduce((s, i) => s + i.amount, 0).toFixed(2));
 
-    // Generate return number via Redis INCR — same race-safe pattern as invoices.
-    // COUNT(*)-based generation produced duplicate numbers under concurrent requests.
-    let seq: number;
-    try {
-      seq = await this.app.redis.incr(SR_SEQUENCE_KEY(pharmacyId));
-    } catch {
-      throw AppError.internal("We couldn't generate a return number right now. Please try again in a moment.");
-    }
+    // Return number from the durable Postgres counter — race-safe, survives Redis restarts.
+    const seq          = await nextSequenceValue(this.app.prisma, pharmacyId, "SUPPLIER_RETURN");
     const returnNumber = generateSRNumber(seq);
 
     return this.repo.create(pharmacyId, userId, {

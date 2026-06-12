@@ -1,10 +1,10 @@
-import type { PrismaClient, Prisma } from "@pharmacy/database";
+import type { Db, Prisma } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 
 export class SupplierCreditNotesRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
-  private async nextCNNumber(pharmacyId: string, tx: Omit<PrismaClient, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">): Promise<string> {
+  private async nextCNNumber(pharmacyId: string, tx: Omit<Db, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">): Promise<string> {
     const count = await tx.supplierCreditNote.count({ where: { pharmacyId } });
     const year  = new Date().getFullYear();
     return `SCN-${year}-${String(count + 1).padStart(5, "0")}`;
@@ -143,6 +143,6 @@ export class SupplierCreditNotesRepo {
       _sum:  { amount: true },
     });
 
-    return { items, total, page: params.page, limit: params.limit, totalPendingCredit: pendingBalance._sum.amount ?? 0 };
+    return { items, total, page: params.page, limit: params.limit, totalPendingCredit: Number(pendingBalance._sum.amount ?? 0) };
   }
 }

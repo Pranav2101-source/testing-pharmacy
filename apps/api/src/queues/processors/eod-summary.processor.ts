@@ -120,18 +120,18 @@ export const eodSummaryWorker = new Worker(
       }),
     ]);
 
-    const totalSales   = salesAgg._sum.totalAmount ?? 0;
+    const totalSales   = Number(salesAgg._sum.totalAmount ?? 0);
     const invoiceCount = salesAgg._count.id;
 
     if (invoiceCount === 0) return;
 
-    const totalReturns = returnsAgg._sum.totalAmount ?? 0;
+    const totalReturns = Number(returnsAgg._sum.totalAmount ?? 0);
     const netSales     = totalSales - totalReturns;
-    const pendingAmt   = pendingCredit._sum.totalAmount ?? 0;
+    const pendingAmt   = Number(pendingCredit._sum.totalAmount ?? 0);
 
     const breakdown = paymentBreakdown.map((p) => ({
       mode:  p.paymentMode as string,
-      total: p._sum.totalAmount ?? 0,
+      total: Number(p._sum.totalAmount ?? 0),
       count: p._count.id,
     }));
 

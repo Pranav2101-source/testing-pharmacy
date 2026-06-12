@@ -8,9 +8,10 @@ import {
   Smartphone, Wallet, Flame, BadgePercent, BarChart2,
   CircleAlert,
 } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, Navigate } from "react-router-dom";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { isSupportStaff } from "@/lib/auth";
 
 // ─── Types ────────────────────────────────────────────────────────
 type PaymentBreakdownItem = { mode: string | null; total: number; count: number };
@@ -446,6 +447,9 @@ function TopMedicinesCard({ eodData, loading }: { eodData: EodData | null; loadi
 
 // ─── Page ─────────────────────────────────────────────────────────
 export default function DashboardHomePage() {
+  // Support staff have no pharmacy home — redirect them to their workspace
+  if (isSupportStaff()) return <Navigate to="/dashboard/support" replace />;
+
   const navigate = useNavigate();
   const today = new Date().toLocaleDateString("en-IN", {
     weekday: "long", day: "numeric", month: "long", year: "numeric",

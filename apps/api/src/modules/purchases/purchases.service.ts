@@ -6,10 +6,8 @@ import type {
 } from "./purchases.schema.js";
 import type { ImportedGRNRow } from "./purchases.import.js";
 import { AppError } from "../../lib/AppError.js";
-import {
-  PO_SEQUENCE_KEY, generatePONumber,
-  GRN_SEQUENCE_KEY, generateGRNNumber,
-} from "../billing/billing.constants.js";
+import { generatePONumber, generateGRNNumber } from "../billing/billing.constants.js";
+import { nextSequenceValue } from "../../lib/sequences.js";
 
 const NEAR_EXPIRY_DAYS = 90; // warn if any GRN item expires within 90 days
 
@@ -63,14 +61,9 @@ export class PurchasesService {
     // PHARMACIST-created POs need OWNER approval; OWNER auto-approves
     const approvalStatus = userRole === "OWNER" ? "NOT_REQUIRED" : "PENDING_APPROVAL";
 
-    // Generate order number via Redis INCR (financial-year scoped) so concurrent
-    // creates never collide — replacing the COUNT(*)-based approach that races.
-    let seq: number;
-    try {
-      seq = await this.app.redis.incr(PO_SEQUENCE_KEY(pharmacyId));
-    } catch {
-      throw AppError.internal("We couldn't generate an order number right now. Please try again in a moment.");
-    }
+    // Order number from the durable Postgres counter (financial-year scoped) —
+    // concurrent creates serialize on the counter row, so numbers never collide.
+    const seq         = await nextSequenceValue(this.app.prisma, pharmacyId, "PURCHASE_ORDER");
     const orderNumber = generatePONumber(seq);
 
     return this.repo.createPO(pharmacyId, userId, {
@@ -247,13 +240,8 @@ export class PurchasesService {
       };
     });
 
-    // Generate GRN number via Redis INCR — same race-safe pattern as invoices.
-    let grnSeq: number;
-    try {
-      grnSeq = await this.app.redis.incr(GRN_SEQUENCE_KEY(pharmacyId));
-    } catch {
-      throw AppError.internal("We couldn't generate a GRN number right now. Please try again in a moment.");
-    }
+    // GRN number from the durable Postgres counter — race-safe, survives Redis restarts.
+    const grnSeq    = await nextSequenceValue(this.app.prisma, pharmacyId, "GRN");
     const grnNumber = generateGRNNumber(grnSeq);
 
     const grn = await this.repo.createGRN(pharmacyId, userId, {

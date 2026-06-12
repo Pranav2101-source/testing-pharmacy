@@ -46,6 +46,11 @@ const CalendarPage         = lazy(() => import("./pages/dashboard/CalendarPage")
 const CustomersPage        = lazy(() => import("./pages/dashboard/CustomersPage"));
 const QuotationsPage       = lazy(() => import("./pages/dashboard/QuotationsPage"));
 
+// ─── Support ──────────────────────────────────────────────────
+const SupportTicketsPage   = lazy(() => import("./pages/dashboard/support/SupportTicketsPage"));
+const TicketDetailPage     = lazy(() => import("./pages/dashboard/support/TicketDetailPage"));
+const AgentsPage           = lazy(() => import("./pages/dashboard/support/AgentsPage"));
+
 // ─── Settings ─────────────────────────────────────────────────
 const SettingsPage           = lazy(() => import("./pages/dashboard/settings/SettingsPage"));
 const PharmacyProfilePage    = lazy(() => import("./pages/dashboard/settings/PharmacyProfilePage"));
@@ -107,6 +112,11 @@ export function App() {
               <Route path="/dashboard/calendar"              element={<CalendarPage />} />
               <Route path="/dashboard/customers"            element={<CustomersPage />} />
               <Route path="/dashboard/quotations"           element={<QuotationsPage />} />
+
+              {/* Support — static routes must come before the dynamic :id segment */}
+              <Route path="/dashboard/support"              element={<SupportTicketsPage />} />
+              <Route path="/dashboard/support/agents"       element={<AgentsPage />} />
+              <Route path="/dashboard/support/:id"          element={<TicketDetailPage />} />
 
               {/* Settings nested layout */}
               <Route element={<SettingsLayout />}>

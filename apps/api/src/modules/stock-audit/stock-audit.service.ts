@@ -8,7 +8,8 @@ import type {
   ListSessionsQuery,
   UpdateItemInput,
 } from "./stock-audit.schema.js"
-import { AUDIT_SEQUENCE_KEY, generateAuditNumber } from "../billing/billing.constants.js"
+import { generateAuditNumber } from "../billing/billing.constants.js"
+import { nextSequenceValue, istDayPeriod } from "../../lib/sequences.js"
 
 export class StockAuditService {
   private repo: StockAuditRepo
@@ -18,14 +19,9 @@ export class StockAuditService {
   }
 
   async createSession(pharmacyId: string, userId: string, input: CreateSessionInput) {
-    // Generate session number via Redis INCR (daily IST key) to prevent the
-    // COUNT(*)-based race condition that produced duplicate AUDIT-YYYYMMDD-NNN numbers.
-    let seq: number
-    try {
-      seq = await this.app.redis.incr(AUDIT_SEQUENCE_KEY(pharmacyId))
-    } catch {
-      throw AppError.internal("We couldn't generate an audit number right now. Please try again in a moment.")
-    }
+    // Session number from the durable Postgres counter (per-IST-day period) so
+    // the AUDIT-YYYYMMDD-NNN suffix stays small and never collides.
+    const seq           = await nextSequenceValue(this.app.prisma, pharmacyId, "STOCK_AUDIT", istDayPeriod())
     const sessionNumber = generateAuditNumber(seq)
     return this.repo.createSession(pharmacyId, userId, sessionNumber, input)
   }

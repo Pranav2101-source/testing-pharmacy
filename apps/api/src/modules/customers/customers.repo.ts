@@ -1,4 +1,4 @@
-import type { PrismaClient, Prisma, CustomerType } from "@pharmacy/database";
+import type { Db, Prisma, CustomerType } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 
 type CustomerWriteData = {
@@ -28,7 +28,7 @@ function parseDate(iso?: string): Date | undefined {
 }
 
 export class CustomersRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   async create(pharmacyId: string, data: CustomerWriteData) {
     if (data.phone) {

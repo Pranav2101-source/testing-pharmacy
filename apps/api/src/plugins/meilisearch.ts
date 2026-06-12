@@ -23,12 +23,24 @@ const meilisearchPlugin: FastifyPluginAsync = async (fastify) => {
   });
 
   const index = client.index("medicines");
-  await index.updateSettings({
-    searchableAttributes: ["name", "genericName", "manufacturer", "composition"],
-    filterableAttributes: ["category", "schedule", "gstRate", "isActive"],
-    sortableAttributes:   ["name"],
-    typoTolerance: { enabled: true, minWordSizeForTypos: { oneTypo: 4, twoTypos: 8 } },
-  });
+
+  // Create the index if it doesn't exist, then apply settings.
+  // Both steps are best-effort — a MeiliSearch outage must never crash the API.
+  try {
+    await client.createIndex("medicines", { primaryKey: "id" });
+  } catch {
+    // Index already exists — fine, continue
+  }
+  try {
+    await index.updateSettings({
+      searchableAttributes: ["name", "genericName", "manufacturer", "composition"],
+      filterableAttributes: ["category", "schedule", "gstRate", "isActive"],
+      sortableAttributes:   ["name"],
+      typoTolerance: { enabled: true, minWordSizeForTypos: { oneTypo: 4, twoTypos: 8 } },
+    });
+  } catch (err) {
+    fastify.log.warn({ err }, "Meilisearch: failed to configure index settings — search may be degraded");
+  }
 
   fastify.decorate("meilisearch", client);
 

@@ -1,7 +1,7 @@
-import type { PrismaClient } from "@pharmacy/database";
+import type { Db } from "@pharmacy/database";
 
 export class CategoriesRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   async create(data: { name: string; code?: string; description?: string; parentId?: string }) {
     return this.db.productCategory.create({

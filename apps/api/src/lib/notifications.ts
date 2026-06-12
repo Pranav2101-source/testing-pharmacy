@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@pharmacy/database";
+import type { Db } from "@pharmacy/database";
 import { sendMail } from "./mailer.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -15,7 +15,7 @@ type NotifyParams = {
 // ─── Core dispatcher ──────────────────────────────────────────────────────────
 // Never throws. Creates a NotificationLog, attempts delivery, updates status.
 
-export async function sendNotification(db: PrismaClient, params: NotifyParams): Promise<void> {
+export async function sendNotification(db: Db, params: NotifyParams): Promise<void> {
   const type = params.type ?? "EMAIL";
 
   let logId: string | null = null;
@@ -68,7 +68,7 @@ export async function sendNotification(db: PrismaClient, params: NotifyParams): 
 // One record per pharmacy (broadcast to all logged-in users of that pharmacy).
 
 export async function inAppNotify(
-  db:         PrismaClient,
+  db:         Db,
   pharmacyId: string,
   params:     { subject: string; message: string },
 ): Promise<void> {
@@ -92,7 +92,7 @@ export async function inAppNotify(
 // ─── Convenience: notify all active OWNER users of a pharmacy ─────────────────
 
 export async function notifyOwners(
-  db:         PrismaClient,
+  db:         Db,
   pharmacyId: string,
   params:     { subject: string; message: string; html?: string },
 ): Promise<void> {

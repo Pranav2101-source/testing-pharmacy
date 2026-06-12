@@ -1,7 +1,7 @@
-import type { PrismaClient } from "@pharmacy/database";
+import type { Db } from "@pharmacy/database";
 
 export class BrandsRepo {
-  constructor(private db: PrismaClient) {}
+  constructor(private db: Db) {}
 
   async create(data: { name: string; manufacturer?: string; country?: string }) {
     return this.db.brand.create({ data });

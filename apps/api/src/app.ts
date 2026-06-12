@@ -34,21 +34,11 @@ import locationsRoutes from "./modules/locations/locations.routes.js";
 import stockAuditRoutes from "./modules/stock-audit/stock-audit.routes.js";
 import calendarRoutes from "./modules/calendar/calendar.routes.js";
 import pharmacyRoutes from "./modules/pharmacy/pharmacy.routes.js";
+import supportRoutes from "./modules/support/support.routes.js";
 
-import { env, allowedOrigins } from "./config/env.js";
+import { env, allowedOrigins, trustProxyHops } from "./config/env.js";
 import { AppError } from "./lib/AppError.js";
 import { Prisma } from "@pharmacy/database";
-
-// ── Queue workers (import side-effect: registers each BullMQ Worker) ──────────
-import "./queues/processors/expiry-alert.processor.js";
-import "./queues/processors/low-stock-alert.processor.js";
-import "./queues/processors/grn-overdue.processor.js";
-import "./queues/processors/eod-summary.processor.js";
-import "./queues/processors/quotation-expiry.processor.js";
-import "./queues/processors/pending-credit.processor.js";
-import "./queues/processors/calendar-digest.processor.js";
-import "./queues/processors/post-invoice.processor.js";
-import "./queues/processors/reservation-cleanup.processor.js";
 
 import { setupScheduledJobs } from "./queues/scheduler.js";
 
@@ -61,7 +51,10 @@ export async function buildApp() {
           ? { target: "pino-pretty", options: { colorize: true } }
           : undefined,
     },
-    trustProxy: true,
+    // Trust exactly the configured number of proxy hops — `true` would trust any
+    // client-supplied X-Forwarded-For, letting attackers spoof their IP and bypass
+    // the IP-keyed rate limits (including the login brute-force limit).
+    trustProxy: trustProxyHops > 0 ? trustProxyHops : false,
   });
 
   // ── Security ──────────────────────────────────────────────────────────────
@@ -81,7 +74,7 @@ export async function buildApp() {
   await app.register(prismaPlugin);
   await app.register(redisPlugin);
   await app.register(meilisearchPlugin);
-  await app.register(multipart, { limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB max CSV
+  await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB — support screen recordings
 
   // Global rate limit — Redis-backed in production (shared across pods); in-memory in dev
   // to avoid burning Upstash free-tier quota on every local API call.
@@ -156,13 +149,31 @@ export async function buildApp() {
   await app.register(stockAuditRoutes,    { prefix: "/api/stock-audit" });
   await app.register(calendarRoutes,      { prefix: "/api/calendar" });
   await app.register(pharmacyRoutes,      { prefix: "/api/pharmacy" });
+  await app.register(supportRoutes,       { prefix: "/api/support" });
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/health", async () => ({ status: "ok", ts: new Date().toISOString() }));
 
-  // ── Scheduled jobs ────────────────────────────────────────────────────────
-  // Register cron jobs on startup; BullMQ deduplicates repeatable jobs automatically.
-  setupScheduledJobs().catch((err) => app.log.error(err, "Failed to setup scheduled jobs"));
+  // ── Queue workers + scheduled jobs ───────────────────────────────────────
+  // Workers are skipped when DISABLE_QUEUES=true (dev with cloud Redis free tier).
+  // Each processor file is a side-effect import that creates a BullMQ Worker;
+  // workers poll Redis constantly and drain Upstash's 500k/day quota in minutes.
+  if (!env.DISABLE_QUEUES) {
+    await Promise.all([
+      import("./queues/processors/expiry-alert.processor.js"),
+      import("./queues/processors/low-stock-alert.processor.js"),
+      import("./queues/processors/grn-overdue.processor.js"),
+      import("./queues/processors/eod-summary.processor.js"),
+      import("./queues/processors/quotation-expiry.processor.js"),
+      import("./queues/processors/pending-credit.processor.js"),
+      import("./queues/processors/calendar-digest.processor.js"),
+      import("./queues/processors/post-invoice.processor.js"),
+      import("./queues/processors/reservation-cleanup.processor.js"),
+    ]);
+    setupScheduledJobs().catch((err) => app.log.error(err, "Failed to setup scheduled jobs"));
+  } else {
+    app.log.info("[Queues] DISABLE_QUEUES=true — skipping workers (dev mode, preserving Redis quota)");
+  }
 
   // ── Global error handler ──────────────────────────────────────────────────
   app.setErrorHandler((error, _request, reply) => {

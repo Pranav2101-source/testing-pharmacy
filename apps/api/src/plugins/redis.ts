@@ -11,15 +11,31 @@ declare module "fastify" {
 
 const redisPlugin: FastifyPluginAsync = async (fastify) => {
   const redis = new Redis(env.REDIS_URL, {
-    maxRetriesPerRequest: 3,
+    // null = never close the connection after N failed commands (required for BullMQ interop)
+    maxRetriesPerRequest: null,
     lazyConnect: true,
+    // Don't queue commands while disconnected — callers get instant errors so they
+    // can fall back (auth middleware already falls back to DB when Redis is down).
+    enableOfflineQueue: false,
   });
 
-  await redis.connect();
+  // Without this listener, ioredis 'error' events become uncaughtExceptions and
+  // crash the process. Redis is non-critical: auth falls back to DB, rate-limiting
+  // falls back to in-memory. Log as warn so we see it without alarming.
+  redis.on("error", (err: Error) => {
+    fastify.log.warn({ err: err.message }, "[Redis] connection error — non-critical features degraded");
+  });
+
+  try {
+    await redis.connect();
+    fastify.log.info("[Redis] Connected");
+  } catch (err) {
+    fastify.log.warn({ err }, "[Redis] Could not connect on startup — Redis features unavailable");
+  }
 
   fastify.decorate("redis", redis);
   fastify.addHook("onClose", async () => {
-    await redis.quit();
+    try { await redis.quit(); } catch { /* ignore — already closed */ }
   });
 };
 

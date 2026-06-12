@@ -1,5 +1,6 @@
 import { Outlet } from "react-router-dom";
 import { TopNav } from "@/components/layout/TopNav";
+import { HelpWidget } from "@/components/help/HelpWidget";
 
 export default function DashboardLayout() {
   return (
@@ -8,6 +9,7 @@ export default function DashboardLayout() {
       <main className="flex-1 overflow-hidden">
         <Outlet />
       </main>
+      <HelpWidget />
     </div>
   );
 }
