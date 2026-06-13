@@ -22,6 +22,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - run: pnpm --filter @pharmacy/database db:generate
+
       - run: pnpm type-check
 
       - run: pnpm build
