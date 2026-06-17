@@ -1,6 +1,4 @@
 import type { FastifyRequest, FastifyReply } from "fastify";
-import { env } from "../config/env.js";
-import { TtlCache } from "../lib/ttl-cache.js";
 
 export type UserRole = "OWNER" | "MANAGER" | "PHARMACIST" | "CASHIER" | "SUPPORT_AGENT" | "PLATFORM_ADMIN";
 
@@ -20,28 +18,10 @@ declare module "@fastify/jwt" {
   }
 }
 
-function parseTtlToSeconds(ttl: string): number {
-  const match = ttl.match(/^(\d+)(m|h|d)$/);
-  if (!match) return 15 * 60;
-  const n    = parseInt(match[1]!, 10);
-  const unit = match[2];
-  if (unit === "m") return n * 60;
-  if (unit === "h") return n * 60 * 60;
-  return n * 24 * 60 * 60;
-}
-
-const TOKEN_VERSION_TTL_S = parseTtlToSeconds(env.JWT_EXPIRES_IN);
-
-// In-process token version cache. Eliminates a DB round-trip on every
-// authenticated request. Eviction on logout/password-change is synchronous —
-// no network hop required (compare: Redis del was async + could fail).
-// Cache miss falls through to Prisma and re-populates transparently.
-const tokenVersionCache = new TtlCache<string, number>();
-
-// Exported so auth.service.ts can invalidate on logout / password change.
-export function invalidateTokenVersion(userId: string): void {
-  tokenVersionCache.delete(userId);
-}
+// No in-process cache here — token version is always read from the DB so that
+// a logout (or password change) on any instance takes effect across all
+// instances immediately. The extra DB round-trip costs ~1 ms on Supabase and
+// is negligible for a pharmacy workload.
 
 export async function authenticate(
   request: FastifyRequest,
@@ -58,21 +38,16 @@ export async function authenticate(
 
   const { sub: userId, tokenVersion } = request.user;
 
-  let currentVersion = tokenVersionCache.get(userId);
+  const user = await request.server.prisma.user.findUnique({
+    where:  { id: userId },
+    select: { tokenVersion: true, isActive: true },
+  });
 
-  if (currentVersion === undefined) {
-    const user = await request.server.prisma.user.findUnique({
-      where:  { id: userId },
-      select: { tokenVersion: true, isActive: true },
-    });
-    if (!user || !user.isActive) {
-      return void reply.status(401).send({ success: false, error: "Unauthorized" });
-    }
-    currentVersion = user.tokenVersion;
-    tokenVersionCache.set(userId, currentVersion, TOKEN_VERSION_TTL_S);
+  if (!user || !user.isActive) {
+    return void reply.status(401).send({ success: false, error: "Unauthorized" });
   }
 
-  if (tokenVersion !== currentVersion) {
+  if (tokenVersion !== user.tokenVersion) {
     return void reply.status(401).send({ success: false, error: "Unauthorized" });
   }
 }

@@ -19,10 +19,6 @@ export const registerSchema = z.object({
   pincode:      z.string().regex(/^\d{6}$/).optional(),
 });
 
-export const refreshSchema = z.object({
-  refreshToken: z.string().min(1),
-});
-
 export const forgotPasswordSchema = z.object({
   email: z.string().email(),
 });
@@ -34,6 +30,5 @@ export const resetPasswordSchema = z.object({
 
 export type LoginInput          = z.infer<typeof loginSchema>;
 export type RegisterInput        = z.infer<typeof registerSchema>;
-export type RefreshInput         = z.infer<typeof refreshSchema>;
 export type ForgotPasswordInput  = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput   = z.infer<typeof resetPasswordSchema>;

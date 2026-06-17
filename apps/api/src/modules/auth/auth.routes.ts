@@ -1,13 +1,49 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import { AuthService } from "./auth.service.js";
 import {
   loginSchema,
   registerSchema,
-  refreshSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
 } from "./auth.schema.js";
 import { authenticate } from "../../middleware/auth.js";
+import { env } from "../../config/env.js";
+
+// ── Refresh-token cookie helpers ──────────────────────────────────────────────
+// The refresh token never travels through JavaScript-readable storage. It lives
+// exclusively in an httpOnly cookie, invisible to any injected script (XSS).
+// The access token is short-lived (JWT_EXPIRES_IN) and kept in JS memory only.
+
+const REFRESH_COOKIE    = "refresh_token";
+const REFRESH_MAX_AGE_S = 7 * 24 * 60 * 60; // 7 days, matches auth.service signTokens
+
+function setRefreshCookie(reply: FastifyReply, token: string): void {
+  reply.setCookie(REFRESH_COOKIE, token, {
+    httpOnly: true,
+    // Secure is required in production (HTTPS). Local dev runs on HTTP so we
+    // skip it there; it would cause browsers to silently drop the cookie.
+    secure:   env.NODE_ENV === "production",
+    // SameSite=None is required when the frontend and API are on different
+    // origins (Vercel ↔ Fly.io, Amplify ↔ ALB, etc.). SameSite=Lax is
+    // sufficient for same-origin local dev and is more restrictive.
+    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
+    // Scope the cookie to auth endpoints only — the browser never sends it
+    // to /api/v1/billing/invoices or any other route. Least privilege.
+    path:     "/api/v1/auth",
+    maxAge:   REFRESH_MAX_AGE_S,
+  });
+}
+
+function clearRefreshCookie(reply: FastifyReply): void {
+  reply.clearCookie(REFRESH_COOKIE, {
+    path:     "/api/v1/auth",
+    httpOnly: true,
+    secure:   env.NODE_ENV === "production",
+    sameSite: env.NODE_ENV === "production" ? "none" : "lax",
+  });
+}
+
+// ── Routes ────────────────────────────────────────────────────────────────────
 
 const authRoutes: FastifyPluginAsync = async (app) => {
   const service = new AuthService(app);
@@ -15,19 +51,35 @@ const authRoutes: FastifyPluginAsync = async (app) => {
   app.post("/register", async (req, reply) => {
     const input  = registerSchema.parse(req.body);
     const tokens = await service.register(input);
-    return reply.status(201).send({ success: true, data: tokens });
+    setRefreshCookie(reply, tokens.refreshToken);
+    return reply.status(201).send({ success: true, data: { accessToken: tokens.accessToken } });
   });
 
   app.post("/login", async (req, reply) => {
     const input  = loginSchema.parse(req.body);
     const result = await service.login(input);
-    return reply.send({ success: true, data: result });
+    setRefreshCookie(reply, result.tokens.refreshToken);
+    return reply.send({
+      success: true,
+      data: {
+        tokens: { accessToken: result.tokens.accessToken },
+        user:   result.user,
+      },
+    });
   });
 
+  // The refresh token is read from the httpOnly cookie — no body parsing needed.
+  // Origin check provides CSRF protection: a cross-site form POST cannot fake
+  // the Origin header, and even if it triggers a rotation, the attacker's page
+  // cannot read the new access token (CORS blocks the response body).
   app.post("/refresh", async (req, reply) => {
-    const input  = refreshSchema.parse(req.body);
-    const tokens = await service.refresh(input);
-    return reply.send({ success: true, data: tokens });
+    const refreshToken = req.cookies[REFRESH_COOKIE];
+    if (!refreshToken) {
+      return reply.status(401).send({ success: false, error: "No refresh token" });
+    }
+    const tokens = await service.refresh(refreshToken);
+    setRefreshCookie(reply, tokens.refreshToken);
+    return reply.send({ success: true, data: { accessToken: tokens.accessToken } });
   });
 
   // Returns 200 even when email is not registered — prevents enumeration
@@ -45,6 +97,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/logout", { preHandler: authenticate }, async (req, reply) => {
     await service.logout(req.user.sub);
+    clearRefreshCookie(reply);
     return reply.send({ success: true, data: { message: "Logged out" } });
   });
 

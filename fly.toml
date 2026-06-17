@@ -1,0 +1,71 @@
+# Fly.io deployment configuration — https://fly.io/docs/reference/configuration/
+#
+# ── One-time setup ────────────────────────────────────────────────────────────
+#   1. Install flyctl:  curl -L https://fly.io/install.sh | sh
+#   2. flyctl auth login
+#   3. flyctl apps create checkup-pharmacy-api   (or: flyctl launch --no-deploy)
+#
+#   4. Set all secrets (never commit real values):
+#      flyctl secrets set \
+#        DATABASE_URL="postgresql://..." \
+#        DIRECT_URL="postgresql://..." \
+#        JWT_SECRET="$(openssl rand -hex 32)" \
+#        MEILISEARCH_HOST="https://..." \
+#        MEILISEARCH_API_KEY="..." \
+#        SUPABASE_URL="https://xxxx.supabase.co" \
+#        SUPABASE_SERVICE_ROLE_KEY="eyJ..." \
+#        ALLOWED_ORIGINS="https://yourdomain.com"
+#
+#   5. Generate a deploy token for GitHub Actions:
+#      flyctl tokens create deploy -x 999999h
+#      → Add the output as secret FLY_API_TOKEN in GitHub repo settings.
+#
+# ── Database migrations ────────────────────────────────────────────────────────
+#   Run from local before first deploy (and after any migration):
+#     pnpm db:migrate
+#   Or via flyctl console after deploy:
+#     flyctl ssh console --app checkup-pharmacy-api
+#
+# ── Meilisearch in production ─────────────────────────────────────────────────
+#   Use Meilisearch Cloud (https://cloud.meilisearch.com) — set MEILISEARCH_HOST
+#   and MEILISEARCH_API_KEY in secrets above. Do NOT use localhost:7700 in prod.
+
+app            = "checkup-pharmacy-api"
+primary_region = "sin"
+# Give the process 30 s to drain in-flight pg-boss jobs before SIGKILL.
+# The worker's boss.stop({ timeout: 25_000 }) finishes within this window.
+kill_timeout   = "30s"
+
+[build]
+
+[env]
+  NODE_ENV         = "production"
+  API_PORT         = "4000"
+  API_HOST         = "0.0.0.0"
+  TRUST_PROXY_HOPS = "1"
+  DISABLE_QUEUES   = "false"
+
+[http_service]
+  internal_port        = 4000
+  force_https          = true
+  auto_stop_machines   = "stop"
+  auto_start_machines  = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type       = "requests"
+    hard_limit = 250
+    soft_limit = 200
+
+  # Liveness probe — Fly restarts the machine if /health stops responding.
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval     = "30s"
+    method       = "GET"
+    path         = "/health"
+    timeout      = "10s"
+
+[[vm]]
+  memory   = "512mb"
+  cpu_kind = "shared"
+  cpus     = 1

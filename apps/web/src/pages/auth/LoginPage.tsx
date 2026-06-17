@@ -30,14 +30,14 @@ export default function LoginPage() {
     try {
       // Use the shared axios instance so interceptors (401 redirect, error
       // normalisation) apply here too — replacing the previous raw fetch call.
-      const res = await api.post<{ data: { tokens: { accessToken: string; refreshToken: string }; user: StoredUser } }>(
+      const res = await api.post<{ data: { tokens: { accessToken: string }; user: StoredUser } }>(
         "/auth/login",
         data,
       );
       const { tokens, user } = res.data.data;
-      // Refresh token keeps the session alive past the 15-minute access token
-      // expiry — api-client silently renews on 401.
-      storeTokens(tokens.accessToken, tokens.refreshToken);
+      // Refresh token is delivered as an httpOnly cookie by the server.
+      // Access token goes to JS memory only — never localStorage.
+      storeTokens(tokens.accessToken);
       storeUser(user);
       setSuccess(true);
       const dest = (user.role === "SUPPORT_AGENT" || user.role === "PLATFORM_ADMIN")

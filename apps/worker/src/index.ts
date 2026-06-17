@@ -35,8 +35,30 @@ process.on("uncaughtException", (err: Error) => {
 });
 
 // Dynamic import so boss.ts evaluates only after DATABASE_URL is in process.env
-const { startWorkers, setupScheduledJobs } = await import("@pharmacy/jobs");
+const { startWorkers, setupScheduledJobs, boss } = await import("@pharmacy/jobs");
 
 await startWorkers();
 setupScheduledJobs().catch((err) => log.error(err, "[worker] Failed to setup scheduled jobs"));
 log.info("[worker] All workers started and scheduled jobs registered");
+
+// Graceful shutdown: Fly.io sends SIGTERM before killing the machine.
+// boss.stop() waits for in-flight jobs to finish (up to timeout ms) so
+// reservations are properly released and jobs are not left in "active" state.
+// fly.toml sets kill_timeout = "30s", giving us 25 s of safe drain time.
+let isShuttingDown = false;
+async function gracefulShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  log.info(`[worker] ${signal} received — stopping pg-boss`);
+  try {
+    await boss.stop({ timeout: 25_000 }); // 25 s max; Fly sends SIGKILL after 30 s
+    log.info("[worker] pg-boss stopped cleanly");
+    process.exit(0);
+  } catch (err) {
+    log.error({ err }, "[worker] Error stopping pg-boss");
+    process.exit(1);
+  }
+}
+
+process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+process.on("SIGINT",  () => void gracefulShutdown("SIGINT"));

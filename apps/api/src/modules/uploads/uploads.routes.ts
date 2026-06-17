@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { randomUUID } from "crypto";
 import path from "path";
+import { fileTypeFromBuffer } from "file-type";
 import { authenticate } from "../../middleware/auth.js";
 import { resolvePharmacy } from "../../middleware/tenant.js";
 import { env } from "../../config/env.js";
@@ -27,19 +28,32 @@ const uploadsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     if (!ALLOWED_MIME_TYPES.has(data.mimetype)) {
+      data.file.resume(); // drain so the multipart connection closes cleanly
       return reply.status(415).send({
         success: false,
         error:   "Unsupported file type. Allowed: JPEG, PNG, WebP, PDF",
       });
     }
 
-    const ext          = path.extname(data.filename) || ".bin";
-    const storagePath  = `${req.pharmacyId}/prescriptions/${randomUUID()}${ext}`;
-    const fileBuffer   = await data.toBuffer();
+    const ext         = path.extname(data.filename) || ".bin";
+    const storagePath = `${req.pharmacyId}/prescriptions/${randomUUID()}${ext}`;
+    const fileBuffer  = await data.toBuffer();
+
+    // Magic-byte check: verify actual file content against the declared MIME type.
+    // A client can lie about mimetype in the multipart header — e.g. send an .exe
+    // with mimetype "image/jpeg". Magic bytes cannot be faked without also breaking
+    // the format, so this check is the reliable server-side gate.
+    const detected = await fileTypeFromBuffer(fileBuffer);
+    if (!detected || !ALLOWED_MIME_TYPES.has(detected.mime)) {
+      return reply.status(415).send({
+        success: false,
+        error:   "File content does not match its declared type. Only JPEG, PNG, WebP, and PDF are accepted.",
+      });
+    }
 
     const { error: uploadError } = await app.supabase.storage
       .from(env.SUPABASE_STORAGE_BUCKET)
-      .upload(storagePath, fileBuffer, { contentType: data.mimetype, upsert: false });
+      .upload(storagePath, fileBuffer, { contentType: detected.mime, upsert: false });
 
     if (uploadError) {
       app.log.error({ err: uploadError }, "[storage] prescription upload failed");
@@ -57,7 +71,7 @@ const uploadsRoutes: FastifyPluginAsync = async (app) => {
         fileName:   data.filename,
         fileUrl:    storagePath,          // store path, not URL — signed on read
         fileSize:   fileBuffer.byteLength,
-        mimeType:   data.mimetype,
+        mimeType:   detected.mime,
       },
     });
 

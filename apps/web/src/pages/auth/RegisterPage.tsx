@@ -162,8 +162,11 @@ export default function RegisterPage() {
     setApiErr(null);
     setSubmitting(true);
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL ?? "http://localhost:4000/api"}/auth/register`, {
+      const res = await fetch(`${import.meta.env.VITE_API_URL ?? "http://localhost:4000/api/v1"}/auth/register`, {
         method: "POST", headers: { "Content-Type": "application/json" },
+        // credentials: include is required so the browser stores the httpOnly
+        // refresh-token cookie from the Set-Cookie response header.
+        credentials: "include",
         body: JSON.stringify({
           pharmacyName, ownerName, phone, email, password,
           ...(city        && { city }),
@@ -175,10 +178,12 @@ export default function RegisterPage() {
         }),
       });
       const json = await res.json() as {
-        success: boolean; data?: { accessToken: string; refreshToken: string }; error?: string;
+        success: boolean; data?: { accessToken: string }; error?: string;
       };
       if (!json.success || !json.data) { setApiErr(json.error ?? "Registration failed."); return; }
-      storeTokens(json.data.accessToken, json.data.refreshToken);
+      // Refresh token is in an httpOnly cookie set by the server. Store only the
+      // access token in JS memory.
+      storeTokens(json.data.accessToken);
       setSuccess(true);
       setTimeout(() => navigate("/dashboard"), 800);
     } catch {

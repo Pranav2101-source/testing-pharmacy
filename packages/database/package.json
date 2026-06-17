@@ -2,9 +2,19 @@
   "name": "@pharmacy/database",
   "version": "0.0.1",
   "private": true,
-  "main": "./src/client.ts",
-  "types": "./src/client.ts",
+  "type": "module",
+  "main": "./dist/client.js",
+  "types": "./dist/client.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    }
+  },
+  "files": ["dist"],
   "scripts": {
+    "build": "prisma generate && tsc",
+    "dev": "tsc --watch",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",

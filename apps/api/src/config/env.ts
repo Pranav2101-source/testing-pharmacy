@@ -54,6 +54,11 @@ const envSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_STORAGE_BUCKET:   z.string().default("pharmacy-docs"),
 
+  // Redis — optional. When set, rate limiting uses a shared Redis counter so the
+  // per-IP brute-force limit is enforced across ALL instances (Fly.io, AWS ALB, etc.).
+  // Omit in local dev; set in production via secrets (Upstash, ElastiCache, etc.).
+  REDIS_URL: z.string().optional(),
+
   RAZORPAY_KEY_ID:     z.string().optional(),
   RAZORPAY_KEY_SECRET: z.string().optional(),
 

@@ -2,7 +2,6 @@ import bcrypt from "bcryptjs";
 import type { FastifyInstance } from "fastify";
 import type { CreateStaffInput, UpdateStaffInput } from "./staff.schema.js";
 import { AppError } from "../../lib/AppError.js";
-import { invalidateTokenVersion } from "../../middleware/auth.js";
 
 export class StaffService {
   constructor(private app: FastifyInstance) {}
@@ -67,8 +66,6 @@ export class StaffService {
       select: { id: true, name: true, email: true, phone: true, role: true, isActive: true },
     });
 
-    if (roleChanged) this.evictTokenVersionCache(id);
-
     return updated;
   }
 
@@ -101,12 +98,6 @@ export class StaffService {
       data:  { isActive: false, tokenVersion: { increment: 1 } },
     });
 
-    this.evictTokenVersionCache(id);
-
     return deactivated;
-  }
-
-  private evictTokenVersionCache(userId: string): void {
-    invalidateTokenVersion(userId);
   }
 }

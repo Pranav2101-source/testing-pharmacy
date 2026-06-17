@@ -34,14 +34,15 @@ export class MedicinesService {
     medicinesCache.delete(medicinesListKey({ page: 1, limit: 100, isActive: true }));
   }
 
-  private async syncOne(medicine: Record<string, unknown>) {
-    try {
-      await this.meili.index(INDEX).addDocuments([medicine]);
-    } catch (err) {
-      // Non-fatal: log and continue — the DB record is already saved.
-      // The next scheduled reindex (or manual /reindex call) will fix the gap.
-      this.log.warn({ err, medicineId: medicine["id"] }, "Meilisearch sync failed — index may be stale");
-    }
+  private syncOne(medicine: Record<string, unknown>): void {
+    // Fire-and-forget: DB record is already saved; a Meilisearch hiccup must
+    // never block or fail the API response. The scheduled reindex recovers gaps.
+    void this.meili
+      .index(INDEX)
+      .addDocuments([medicine])
+      .catch((err) =>
+        this.log.warn({ err, medicineId: medicine["id"] }, "Meilisearch sync failed — index may be stale"),
+      );
   }
 
   async create(input: CreateMedicineInput) {
@@ -50,7 +51,7 @@ export class MedicinesService {
       throw AppError.conflict(`Medicine "${input.name}" already exists`);
     }
     const medicine = await this.repo.create(input);
-    await this.syncOne(medicine as Record<string, unknown>);
+    this.syncOne(medicine as Record<string, unknown>);
     this.bustListCache();
     return medicine;
   }
@@ -65,7 +66,7 @@ export class MedicinesService {
     }
 
     const medicine = await this.repo.update(id, input);
-    await this.syncOne(medicine as Record<string, unknown>);
+    this.syncOne(medicine as Record<string, unknown>);
     this.bustListCache();
     return medicine;
   }
@@ -99,7 +100,7 @@ export class MedicinesService {
     const existing = await this.repo.getById(id);
     if (!existing) throw AppError.notFound("Medicine not found");
     const medicine = await this.repo.update(id, { isActive: false });
-    await this.syncOne(medicine as Record<string, unknown>);
+    this.syncOne(medicine as Record<string, unknown>);
     this.bustListCache();
     return medicine;
   }
@@ -108,7 +109,7 @@ export class MedicinesService {
     const existing = await this.repo.getById(id);
     if (!existing) throw AppError.notFound("Medicine not found");
     const medicine = await this.repo.update(id, { isActive: true });
-    await this.syncOne(medicine as Record<string, unknown>);
+    this.syncOne(medicine as Record<string, unknown>);
     this.bustListCache();
     return medicine;
   }
@@ -209,7 +210,10 @@ export class MedicinesService {
     }
 
     if (toIndex.length > 0) {
-      await this.meili.index(INDEX).addDocuments(toIndex);
+      void this.meili
+        .index(INDEX)
+        .addDocuments(toIndex)
+        .catch((err) => this.log.warn({ err }, "Meilisearch bulk sync failed — index may be stale"));
     }
 
     return results;

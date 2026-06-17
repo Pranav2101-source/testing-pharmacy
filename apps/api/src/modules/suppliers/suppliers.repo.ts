@@ -46,6 +46,7 @@ export class SuppliersRepo {
       where:   { pharmacyId, isActive: true },
       orderBy: { name: "asc" },
       select:  { id: true, name: true, phone: true },
+      take:    200,
     });
   }
 

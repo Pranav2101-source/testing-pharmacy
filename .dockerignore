@@ -1,0 +1,21 @@
+# Dependencies — reinstalled inside Docker
+node_modules
+**/node_modules
+
+# Build outputs — rebuilt inside Docker
+dist
+**/.next
+**/.turbo
+
+# Environment files — passed as env vars at runtime
+.env
+.env.*
+!.env.example
+
+# Git
+.git
+.gitignore
+
+# Editor / OS
+.DS_Store
+*.log

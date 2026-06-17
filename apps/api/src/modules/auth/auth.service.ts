@@ -2,9 +2,8 @@ import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { AuthRepo } from "./auth.repo.js";
-import type { LoginInput, RegisterInput, RefreshInput, ForgotPasswordInput, ResetPasswordInput } from "./auth.schema.js";
+import type { LoginInput, RegisterInput, ForgotPasswordInput, ResetPasswordInput } from "./auth.schema.js";
 import type { JwtPayload, UserRole } from "../../middleware/auth.js";
-import { invalidateTokenVersion } from "../../middleware/auth.js";
 import { AppError } from "../../lib/AppError.js";
 import { env } from "../../config/env.js";
 import { notifyOwners } from "../../lib/notifications.js";
@@ -104,10 +103,10 @@ export class AuthService {
 
   // ── Refresh ───────────────────────────────────────────────────────────────
 
-  async refresh(input: RefreshInput) {
+  async refresh(refreshToken: string) {
     let payload: JwtPayload;
     try {
-      payload = this.app.jwt.verify<JwtPayload>(input.refreshToken);
+      payload = this.app.jwt.verify<JwtPayload>(refreshToken);
     } catch {
       throw AppError.unauthorized("Invalid or expired refresh token");
     }
@@ -132,9 +131,6 @@ export class AuthService {
     // Increment tokenVersion — invalidates the submitted refresh token and all
     // outstanding access tokens bearing the old version.
     const newVersion = await this.repo.rotateTokenVersion(user.id);
-
-    // Evict the cached tokenVersion so authenticate picks up the new one immediately.
-    invalidateTokenVersion(user.id);
 
     return this.signTokens(user.id, user.pharmacyId, user.role, user.email, newVersion);
   }
@@ -193,9 +189,6 @@ export class AuthService {
 
     // consumePasswordResetToken also increments tokenVersion, logging out all sessions.
     await this.repo.consumePasswordResetToken(user.id, newPasswordHash);
-
-    // Evict the tokenVersion cache so all existing access tokens are rejected immediately.
-    invalidateTokenVersion(user.id);
   }
 
   // ── Logout ────────────────────────────────────────────────────────────────
@@ -204,7 +197,6 @@ export class AuthService {
     // Incrementing tokenVersion server-side invalidates all outstanding tokens for
     // this user — both the current access token and any refresh tokens in other tabs.
     await this.repo.rotateTokenVersion(userId);
-    invalidateTokenVersion(userId);
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────

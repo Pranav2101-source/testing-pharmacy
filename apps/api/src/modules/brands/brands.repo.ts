@@ -43,6 +43,6 @@ export class BrandsRepo {
   }
 
   async listAll() {
-    return this.db.brand.findMany({ where: { isActive: true }, orderBy: { name: "asc" } });
+    return this.db.brand.findMany({ where: { isActive: true }, orderBy: { name: "asc" }, take: 500 });
   }
 }

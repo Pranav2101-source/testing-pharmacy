@@ -1,4 +1,6 @@
 import Fastify from "fastify";
+import compress from "@fastify/compress";
+import cookie   from "@fastify/cookie";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import jwt from "@fastify/jwt";
@@ -6,6 +8,7 @@ import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
+import { Redis } from "ioredis";
 import { ZodError } from "zod";
 
 import prismaPlugin from "./plugins/prisma.js";
@@ -53,10 +56,20 @@ export async function buildApp() {
           ? { target: "pino-pretty", options: { colorize: true } }
           : undefined,
     },
+    // 1 MB hard cap on JSON/form request bodies. File uploads bypass this via
+    // @fastify/multipart which enforces its own 25 MB per-file limit.
+    bodyLimit: 1_048_576,
     // Trust exactly the configured number of proxy hops — `true` would trust any
     // client-supplied X-Forwarded-For, letting attackers spoof their IP and bypass
     // the IP-keyed rate limits (including the login brute-force limit).
     trustProxy: trustProxyHops > 0 ? trustProxyHops : false,
+  });
+
+  // ── Compression ───────────────────────────────────────────────────────────
+  await app.register(compress, {
+    global:    true,
+    threshold: 1024,
+    encodings: ["br", "gzip", "deflate"],
   });
 
   // ── Security ──────────────────────────────────────────────────────────────
@@ -71,20 +84,60 @@ export async function buildApp() {
     credentials: true,
   });
 
-  // ── Plugins ───────────────────────────────────────────────────────────────
-  await app.register(prismaPlugin);
-  await app.register(storagePlugin);
-  await app.register(meilisearchPlugin);
-  await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
+  // ── Cookies ───────────────────────────────────────────────────────────────
+  // Required for httpOnly refresh-token cookies. Must be registered before
+  // auth routes so req.cookies is available when routes read the refresh cookie.
+  await app.register(cookie);
 
-  // Rate limiting — in-memory (single-process). For multi-pod deployments,
-  // replace with a shared store (e.g. Upstash Redis) via the `redis` option.
+  // ── Rate limiting ─────────────────────────────────────────────────────────
+  // When REDIS_URL is set (production), the counter is shared across all
+  // instances so the brute-force limit is enforced fleet-wide — not just
+  // per-process. Without REDIS_URL (local dev / CI), falls back to in-memory.
+  let redisClient: Redis | undefined;
+  if (env.REDIS_URL) {
+    redisClient = new Redis(env.REDIS_URL, {
+      connectTimeout:     5_000,
+      maxRetriesPerRequest: 2,
+      enableOfflineQueue: false, // fail fast if Redis is unreachable rather than queuing
+      lazyConnect:        true,
+    });
+    redisClient.on("error", (err: Error) => {
+      app.log.warn({ err }, "[redis] rate-limit store error");
+    });
+    try {
+      await redisClient.connect();
+      app.log.info("[redis] rate-limit store connected");
+    } catch (err) {
+      // Redis unavailable at startup — fall back to in-memory so the server
+      // still starts. Log clearly so ops can react.
+      app.log.error({ err }, "[redis] failed to connect — falling back to in-memory rate limiting");
+      await redisClient.quit().catch(() => {});
+      redisClient = undefined;
+    }
+  }
+
   await app.register(rateLimit, {
     global:       true,
     max:          200,
     timeWindow:   "1 minute",
     keyGenerator: (req) => req.ip,
+    ...(redisClient ? { redis: redisClient } : {}),
   });
+
+  // Close the Redis connection cleanly when the app shuts down.
+  if (redisClient) {
+    app.addHook("onClose", async () => {
+      await redisClient!.quit().catch((err: unknown) => {
+        app.log.warn(err, "[redis] error during disconnect");
+      });
+    });
+  }
+
+  // ── Plugins ───────────────────────────────────────────────────────────────
+  await app.register(prismaPlugin);
+  await app.register(storagePlugin);
+  await app.register(meilisearchPlugin);
+  await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   await app.register(jwt, {
@@ -154,17 +207,23 @@ export async function buildApp() {
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/health", async () => ({ status: "ok", ts: new Date().toISOString() }));
 
+  app.get("/health/ready", async (_, reply) => {
+    try {
+      await app.prisma.$queryRaw`SELECT 1`;
+      return { status: "ready", ts: new Date().toISOString() };
+    } catch {
+      return reply.status(503).send({ status: "unavailable", ts: new Date().toISOString() });
+    }
+  });
+
   // ── Queue workers + scheduled jobs ───────────────────────────────────────
-  // pg-boss uses LISTEN/NOTIFY on the existing Postgres database — zero Redis
-  // usage, no external service required. Workers and schedules are skipped
-  // when DISABLE_QUEUES=true (e.g. CI, minimal dev environments).
   if (!env.DISABLE_QUEUES) {
     await startWorkers();
     await setupScheduledJobs();
 
-    // Graceful shutdown: wait for in-flight jobs to finish before the process exits.
     app.addHook("onClose", async () => {
-      await boss.stop().catch((err: unknown) => {
+      // 25 s budget — Fly sends SIGKILL at kill_timeout (30 s), leaving 5 s buffer.
+      await boss.stop({ timeout: 25_000 }).catch((err: unknown) => {
         app.log.warn(err, "[pg-boss] error during shutdown");
       });
     });
@@ -176,7 +235,6 @@ export async function buildApp() {
 
   // ── Global error handler ──────────────────────────────────────────────────
   app.setErrorHandler((error, _request, reply) => {
-    // ── 1. Zod input validation errors ──────────────────────────────────────
     if (error instanceof ZodError) {
       return reply.status(400).send({
         success: false,
@@ -185,7 +243,6 @@ export async function buildApp() {
       });
     }
 
-    // ── 2. Prisma known request errors ───────────────────────────────────────
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       switch (error.code) {
         case "P2002": {
@@ -233,7 +290,6 @@ export async function buildApp() {
       }
     }
 
-    // ── 3. Prisma client initialization / connection errors ──────────────────
     if (
       error instanceof Prisma.PrismaClientInitializationError ||
       error instanceof Prisma.PrismaClientRustPanicError
@@ -246,7 +302,6 @@ export async function buildApp() {
       });
     }
 
-    // ── 4. Application errors and everything else ────────────────────────────
     const status: number =
       error instanceof AppError
         ? error.statusCode

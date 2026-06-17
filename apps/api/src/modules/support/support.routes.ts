@@ -1,9 +1,12 @@
 import type { FastifyPluginAsync } from "fastify";
 import { createReadStream, createWriteStream, existsSync } from "fs";
 import { mkdir, stat, unlink } from "fs/promises";
+import { Transform } from "stream";
 import { pipeline } from "stream/promises";
 import { join, extname } from "path";
 import { randomBytes } from "crypto";
+import { fileTypeFromBuffer } from "file-type";
+import type { FileTypeResult } from "file-type";
 import { authenticate, requireRole } from "../../middleware/auth.js";
 import type { JwtPayload } from "../../middleware/auth.js";
 import { resolvePharmacy } from "../../middleware/tenant.js";
@@ -35,6 +38,41 @@ const ALLOWED_UPLOADS: Record<string, string[]> = {
   ".webm": ["video/webm"],
   ".pdf":  ["application/pdf"],
 };
+
+// Ground-truth MIME types based on magic bytes, not the client-supplied Content-Type.
+const ALLOWED_DETECTED_MIME = new Set([
+  "image/jpeg", "image/png", "image/gif", "image/webp",
+  "video/mp4",  "video/webm",
+  "application/pdf",
+]);
+
+// Inserts a Transform into a pipeline that sniffs the first chunk for the real
+// file type without buffering the whole stream. The `result` Promise resolves
+// once the first chunk flows through — always before `pipeline()` settles.
+function createMagicByteDetector(): { transform: Transform; result: Promise<FileTypeResult | undefined> } {
+  let settle!: (r: FileTypeResult | undefined) => void;
+  const result  = new Promise<FileTypeResult | undefined>((res) => { settle = res; });
+  let checked   = false;
+
+  const transform = new Transform({
+    transform(chunk: Buffer, _, done) {
+      if (!checked) {
+        checked = true;
+        void fileTypeFromBuffer(chunk)
+          .then((ft) => { settle(ft); done(null, chunk); })
+          .catch((err: Error) => done(err));
+      } else {
+        done(null, chunk);
+      }
+    },
+    flush(done) {
+      if (!checked) settle(undefined); // empty or zero-byte stream
+      done();
+    },
+  });
+
+  return { transform, result };
+}
 
 const supportRoutes: FastifyPluginAsync = async (app) => {
   const service = new SupportService(app);
@@ -122,6 +160,7 @@ const supportRoutes: FastifyPluginAsync = async (app) => {
     let mimeType      = "";
     let wasTruncated  = false;
     let messageId: string | undefined;
+    let detectedType  = Promise.resolve<FileTypeResult | undefined>(undefined);
 
     // Iterate ALL parts (no early break): multipart field order is not
     // guaranteed, so a messageId field sent after the file must still be read.
@@ -153,7 +192,10 @@ const supportRoutes: FastifyPluginAsync = async (app) => {
       storedName   = `${randomBytes(12).toString("hex")}-${Date.now()}${ext}`;
 
       // Stream straight to disk — never buffer the (up to 25 MB) file in memory.
-      await pipeline(part.file, createWriteStream(join(UPLOAD_DIR, storedName)));
+      // magicDetect sniffs the first chunk for the real file type without buffering.
+      const { transform: magicDetect, result: typeResult } = createMagicByteDetector();
+      detectedType = typeResult;
+      await pipeline(part.file, magicDetect, createWriteStream(join(UPLOAD_DIR, storedName)));
       wasTruncated = part.file.truncated;
     }
 
@@ -167,6 +209,17 @@ const supportRoutes: FastifyPluginAsync = async (app) => {
       await unlink(storedPath).catch(() => { /* best-effort cleanup */ });
       throw AppError.badRequest(
         `File exceeds the ${Math.floor(MAX_ATTACHMENT_SIZE / (1024 * 1024))} MB limit`,
+      );
+    }
+
+    // Magic-byte validation: runs after pipeline() so the Transform has already seen
+    // the first chunk. If the detected type is absent or not in the allow-list we
+    // delete the file immediately — it was never accessible while this request was live.
+    const detected = await detectedType;
+    if (!detected || !ALLOWED_DETECTED_MIME.has(detected.mime)) {
+      await unlink(storedPath).catch(() => { /* best-effort cleanup */ });
+      throw AppError.badRequest(
+        "File content does not match its declared format. Only images, videos, and PDFs are accepted.",
       );
     }
 

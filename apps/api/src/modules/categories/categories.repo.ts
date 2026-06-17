@@ -39,6 +39,7 @@ export class CategoriesRepo {
     return this.db.productCategory.findMany({
       orderBy: [{ parentId: "asc" }, { name: "asc" }],
       include: { parent: { select: { id: true, name: true } } },
+      take: 500,
     });
   }
 }
