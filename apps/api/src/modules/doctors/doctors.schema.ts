@@ -14,7 +14,7 @@ export const updateDoctorSchema = createDoctorSchema.partial();
 
 export const listDoctorsQuerySchema = z.object({
   search:   z.string().optional(),
-  isActive: z.coerce.boolean().optional(),
+  isActive: z.coerce.boolean().default(true),
   page:     z.coerce.number().int().min(1).default(1),
   limit:    z.coerce.number().int().min(1).max(100).default(20),
 });

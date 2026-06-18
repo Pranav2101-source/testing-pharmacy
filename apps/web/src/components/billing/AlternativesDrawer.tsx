@@ -280,6 +280,7 @@ export function AlternativesDrawer({
       inventoryId:    batch.id,
       medicineName:   alt.name,
       hsnCode:        alt.hsnCode,
+      schedule:       alt.schedule,
       packSize:       alt.packSize ?? undefined,
       location:       batch.location ?? undefined,
       batchNumber:    batch.batchNumber,

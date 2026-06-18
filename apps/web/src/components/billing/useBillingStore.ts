@@ -6,6 +6,7 @@ export type CartItem = {
   inventoryId:    string;
   medicineName:   string;
   hsnCode:        string | null;
+  schedule:       string | null;
   packSize?:      string;
   location?:      string;
   batchNumber:    string;
@@ -33,7 +34,8 @@ export type BillingMeta = {
   customerDefaultDiscount: number;
   doctorId:                string;
   doctorName:              string;
-  prescriptionId:          string;  // Rx number — required for Schedule H medicines
+  prescriptionId:          string;  // DB id — required for Schedule H medicines
+  prescriptionNumber:      string;  // human-readable "RX-00001" shown on receipts
   paymentMode:             "CASH" | "UPI" | "CARD" | "CREDIT";
   paymentStatus:           "PAID" | "PENDING" | "PARTIAL";
   isInterstate:            boolean;
@@ -67,6 +69,7 @@ const DEFAULT_META: BillingMeta = {
   doctorId:                "",
   doctorName:              "",
   prescriptionId:          "",
+  prescriptionNumber:      "",
   paymentMode:             "CASH",
   paymentStatus:           "PAID",
   isInterstate:            false,
@@ -90,6 +93,7 @@ function recompute(item: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgs
     inventoryId:    item.inventoryId,
     medicineName:   item.medicineName,
     hsnCode:        item.hsnCode,
+    schedule:       item.schedule,
     packSize:       item.packSize,
     location:       item.location,
     batchNumber:    item.batchNumber,

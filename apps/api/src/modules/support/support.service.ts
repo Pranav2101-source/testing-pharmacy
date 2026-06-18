@@ -68,10 +68,11 @@ export class SupportService {
 
   async listTickets(userId: string, role: string, query: ListTicketsQuery) {
     const params = {
-      page:   Math.max(1, query.page),
-      limit:  Math.min(50, query.limit),
-      status: query.status,
-      search: query.search?.trim() || undefined,
+      page:        Math.max(1, query.page),
+      limit:       Math.min(50, query.limit),
+      status:      query.status,
+      search:      query.search?.trim() || undefined,
+      raisedById:  query.raisedById,
     };
 
     if (SUPPORT_ROLES.includes(role as any)) {
@@ -142,7 +143,7 @@ export class SupportService {
       }
     }
 
-    const message = await this.repo.addMessage(ticketId, senderId, input.message);
+    const message = await this.repo.addMessage(ticketId, ticket.pharmacyId, senderId, input.message);
 
     // Notify the other party
     if (SUPPORT_ROLES.includes(role as any)) {
@@ -203,7 +204,7 @@ export class SupportService {
       }
     }
 
-    return this.repo.addAttachment({ ticketId, ...data });
+    return this.repo.addAttachment({ ticketId, pharmacyId: ticket.pharmacyId, ...data });
   }
 
   /**

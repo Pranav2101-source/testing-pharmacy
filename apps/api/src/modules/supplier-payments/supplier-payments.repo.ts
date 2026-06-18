@@ -1,4 +1,5 @@
 import type { Db, Prisma } from "@pharmacy/database";
+import { withTenant } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 
 export class SupplierPaymentsRepo {
@@ -19,7 +20,7 @@ export class SupplierPaymentsRepo {
     notes?:      string;
     paidAt?:     Date;
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       // Validate supplier belongs to pharmacy
       const supplier = await tx.supplier.findFirst({
         where:  { id: data.supplierId, pharmacyId },

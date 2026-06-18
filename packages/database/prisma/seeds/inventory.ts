@@ -152,7 +152,10 @@ const STOCK: StockEntry[] = [
 ];
 
 export async function seedInventory() {
-  const pharmacy = await prisma.pharmacy.findFirst({ orderBy: { createdAt: "asc" } });
+  const pharmacy = await prisma.pharmacy.findFirst({
+    where:   { id: { not: "platform_checkup_support" } },
+    orderBy: { createdAt: "asc" },
+  });
   if (!pharmacy) {
     console.log("⚠  No pharmacy found — skipping inventory seed. Register a pharmacy first.");
     return 0;

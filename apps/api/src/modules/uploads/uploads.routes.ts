@@ -6,7 +6,8 @@ import { authenticate } from "../../middleware/auth.js";
 import { resolvePharmacy } from "../../middleware/tenant.js";
 import { env } from "../../config/env.js";
 
-const SIGNED_URL_TTL_SECONDS = 3600; // 1 hour
+const SIGNED_URL_TTL_SECONDS  = 3600;         // 1 hour
+const MAX_PRESCRIPTION_BYTES  = 5 * 1024 * 1024; // 5 MB
 
 const ALLOWED_MIME_TYPES = new Set([
   "image/jpeg",
@@ -38,6 +39,13 @@ const uploadsRoutes: FastifyPluginAsync = async (app) => {
     const ext         = path.extname(data.filename) || ".bin";
     const storagePath = `${req.pharmacyId}/prescriptions/${randomUUID()}${ext}`;
     const fileBuffer  = await data.toBuffer();
+
+    if (fileBuffer.byteLength > MAX_PRESCRIPTION_BYTES) {
+      return reply.status(413).send({
+        success: false,
+        error:   "File too large. Maximum size for prescription uploads is 5 MB.",
+      });
+    }
 
     // Magic-byte check: verify actual file content against the declared MIME type.
     // A client can lie about mimetype in the multipart header — e.g. send an .exe
@@ -78,6 +86,26 @@ const uploadsRoutes: FastifyPluginAsync = async (app) => {
     return reply.status(201).send({
       success: true,
       data:    { ...upload, signedUrl: signedData?.signedUrl ?? null },
+    });
+  });
+
+  // GET /api/v1/uploads/:id/signed-url
+  // Returns a fresh 1-hour signed URL for a single upload (used by prescription detail view).
+  app.get("/:id/signed-url", { preHandler }, async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const upload = await app.prisma.upload.findFirst({
+      where:  { id, pharmacyId: req.pharmacyId },
+      select: { fileUrl: true, fileName: true, mimeType: true },
+    });
+    if (!upload) return reply.status(404).send({ success: false, error: "Upload not found" });
+
+    const { data: signedData } = await app.supabase.storage
+      .from(env.SUPABASE_STORAGE_BUCKET)
+      .createSignedUrl(upload.fileUrl, SIGNED_URL_TTL_SECONDS);
+
+    return reply.send({
+      success: true,
+      data: { signedUrl: signedData?.signedUrl ?? null, fileName: upload.fileName, mimeType: upload.mimeType },
     });
   });
 

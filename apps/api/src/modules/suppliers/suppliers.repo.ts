@@ -135,7 +135,7 @@ export class SuppliersRepo {
         totalGst:     data.totalGst,
         totalAmount:  data.totalAmount,
         receivedAt:   new Date(),
-        items:        { create: data.items },
+        items:        { create: data.items.map((item) => ({ ...item, pharmacyId })) },
       },
       include: { items: true, supplier: true },
     });

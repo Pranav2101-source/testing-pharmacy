@@ -59,20 +59,22 @@ export class SupportRepo {
   }
 
   async listForPharmacy(pharmacyId: string, params: {
-    page:    number;
-    limit:   number;
-    status?: TicketStatus;
-    search?: string;
+    page:         number;
+    limit:        number;
+    status?:      TicketStatus;
+    search?:      string;
+    raisedById?:  string;
   }) {
     const where = buildWhere({ pharmacyId, ...params });
     return paginate(this.db, where, params);
   }
 
   async listAll(params: {
-    page:    number;
-    limit:   number;
-    status?: TicketStatus;
-    search?: string;
+    page:        number;
+    limit:       number;
+    status?:     TicketStatus;
+    search?:     string;
+    raisedById?: string;
   }) {
     const where = buildWhere(params);
     return paginate(this.db, where, params);
@@ -115,9 +117,9 @@ export class SupportRepo {
     });
   }
 
-  async addMessage(ticketId: string, senderId: string, message: string) {
+  async addMessage(ticketId: string, pharmacyId: string, senderId: string, message: string) {
     return this.db.ticketMessage.create({
-      data:    { ticketId, senderId, message },
+      data:    { ticketId, pharmacyId, senderId, message },
       include: {
         sender:      { select: { id: true, name: true, role: true } },
         attachments: true,
@@ -126,13 +128,14 @@ export class SupportRepo {
   }
 
   async addAttachment(data: {
-    ticketId:  string;
+    ticketId:   string;
+    pharmacyId: string;
     messageId?: string;
-    fileName:  string;
-    fileUrl:   string;
-    fileSize:  number;
-    mimeType:  string;
-    fileType:  "IMAGE" | "VIDEO" | "DOCUMENT";
+    fileName:   string;
+    fileUrl:    string;
+    fileSize:   number;
+    mimeType:   string;
+    fileType:   "IMAGE" | "VIDEO" | "DOCUMENT";
   }) {
     return this.db.ticketAttachment.create({ data });
   }
@@ -214,12 +217,14 @@ const ticketIncludes = {
 function buildWhere(params: {
   pharmacyId?:      string;
   assignedAgentId?: string;
+  raisedById?:      string;
   status?:          TicketStatus;
   search?:          string;
 }): Prisma.SupportTicketWhereInput {
   return {
     ...(params.pharmacyId      ? { pharmacyId: params.pharmacyId }           : {}),
     ...(params.assignedAgentId ? { assignedAgentId: params.assignedAgentId } : {}),
+    ...(params.raisedById      ? { raisedById:      params.raisedById }      : {}),
     ...(params.status          ? { status: params.status }                   : {}),
     ...(params.search
       ? {

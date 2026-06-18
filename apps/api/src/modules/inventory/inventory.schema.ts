@@ -76,6 +76,7 @@ export const listLedgerQuerySchema = z.object({
   limit:       z.coerce.number().int().positive().max(100).default(50),
   inventoryId: z.string().optional(),
   medicineId:  z.string().optional(),
+  userId:      z.string().optional(),
   type:        z.enum(["SALE", "RETURN", "PURCHASE", "ADJUSTMENT", "OPENING", "DAMAGE", "EXPIRY_REMOVAL"]).optional(),
   direction:   z.enum(["IN", "OUT"]).optional(),
   from:        z.string().datetime({ offset: true }).optional(),

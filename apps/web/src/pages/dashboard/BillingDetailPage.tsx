@@ -43,6 +43,7 @@ type Invoice = {
   paymentStatus: string;
   isInterstate: boolean;
   prescriptionId: string | null;
+  prescription: { id: string; prescriptionNumber: string; doctorName: string; patientName: string; status: string } | null;
   subtotal: number;
   discountAmount: number;
   taxableAmount: number;
@@ -165,7 +166,7 @@ export default function BillDetailPage() {
     createdAt:       invoice.createdAt,
     customerName:    invoice.customer?.name    || undefined,
     customerPhone:   invoice.customer?.phone   || undefined,
-    prescriptionNo:  invoice.prescriptionId    || undefined,
+    prescriptionNo:  invoice.prescription?.prescriptionNumber || undefined,
     doctorName:      invoice.doctorName        || undefined,
     cashierName:     invoice.user.name         || undefined,
     paymentMode:     invoice.paymentMode,

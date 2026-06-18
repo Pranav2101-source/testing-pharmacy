@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { User, Phone, UserPlus, X, Loader2, MoreHorizontal } from "lucide-react";
+import { User, Phone, UserPlus, X, Loader2, AlertCircle } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
@@ -53,6 +53,7 @@ export function CustomerSearchCombobox() {
   const [activeIndex,  setActiveIndex]  = useState(0);
   const [showModal,    setShowModal]    = useState(false);
   const [pos,          setPos]          = useState<DropdownPos>({ top: 0, left: 0, width: 320 });
+  const [creditInfo,   setCreditInfo]   = useState<{ used: number; limit: number } | null>(null);
 
   const anchorRef   = useRef<HTMLDivElement>(null);
   const inputRef    = useRef<HTMLInputElement>(null);
@@ -144,9 +145,11 @@ export function CustomerSearchCombobox() {
       customerAddress:         (c as SearchResult).address ?? "",
       abha:                    (c as SearchResult).abhaNumber ?? "",
       customerDefaultDiscount: c.defaultDiscount,
-      // Auto-apply the customer's default discount to the bill
       billDiscountPct:         c.defaultDiscount,
     });
+    const used  = (c as SearchResult).creditUsed  ?? 0;
+    const limit = (c as SearchResult).creditLimit ?? 0;
+    setCreditInfo(used > 0 || limit > 0 ? { used, limit } : null);
     setQuery("");
     setOpen(false);
   }
@@ -161,12 +164,18 @@ export function CustomerSearchCombobox() {
       customerDefaultDiscount: 0,
       billDiscountPct:         0,
     });
+    setCreditInfo(null);
     setQuery("");
     setTimeout(() => inputRef.current?.focus(), 10);
   }
 
   // ── Selected state ────────────────────────────────────────────────────────
   if (customerId) {
+    const creditUsed  = creditInfo?.used  ?? 0;
+    const creditLimit = creditInfo?.limit ?? 0;
+    const overLimit   = creditLimit > 0 && creditUsed >= creditLimit;
+    const hasCredit   = creditUsed > 0;
+
     return (
       <div className="flex items-center gap-3 min-w-0 flex-1">
         <motion.div
@@ -179,7 +188,7 @@ export function CustomerSearchCombobox() {
         </motion.div>
         <div className="min-w-0 flex-1">
           <p className="text-[14px] font-bold text-slate-800 leading-tight truncate">{customerName}</p>
-          <div className="flex items-center gap-2 mt-0.5">
+          <div className="flex items-center gap-2 mt-0.5 flex-wrap">
             {customerPhone && (
               <span className="text-[11px] text-slate-400 flex items-center gap-1">
                 <Phone className="w-2.5 h-2.5" />{customerPhone}
@@ -188,6 +197,18 @@ export function CustomerSearchCombobox() {
             {customerDefaultDiscount > 0 && (
               <span className="text-[10px] bg-green-100 text-green-700 font-bold px-1.5 py-0.5 rounded-full leading-none">
                 {customerDefaultDiscount}% off
+              </span>
+            )}
+            {hasCredit && (
+              <span className={cn(
+                "flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none",
+                overLimit ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+              )}>
+                <AlertCircle className="w-2.5 h-2.5" />
+                ₹{creditUsed.toLocaleString("en-IN")} outstanding
+                {creditLimit > 0 && (
+                  <span className="opacity-70"> / ₹{creditLimit.toLocaleString("en-IN")}</span>
+                )}
               </span>
             )}
           </div>
@@ -219,15 +240,6 @@ export function CustomerSearchCombobox() {
             autoComplete="off"
             className="w-full text-[14px] font-medium text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none leading-tight"
           />
-          <div className="flex items-center gap-1.5 mt-0.5">
-            <button
-              onClick={() => setMeta({ customerId: "COUNTER", customerName: "Counter", customerPhone: "", customerDefaultDiscount: 0 })}
-              className="text-[11px] text-blue-500 hover:text-blue-700 font-medium transition-colors leading-none"
-            >
-              Create as Counter Bill
-            </button>
-            <MoreHorizontal className="w-3 h-3 text-slate-400" />
-          </div>
         </div>
       </div>
 

@@ -56,6 +56,18 @@ model Pharmacy {
   medicineOverrides   PharmacyMedicineOverride[]
   doctors             Doctor[]
   cashClosures        CashClosure[]
+  // Child-table back-relations (added for RLS + tenant isolation on item rows)
+  invoiceItems        InvoiceItem[]
+  grnItems            GRNItem[]
+  purchaseOrderItems  PurchaseOrderItem[]
+  salesReturnItems    SalesReturnItem[]
+  supplierReturnItems SupplierReturnItem[]
+  quotationItems      QuotationItem[]
+  stockAuditItems     StockAuditItem[]
+  ticketMessages      TicketMessage[]
+  ticketAttachments   TicketAttachment[]
+  prescriptions       Prescription[]
+  prescriptionItems   PrescriptionItem[]
 
   @@map("pharmacies")
 }
@@ -170,12 +182,15 @@ model Medicine {
   quotationItems      QuotationItem[]
   purchaseOrderItems  PurchaseOrderItem[]
   pharmacyOverrides   PharmacyMedicineOverride[]
+  prescriptionItems   PrescriptionItem[]
 
   @@index([name])
   @@index([genericName])
   @@index([hsnCode])
   @@index([category])
   @@index([barcode])
+  @@index([manufacturer])
+  @@index([isActive])
   @@map("medicines")
 }
 
@@ -346,6 +361,7 @@ model Customer {
   @@index([pharmacyId, abhaNumber])
   @@index([pharmacyId, customerType])
   @@index([pharmacyId, deletedAt])
+  @@index([pharmacyId, email])
   @@map("customers")
 }
 
@@ -386,6 +402,7 @@ model Supplier {
   quotations      Quotation[]
 
   @@index([pharmacyId])
+  @@index([pharmacyId, isActive])
   @@map("suppliers")
 }
 
@@ -448,6 +465,7 @@ enum GRNStatus {
 
 model PurchaseOrderItem {
   id              String   @id @default(cuid())
+  pharmacyId      String
   purchaseOrderId String
   medicineId      String?
   inventoryId     String?
@@ -462,10 +480,13 @@ model PurchaseOrderItem {
   sgst            Decimal  @db.Decimal(12, 2)
   amount          Decimal  @db.Decimal(12, 2)
 
+  pharmacy      Pharmacy      @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   medicine      Medicine?     @relation(fields: [medicineId], references: [id])
   inventory     Inventory?    @relation(fields: [inventoryId], references: [id])
 
+  @@index([pharmacyId])
+  @@index([purchaseOrderId])
   @@index([medicineId])
   @@map("purchase_order_items")
 }
@@ -507,13 +528,14 @@ model Invoice {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy Pharmacy         @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  customer Customer?        @relation(fields: [customerId], references: [id])
-  doctor   Doctor?          @relation(fields: [doctorId], references: [id])
-  user     User             @relation(fields: [userId], references: [id])
-  items    InvoiceItem[]
-  payments InvoicePayment[]
-  returns  SalesReturn[]
+  pharmacy     Pharmacy         @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  customer     Customer?        @relation(fields: [customerId], references: [id])
+  doctor       Doctor?          @relation(fields: [doctorId], references: [id])
+  user         User             @relation(fields: [userId], references: [id])
+  prescription Prescription?    @relation(fields: [prescriptionId], references: [id], onDelete: SetNull)
+  items        InvoiceItem[]
+  payments     InvoicePayment[]
+  returns      SalesReturn[]
 
   @@unique([pharmacyId, invoiceNumber])
   @@unique([pharmacyId, idempotencyKey])
@@ -524,7 +546,82 @@ model Invoice {
   @@index([pharmacyId, paymentStatus, isCancelled])
   // Covering index for filtered invoice list sorted by date (most common view)
   @@index([pharmacyId, isCancelled, createdAt(sort: Desc)])
+  // Doctor-wise prescription report (full scan without this)
+  @@index([pharmacyId, doctorId])
+  // Cashier-wise billing report
+  @@index([pharmacyId, userId])
   @@map("invoices")
+}
+
+// ─── Prescription ─────────────────────────────────────────────────────────────
+// Structured prescription record linking a scanned upload to doctor + patient
+// details and the list of drugs prescribed. Required for Schedule H / H1 / X
+// drugs under the Drugs & Cosmetics Act before dispensing.
+
+model Prescription {
+  id                 String             @id @default(cuid())
+  pharmacyId         String
+  prescriptionNumber String
+  doctorId           String?
+  doctorName         String
+  doctorRegNo        String?            // MCI / state council registration number
+  doctorPhone        String?
+  patientName        String
+  patientAge         Int?
+  patientPhone       String?
+  patientGender      String?
+  uploadId           String?            // scanned prescription image
+  prescribedDate     DateTime?
+  validUntil         DateTime?
+  status             PrescriptionStatus @default(ACTIVE)
+  notes              String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  doctor   Doctor?           @relation(fields: [doctorId], references: [id])
+  upload   Upload?           @relation(fields: [uploadId], references: [id])
+  invoices Invoice[]
+  items    PrescriptionItem[]
+
+  @@unique([pharmacyId, prescriptionNumber])
+  @@index([pharmacyId, status])
+  @@index([pharmacyId, doctorId])
+  @@index([pharmacyId, createdAt])
+  @@map("prescriptions")
+}
+
+model PrescriptionItem {
+  id             String  @id @default(cuid())
+  pharmacyId     String
+  prescriptionId String
+  medicineName   String
+  medicineId     String?
+  schedule       String? // H, H1, X, G, OTC
+  quantity       Int
+  dispensedQty   Int     @default(0)
+  dosage         String?
+  duration       String?
+  notes          String?
+
+  createdAt DateTime @default(now())
+
+  pharmacy     Pharmacy     @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  prescription Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  medicine     Medicine?    @relation(fields: [medicineId], references: [id])
+
+  @@index([pharmacyId])
+  @@index([prescriptionId])
+  @@map("prescription_items")
+}
+
+enum PrescriptionStatus {
+  ACTIVE
+  PARTIAL
+  DISPENSED
+  EXPIRED
+  CANCELLED
 }
 
 enum InvoiceStatus {
@@ -551,6 +648,7 @@ enum PaymentStatus {
 
 model InvoiceItem {
   id            String   @id @default(cuid())
+  pharmacyId    String
   invoiceId     String
   inventoryId   String
   medicineName  String
@@ -569,10 +667,14 @@ model InvoiceItem {
   taxableAmount Decimal  @db.Decimal(12, 2)
   amount        Decimal  @db.Decimal(12, 2)
 
-  invoice   Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  inventory Inventory @relation(fields: [inventoryId], references: [id])
+  pharmacy         Pharmacy        @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  invoice          Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  inventory        Inventory       @relation(fields: [inventoryId], references: [id])
+  salesReturnItems SalesReturnItem[]
 
+  @@index([pharmacyId])
   @@index([invoiceId])
+  @@index([inventoryId])
   @@map("invoice_items")
 }
 
@@ -641,6 +743,7 @@ enum ReturnDisposition {
 
 model SalesReturnItem {
   id            String            @id @default(cuid())
+  pharmacyId    String
   returnId      String
   invoiceItemId String?
   inventoryId   String
@@ -660,11 +763,15 @@ model SalesReturnItem {
   amount        Decimal           @db.Decimal(12, 2)
   disposition   ReturnDisposition @default(RESTOCK)
 
-  return    SalesReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
-  inventory Inventory   @relation(fields: [inventoryId], references: [id])
+  pharmacy    Pharmacy     @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  return      SalesReturn  @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  inventory   Inventory    @relation(fields: [inventoryId], references: [id])
+  invoiceItem InvoiceItem? @relation(fields: [invoiceItemId], references: [id], onDelete: SetNull)
 
+  @@index([pharmacyId])
   @@index([returnId])
   @@index([inventoryId])
+  @@index([invoiceItemId])
   @@map("sales_return_items")
 }
 
@@ -696,6 +803,8 @@ model InventoryMovement {
   @@index([referenceId])
   // Covering index for ledger filtered by movement type (sale/purchase/adjustment history views)
   @@index([pharmacyId, type, createdAt(sort: Desc)])
+  // User-wise stock movement audit
+  @@index([pharmacyId, userId, createdAt(sort: Desc)])
   @@map("inventory_movements")
 }
 
@@ -767,7 +876,8 @@ model Upload {
 
   createdAt DateTime @default(now())
 
-  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  pharmacy      Pharmacy       @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  prescriptions Prescription[]
 
   @@index([pharmacyId, type])
   @@map("uploads")
@@ -802,6 +912,8 @@ model NotificationLog {
   @@index([pharmacyId, createdAt])
   @@index([pharmacyId, status])
   @@index([pharmacyId, isRead])
+  // Filtering failed SMS/WhatsApp by type+status
+  @@index([pharmacyId, type, status])
   @@map("notification_logs")
 }
 
@@ -853,6 +965,8 @@ model GoodsReceiptNote {
   @@index([pharmacyId, supplierId])
   @@index([pharmacyId, paymentDueDate])
   @@index([pharmacyId, createdAt])
+  // Duplicate supplier-invoice detection scoped to pharmacy
+  @@index([pharmacyId, supplierInvoiceNo])
   @@map("goods_receipt_notes")
 }
 
@@ -902,6 +1016,7 @@ model SupplierReturn {
 
 model SupplierReturnItem {
   id           String               @id @default(cuid())
+  pharmacyId   String
   returnId     String
   inventoryId  String
   medicineId   String
@@ -915,16 +1030,19 @@ model SupplierReturnItem {
 
   createdAt DateTime @default(now())
 
+  pharmacy       Pharmacy       @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   supplierReturn SupplierReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
   inventory      Inventory      @relation(fields: [inventoryId], references: [id])
   medicine       Medicine       @relation(fields: [medicineId], references: [id])
 
+  @@index([pharmacyId])
   @@index([returnId])
   @@map("supplier_return_items")
 }
 
 model GRNItem {
   id           String    @id @default(cuid())
+  pharmacyId   String
   grnId        String
   medicineId   String
   medicineName String
@@ -946,11 +1064,15 @@ model GRNItem {
 
   createdAt DateTime @default(now())
 
+  pharmacy  Pharmacy         @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   grn       GoodsReceiptNote @relation(fields: [grnId], references: [id], onDelete: Cascade)
   medicine  Medicine         @relation(fields: [medicineId], references: [id])
   inventory Inventory?       @relation(fields: [inventoryId], references: [id])
 
+  @@index([pharmacyId])
   @@index([grnId])
+  @@index([medicineId])
+  @@index([inventoryId])
   @@map("grn_items")
 }
 
@@ -991,6 +1113,7 @@ model SupplierPayment {
   @@unique([pharmacyId, paymentNumber])
   @@index([pharmacyId, supplierId])
   @@index([pharmacyId, paidAt])
+  @@index([grnId])
   @@map("supplier_payments")
 }
 
@@ -1067,6 +1190,7 @@ enum QuotationStatus {
 
 model QuotationItem {
   id           String  @id @default(cuid())
+  pharmacyId   String
   quotationId  String
   medicineId   String
   medicineName String
@@ -1077,9 +1201,11 @@ model QuotationItem {
   discount     Decimal  @default(0) @db.Decimal(12, 2)
   notes        String?
 
+  pharmacy  Pharmacy  @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
   medicine  Medicine  @relation(fields: [medicineId], references: [id])
 
+  @@index([pharmacyId])
   @@index([quotationId])
   @@map("quotation_items")
 }
@@ -1155,6 +1281,7 @@ model StockAuditSession {
 
 model StockAuditItem {
   id          String  @id @default(cuid())
+  pharmacyId  String
   sessionId   String
   inventoryId String
   expectedQty Int     // snapshot of inventory.quantity at session creation
@@ -1165,11 +1292,14 @@ model StockAuditItem {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  pharmacy  Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   session   StockAuditSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   inventory Inventory         @relation(fields: [inventoryId], references: [id])
 
   @@unique([sessionId, inventoryId])
+  @@index([pharmacyId])
   @@index([sessionId])
+  @@index([inventoryId])
   @@map("stock_audit_items")
 }
 
@@ -1259,40 +1389,47 @@ model SupportTicket {
   @@index([pharmacyId, status])
   @@index([pharmacyId, createdAt(sort: Desc)])
   @@index([assignedAgentId, status])
+  @@index([raisedById])
   @@map("support_tickets")
 }
 
 model TicketMessage {
-  id        String   @id @default(cuid())
-  ticketId  String
-  senderId  String
-  message   String
+  id         String   @id @default(cuid())
+  pharmacyId String
+  ticketId   String
+  senderId   String
+  message    String
 
   createdAt DateTime @default(now())
 
+  pharmacy    Pharmacy           @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   ticket      SupportTicket      @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   sender      User               @relation("TicketMessageSender", fields: [senderId], references: [id])
   attachments TicketAttachment[]
 
+  @@index([pharmacyId])
   @@index([ticketId, createdAt])
   @@map("ticket_messages")
 }
 
 model TicketAttachment {
-  id        String             @id @default(cuid())
-  ticketId  String
-  messageId String?
-  fileName  String
-  fileUrl   String
-  fileSize  Int
-  mimeType  String
-  fileType  AttachmentFileType
+  id         String             @id @default(cuid())
+  pharmacyId String
+  ticketId   String
+  messageId  String?
+  fileName   String
+  fileUrl    String
+  fileSize   Int
+  mimeType   String
+  fileType   AttachmentFileType
 
   createdAt DateTime @default(now())
 
-  ticket  SupportTicket  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  message TicketMessage? @relation(fields: [messageId], references: [id])
+  pharmacy Pharmacy       @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  ticket   SupportTicket  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  message  TicketMessage? @relation(fields: [messageId], references: [id])
 
+  @@index([pharmacyId])
   @@index([ticketId])
   @@map("ticket_attachments")
 }
@@ -1351,10 +1488,12 @@ model Doctor {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy Pharmacy  @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  invoices Invoice[]
+  pharmacy      Pharmacy       @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  invoices      Invoice[]
+  prescriptions Prescription[]
 
   @@index([pharmacyId, name])
+  @@index([pharmacyId, isActive])
   @@map("doctors")
 }
 

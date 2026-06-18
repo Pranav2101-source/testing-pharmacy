@@ -1,4 +1,5 @@
 import type { Db, Prisma } from "@pharmacy/database";
+import { withTenant } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 
 export class SupplierCreditNotesRepo {
@@ -17,7 +18,7 @@ export class SupplierCreditNotesRepo {
     notes?:           string;
     issuedAt?:        Date;
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const supplier = await tx.supplier.findFirst({ where: { id: data.supplierId, pharmacyId }, select: { id: true } });
       if (!supplier) throw AppError.notFound("Supplier not found");
 
@@ -64,7 +65,7 @@ export class SupplierCreditNotesRepo {
   }
 
   async updateStatus(id: string, pharmacyId: string, userId: string, status: "APPLIED" | "CANCELLED", notes?: string) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const existing = await tx.supplierCreditNote.findFirst({
         where:  { id, pharmacyId },
         select: { status: true, creditNoteNumber: true },

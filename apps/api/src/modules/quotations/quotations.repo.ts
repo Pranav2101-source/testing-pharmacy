@@ -1,4 +1,5 @@
 import type { Db, Prisma, QuotationStatus } from "@pharmacy/database";
+import { withTenant } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 
 export class QuotationsRepo {
@@ -19,7 +20,7 @@ export class QuotationsRepo {
       notes?:       string;
     }[];
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const supplier = await tx.supplier.findFirst({ where: { id: data.supplierId, pharmacyId }, select: { id: true } });
       if (!supplier) throw AppError.notFound("Supplier not found");
 
@@ -33,7 +34,7 @@ export class QuotationsRepo {
           notes:          data.notes,
           createdBy:      userId,
           items: {
-            create: data.items,
+            create: data.items.map((item) => ({ ...item, pharmacyId })),
           },
         },
         include: {
@@ -70,7 +71,7 @@ export class QuotationsRepo {
       notes?:       string;
     }[];
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const existing = await tx.quotation.findFirst({ where: { id, pharmacyId }, select: { status: true } });
       if (!existing) throw AppError.notFound("Quotation not found");
       if (!["DRAFT", "SENT"].includes(existing.status)) {
@@ -86,7 +87,7 @@ export class QuotationsRepo {
         data: {
           validUntil: data.validUntil,
           notes:      data.notes,
-          ...(data.items ? { items: { create: data.items } } : {}),
+          ...(data.items ? { items: { create: data.items.map((item) => ({ ...item, pharmacyId })) } } : {}),
         },
         include: {
           supplier: { select: { id: true, name: true } },
@@ -103,7 +104,7 @@ export class QuotationsRepo {
   }
 
   async updateStatus(id: string, pharmacyId: string, userId: string, status: QuotationStatus) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const existing = await tx.quotation.findFirst({ where: { id, pharmacyId }, select: { status: true } });
       if (!existing) throw AppError.notFound("Quotation not found");
 
@@ -167,7 +168,7 @@ export class QuotationsRepo {
 
   // Convert a RECEIVED quotation into a DRAFT Purchase Order
   async convertToPO(id: string, pharmacyId: string, userId: string, orderNumber: string, notes?: string) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const quotation = await tx.quotation.findFirst({
         where:   { id, pharmacyId },
         include: { items: true, supplier: { select: { id: true, name: true } } },
@@ -210,6 +211,7 @@ export class QuotationsRepo {
         totalGst += gstAmt;
 
         return {
+          pharmacyId,
           medicineId:   item.medicineId,
           medicineName: item.medicineName,
           batchNumber:  "TBD",

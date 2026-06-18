@@ -32,10 +32,11 @@ export const addMessageSchema = z.object({
 // ── List tickets query ────────────────────────────────────────────────────────
 
 export const listTicketsQuerySchema = z.object({
-  page:   z.coerce.number().int().positive().default(1),
-  limit:  z.coerce.number().int().positive().max(50).default(20),
-  status: z.enum(TICKET_STATUSES).optional(),
-  search: z.string().max(100).optional(),
+  page:        z.coerce.number().int().positive().default(1),
+  limit:       z.coerce.number().int().positive().max(50).default(20),
+  status:      z.enum(TICKET_STATUSES).optional(),
+  search:      z.string().max(100).optional(),
+  raisedById:  z.string().optional(),
 });
 
 // ── Create agent (platform admin) ─────────────────────────────────────────────

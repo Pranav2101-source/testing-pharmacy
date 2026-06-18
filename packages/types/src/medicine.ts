@@ -50,6 +50,7 @@ export type AlternativeResult = {
   packSize: string | null;
   hsnCode: string | null;
   gstRate: number;
+  schedule: string | null;
   brand: { id: string; name: string } | null;
   totalStock: number;
   mrp: number;

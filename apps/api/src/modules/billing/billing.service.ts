@@ -131,6 +131,18 @@ export class BillingService {
       );
     }
 
+    // Validate prescription exists, belongs to this pharmacy, and is usable
+    if (input.prescriptionId) {
+      const rx = await this.app.prisma.prescription.findFirst({
+        where:  { id: input.prescriptionId, pharmacyId },
+        select: { status: true },
+      });
+      if (!rx) throw AppError.notFound("Prescription not found");
+      if (rx.status !== "ACTIVE" && rx.status !== "PARTIAL") {
+        throw AppError.unprocessable(`Prescription is ${rx.status} and cannot be used for billing`);
+      }
+    }
+
     const lineItems: InvoiceLineItem[] = [];
 
     for (const item of input.items) {
@@ -240,7 +252,7 @@ export class BillingService {
         customerName:   customerForIgst?.name  ?? null,
         customerPhone:  customerForIgst?.phone ?? null,
         doctorName:     input.doctorName,
-        prescriptionId: input.prescriptionId,
+        ...(input.prescriptionId ? { prescription: { connect: { id: input.prescriptionId } } } : {}),
         paymentMode:    input.paymentMode,
         paymentStatus:  input.paymentStatus,
         status:         "COMPLETED",
@@ -257,6 +269,7 @@ export class BillingService {
         isInterstate,
         items: {
           create: lineItems.map((li) => ({
+            pharmacy:      { connect: { id: pharmacyId } },
             inventory:     { connect: { id: li.inventoryId } },
             medicineName:  li.medicineName,
             hsnCode:       li.hsnCode,
@@ -285,6 +298,16 @@ export class BillingService {
     });
 
     // ── Post-invoice side-effects ─────────────────────────────────────────────
+
+    // Mark prescription as DISPENSED once the invoice is committed.
+    if (input.prescriptionId) {
+      await this.app.prisma.prescription.update({
+        where: { id: input.prescriptionId },
+        data:  { status: "DISPENSED" },
+      }).catch((err: unknown) => {
+        this.app.log.error({ err, prescriptionId: input.prescriptionId }, "Failed to mark prescription DISPENSED");
+      });
+    }
 
     // Fire-and-forget: enqueue post-invoice notifications (receipt, credit warning).
     // The invoice is already committed; pg-boss persists the job in Postgres and

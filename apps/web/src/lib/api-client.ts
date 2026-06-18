@@ -14,6 +14,12 @@ export const api = axios.create({
 api.interceptors.request.use((config) => {
   const token = getAccessToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
+  // For FormData (file uploads), let the browser set Content-Type so it can
+  // include the multipart boundary. The instance default of application/json
+  // would cause a 406 from the server.
+  if (config.data instanceof FormData) {
+    delete config.headers["Content-Type"];
+  }
   return config;
 });
 
@@ -26,6 +32,25 @@ api.interceptors.request.use((config) => {
 // On page reload the in-memory access token is gone. The first 401 from any
 // request triggers this silent refresh, so users never see the login screen
 // mid-shift as long as their refresh-token cookie (7-day TTL) is still valid.
+
+/** Call once at app boot (from PrivateRoute) to pre-populate the in-memory
+ *  access token from the httpOnly refresh-token cookie. Prevents the wave of
+ *  401 → retry → success noise that happens when the dashboard mounts before
+ *  any token is in memory. Returns true if a valid session exists. */
+export async function initAuth(): Promise<boolean> {
+  if (getAccessToken()) return true;
+  try {
+    const res = await axios.post<{ success: boolean; data: { accessToken: string } }>(
+      `${BASE_URL}/auth/refresh`,
+      {},
+      { headers: { "Content-Type": "application/json" }, withCredentials: true },
+    );
+    storeTokens(res.data.data.accessToken);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const NO_REFRESH_URLS = [
   "/auth/login",

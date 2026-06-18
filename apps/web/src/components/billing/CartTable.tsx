@@ -8,8 +8,15 @@ import { useBillingStore, type CartItem } from "./useBillingStore";
 import { EmptyBillState } from "./EmptyBillState";
 import { cn } from "@/lib/utils";
 
-// Column grid — 12 cols: ItemName | Unit | Loc | Batch | Expiry | MRP | Qty | D% | D.Price | GST% | Amount | Del
-const COL = "grid-cols-[minmax(200px,1fr)_80px_58px_104px_72px_80px_72px_64px_90px_64px_104px_38px]";
+// Column grid — 11 cols: ItemName | Pack | Batch+Loc | Expiry | MRP | Qty | D% | Rate | GST% | Amount | Del
+// Loc folded into Batch cell as a sub-line — saves 58px on tight screens
+const COL = "grid-cols-[minmax(200px,1fr)_80px_104px_72px_80px_72px_64px_90px_64px_104px_38px]";
+
+const CONTROLLED_BADGE: Record<string, string> = {
+  H:  "bg-amber-100 text-amber-700 border-amber-200",
+  H1: "bg-orange-100 text-orange-700 border-orange-200",
+  X:  "bg-red-100 text-red-600 border-red-200",
+};
 
 const TH = "text-[11px] font-bold text-slate-500 uppercase tracking-wider text-right px-2.5 select-none whitespace-nowrap";
 
@@ -19,8 +26,7 @@ export function CartTableHeader() {
     <div className={cn("grid items-center bg-slate-50 border-b border-slate-200", COL)}>
       <span className={cn(TH, "text-left px-3 py-2.5")}>Item</span>
       <span className={cn(TH, "text-left px-2.5 py-2.5")}>Pack</span>
-      <span className={cn(TH, "text-left px-2.5 py-2.5")}>Loc</span>
-      <span className={cn(TH, "py-2.5")}>Batch</span>
+      <span className={cn(TH, "py-2.5")}>Batch / Loc</span>
       <span className={cn(TH, "py-2.5")}>Expiry</span>
       <span className={cn(TH, "py-2.5")}>MRP</span>
       <span className={cn(TH, "py-2.5")}>Qty</span>
@@ -40,7 +46,7 @@ function SkeletonRow({ idx }: { idx: number }) {
       <div className="px-3 flex items-center gap-2">
         <div className="skeleton h-3.5 w-36 rounded" />
       </div>
-      {[80, 58, 104, 72, 80, 72, 64, 90, 64, 104].map((w, i) => (
+      {[80, 104, 72, 80, 72, 64, 90, 64, 104].map((w, i) => (
         <div key={i} className="px-2.5 flex justify-end">
           <div className="skeleton h-3 rounded" style={{ width: w * 0.44 }} />
         </div>
@@ -99,6 +105,11 @@ const CartRow = memo(function CartRow({
           )}>
             {item.medicineName}
           </p>
+          {item.schedule && CONTROLLED_BADGE[item.schedule.toUpperCase()] && (
+            <span className={cn("flex-shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full leading-none border", CONTROLLED_BADGE[item.schedule.toUpperCase()])}>
+              Sch {item.schedule.toUpperCase()}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2 mt-0.5">
           {item.hsnCode && (
@@ -125,15 +136,13 @@ const CartRow = memo(function CartRow({
         {item.packSize ?? "—"}
       </span>
 
-      {/* Loc. */}
-      <span className={cn("px-2.5 py-2 text-[13px] text-left truncate", item.location ? "text-slate-600 font-medium" : "text-slate-300")}>
-        {item.location ?? "—"}
-      </span>
-
-      {/* Batch */}
-      <span className="px-2.5 py-2 text-[12px] text-slate-500 text-right font-mono truncate">
-        {item.batchNumber}
-      </span>
+      {/* Batch + Loc combined */}
+      <div className="px-2.5 py-2 min-w-0 text-right">
+        <p className="text-[12px] text-slate-600 font-mono truncate">{item.batchNumber}</p>
+        {item.location && (
+          <p className="text-[10px] text-blue-500 font-semibold truncate mt-0.5">{item.location}</p>
+        )}
+      </div>
 
       {/* Expiry */}
       <span className={cn(

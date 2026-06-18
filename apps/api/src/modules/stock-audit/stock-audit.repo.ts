@@ -1,4 +1,5 @@
 import type { Db, Prisma } from "@pharmacy/database"
+import { withTenant } from "@pharmacy/database"
 import { AppError } from "../../lib/AppError.js"
 import type {
   ApproveSessionInput,
@@ -43,7 +44,7 @@ export class StockAuditRepo {
   //   longer count sessions today — the number comes from the caller.
 
   async createSession(pharmacyId: string, userId: string, sessionNumber: string, data: CreateSessionInput) {
-    return this.db.$transaction(async (tx: TxClient) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const activeInventory = await tx.inventory.findMany({
         where:  { pharmacyId, status: "ACTIVE" },
         select: { id: true, quantity: true },
@@ -60,6 +61,7 @@ export class StockAuditRepo {
           notes:     data.notes,
           items: {
             create: activeInventory.map((inv) => ({
+              pharmacyId,
               inventoryId: inv.id,
               expectedQty: inv.quantity,
             })),
@@ -127,7 +129,7 @@ export class StockAuditRepo {
   //   DB calls with no transaction wrapping them.
 
   async completeSession(id: string, pharmacyId: string, userId: string, data: CompleteSessionInput) {
-    return this.db.$transaction(async (tx: TxClient) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const uncounted = await tx.stockAuditItem.count({
         where: { sessionId: id, countedQty: null },
       })
@@ -160,9 +162,7 @@ export class StockAuditRepo {
   //   sequential awaits inside the Serializable lock window.
 
   async approveSession(id: string, pharmacyId: string, userId: string, data: ApproveSessionInput) {
-    return this.db
-      .$transaction(
-        async (tx: TxClient) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
           const session = await tx.stockAuditSession.findFirst({
             where:   { id, pharmacyId },
             include: { items: true },
@@ -252,9 +252,7 @@ export class StockAuditRepo {
             where: { id },
             data:  { status: "APPROVED", approvedAt: new Date(), approvedBy: userId },
           })
-        },
-        { isolationLevel: "Serializable", timeout: 20_000 },
-      )
+    }, { isolationLevel: "Serializable", timeout: 20_000 })
       .catch((err: { code?: string }) => {
         if (err.code === "P2034") throw AppError.conflict("Concurrent modification — please retry")
         throw err
@@ -269,7 +267,7 @@ export class StockAuditRepo {
   // Fix #12: updateMany with pharmacyId to scope the write to this tenant.
 
   async cancelSession(id: string, pharmacyId: string, userId: string) {
-    return this.db.$transaction(async (tx: TxClient) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       // Read the pre-cancel state first so the audit log records the OLD status.
       const before = await tx.stockAuditSession.findFirst({
         where:  { id, pharmacyId },

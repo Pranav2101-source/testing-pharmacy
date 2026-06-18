@@ -1,4 +1,4 @@
-import { Prisma, type Db, type BatchStatus, type MovementType, type MovementDirection } from "@pharmacy/database";
+import { Prisma, withTenant, type Db, type BatchStatus, type MovementType, type MovementDirection } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 import { env } from "../../config/env.js";
 
@@ -169,7 +169,7 @@ export class InventoryRepo {
   }
 
   async updateBatchStatus(id: string, pharmacyId: string, userId: string, status: string, reason: string) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const item = await tx.inventory.findFirst({
         where:  { id, pharmacyId },
         select: { quantity: true, status: true },
@@ -215,7 +215,7 @@ export class InventoryRepo {
     reason:     string;
     type:       string;
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, params.pharmacyId, async (tx) => {
       const item = await tx.inventory.findFirst({
         where:  { id: params.id, pharmacyId: params.pharmacyId },
         select: { quantity: true },
@@ -269,6 +269,7 @@ export class InventoryRepo {
     limit:        number;
     inventoryId?: string;
     medicineId?:  string;
+    userId?:      string;
     type?:        string;
     direction?:   string;
     from?:        Date;
@@ -277,6 +278,7 @@ export class InventoryRepo {
     const where: Prisma.InventoryMovementWhereInput = {
       pharmacyId,
       ...(params.inventoryId ? { inventoryId: params.inventoryId } : {}),
+      ...(params.userId      ? { userId:      params.userId }      : {}),
       ...(params.type        ? { type: params.type as MovementType } : {}),
       ...(params.direction   ? { direction: params.direction as MovementDirection } : {}),
       ...(params.from || params.to
@@ -316,7 +318,7 @@ export class InventoryRepo {
     sessionId:  string;
     items:      { inventoryId: string; quantity: number }[];
   }): Promise<{ inventoryId: string; available: number }[]> {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, params.pharmacyId, async (tx) => {
       // Serializable isolation prevents two concurrent sessions from both reading
       // the same available stock, computing "no conflict", and then both writing
       // reservations — which would let total reserved quantity exceed actual stock.
@@ -431,7 +433,7 @@ export class InventoryRepo {
   }
 
   async releaseReservations(params: { pharmacyId: string; sessionId: string }): Promise<void> {
-    await this.db.$transaction(async (tx) => {
+    await withTenant(this.db, params.pharmacyId, async (tx) => {
       const existing = await tx.stockReservation.findMany({
         where:  { pharmacyId: params.pharmacyId, sessionId: params.sessionId },
         select: { inventoryId: true, quantity: true },
@@ -539,7 +541,7 @@ export class InventoryRepo {
     medicineId?: string;
     reason:      string;
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const affected = await tx.inventory.findMany({
         where: {
           pharmacyId,

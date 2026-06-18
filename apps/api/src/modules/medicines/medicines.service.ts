@@ -285,6 +285,7 @@ export class MedicinesService {
         packSize:     med.packSize,
         hsnCode:      med.hsnCode,
         gstRate:      overrideGst.get(med.id) ?? med.gstRate,
+        schedule:     med.schedule,
         brand:        med.brand,
         totalStock,
         mrp,

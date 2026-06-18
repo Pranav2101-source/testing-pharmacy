@@ -283,7 +283,7 @@ function NewBillInner() {
         customerPhone:    meta.customerPhone    || undefined,
         customerAddress:  meta.customerAddress  || undefined,
         abha:             meta.abha             || undefined,
-        prescriptionNo:   meta.prescriptionId   || undefined,
+        prescriptionNo:   meta.prescriptionNumber || undefined,
         cashierName:      getStoredUser()?.name  || undefined,
         doctorName:       meta.doctorName        || undefined,
         paymentMode:      meta.paymentMode,

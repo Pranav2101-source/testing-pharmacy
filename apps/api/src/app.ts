@@ -39,7 +39,8 @@ import calendarRoutes from "./modules/calendar/calendar.routes.js";
 import pharmacyRoutes from "./modules/pharmacy/pharmacy.routes.js";
 import supportRoutes    from "./modules/support/support.routes.js";
 import doctorsRoutes    from "./modules/doctors/doctors.routes.js";
-import cashClosureRoutes from "./modules/cash-closure/cash-closure.routes.js";
+import cashClosureRoutes    from "./modules/cash-closure/cash-closure.routes.js";
+import prescriptionsRoutes  from "./modules/prescriptions/prescriptions.routes.js";
 
 import { env, allowedOrigins, trustProxyHops } from "./config/env.js";
 import { AppError } from "./lib/AppError.js";
@@ -203,6 +204,7 @@ export async function buildApp() {
   await app.register(supportRoutes,             { prefix: "/api/v1/support" });
   await app.register(doctorsRoutes,             { prefix: "/api/v1/doctors" });
   await app.register(cashClosureRoutes,         { prefix: "/api/v1/cash-closure" });
+  await app.register(prescriptionsRoutes,       { prefix: "/api/v1/prescriptions" });
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/health", async () => ({ status: "ok", ts: new Date().toISOString() }));

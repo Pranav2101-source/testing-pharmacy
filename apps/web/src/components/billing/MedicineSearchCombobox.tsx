@@ -304,6 +304,7 @@ export function MedicineSearchCombobox({
       inventoryId:    batch.id,
       medicineName:   batch.medicine.name,
       hsnCode:        batch.medicine.hsnCode,
+      schedule:       med.schedule,
       packSize:       med.packSize ?? undefined,
       location:       batch.location,
       batchNumber:    batch.batchNumber,

@@ -104,6 +104,7 @@ export class InventoryService {
       limit:       query.limit,
       inventoryId: query.inventoryId,
       medicineId:  query.medicineId,
+      userId:      query.userId,
       type:        query.type,
       direction:   query.direction,
       from:        query.from ? new Date(query.from) : undefined,

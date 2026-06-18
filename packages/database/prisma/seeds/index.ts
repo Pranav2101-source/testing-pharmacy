@@ -1,6 +1,13 @@
-import { prisma } from "../../src/client.js";
-import { medicines } from "./medicines.js";
-import { seedInventory } from "./inventory.js";
+import { config } from "dotenv";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+config({ path: resolve(__dirname, "../../../../.env") });
+
+const { prisma }      = await import("../../src/client.js") as any;
+const { medicines }   = await import("./medicines.js") as any;
+const { seedInventory } = await import("./inventory.js") as any;
 
 async function seed() {
   // ── 1. Medicines (global catalogue) ────────────────────────────────────────

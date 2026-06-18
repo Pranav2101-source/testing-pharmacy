@@ -171,6 +171,31 @@ export type DbTransactionClient = Omit<
   "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends"
 >;
 
+/**
+ * Run `callback` inside a Prisma interactive transaction where the PostgreSQL
+ * session variable `app.current_pharmacy_id` is set for the duration.
+ *
+ * RLS policies on every pharmacy-scoped table use this variable as a second
+ * line of defense: a bug that forgets a WHERE pharmacyId = ? clause will be
+ * caught at the database level when the variable is set.
+ *
+ * Usage:
+ *   const invoice = await withTenant(db, req.pharmacyId, (tx) =>
+ *     tx.invoice.findFirstOrThrow({ where: { id, pharmacyId: req.pharmacyId } })
+ *   );
+ */
+export async function withTenant<T>(
+  db:         Db,
+  pharmacyId: string,
+  callback:   (tx: DbTransactionClient) => Promise<T>,
+  options?:   { isolationLevel?: "ReadUncommitted" | "ReadCommitted" | "RepeatableRead" | "Serializable"; timeout?: number; maxWait?: number },
+): Promise<T> {
+  return db.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('app.current_pharmacy_id', ${pharmacyId}, true)`;
+    return callback(tx as unknown as DbTransactionClient);
+  }, options);
+}
+
 const globalForPrisma = globalThis as unknown as { prisma?: Db };
 
 export const prisma: Db = globalForPrisma.prisma ?? createClient();

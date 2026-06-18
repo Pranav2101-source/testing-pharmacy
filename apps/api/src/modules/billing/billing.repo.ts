@@ -1,4 +1,5 @@
 import type { Db, Prisma, PaymentMode, PaymentStatus, InvoiceStatus } from "@pharmacy/database";
+import { withTenant } from "@pharmacy/database";
 import type { PendingMovement } from "./billing.types.js";
 import { AppError } from "../../lib/AppError.js";
 import { nextSequenceValue } from "../../lib/sequences.js";
@@ -6,11 +7,12 @@ import { nextSequenceValue } from "../../lib/sequences.js";
 // ─── Shared include shapes ────────────────────────────────────────────────────
 
 const INVOICE_INCLUDE = {
-  items:    true,
-  customer: { select: { id: true, name: true, phone: true, email: true } },
-  user:     { select: { id: true, name: true } },
-  payments: { orderBy: { paidAt: "asc" as const } },
-  returns:  { select: { id: true, returnNumber: true, totalAmount: true, createdAt: true } },
+  items:        true,
+  customer:     { select: { id: true, name: true, phone: true, email: true } },
+  user:         { select: { id: true, name: true } },
+  payments:     { orderBy: { paidAt: "asc" as const } },
+  returns:      { select: { id: true, returnNumber: true, totalAmount: true, createdAt: true } },
+  prescription: { select: { id: true, prescriptionNumber: true, doctorName: true, doctorRegNo: true, patientName: true, status: true } },
 } satisfies Prisma.InvoiceInclude;
 
 const RETURN_INCLUDE = {
@@ -88,7 +90,7 @@ export class BillingRepo {
     paymentMode?:          string;
     auditMeta?:            { ipAddress?: string; userAgent?: string };
   }) {
-    const txResult = await this.db.$transaction(async (tx) => {
+    const txResult = await withTenant(this.db, params.pharmacyId, async (tx) => {
 
       // Step 0 — idempotency (generator NOT called on duplicate → no sequence gap)
       if (params.idempotencyKey) {
@@ -323,7 +325,7 @@ export class BillingRepo {
     reason:     string;
     auditMeta?: { ipAddress?: string; userAgent?: string };
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, params.pharmacyId, async (tx) => {
       const invoice = await tx.invoice.findFirst({
         where:   { id: params.invoiceId, pharmacyId: params.pharmacyId },
         include: {
@@ -487,7 +489,7 @@ export class BillingRepo {
     }[];
     auditMeta?: { ipAddress?: string; userAgent?: string };
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, params.pharmacyId, async (tx) => {
 
       // Idempotency (generator NOT called on duplicate → no sequence gap)
       if (params.idempotencyKey) {
@@ -680,6 +682,7 @@ export class BillingRepo {
           totalAmount,
           items: {
             create: returnLineItems.map((li) => ({
+              pharmacyId:    params.pharmacyId,
               invoiceItemId: li.invoiceItemId,
               inventoryId:   li.inventoryId,
               medicineName:  li.medicineName,
@@ -798,7 +801,7 @@ export class BillingRepo {
     paidAt?:     Date;
     auditMeta?:  { ipAddress?: string; userAgent?: string };
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, params.pharmacyId, async (tx) => {
       const invoice = await tx.invoice.findFirst({
         where:   { id: params.invoiceId, pharmacyId: params.pharmacyId },
         include: { payments: true },

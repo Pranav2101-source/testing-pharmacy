@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Lightbulb, X, Search, ChevronDown, ArrowRight,
@@ -7,7 +7,7 @@ import {
   Calendar, TrendingUp, Tag, Truck, CreditCard,
   Settings, FlaskConical, MapPin, Bell, FileText,
   Building2, Phone, UserPlus, BookmarkCheck, ClipboardList,
-  Monitor, CheckCircle2, DollarSign, Hash,
+  Monitor, CheckCircle2, DollarSign, Hash, Keyboard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { isSupportStaff } from "@/lib/auth";
@@ -45,6 +45,71 @@ type HelpCategory = {
 // ── All content ───────────────────────────────────────────────────────────────
 
 const CATEGORIES: HelpCategory[] = [
+
+  // ── Keyboard Shortcuts ────────────────────────────────────────────────────
+  {
+    id: "shortcuts", label: "Shortcuts", icon: Keyboard,
+    color: "text-blue-600", bg: "bg-blue-50", activeBg: "bg-blue-600",
+    items: [
+      {
+        id: "global-shortcuts", question: "Global shortcuts — work everywhere",
+        tags: ["shortcut", "keyboard", "global", "f2", "ctrl k", "hotkey"],
+        blocks: [
+          { type: "text", content: "These shortcuts work on any page in the app — no matter where you are." },
+          { type: "shortcut", keys: ["F2"],           desc: "Open New Bill from anywhere in the app" },
+          { type: "shortcut", keys: ["Ctrl", "K"],    desc: "Focus the global search bar in the top nav" },
+          { type: "shortcut", keys: ["Escape"],        desc: "Close any open dropdown, modal, or panel" },
+          { type: "tip", content: "F2 is the fastest way to start billing. It works from any page as long as your cursor is not inside an input box." },
+        ],
+      },
+      {
+        id: "billing-shortcuts", question: "Billing page shortcuts",
+        tags: ["billing", "shortcut", "f9", "f8", "ctrl s", "alt", "save", "print", "draft"],
+        blocks: [
+          { type: "text", content: "These shortcuts are active only when you are on the New Bill page (/billing/new)." },
+          { type: "shortcut", keys: ["F9"],           desc: "Save & Print — finalise bill and open print dialog" },
+          { type: "shortcut", keys: ["F8"],           desc: "Save & New — save bill and immediately open a fresh one" },
+          { type: "shortcut", keys: ["Ctrl", "S"],    desc: "Save as Draft — park the bill without finalising" },
+          { type: "shortcut", keys: ["Alt", "1"],     desc: "Switch payment mode to Cash" },
+          { type: "shortcut", keys: ["Alt", "2"],     desc: "Switch payment mode to UPI" },
+          { type: "shortcut", keys: ["Alt", "3"],     desc: "Switch payment mode to Card" },
+          { type: "shortcut", keys: ["Alt", "4"],     desc: "Switch payment mode to Credit" },
+          { type: "tip", content: "Alt+1–4 change the payment mode instantly without touching the mouse. Very useful at a busy counter." },
+        ],
+      },
+      {
+        id: "medicine-search-shortcuts", question: "Medicine search shortcuts",
+        tags: ["medicine", "search", "shortcut", "arrow", "enter", "escape", "barcode", "alternatives"],
+        blocks: [
+          { type: "text", content: "When the medicine search dropdown is open on the billing screen:" },
+          { type: "shortcut", keys: ["↓ / ↑"],       desc: "Move highlight up or down through search results" },
+          { type: "shortcut", keys: ["Enter"],        desc: "Add highlighted medicine to the bill" },
+          { type: "shortcut", keys: ["→"],            desc: "Open generic alternatives / substitutes for highlighted medicine" },
+          { type: "shortcut", keys: ["Escape"],       desc: "Close search results and clear the query" },
+          { type: "tip", content: "Barcode scanners (USB wedge) are auto-detected. Scan any barcode and the medicine is found and added instantly — no need to type." },
+        ],
+      },
+      {
+        id: "customer-search-shortcuts", question: "Customer search shortcuts",
+        tags: ["customer", "search", "shortcut", "arrow", "enter", "escape"],
+        blocks: [
+          { type: "text", content: "When searching for a customer/patient in the billing header:" },
+          { type: "shortcut", keys: ["↓ / ↑"],       desc: "Navigate through matching customers" },
+          { type: "shortcut", keys: ["Enter"],        desc: "Select the highlighted customer, or open 'Add New Customer' if at the last row" },
+          { type: "shortcut", keys: ["Escape"],       desc: "Close the customer dropdown" },
+        ],
+      },
+      {
+        id: "stock-audit-shortcuts", question: "Stock Audit shortcuts",
+        tags: ["stock audit", "shortcut", "enter", "audit"],
+        blocks: [
+          { type: "text", content: "On the Stock Audit detail page, where you enter physical counts row by row:" },
+          { type: "shortcut", keys: ["Enter"],        desc: "Confirm the current row's count and jump to the next medicine" },
+          { type: "tip", content: "Use Enter to move through rows quickly without touching the mouse — ideal when counting shelf by shelf." },
+        ],
+      },
+    ],
+  },
 
   // ── Getting Started ────────────────────────────────────────────────────────
   {
@@ -206,6 +271,20 @@ const CATEGORIES: HelpCategory[] = [
             ],
           },
           { type: "tip", content: "The GST report under Reports gives you a month-wise input/output tax summary ready for filing on the GST portal." },
+        ],
+      },
+      {
+        id: "lifa-lila", question: "What is LIFA / LILA batch selection?",
+        tags: ["lifa", "lila", "batch", "newest", "oldest", "fefo", "lifo"],
+        blocks: [
+          { type: "text", content: "LIFA and LILA control which batch is auto-selected when you add a medicine that exists in multiple batches." },
+          {
+            type: "badges", items: [
+              { label: "LIFA", color: "bg-blue-100 text-blue-700",  desc: "Last In, First Available — newest batch dispensed first. Useful for fast-moving medicines where the latest stock is most trusted." },
+              { label: "LILA", color: "bg-slate-100 text-slate-700", desc: "Last In, Last Available — oldest batch dispensed first (FEFO behaviour). Recommended to minimise expiry losses." },
+            ],
+          },
+          { type: "tip", content: "Toggle LIFA/LILA from the small button on the billing sub-navigation bar. Hover it to see which mode is active. LILA (FEFO) is the safer default for most pharmacies." },
         ],
       },
       {
@@ -471,6 +550,40 @@ const CATEGORIES: HelpCategory[] = [
             ],
           },
           { type: "tip", content: "Medicines in the catalogue have GST rates and HSN codes pre-filled. Adding them to inventory avoids manual data entry errors." },
+        ],
+      },
+      {
+        id: "doctors", question: "What is the Doctors module?",
+        tags: ["doctors", "prescription", "dr", "physician", "prescription link"],
+        blocks: [
+          { type: "text", content: "The Doctors module maintains a master list of prescribing physicians associated with your pharmacy. Linking a doctor to a bill helps with prescription tracking, Schedule H compliance, and generating doctor-wise sales reports." },
+          {
+            type: "steps", steps: [
+              "Go to More → Doctors to view all registered doctors",
+              "Click 'Add Doctor' and enter name, qualification, registration number, and clinic address",
+              "When creating a bill, start typing in the Doctor field to search and attach a doctor",
+              "Bills with a doctor linked can optionally store the Rx (prescription) number",
+            ],
+          },
+          { type: "tip", content: "For Schedule H & H1 medicines, you must record the doctor's name and Rx number on every bill. The Doctors module makes this fast — just search and select." },
+        ],
+      },
+      {
+        id: "cash-closure", question: "What is Cash Closure?",
+        tags: ["cash closure", "day end", "eod", "cash reconciliation", "closing"],
+        blocks: [
+          { type: "text", content: "Cash Closure is the end-of-day process where you reconcile the actual cash in your drawer against the expected cash from today's bills. It creates a locked daily cash record for your accounts." },
+          {
+            type: "steps", steps: [
+              "Go to More → Cash Closure at the end of each working day",
+              "The system shows expected cash (total cash-mode bills for the day)",
+              "Count the physical cash in your drawer and enter the actual amount",
+              "Any difference (short or excess) is recorded with a reason",
+              "Confirm the closure — the day is locked and cannot be edited",
+            ],
+          },
+          { type: "warning", content: "Once a cash closure is confirmed it cannot be undone. Make sure your count is correct before submitting." },
+          { type: "tip", content: "Run Cash Closure every evening. It makes monthly accounting and audit much easier." },
         ],
       },
       {
@@ -807,6 +920,7 @@ const CATEGORIES: HelpCategory[] = [
 
 // ── Category colour helper ────────────────────────────────────────────────────
 const CAT_ACTIVE_BG: Record<string, string> = {
+  shortcuts:  "bg-blue-600",
   start:      "bg-amber-500",
   billing:    "bg-blue-600",
   inventory:  "bg-emerald-600",
@@ -982,6 +1096,17 @@ export function HelpWidget() {
   }, [search]);
 
   const currentCat = CATEGORIES.find(c => c.id === activeCategory) ?? CATEGORIES[0]!;
+
+  // Allow external triggers (e.g. "Shortcuts / Help" in profile menu) to open the widget
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const cat = (e as CustomEvent<{ category?: string }>).detail?.category;
+      if (cat) setActiveCat(cat);
+      setOpen(true);
+    };
+    window.addEventListener("checkup:open-help", handler as EventListener);
+    return () => window.removeEventListener("checkup:open-help", handler as EventListener);
+  }, []);
 
   function openTicket() {
     setOpen(false);

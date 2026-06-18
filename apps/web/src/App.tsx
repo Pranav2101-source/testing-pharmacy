@@ -48,6 +48,7 @@ const CustomersPage        = lazy(() => import("./pages/dashboard/CustomersPage"
 const QuotationsPage       = lazy(() => import("./pages/dashboard/QuotationsPage"));
 const DoctorsPage          = lazy(() => import("./pages/dashboard/DoctorsPage"));
 const CashClosurePage      = lazy(() => import("./pages/dashboard/CashClosurePage"));
+const PrescriptionsPage    = lazy(() => import("./pages/dashboard/PrescriptionsPage"));
 
 // ─── Support ──────────────────────────────────────────────────
 const SupportTicketsPage   = lazy(() => import("./pages/dashboard/support/SupportTicketsPage"));
@@ -128,6 +129,7 @@ export function App() {
               <Route path="/dashboard/customers"            element={<CustomersPage />} />
               <Route path="/dashboard/quotations"           element={<QuotationsPage />} />
               <Route path="/dashboard/doctors"              element={<DoctorsPage />} />
+              <Route path="/dashboard/prescriptions"       element={<PrescriptionsPage />} />
 
               {/* Owner/Manager only routes */}
               <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} />}>

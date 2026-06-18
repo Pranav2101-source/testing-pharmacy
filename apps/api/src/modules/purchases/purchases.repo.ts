@@ -1,4 +1,5 @@
 import type { Db, Prisma } from "@pharmacy/database";
+import { withTenant } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 import { notifyOwners } from "../../lib/notifications.js";
 
@@ -31,7 +32,7 @@ export class PurchasesRepo {
     totalGst:    number;
     totalAmount: number;
   }) {
-    const po = await this.db.$transaction(async (tx) => {
+    const po = await withTenant(this.db, pharmacyId, async (tx) => {
       const created = await tx.purchaseOrder.create({
         data: {
           pharmacyId,
@@ -47,6 +48,7 @@ export class PurchasesRepo {
           totalAmount:    data.totalAmount,
           items: {
             create: data.items.map((item) => ({
+              pharmacyId:   pharmacyId,
               medicineId:   item.medicineId,
               medicineName: item.medicineName,
               batchNumber:  item.batchNumber,
@@ -114,7 +116,7 @@ export class PurchasesRepo {
     totalGst?:    number;
     totalAmount?: number;
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const existing = await tx.purchaseOrder.findFirst({ where: { id, pharmacyId }, select: { status: true } });
       if (!existing) throw AppError.notFound("Purchase order not found");
       if (existing.status !== "DRAFT") throw AppError.unprocessable("Only DRAFT purchase orders can be edited");
@@ -133,7 +135,7 @@ export class PurchasesRepo {
           totalGst:     data.totalGst,
           totalAmount:  data.totalAmount,
           ...(data.items ? {
-            items: { create: data.items },
+            items: { create: data.items.map((item) => ({ ...item, pharmacyId })) },
           } : {}),
         },
         include: { supplier: { select: { id: true, name: true } }, items: true },
@@ -148,7 +150,7 @@ export class PurchasesRepo {
   }
 
   async approvePO(id: string, pharmacyId: string, userId: string, approved: boolean, rejectionReason?: string) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const existing = await tx.purchaseOrder.findFirst({
         where:  { id, pharmacyId },
         select: { status: true, approvalStatus: true },
@@ -184,7 +186,7 @@ export class PurchasesRepo {
   }
 
   async sendPO(id: string, pharmacyId: string, userId: string) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const existing = await tx.purchaseOrder.findFirst({
         where:  { id, pharmacyId },
         select: { status: true, approvalStatus: true },
@@ -213,7 +215,7 @@ export class PurchasesRepo {
   }
 
   async cancelPO(id: string, pharmacyId: string, userId: string) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const existing = await tx.purchaseOrder.findFirst({
         where:  { id, pharmacyId },
         select: { status: true, grns: { select: { status: true } } },
@@ -332,7 +334,7 @@ export class PurchasesRepo {
     totalGst:    number;
     totalAmount: number;
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       // Duplicate supplier invoice guard moved INSIDE the Serializable transaction.
       // Two concurrent creates with the same supplierInvoiceNo previously both passed
       // the pre-transaction check (TOCTOU) and produced duplicate GRN records.
@@ -367,7 +369,7 @@ export class PurchasesRepo {
           totalGst:            data.totalGst,
           totalAmount:         data.totalAmount,
           items: {
-            create: data.items,
+            create: data.items.map((item) => ({ ...item, pharmacyId })),
           },
         },
         include: {
@@ -408,7 +410,7 @@ export class PurchasesRepo {
     totalGst?:    number;
     totalAmount?: number;
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const existing = await tx.goodsReceiptNote.findFirst({
         where:  { id, pharmacyId },
         select: { status: true, supplierId: true },
@@ -447,7 +449,7 @@ export class PurchasesRepo {
           subtotal:            data.subtotal,
           totalGst:            data.totalGst,
           totalAmount:         data.totalAmount,
-          ...(data.items ? { items: { create: data.items } } : {}),
+          ...(data.items ? { items: { create: data.items.map((item) => ({ ...item, pharmacyId })) } } : {}),
         },
         include: {
           supplier: { select: { id: true, name: true } },
@@ -464,8 +466,7 @@ export class PurchasesRepo {
   }
 
   async confirmGRN(id: string, pharmacyId: string, userId: string) {
-    return this.db.$transaction(
-      async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
         const grn = await tx.goodsReceiptNote.findFirst({
           where:   { id, pharmacyId },
           include: {
@@ -650,13 +651,11 @@ export class PurchasesRepo {
         });
 
         return confirmed;
-      },
-      { isolationLevel: "Serializable", timeout: 20_000 },
-    );
+    }, { isolationLevel: "Serializable", timeout: 20_000 });
   }
 
   async cancelGRN(id: string, pharmacyId: string, userId: string) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const grn = await tx.goodsReceiptNote.findFirst({ where: { id, pharmacyId }, select: { status: true, grnNumber: true } });
       if (!grn) throw AppError.notFound("GRN not found");
       if (grn.status !== "DRAFT") throw AppError.unprocessable("Only DRAFT GRNs can be cancelled");

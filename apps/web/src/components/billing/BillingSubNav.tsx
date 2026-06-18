@@ -232,20 +232,25 @@ export const BillingSubNav = memo(function BillingSubNav({
       {/* Controls */}
       <div className="flex items-center gap-1.5">
         {/* LIFA / LILA — batch selection strategy */}
-        <button
-          onClick={onLifaToggle}
-          title={lifa
-            ? "LIFA — Last In, First Available. Click to switch to LILA"
-            : "LILA — Last In, Last Available. Click to switch to LIFA"}
-          className={cn(
-            "text-[11px] font-bold px-2 py-1 rounded-md border transition-colors",
-            lifa
-              ? "border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100"
-              : "border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100",
-          )}
-        >
-          {lifa ? "LIFA" : "LILA"}
-        </button>
+        <div className="flex items-center gap-1 group/lifa">
+          <button
+            onClick={onLifaToggle}
+            title={lifa
+              ? "LIFA — Last In, First Available. Newest batches dispensed first."
+              : "LILA — Last In, Last Available. Oldest batches dispensed first (FEFO)."}
+            className={cn(
+              "text-[11px] font-bold px-2 py-1 rounded-md border transition-colors",
+              lifa
+                ? "border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100"
+                : "border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100",
+            )}
+          >
+            {lifa ? "LIFA" : "LILA"}
+          </button>
+          <span className="hidden group-hover/lifa:block text-[10px] text-slate-400 font-medium whitespace-nowrap">
+            {lifa ? "newest batch first" : "oldest batch first"}
+          </span>
+        </div>
 
         <div className="h-4 w-px bg-slate-200 mx-0.5" />
 

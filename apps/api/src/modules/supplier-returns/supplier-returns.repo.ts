@@ -1,4 +1,5 @@
 import type { Db, Prisma } from "@pharmacy/database";
+import { withTenant } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 
 export class SupplierReturnsRepo {
@@ -22,7 +23,7 @@ export class SupplierReturnsRepo {
     }[];
     totalAmount: number;
   }) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const sr = await tx.supplierReturn.create({
         data: {
           pharmacyId,
@@ -34,6 +35,7 @@ export class SupplierReturnsRepo {
           totalAmount: data.totalAmount,
           items: {
             create: data.items.map((item) => ({
+              pharmacy:     { connect: { id: pharmacyId } },
               inventory:    { connect: { id: item.inventoryId } },
               medicine:     { connect: { id: item.medicineId } },
               medicineName: item.medicineName,
@@ -61,8 +63,7 @@ export class SupplierReturnsRepo {
   }
 
   async confirm(id: string, pharmacyId: string, userId: string) {
-    return this.db.$transaction(
-      async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
         const sr = await tx.supplierReturn.findFirst({
           where:   { id, pharmacyId },
           include: { items: true },
@@ -120,13 +121,11 @@ export class SupplierReturnsRepo {
         });
 
         return confirmed;
-      },
-      { isolationLevel: "Serializable", timeout: 15_000 },
-    );
+    }, { isolationLevel: "Serializable", timeout: 15_000 });
   }
 
   async cancel(id: string, pharmacyId: string, userId: string) {
-    return this.db.$transaction(async (tx) => {
+    return withTenant(this.db, pharmacyId, async (tx) => {
       const sr = await tx.supplierReturn.findFirst({ where: { id, pharmacyId }, select: { status: true, returnNumber: true } });
       if (!sr) throw AppError.notFound("Supplier return not found");
       if (sr.status !== "DRAFT") throw AppError.unprocessable("Only DRAFT supplier returns can be cancelled");
