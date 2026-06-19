@@ -39,6 +39,13 @@ export class StockAuditService {
   }
 
   async approveSession(id: string, pharmacyId: string, userId: string, input: ApproveSessionInput) {
+    // Verify the approver is an active user who belongs to this pharmacy.
+    // Without this check, approvedBy could store a userId from a different tenant.
+    const approver = await this.app.prisma.user.findFirst({
+      where:  { id: userId, pharmacyId, isActive: true },
+      select: { id: true },
+    })
+    if (!approver) throw AppError.forbidden("Approver does not belong to this pharmacy")
     return this.repo.approveSession(id, pharmacyId, userId, input)
   }
 

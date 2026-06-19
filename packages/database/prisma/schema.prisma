@@ -132,8 +132,9 @@ model User {
   calendarEvents      CalendarEvent[]      @relation("CalendarEventCreator")
   ticketsRaised       SupportTicket[]      @relation("TicketRaisedBy")
   ticketMessages      TicketMessage[]      @relation("TicketMessageSender")
-  supportAgent        SupportAgent?
-  cashClosures        CashClosure[]
+  supportAgent          SupportAgent?
+  cashClosures          CashClosure[]
+  approvedAuditSessions StockAuditSession[] @relation("StockAuditApprover")
 
   @@unique([pharmacyId, email])
   @@index([pharmacyId, role])
@@ -1272,6 +1273,7 @@ model StockAuditSession {
   updatedAt DateTime @updatedAt
 
   pharmacy Pharmacy         @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  approver User?            @relation("StockAuditApprover", fields: [approvedBy], references: [id])
   items    StockAuditItem[]
 
   @@unique([pharmacyId, sessionNumber])
