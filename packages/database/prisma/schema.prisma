@@ -284,7 +284,6 @@ model Inventory {
   medicine            Medicine            @relation(fields: [medicineId], references: [id])
   shelf               Shelf?              @relation(fields: [shelfId], references: [id])
   invoiceItems        InvoiceItem[]
-  purchaseItems       PurchaseOrderItem[]
   salesReturnItems    SalesReturnItem[]
   inventoryMovements  InventoryMovement[]
   stockReservations   StockReservation[]
@@ -467,8 +466,7 @@ model PurchaseOrderItem {
   id              String   @id @default(cuid())
   pharmacyId      String
   purchaseOrderId String
-  medicineId      String?
-  inventoryId     String?
+  medicineId      String
   medicineName    String
   batchNumber     String
   expiryDate      DateTime
@@ -482,8 +480,7 @@ model PurchaseOrderItem {
 
   pharmacy      Pharmacy      @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  medicine      Medicine?     @relation(fields: [medicineId], references: [id])
-  inventory     Inventory?    @relation(fields: [inventoryId], references: [id])
+  medicine      Medicine      @relation(fields: [medicineId], references: [id])
 
   @@index([pharmacyId])
   @@index([purchaseOrderId])
