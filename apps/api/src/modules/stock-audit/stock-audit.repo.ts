@@ -147,7 +147,13 @@ export class StockAuditRepo {
         throw AppError.conflict(`Cannot complete a session in ${session.status} status`)
       }
 
-      return tx.stockAuditSession.findFirst({ where: { id, pharmacyId } })
+      return tx.stockAuditSession.findFirst({
+        where:   { id, pharmacyId },
+        include: {
+          items:  { include: ITEM_INCLUDE, orderBy: { createdAt: "asc" } },
+          _count: { select: { items: true } },
+        },
+      })
     })
   }
 
@@ -248,9 +254,20 @@ export class StockAuditRepo {
             },
           })
 
-          return tx.stockAuditSession.update({
-            where: { id },
+          // Use updateMany so pharmacyId is in the WHERE — prevents a cross-tenant
+          // write if a session id from another pharmacy is somehow known to the caller.
+          await tx.stockAuditSession.updateMany({
+            where: { id, pharmacyId },
             data:  { status: "APPROVED", approvedAt: new Date(), approvedBy: userId },
+          })
+
+          return tx.stockAuditSession.findFirst({
+            where:   { id, pharmacyId },
+            include: {
+              items:    { include: ITEM_INCLUDE, orderBy: { createdAt: "asc" } },
+              _count:   { select: { items: true } },
+              approver: { select: { id: true, name: true } },
+            },
           })
     }, { isolationLevel: "Serializable", timeout: 20_000 })
       .catch((err: { code?: string }) => {
@@ -317,7 +334,8 @@ export class StockAuditRepo {
           include:  ITEM_INCLUDE,
           orderBy:  { createdAt: "asc" },
         },
-        _count: { select: { items: true } },
+        _count:   { select: { items: true } },
+        approver: { select: { id: true, name: true } },
       },
     })
   }

@@ -42,6 +42,8 @@ type AuditSession = {
   startedAt:     string | null;
   completedAt:   string | null;
   approvedAt:    string | null;
+  approvedBy:    string | null;
+  approver:      { id: string; name: string } | null;
   createdBy:     string;
   items:         AuditItem[];
   _count:        { items: number };
@@ -136,6 +138,7 @@ function PostApprovalSummary({ session }: { session: AuditSession }) {
           <h3 className="text-[15px] font-bold text-emerald-900">Audit Approved &amp; Applied</h3>
           <p className="text-[12px] text-emerald-700 mt-0.5">
             {fmtLong(session.approvedAt!)} · {session._count.items} items audited{elapsed && ` · took ${elapsed}`}
+            {session.approver && ` · by ${session.approver.name}`}
           </p>
         </div>
         {netValue < 0 && (
