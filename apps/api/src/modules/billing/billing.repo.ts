@@ -810,9 +810,15 @@ export class BillingRepo {
 
       if (!invoice)            throw AppError.notFound("Invoice not found");
       if (invoice.isCancelled) throw AppError.conflict("Cannot add payment to a cancelled invoice");
+      if (invoice.status === "RETURNED")
+        throw AppError.conflict("Invoice is fully returned — no payment is due");
 
-      const totalPaid = invoice.payments.reduce((s, p) => s + p.amount, 0);
-      const remaining = invoice.totalAmount - totalPaid;
+      // Effective balance the customer actually owes is originalTotal minus whatever
+      // was already returned.  Ignoring returnedAmount here would require the customer
+      // to pay the full original amount even after a partial return.
+      const totalPaid      = invoice.payments.reduce((s, p) => s + Number(p.amount), 0);
+      const effectiveTotal = Number(invoice.totalAmount) - Number(invoice.returnedAmount);
+      const remaining      = effectiveTotal - totalPaid;
 
       if (params.amount > remaining + 0.01) {
         throw AppError.unprocessable(
@@ -835,8 +841,8 @@ export class BillingRepo {
 
       const newTotalPaid = totalPaid + params.amount;
       let paymentStatus: "PAID" | "PARTIAL" | "PENDING" = "PENDING";
-      if (newTotalPaid >= invoice.totalAmount - 0.01) paymentStatus = "PAID";
-      else if (newTotalPaid > 0)                      paymentStatus = "PARTIAL";
+      if (newTotalPaid >= effectiveTotal - 0.01) paymentStatus = "PAID";
+      else if (newTotalPaid > 0)                 paymentStatus = "PARTIAL";
 
       // Only update paymentStatus — intentionally NOT touching paymentMode.
       // paymentMode records the agreed payment method set at invoice creation
@@ -860,9 +866,13 @@ export class BillingRepo {
         invoice.customerId                     &&
         invoice.paymentMode       === "CREDIT";
       if (wasCreditSale) {
+        // Decrement by effectiveTotal (originalAmount − returnedAmount), not by
+        // the full originalAmount.  The return flow already decremented creditUsed
+        // by returnedAmount, so decrementing by the full amount here would push
+        // creditUsed negative and permanently inflate the customer's available credit.
         await tx.customer.updateMany({
           where: { id: invoice.customerId!, pharmacyId: params.pharmacyId, customerType: "CREDIT" },
-          data:  { creditUsed: { decrement: invoice.totalAmount } },
+          data:  { creditUsed: { decrement: Math.max(0, effectiveTotal) } },
         });
 
         await tx.auditLog.create({
@@ -873,7 +883,7 @@ export class BillingRepo {
             entity:     "CustomerCredit",
             entityId:   invoice.customerId!,
             newData: {
-              change:        `-${invoice.totalAmount}`,
+              change:        `-${effectiveTotal}`,
               reason:        "credit_settled",
               invoiceId:     invoice.id,
               invoiceNumber: invoice.invoiceNumber,
