@@ -6,7 +6,6 @@ type CustomerWriteData = {
   phone?:          string;
   email?:          string;
   address?:        string;
-  age?:            number;
   dateOfBirth?:    string; // "YYYY-MM-DD" — converted to Date before writing
   gender?:         string;
   abhaNumber?:     string;
@@ -17,6 +16,16 @@ type CustomerWriteData = {
   notes?:          string;
   createdById?:    string;
 };
+
+// Returns current age in full years, or null if dateOfBirth is not set.
+export function computeAge(dateOfBirth: Date | null | undefined): number | null {
+  if (!dateOfBirth) return null;
+  const today = new Date();
+  let age = today.getFullYear() - dateOfBirth.getFullYear();
+  const m = today.getMonth() - dateOfBirth.getMonth();
+  if (m < 0 || (m === 0 && today.getDate() < dateOfBirth.getDate())) age--;
+  return age < 0 ? 0 : age;
+}
 
 // Reusable filter that excludes soft-deleted customers from all queries
 const ACTIVE = { deletedAt: null } as const;

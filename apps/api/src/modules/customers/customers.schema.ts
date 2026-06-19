@@ -7,7 +7,6 @@ export const createCustomerSchema = z.object({
   phone:           z.string().regex(/^[6-9]\d{9}$/, "Enter a valid 10-digit mobile number").optional(),
   email:           z.string().email("Invalid email").optional(),
   address:         z.string().max(500).optional(),
-  age:             z.number().int().min(0).max(150).optional(),
   dateOfBirth:     z.string().optional(),          // "YYYY-MM-DD" ISO date string
   gender:          z.enum(["MALE", "FEMALE", "OTHER"]).optional(),
   abhaNumber:      z.string().max(50).optional(),  // ABHA / Health ID / IPD / OPD

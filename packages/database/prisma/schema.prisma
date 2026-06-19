@@ -336,7 +336,6 @@ model Customer {
   email           String?
   address         String?
   state           String?      // Indian state code (e.g. "MH", "KA") — used for IGST determination
-  age             Int?         // legacy field; prefer dateOfBirth for new records
   dateOfBirth     DateTime?
   gender          String?
   abhaNumber      String?      // ABHA / Health ID / IPD / OPD number

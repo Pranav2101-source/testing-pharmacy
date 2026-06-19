@@ -138,7 +138,7 @@ export class ReportsRepo {
             createdAt:      true,
             prescriptionId: true,
             doctorName:     true,
-            customer:       { select: { id: true, name: true, phone: true, age: true, gender: true } },
+            customer:       { select: { id: true, name: true, phone: true, gender: true } },
             user:           { select: { id: true, name: true } },
           },
         },
