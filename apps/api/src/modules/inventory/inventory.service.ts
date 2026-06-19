@@ -135,10 +135,18 @@ export class InventoryService {
   async updateLocation(id: string, pharmacyId: string, data: { shelfId?: string | null; location?: string | null }) {
     const item = await this.repo.db.inventory.findFirst({ where: { id, pharmacyId }, select: { id: true } });
     if (!item) throw AppError.notFound("This stock item could not be found. It may have already been removed.");
-    return this.repo.db.inventory.update({
-      where: { id, pharmacyId },
-      data:  { shelfId: data.shelfId, location: data.location },
-    });
+
+    // Enforce mutual exclusivity: shelfId (structured) and location (free-text)
+    // cannot both be set — they describe the same physical placement and conflict.
+    // shelfId takes precedence when both are supplied.
+    const update: { shelfId: string | null; location: string | null } =
+      data.shelfId != null
+        ? { shelfId: data.shelfId, location: null }         // shelf assigned — clear free-text
+        : data.location != null
+          ? { shelfId: null, location: data.location }      // free-text only — clear shelf
+          : { shelfId: null, location: null };              // explicit clear
+
+    return this.repo.db.inventory.update({ where: { id, pharmacyId }, data: update });
   }
 
   async batchRecall(pharmacyId: string, userId: string, input: BatchRecallInput) {

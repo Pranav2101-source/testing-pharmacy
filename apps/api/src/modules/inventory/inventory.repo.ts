@@ -42,6 +42,16 @@ export class InventoryRepo {
     minimumStock: number;
     reorderLevel?: number;
   }) {
+    // Enforce mutual exclusivity between shelfId (structured) and location (free-text).
+    // shelfId takes precedence when both arrive together.  If neither is provided,
+    // preserve existing values by omitting both from the update.
+    const locationUpdate =
+      data.shelfId !== undefined
+        ? { shelfId: data.shelfId, location: null }        // shelf assigned — clear free-text
+        : data.location !== undefined
+          ? { location: data.location, shelfId: null }     // free-text only — clear shelf
+          : {};                                            // neither changed — keep existing
+
     return this.db.inventory.upsert({
       where: {
         pharmacyId_medicineId_batchNumber: { pharmacyId, medicineId: data.medicineId, batchNumber: data.batchNumber },
@@ -50,11 +60,22 @@ export class InventoryRepo {
         quantity:     { increment: data.quantity },
         purchaseRate: data.purchaseRate,
         mrp:          data.mrp,
-        location:     data.location,
-        ...(data.shelfId !== undefined ? { shelfId: data.shelfId } : {}),
+        ...locationUpdate,
         status:       "ACTIVE",
       },
-      create: { pharmacyId, ...data, reorderLevel: data.reorderLevel ?? 5, status: "ACTIVE" },
+      create: {
+        pharmacyId,
+        medicineId:   data.medicineId,
+        batchNumber:  data.batchNumber,
+        expiryDate:   data.expiryDate,
+        quantity:     data.quantity,
+        purchaseRate: data.purchaseRate,
+        mrp:          data.mrp,
+        minimumStock: data.minimumStock,
+        reorderLevel: data.reorderLevel ?? 5,
+        status:       "ACTIVE",
+        ...locationUpdate,
+      },
       include: INVENTORY_INCLUDE,
     });
   }
