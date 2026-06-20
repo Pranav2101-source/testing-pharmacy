@@ -1,4 +1,4 @@
-import type PgBoss from "pg-boss";
+import type { Job } from "pg-boss";
 import { prisma } from "@pharmacy/database";
 import { notifyOwners } from "@pharmacy/mailer";
 
@@ -79,7 +79,7 @@ async function processPharmacy(pharmacyId: string): Promise<void> {
   console.info(`[low-stock-alert][${pharmacy.name}] sent alert: ${lowStock.length} items`);
 }
 
-export async function lowStockAlertHandler(_job: PgBoss.Job): Promise<void> {
+export async function lowStockAlertHandler(_jobs: Job[]): Promise<void> {
   const pharmacies = await prisma.pharmacy.findMany({
     where:  { isActive: true },
     select: { id: true },

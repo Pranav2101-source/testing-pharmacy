@@ -18,6 +18,5 @@ export async function enqueuePostInvoice(data: PostInvoiceJobData): Promise<void
     retryDelay:  5,
     retryBackoff: true,
     expireInSeconds: 3_600,
-    onComplete: false,
   });
 }

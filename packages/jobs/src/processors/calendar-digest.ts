@@ -1,4 +1,4 @@
-import type PgBoss from "pg-boss";
+import type { Job } from "pg-boss";
 import { prisma } from "@pharmacy/database";
 import { inAppNotify } from "@pharmacy/mailer";
 
@@ -68,7 +68,7 @@ async function processPharmacy(pharmacyId: string, pharmacyName: string): Promis
   });
 }
 
-export async function calendarDigestHandler(_job: PgBoss.Job): Promise<void> {
+export async function calendarDigestHandler(_jobs: Job[]): Promise<void> {
   const pharmacies = await prisma.pharmacy.findMany({
     where:  { isActive: true },
     select: { id: true, name: true },

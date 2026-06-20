@@ -1,4 +1,4 @@
-import type PgBoss from "pg-boss";
+import type { Job } from "pg-boss";
 import { prisma } from "@pharmacy/database";
 
 // Cleans up StockReservation rows whose TTL has passed and restores
@@ -8,7 +8,7 @@ import { prisma } from "@pharmacy/database";
 // upsertReservations (new billing session) and atomically inside
 // createInvoiceTransactional (billing completes). This job covers
 // abandoned carts that never triggered either path.
-export async function reservationCleanupHandler(_job: PgBoss.Job): Promise<void> {
+export async function reservationCleanupHandler(_jobs: Job[]): Promise<void> {
   const now = new Date();
 
   const expired = await prisma.stockReservation.findMany({

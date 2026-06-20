@@ -21,19 +21,19 @@ export async function startWorkers(): Promise<void> {
   await boss.start();
 
   // Fan-out jobs: one worker handles all pharmacies in-process.
-  // teamSize = max concurrent jobs fetched per poll; concurrency within each team.
+  // localConcurrency = max concurrent jobs fetched per poll; concurrency within each team.
   await Promise.all([
-    boss.work("expiry-alerts",       { teamSize: 5 }, expiryAlertHandler),
-    boss.work("low-stock-alerts",    { teamSize: 5 }, lowStockAlertHandler),
-    boss.work("grn-overdue",         { teamSize: 5 }, grnOverdueHandler),
-    boss.work("eod-summary",         { teamSize: 5 }, eodSummaryHandler),
-    boss.work("quotation-expiry",    { teamSize: 5 }, quotationExpiryHandler),
-    boss.work("pending-credit",      { teamSize: 5 }, pendingCreditHandler),
-    boss.work("calendar-digest",     { teamSize: 5 }, calendarDigestHandler),
+    boss.work("expiry-alerts",       { localConcurrency: 5 }, expiryAlertHandler),
+    boss.work("low-stock-alerts",    { localConcurrency: 5 }, lowStockAlertHandler),
+    boss.work("grn-overdue",         { localConcurrency: 5 }, grnOverdueHandler),
+    boss.work("eod-summary",         { localConcurrency: 5 }, eodSummaryHandler),
+    boss.work("quotation-expiry",    { localConcurrency: 5 }, quotationExpiryHandler),
+    boss.work("pending-credit",      { localConcurrency: 5 }, pendingCreditHandler),
+    boss.work("calendar-digest",     { localConcurrency: 5 }, calendarDigestHandler),
     // post-invoice is event-driven (triggered by billing), not cron; higher concurrency
-    boss.work("post-invoice",        { teamSize: 10 }, postInvoiceHandler),
+    boss.work("post-invoice",        { localConcurrency: 10 }, postInvoiceHandler),
     // reservation-cleanup is single-threaded to avoid concurrent inventory mutations
-    boss.work("reservation-cleanup", { teamSize: 1  }, reservationCleanupHandler),
+    boss.work("reservation-cleanup", { localConcurrency: 1  }, reservationCleanupHandler),
   ]);
 
   console.info("[pg-boss] all workers registered");

@@ -1,4 +1,4 @@
-import type PgBoss from "pg-boss";
+import type { Job } from "pg-boss";
 import { prisma } from "@pharmacy/database";
 import { notifyOwners } from "@pharmacy/mailer";
 
@@ -123,7 +123,7 @@ async function processPharmacy(pharmacyId: string): Promise<void> {
   console.info(`[eod-summary][${pharmacy.name}] sent: ₹${totalSales.toFixed(2)} in ${invoiceCount} invoices`);
 }
 
-export async function eodSummaryHandler(_job: PgBoss.Job): Promise<void> {
+export async function eodSummaryHandler(_jobs: Job[]): Promise<void> {
   const pharmacies = await prisma.pharmacy.findMany({
     where:  { isActive: true },
     select: { id: true },

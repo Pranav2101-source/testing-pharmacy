@@ -1,9 +1,10 @@
-import type PgBoss from "pg-boss";
+import type { Job } from "pg-boss";
 import { prisma } from "@pharmacy/database";
 import { notifyOwners, sendNotification } from "@pharmacy/mailer";
 import type { PostInvoiceJobData } from "../client.js";
 
-export async function postInvoiceHandler(job: PgBoss.Job<PostInvoiceJobData>): Promise<void> {
+export async function postInvoiceHandler(jobs: Job<PostInvoiceJobData>[]): Promise<void> {
+  for (const job of jobs) {
   const { pharmacyId, invoiceNumber, totalAmount, paymentMode, customerId } = job.data;
 
   const [pharmacy, customer] = await Promise.all([
@@ -36,5 +37,6 @@ export async function postInvoiceHandler(job: PgBoss.Job<PostInvoiceJobData>): P
         message: `${customer.name} has used ₹${customer.creditUsed.toFixed(2)} of ₹${customer.creditLimit.toFixed(2)} (${usedPct.toFixed(0)}%). Invoice: ${invoiceNumber}.`,
       });
     }
+  }
   }
 }

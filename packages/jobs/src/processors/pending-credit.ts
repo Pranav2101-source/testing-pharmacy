@@ -1,4 +1,4 @@
-import type PgBoss from "pg-boss";
+import type { Job } from "pg-boss";
 import { prisma } from "@pharmacy/database";
 import { notifyOwners } from "@pharmacy/mailer";
 
@@ -79,7 +79,7 @@ async function processPharmacy(pharmacyId: string): Promise<void> {
   console.info(`[pending-credit][${pharmacy.name}] sent: ${pending.length} invoices ₹${total.toFixed(2)}`);
 }
 
-export async function pendingCreditHandler(_job: PgBoss.Job): Promise<void> {
+export async function pendingCreditHandler(_jobs: Job[]): Promise<void> {
   const pharmacies = await prisma.pharmacy.findMany({
     where:  { isActive: true },
     select: { id: true },

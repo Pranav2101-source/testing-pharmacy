@@ -19,7 +19,7 @@
   "dependencies": {
     "@pharmacy/database": "workspace:*",
     "@pharmacy/mailer": "workspace:*",
-    "pg-boss": "^9.0.0",
+    "pg-boss": "^12.20.0",
     "pino": "^9.4.0",
     "pino-pretty": "^13.0.0"
   },
