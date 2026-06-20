@@ -288,6 +288,7 @@ export class InventoryRepo {
   async getLedger(pharmacyId: string, params: {
     page:         number;
     limit:        number;
+    cursor?:      string;
     inventoryId?: string;
     medicineId?:  string;
     userId?:      string;
@@ -310,26 +311,42 @@ export class InventoryRepo {
         : {}),
     };
 
+    const include = {
+      inventory: {
+        select: {
+          batchNumber: true,
+          medicine:    { select: { name: true, genericName: true } },
+        },
+      },
+      user: { select: { id: true, name: true } },
+    } as const;
+
+    if (params.cursor) {
+      const movements = await this.db.inventoryMovement.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        cursor:  { id: params.cursor },
+        skip:    1,
+        take:    params.limit,
+        include,
+      });
+      const nextCursor = movements.length === params.limit ? movements[movements.length - 1]?.id : undefined;
+      return { movements, nextCursor, page: params.page, limit: params.limit };
+    }
+
     const [movements, total] = await Promise.all([
       this.db.inventoryMovement.findMany({
         where,
         orderBy: { createdAt: "desc" },
         skip:    (params.page - 1) * params.limit,
         take:    params.limit,
-        include: {
-          inventory: {
-            select: {
-              batchNumber: true,
-              medicine:    { select: { name: true, genericName: true } },
-            },
-          },
-          user: { select: { id: true, name: true } },
-        },
+        include,
       }),
       this.db.inventoryMovement.count({ where }),
     ]);
 
-    return { movements, total, page: params.page, limit: params.limit };
+    const nextCursor = movements.length === params.limit ? movements[movements.length - 1]?.id : undefined;
+    return { movements, total, nextCursor, page: params.page, limit: params.limit };
   }
 
   // ── Stock Reservation ─────────────────────────────────────────────────────
@@ -633,6 +650,23 @@ export class InventoryRepo {
 
       return { affectedCount: affected.length, recallId: recall.id, items: affected };
     });
+  }
+
+  // ── Encapsulated helpers (keeps service layer off repo.db) ───────────────────
+
+  async getMedicineOverrides(pharmacyId: string, medicineIds: string[]) {
+    if (medicineIds.length === 0) return [];
+    return this.db.pharmacyMedicineOverride.findMany({
+      where: { pharmacyId, medicineId: { in: medicineIds } },
+    });
+  }
+
+  async updateInventoryLocation(
+    id:         string,
+    pharmacyId: string,
+    data: { shelfId: string | null; location: string | null },
+  ) {
+    return this.db.inventory.update({ where: { id, pharmacyId }, data });
   }
 
   async listRecalledBatches(pharmacyId: string, params: {

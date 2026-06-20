@@ -9,6 +9,7 @@ import type {
   AddPaymentInput,
   ListInvoicesQuery,
   ListReturnsQuery,
+  InvoiceSettingsConfigInput,
 } from "./billing.schema.js";
 import type { InvoiceLineItem, DashboardStats } from "./billing.types.js";
 import { AppError } from "../../lib/AppError.js";
@@ -351,6 +352,7 @@ export class BillingService {
     return this.repo.listInvoices(pharmacyId, {
       page:             Math.max(1, query.page),
       limit:            Math.min(MAX_PAGE_LIMIT, Math.max(1, query.limit)),
+      cursor:           query.cursor,
       search:           query.search?.trim() || undefined,
       // Accept both plain dates (YYYY-MM-DD) and full ISO datetimes.
       // For plain dates, set `to` to end-of-day so invoices created on the
@@ -437,6 +439,7 @@ export class BillingService {
     return this.repo.listReturns(pharmacyId, {
       page:      Math.max(1, query.page),
       limit:     Math.min(MAX_PAGE_LIMIT, Math.max(1, query.limit)),
+      cursor:    query.cursor,
       search:    query.search?.trim() || undefined,
       from:      query.from ? new Date(query.from) : undefined,
       to:        query.to   ? (() => { const d = new Date(query.to!); if (!query.to!.includes("T")) d.setUTCHours(23, 59, 59, 999); return d; })() : undefined,
@@ -499,10 +502,11 @@ export class BillingService {
   async saveInvoiceSettings(
     pharmacyId: string,
     userId:     string,
-    config:     Record<string, unknown>,
+    config:     InvoiceSettingsConfigInput,
     auditMeta?: { ipAddress?: string; userAgent?: string },
   ) {
-    // Prisma's Json type requires an explicit cast from Record<string,unknown>
+    // Prisma's Json type requires an explicit cast — the caller guarantees the
+    // shape is valid because it was parsed through invoiceSettingsConfigSchema.
     const json = config as Parameters<typeof this.app.prisma.invoiceSettings.upsert>[0]["create"]["settings"];
 
     const result = await this.app.prisma.invoiceSettings.upsert({
@@ -518,7 +522,7 @@ export class BillingService {
         action:    "UPDATE",
         entity:    "InvoiceSettings",
         entityId:  pharmacyId,
-        newData:   config as Parameters<typeof this.app.prisma.auditLog.create>[0]["data"]["newData"],
+        newData:   json as Parameters<typeof this.app.prisma.auditLog.create>[0]["data"]["newData"],
         ipAddress: auditMeta?.ipAddress,
         userAgent: auditMeta?.userAgent?.slice(0, 500),
       },

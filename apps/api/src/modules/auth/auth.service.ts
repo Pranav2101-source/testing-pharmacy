@@ -70,6 +70,23 @@ export class AuthService {
     const valid = await bcrypt.compare(input.password, hash);
 
     if (!user || !user.isActive || !valid) {
+      // Log when the account exists — gives a pharmacyId to write against and lets
+      // the audit trail surface brute-force / credential-stuffing patterns.
+      if (user) {
+        void this.app.prisma.auditLog.create({
+          data: {
+            pharmacyId: user.pharmacyId,
+            userId:     user.id,
+            action:     "LOGIN_FAILED",
+            entity:     "User",
+            entityId:   user.id,
+            newData: {
+              reason: !user.isActive ? "account_inactive" : "wrong_password",
+              email:  input.email,
+            },
+          },
+        }).catch(() => { /* audit write must not shadow the auth error */ });
+      }
       throw AppError.unauthorized("Invalid credentials");
     }
     if (!user.pharmacy.isActive) {

@@ -945,6 +945,7 @@ export class BillingRepo {
     params: {
       page:              number;
       limit:             number;
+      cursor?:           string;
       search?:           string;
       from?:             Date;
       to?:               Date;
@@ -993,22 +994,41 @@ export class BillingRepo {
         : {}),
     };
 
+    const include = {
+      customer: { select: { name: true, phone: true } },
+      user:     { select: { name: true } },
+      _count:   { select: { items: true } },
+    } as const;
+
+    // Cursor mode: skip the COUNT query entirely and use the id cursor to resume.
+    // Prisma finds the cursor record inside the ordered result set and returns
+    // the next `limit` records after it — O(log n) instead of O(n) for large tables.
+    if (params.cursor) {
+      const items = await this.db.invoice.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        cursor:  { id: params.cursor },
+        skip:    1,
+        take:    params.limit,
+        include,
+      });
+      const nextCursor = items.length === params.limit ? items[items.length - 1]?.id : undefined;
+      return { items, nextCursor, page: params.page, limit: params.limit };
+    }
+
     const [items, total] = await Promise.all([
       this.db.invoice.findMany({
         where,
         orderBy: { createdAt: "desc" },
         skip:    (params.page - 1) * params.limit,
         take:    params.limit,
-        include: {
-          customer: { select: { name: true, phone: true } },
-          user:     { select: { name: true } },
-          _count:   { select: { items: true } },
-        },
+        include,
       }),
       this.db.invoice.count({ where }),
     ]);
 
-    return { items, total, page: params.page, limit: params.limit, totalPages: Math.ceil(total / params.limit) };
+    const nextCursor = items.length === params.limit ? items[items.length - 1]?.id : undefined;
+    return { items, total, nextCursor, page: params.page, limit: params.limit, totalPages: Math.ceil(total / params.limit) };
   }
 
   // ── Returns ───────────────────────────────────────────────────────────────
@@ -1025,6 +1045,7 @@ export class BillingRepo {
     params: {
       page:       number;
       limit:      number;
+      cursor?:    string;
       search?:    string;
       from?:      Date;
       to?:        Date;
@@ -1051,23 +1072,39 @@ export class BillingRepo {
         : {}),
     };
 
+    const include = {
+      invoice:  { select: { id: true, invoiceNumber: true } },
+      customer: { select: { name: true, phone: true } },
+      user:     { select: { name: true } },
+      items:    { select: { quantity: true, amount: true } },
+    } as const;
+
+    if (params.cursor) {
+      const items = await this.db.salesReturn.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        cursor:  { id: params.cursor },
+        skip:    1,
+        take:    params.limit,
+        include,
+      });
+      const nextCursor = items.length === params.limit ? items[items.length - 1]?.id : undefined;
+      return { items, nextCursor, page: params.page, limit: params.limit };
+    }
+
     const [items, total] = await Promise.all([
       this.db.salesReturn.findMany({
         where,
         orderBy: { createdAt: "desc" },
         skip:    (params.page - 1) * params.limit,
         take:    params.limit,
-        include: {
-          invoice:  { select: { id: true, invoiceNumber: true } },
-          customer: { select: { name: true, phone: true } },
-          user:     { select: { name: true } },
-          items:    { select: { quantity: true, amount: true } },
-        },
+        include,
       }),
       this.db.salesReturn.count({ where }),
     ]);
 
-    return { items, total, page: params.page, limit: params.limit, totalPages: Math.ceil(total / params.limit) };
+    const nextCursor = items.length === params.limit ? items[items.length - 1]?.id : undefined;
+    return { items, total, nextCursor, page: params.page, limit: params.limit, totalPages: Math.ceil(total / params.limit) };
   }
 
   // ── Dashboard stats ───────────────────────────────────────────────────────

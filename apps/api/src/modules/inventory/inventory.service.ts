@@ -41,9 +41,10 @@ export class InventoryService {
     items: Array<{ medicineId: string; medicine?: Record<string, unknown> | null }>,
   ): Promise<void> {
     if (items.length === 0) return;
-    const overrides = await this.repo.db.pharmacyMedicineOverride.findMany({
-      where: { pharmacyId, medicineId: { in: [...new Set(items.map((i) => i.medicineId))] } },
-    });
+    const overrides = await this.repo.getMedicineOverrides(
+      pharmacyId,
+      [...new Set(items.map((i) => i.medicineId))],
+    );
     if (overrides.length === 0) return;
 
     const byMedicine = new Map(overrides.map((o) => [o.medicineId, o]));
@@ -102,6 +103,7 @@ export class InventoryService {
     return this.repo.getLedger(pharmacyId, {
       page:        query.page,
       limit:       query.limit,
+      cursor:      query.cursor,
       inventoryId: query.inventoryId,
       medicineId:  query.medicineId,
       userId:      query.userId,
@@ -133,7 +135,7 @@ export class InventoryService {
   }
 
   async updateLocation(id: string, pharmacyId: string, data: { shelfId?: string | null; location?: string | null }) {
-    const item = await this.repo.db.inventory.findFirst({ where: { id, pharmacyId }, select: { id: true } });
+    const item = await this.repo.getById(id, pharmacyId);
     if (!item) throw AppError.notFound("This stock item could not be found. It may have already been removed.");
 
     // Enforce mutual exclusivity: shelfId (structured) and location (free-text)
@@ -141,18 +143,18 @@ export class InventoryService {
     // shelfId takes precedence when both are supplied.
     const update: { shelfId: string | null; location: string | null } =
       data.shelfId != null
-        ? { shelfId: data.shelfId, location: null }         // shelf assigned — clear free-text
+        ? { shelfId: data.shelfId, location: null }
         : data.location != null
-          ? { shelfId: null, location: data.location }      // free-text only — clear shelf
-          : { shelfId: null, location: null };              // explicit clear
+          ? { shelfId: null, location: data.location }
+          : { shelfId: null, location: null };
 
-    return this.repo.db.inventory.update({ where: { id, pharmacyId }, data: update });
+    return this.repo.updateInventoryLocation(id, pharmacyId, update);
   }
 
   async batchRecall(pharmacyId: string, userId: string, input: BatchRecallInput) {
     const result = await this.repo.batchRecall(pharmacyId, userId, input);
 
-    void notifyOwners(this.repo.db, pharmacyId, {
+    void notifyOwners(this.app.prisma, pharmacyId, {
       subject: `🚨 URGENT: Batch Recall — ${input.batchNumber}`,
       message: `Batch ${input.batchNumber} has been recalled.\nReason: ${input.reason}\nAll affected inventory has been quarantined. Review immediately.`,
     });

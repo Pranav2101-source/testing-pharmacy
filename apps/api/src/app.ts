@@ -165,7 +165,7 @@ export async function buildApp() {
   await app.register(
     async (authApp) => {
       authApp.addHook("onRequest", async (req, reply) => {
-        const sensitiveRoutes = ["/login", "/register", "/forgot-password", "/reset-password"];
+        const sensitiveRoutes = ["/login", "/register", "/forgot-password", "/reset-password", "/refresh"];
         const isSensitive = sensitiveRoutes.some((r) => req.url.endsWith(r));
         if (!isSensitive) return;
         try {

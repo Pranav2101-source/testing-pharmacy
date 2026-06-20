@@ -117,6 +117,49 @@ export function calcInvoiceTotals(
   };
 }
 
+// ─── Purchase-side GST ───────────────────────────────────────────────────────
+// Supplier cost prices in Indian B2B trade are GST-exclusive (tax is added on
+// top), which is the opposite of retail MRP (GST-inclusive). This function
+// forward-calculates GST from cost price rather than reverse-calculating from MRP.
+//
+// Use this for Purchase Orders and GRNs.
+// Use calcGstFromMrp for billing/invoices.
+
+export type PurchaseLineGST = {
+  lineTotal: number; // cost after discount, GST-exclusive
+  cgst:      number;
+  sgst:      number;
+  igst:      number;
+  totalGst:  number;
+  amount:    number; // lineTotal + totalGst (the supplier invoice amount)
+};
+
+export function calcPurchaseLineGST(
+  costPrice:   number,
+  quantity:    number,
+  discount:    number,    // percentage 0–100, pass 0 for purchase orders with no discount
+  gstRate:     number,    // 0 | 5 | 12
+  isInterstate = false,
+): PurchaseLineGST {
+  const gross     = costPrice * quantity;
+  const lineTotal = round(gross * (1 - discount / 100));
+  const halfGst   = round((lineTotal * gstRate) / 100 / 2);
+
+  if (isInterstate) {
+    const igst = halfGst * 2;
+    return { lineTotal, cgst: 0, sgst: 0, igst, totalGst: igst, amount: round(lineTotal + igst) };
+  }
+
+  return {
+    lineTotal,
+    cgst:     halfGst,
+    sgst:     halfGst,
+    igst:     0,
+    totalGst: halfGst * 2,
+    amount:   round(lineTotal + halfGst * 2),
+  };
+}
+
 function round(value: number): number {
   return Math.round(value * 100) / 100;
 }

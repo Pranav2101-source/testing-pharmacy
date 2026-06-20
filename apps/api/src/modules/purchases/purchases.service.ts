@@ -9,23 +9,9 @@ import type { ImportedGRNRow } from "./purchases.import.js";
 import { AppError } from "../../lib/AppError.js";
 import { generatePONumber, generateGRNNumber } from "../billing/billing.constants.js";
 import { nextSequenceValue } from "../../lib/sequences.js";
+import { calcPurchaseLineGST } from "@pharmacy/utils";
 
 const NEAR_EXPIRY_DAYS = 90; // warn if any GRN item expires within 90 days
-
-function calcLineGST(purchaseRate: number, quantity: number, gstRate: number) {
-  const lineTotal = purchaseRate * quantity;
-  const cgst      = (lineTotal * gstRate) / 100 / 2;
-  const sgst      = cgst;
-  return { lineTotal, cgst, sgst, amount: lineTotal + cgst + sgst };
-}
-
-function calcGRNLineAmount(purchaseRate: number, receivedQty: number, discount: number, gstRate: number) {
-  const lineTotal  = purchaseRate * receivedQty;
-  const discounted = lineTotal * (1 - discount / 100);
-  const cgst       = (discounted * gstRate) / 100 / 2;
-  const sgst       = cgst;
-  return { lineTotal: discounted, cgst, sgst, amount: discounted + cgst + sgst };
-}
 
 export class PurchasesService {
   private repo: PurchasesRepo;
@@ -41,7 +27,7 @@ export class PurchasesService {
     let totalGst = 0;
 
     const items = input.items.map((item) => {
-      const { lineTotal, cgst, sgst, amount } = calcLineGST(item.purchaseRate, item.quantity, item.gstRate);
+      const { lineTotal, cgst, sgst, amount } = calcPurchaseLineGST(item.purchaseRate, item.quantity, 0, item.gstRate);
       subtotal += lineTotal;
       totalGst += cgst + sgst;
       return {
@@ -108,7 +94,7 @@ export class PurchasesService {
     let totalGst: number | undefined;
 
     const items = input.items?.map((item) => {
-      const { lineTotal, cgst, sgst, amount } = calcLineGST(item.purchaseRate, item.quantity, item.gstRate);
+      const { lineTotal, cgst, sgst, amount } = calcPurchaseLineGST(item.purchaseRate, item.quantity, 0, item.gstRate);
       subtotal = (subtotal ?? 0) + lineTotal;
       totalGst = (totalGst ?? 0) + cgst + sgst;
       return {
@@ -250,7 +236,7 @@ export class PurchasesService {
     let totalGst = 0;
 
     const items = input.items.map((item) => {
-      const { lineTotal, cgst, sgst, amount } = calcGRNLineAmount(item.purchaseRate, item.receivedQty, item.discount, item.gstRate);
+      const { lineTotal, cgst, sgst, amount } = calcPurchaseLineGST(item.purchaseRate, item.receivedQty, item.discount, item.gstRate);
       subtotal += lineTotal;
       totalGst += cgst + sgst;
       return {
@@ -308,7 +294,7 @@ export class PurchasesService {
     let totalGst: number | undefined;
 
     const items = input.items?.map((item) => {
-      const { lineTotal, cgst, sgst, amount } = calcGRNLineAmount(item.purchaseRate, item.receivedQty, item.discount, item.gstRate);
+      const { lineTotal, cgst, sgst, amount } = calcPurchaseLineGST(item.purchaseRate, item.receivedQty, item.discount, item.gstRate);
       subtotal = (subtotal ?? 0) + lineTotal;
       totalGst = (totalGst ?? 0) + cgst + sgst;
       return {

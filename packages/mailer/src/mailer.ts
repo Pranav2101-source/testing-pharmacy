@@ -27,12 +27,23 @@ export async function sendMail(opts: {
   text?:   string;
 }): Promise<void> {
   const transport = getTransporter();
-  if (!transport) return;
-  await transport.sendMail({
-    from:    process.env.SMTP_FROM ?? "noreply@checkup.app",
-    to:      opts.to,
-    subject: opts.subject,
-    html:    opts.html,
-    text:    opts.text,
-  });
+  if (!transport) {
+    // SMTP credentials not configured. In production this means password-reset
+    // emails and other transactional mail are silently dropped. Set SMTP_HOST,
+    // SMTP_USER, and SMTP_PASS to enable email delivery.
+    console.warn(`[mailer] SMTP not configured — skipping email to ${opts.to}: "${opts.subject}"`);
+    return;
+  }
+  try {
+    await transport.sendMail({
+      from:    process.env.SMTP_FROM ?? "noreply@checkup.app",
+      to:      opts.to,
+      subject: opts.subject,
+      html:    opts.html,
+      text:    opts.text,
+    });
+  } catch (err) {
+    console.error(`[mailer] sendMail failed — to: ${opts.to}, subject: "${opts.subject}"`, err);
+    throw err;
+  }
 }

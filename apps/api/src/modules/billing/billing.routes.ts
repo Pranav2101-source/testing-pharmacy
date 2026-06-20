@@ -7,6 +7,7 @@ import {
   createReturnSchema,
   listInvoicesQuerySchema,
   listReturnsQuerySchema,
+  invoiceSettingsConfigSchema,
 } from "./billing.schema.js";
 import { authenticate, requireOwner } from "../../middleware/auth.js";
 import { resolvePharmacy } from "../../middleware/tenant.js";
@@ -25,7 +26,7 @@ const billingRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.put("/settings", { preHandler: owner }, async (req, reply) => {
-    const config = req.body as Record<string, unknown>;
+    const config = invoiceSettingsConfigSchema.parse(req.body);
     const result = await service.saveInvoiceSettings(
       req.pharmacyId,
       req.user.sub,

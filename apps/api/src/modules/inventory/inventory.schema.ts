@@ -74,6 +74,7 @@ export const listInventoryQuerySchema = z.object({
 export const listLedgerQuerySchema = z.object({
   page:        z.coerce.number().int().positive().default(1),
   limit:       z.coerce.number().int().positive().max(100).default(50),
+  cursor:      z.string().optional(),
   inventoryId: z.string().optional(),
   medicineId:  z.string().optional(),
   userId:      z.string().optional(),
