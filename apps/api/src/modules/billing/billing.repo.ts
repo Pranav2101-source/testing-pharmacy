@@ -211,7 +211,7 @@ export class BillingRepo {
             quantity:       m.quantity,
             quantityBefore: m.quantityBefore,
             quantityAfter:  m.quantityAfter,
-            referenceType:  "invoice",
+            referenceType:  "INVOICE",
             referenceId:    invoice.id,
           })),
         });
@@ -402,7 +402,7 @@ export class BillingRepo {
             quantity:       m.quantity,
             quantityBefore: m.quantityBefore,
             quantityAfter:  m.quantityAfter,
-            referenceType:  "invoice_cancel",
+            referenceType:  "INVOICE_CANCEL",
             referenceId:    invoice.id,
             notes:          `Cancellation: ${params.reason}`,
           })),
@@ -544,6 +544,16 @@ export class BillingRepo {
             alreadyReturnedAmtMap.set(
               ri.invoiceItemId,
               (alreadyReturnedAmtMap.get(ri.invoiceItemId) ?? 0) + ri.amount,
+            );
+          } else {
+            // invoiceItemId is null — the linked InvoiceItem was deleted (SetNull cascade) or
+            // was never set. This return item is excluded from the "already returned" guard,
+            // which means the qty / amount for its medicine line is under-counted.
+            // Operators should investigate and manually reconcile if this appears in logs.
+            console.warn(
+              `[SalesReturn] invoiceItemId is null on SalesReturnItem ${ri.id} ` +
+              `(returnId=${ret.id}, invoiceId=${invoice.id}). ` +
+              "Over-return guard may be incomplete for this line item.",
             );
           }
         }
@@ -728,7 +738,7 @@ export class BillingRepo {
             quantity:       m.quantity,
             quantityBefore: m.quantityBefore,
             quantityAfter:  m.quantityAfter,
-            referenceType:  "sales_return",
+            referenceType:  "SALES_RETURN",
             referenceId:    salesReturn.id,
           })),
         });

@@ -9,7 +9,7 @@ import {
   Plus, Lightbulb, RefreshCw, ChevronRight, Search, Calendar,
   ChevronDown, SlidersHorizontal, Loader2, ArrowUpDown,
   ArrowUp, ArrowDown, FileX, AlertCircle, TrendingUp, RotateCcw,
-  BadgeIndianRupee, CreditCard, X,
+  BadgeIndianRupee, CreditCard, X, Banknote, Smartphone, Clock3, Package,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -41,13 +41,17 @@ type Invoice = {
   paymentStatus: PaymentStatus;
   totalAmount: number;
   isCancelled: boolean;
+  doctorName: string | null;
   customer: { name: string; phone: string | null } | null;
   user: { name: string };
+  _count: { items: number };
 };
 
 type SortCol = "invoiceNumber" | "createdAt" | "customerName" | "totalAmount" | "paymentStatus";
 type SortDir = "asc" | "desc";
 type AmountFilter = "all" | "lte500" | "501-2000" | "2001-5000" | "gt5000";
+type ModeFilter   = "all" | "CASH" | "UPI" | "CARD" | "CREDIT";
+type StatusFilter = "all" | "PAID" | "PENDING" | "PARTIAL" | "CANCELLED";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -151,6 +155,32 @@ function StatusBadge({ isCancelled, paymentStatus }: { isCancelled: boolean; pay
   );
 }
 
+// ─── Payment mode badge ───────────────────────────────────────────────────────
+
+const MODE_CFG: Record<PaymentMode, { label: string; cls: string; Icon: ElementType }> = {
+  CASH:   { label: "Cash",   cls: "bg-emerald-50 text-emerald-700 border-emerald-200", Icon: Banknote   },
+  UPI:    { label: "UPI",    cls: "bg-violet-50  text-violet-700  border-violet-200",  Icon: Smartphone },
+  CARD:   { label: "Card",   cls: "bg-blue-50    text-blue-700    border-blue-200",    Icon: CreditCard },
+  CREDIT: { label: "Credit", cls: "bg-orange-50  text-orange-700  border-orange-200",  Icon: Clock3     },
+};
+
+function PaymentModeBadge({ mode }: { mode: PaymentMode }) {
+  const cfg = MODE_CFG[mode] ?? { label: mode, cls: "bg-slate-50 text-slate-600 border-slate-200", Icon: Banknote };
+  return (
+    <span className={cn("inline-flex items-center gap-1 text-[11px] font-semibold border rounded-full px-2 py-0.5 whitespace-nowrap", cfg.cls)}>
+      <cfg.Icon className="w-3 h-3" />
+      {cfg.label}
+    </span>
+  );
+}
+
+const MODE_OPTIONS: [ModeFilter, string][] = [
+  ["all", "All Modes"], ["CASH", "Cash"], ["UPI", "UPI"], ["CARD", "Card"], ["CREDIT", "Credit"],
+];
+const STATUS_OPTIONS: [StatusFilter, string][] = [
+  ["all", "All Status"], ["PAID", "Paid"], ["PARTIAL", "Partial"], ["PENDING", "Pending"], ["CANCELLED", "Cancelled"],
+];
+
 // ─── Sort icon ────────────────────────────────────────────────────────────────
 
 function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
@@ -219,8 +249,12 @@ export default function BillingDashboardPage() {
   const [dateTo,        setDateTo]        = useState(fy.to);
   const [dateLabel,     setDateLabel]     = useState(fy.label);
   const [amountFilter,  setAmountFilter]  = useState<AmountFilter>("all");
+  const [modeFilter,    setModeFilter]    = useState<ModeFilter>("all");
+  const [statusFilter,  setStatusFilter]  = useState<StatusFilter>("all");
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showAmountDrop, setShowAmountDrop] = useState(false);
+  const [showModeDrop,   setShowModeDrop]   = useState(false);
+  const [showStatusDrop, setShowStatusDrop] = useState(false);
   const [draftFrom,     setDraftFrom]     = useState(fy.from);
   const [draftTo,       setDraftTo]       = useState(fy.to);
 
@@ -231,11 +265,15 @@ export default function BillingDashboardPage() {
   // ── Refs for outside-click ────────────────────────────────────
   const dateRef   = useRef<HTMLDivElement>(null);
   const amountRef = useRef<HTMLDivElement>(null);
+  const modeRef   = useRef<HTMLDivElement>(null);
+  const statusRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function onOutside(e: MouseEvent) {
       if (dateRef.current   && !dateRef.current.contains(e.target as Node))   setShowDatePicker(false);
       if (amountRef.current && !amountRef.current.contains(e.target as Node)) setShowAmountDrop(false);
+      if (modeRef.current   && !modeRef.current.contains(e.target as Node))   setShowModeDrop(false);
+      if (statusRef.current && !statusRef.current.contains(e.target as Node)) setShowStatusDrop(false);
     }
     document.addEventListener("mousedown", onOutside);
     return () => document.removeEventListener("mousedown", onOutside);
@@ -254,7 +292,12 @@ export default function BillingDashboardPage() {
           ...(search ? { search } : {}),
           from: dateFrom,
           to:   dateTo,
-          includeCancelled: true,
+          ...(modeFilter   !== "all" ? { paymentMode:   modeFilter }   : {}),
+          ...(statusFilter === "CANCELLED"
+            ? { status: "CANCELLED" }
+            : statusFilter !== "all"
+              ? { paymentStatus: statusFilter, includeCancelled: false }
+              : { includeCancelled: true }),
         },
       });
       setInvoices(data.data.items);
@@ -265,7 +308,7 @@ export default function BillingDashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, billSearch, nameSearch, dateFrom, dateTo]);
+  }, [page, billSearch, nameSearch, dateFrom, dateTo, modeFilter, statusFilter]);
 
   // Debounce search; fetch immediately on non-text param change
   useEffect(() => {
@@ -333,7 +376,8 @@ export default function BillingDashboardPage() {
   }
 
   const activeFilterCount =
-    (billSearch ? 1 : 0) + (nameSearch ? 1 : 0) + (amountFilter !== "all" ? 1 : 0);
+    (billSearch ? 1 : 0) + (nameSearch ? 1 : 0) +
+    (amountFilter !== "all" ? 1 : 0) + (modeFilter !== "all" ? 1 : 0) + (statusFilter !== "all" ? 1 : 0);
 
   // ── Table column header ───────────────────────────────────────
   function ColHeader({
@@ -554,6 +598,80 @@ export default function BillingDashboardPage() {
           </AnimatePresence>
         </div>
 
+        {/* Payment mode filter */}
+        <div ref={modeRef} className="relative">
+          <button
+            onClick={() => setShowModeDrop((v) => !v)}
+            className={cn(
+              "flex items-center gap-1.5 border rounded-md bg-white px-3 h-[30px] text-[13px] font-medium transition-colors whitespace-nowrap shadow-sm",
+              modeFilter !== "all" ? "border-violet-300 text-violet-600 ring-2 ring-violet-100" : "border-slate-200 text-slate-700 hover:border-slate-300"
+            )}
+          >
+            <Banknote className="w-3.5 h-3.5 text-slate-400" />
+            {modeFilter === "all" ? "Payment Mode" : MODE_OPTIONS.find(([v]) => v === modeFilter)?.[1]}
+            <ChevronDown className="w-3 h-3 text-slate-400" />
+          </button>
+          <AnimatePresence>
+            {showModeDrop && (
+              <motion.div
+                initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                transition={{ duration: 0.14 }}
+                className="absolute top-full left-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl z-20 py-1 min-w-[150px]"
+              >
+                {MODE_OPTIONS.map(([val, label]) => {
+                  const Icon = val !== "all" ? MODE_CFG[val as PaymentMode]?.Icon : null;
+                  return (
+                    <button key={val} onClick={() => { setModeFilter(val); setShowModeDrop(false); setPage(1); }}
+                      className={cn("w-full text-left px-4 py-2 text-[13px] hover:bg-violet-50 transition-colors flex items-center gap-2",
+                        modeFilter === val && "text-violet-600 font-semibold bg-violet-50/60")}>
+                      {Icon && <Icon className="w-3.5 h-3.5" />}
+                      {label}
+                    </button>
+                  );
+                })}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
+        {/* Status filter */}
+        <div ref={statusRef} className="relative">
+          <button
+            onClick={() => setShowStatusDrop((v) => !v)}
+            className={cn(
+              "flex items-center gap-1.5 border rounded-md bg-white px-3 h-[30px] text-[13px] font-medium transition-colors whitespace-nowrap shadow-sm",
+              statusFilter !== "all" ? "border-blue-300 text-blue-600 ring-2 ring-blue-100" : "border-slate-200 text-slate-700 hover:border-slate-300"
+            )}
+          >
+            <span>Status:</span>
+            <span className={statusFilter !== "all" ? "font-semibold" : "text-slate-400"}>
+              {STATUS_OPTIONS.find(([v]) => v === statusFilter)?.[1] ?? "All"}
+            </span>
+            <ChevronDown className="w-3 h-3 text-slate-400" />
+          </button>
+          <AnimatePresence>
+            {showStatusDrop && (
+              <motion.div
+                initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                transition={{ duration: 0.14 }}
+                className="absolute top-full left-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-xl z-20 py-1 min-w-[150px]"
+              >
+                {STATUS_OPTIONS.map(([val, label]) => (
+                  <button key={val} onClick={() => { setStatusFilter(val); setShowStatusDrop(false); setPage(1); }}
+                    className={cn("w-full text-left px-4 py-2 text-[13px] hover:bg-blue-50 transition-colors",
+                      statusFilter === val && "text-blue-600 font-semibold bg-blue-50/60")}>
+                    {label}
+                  </button>
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
         {/* Active filter count badge */}
         {activeFilterCount > 0 && (
           <span className="flex items-center gap-1 text-[11px] font-semibold text-blue-600 bg-blue-50 border border-blue-200 rounded-full px-2.5 py-0.5">
@@ -595,8 +713,26 @@ export default function BillingDashboardPage() {
             </span>
           )}
 
+          {modeFilter !== "all" && (
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-white border border-violet-200 text-violet-700 rounded-full px-2.5 py-0.5">
+              Mode: <span className="font-bold">{MODE_OPTIONS.find(([v]) => v === modeFilter)?.[1]}</span>
+              <button onClick={() => { setModeFilter("all"); setPage(1); }} className="ml-0.5 hover:text-red-500 transition-colors">
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          )}
+
+          {statusFilter !== "all" && (
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium bg-white border border-blue-200 text-blue-700 rounded-full px-2.5 py-0.5">
+              Status: <span className="font-bold">{STATUS_OPTIONS.find(([v]) => v === statusFilter)?.[1]}</span>
+              <button onClick={() => { setStatusFilter("all"); setPage(1); }} className="ml-0.5 hover:text-red-500 transition-colors">
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          )}
+
           <button
-            onClick={() => { setBillSearch(""); setNameSearch(""); setAmountFilter("all"); setPage(1); }}
+            onClick={() => { setBillSearch(""); setNameSearch(""); setAmountFilter("all"); setModeFilter("all"); setStatusFilter("all"); setPage(1); }}
             className="text-[11px] font-semibold text-red-500 hover:text-red-600 ml-auto transition-colors"
           >
             Clear all
@@ -609,28 +745,29 @@ export default function BillingDashboardPage() {
         <table className="w-full border-collapse">
           <thead className="sticky top-0 bg-white z-10">
             <tr className="border-b border-slate-200">
-              <ColHeader col="invoiceNumber" label="Bill No."     />
-              <ColHeader col="createdAt"     label="Entry Date"   />
-              <ColHeader                     label="Bill Date"  sortable={false} />
-              <ColHeader                     label="Entry By"   sortable={false} />
-              <ColHeader col="customerName"  label="Patient"      />
-              <ColHeader                     label="Mobile"     sortable={false} />
-              <ColHeader col="totalAmount"   label="Bill Amount"  />
-              <ColHeader col="paymentStatus" label="Status"       />
+              <ColHeader col="invoiceNumber" label="Bill No."    />
+              <ColHeader col="createdAt"     label="Date"        />
+              <ColHeader                     label="Entry By"  sortable={false} />
+              <ColHeader col="customerName"  label="Patient"     />
+              <ColHeader                     label="Mobile"    sortable={false} />
+              <ColHeader                     label="Payment"   sortable={false} />
+              <ColHeader                     label="Items"     sortable={false} />
+              <ColHeader col="totalAmount"   label="Amount"      />
+              <ColHeader col="paymentStatus" label="Status"      />
             </tr>
           </thead>
 
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={8} className="py-24 text-center">
+                <td colSpan={9} className="py-24 text-center">
                   <Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" />
                   <p className="text-slate-400 text-[13px] mt-3">Loading invoices…</p>
                 </td>
               </tr>
             ) : error ? (
               <tr>
-                <td colSpan={8} className="py-24 text-center">
+                <td colSpan={9} className="py-24 text-center">
                   <AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-3" />
                   <p className="text-red-500 text-[13px] font-medium">{error}</p>
                   <button
@@ -643,7 +780,7 @@ export default function BillingDashboardPage() {
               </tr>
             ) : displayedInvoices.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-24 text-center">
+                <td colSpan={9} className="py-24 text-center">
                   <FileX className="w-10 h-10 text-slate-200 mx-auto mb-3" />
                   <p className="text-slate-500 text-[14px] font-medium">No invoices found</p>
                   <p className="text-slate-400 text-[12px] mt-1">
@@ -667,9 +804,6 @@ export default function BillingDashboardPage() {
                   <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap">
                     {formatDate(inv.createdAt)}
                   </td>
-                  <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap">
-                    {formatDate(inv.createdAt)}
-                  </td>
                   <td className="px-4 py-3 text-[13px] text-slate-700 whitespace-nowrap">
                     {inv.user.name}
                   </td>
@@ -678,6 +812,15 @@ export default function BillingDashboardPage() {
                   </td>
                   <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap tabular-nums">
                     {inv.customer?.phone ?? <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="px-4 py-3">
+                    <PaymentModeBadge mode={inv.paymentMode} />
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="inline-flex items-center gap-1 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-full px-2 py-0.5">
+                      <Package className="w-3 h-3" />
+                      {inv._count.items}
+                    </span>
                   </td>
                   <td className="px-4 py-3 text-[13px] font-semibold text-slate-900 whitespace-nowrap tabular-nums">
                     {fmtCurrency(inv.totalAmount)}

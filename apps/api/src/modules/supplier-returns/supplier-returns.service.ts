@@ -14,11 +14,16 @@ export class SupplierReturnsService {
 
   async create(pharmacyId: string, userId: string, input: CreateSRInput) {
     const items = input.items.map((item) => {
-      // A valid debit note must include GST so the supplier can issue a
-      // corresponding credit note and the pharmacy can reverse its ITC.
-      // amount = purchaseRate × qty × (1 + gstRate/100)
-      const taxMultiplier = 1 + item.gstRate / 100;
-      const amount = parseFloat((item.purchaseRate * item.quantity * taxMultiplier).toFixed(2));
+      // Compute line-level GST breakdown for the debit note.
+      // taxableAmount = purchaseRate × qty (no discount on supplier returns)
+      // cgst = sgst = taxableAmount × gstRate / 2 / 100 (intra-state; igst for inter-state handled at header)
+      const taxableAmount = parseFloat((item.purchaseRate * item.quantity).toFixed(2));
+      const gstRate       = item.gstRate;
+      const halfGst       = parseFloat((taxableAmount * gstRate / 100 / 2).toFixed(2));
+      const cgst          = halfGst;
+      const sgst          = halfGst;
+      const igst          = 0; // set at header level if inter-state; line items always use cgst+sgst
+      const amount        = parseFloat((taxableAmount + cgst + sgst).toFixed(2));
       return {
         inventoryId:  item.inventoryId,
         medicineId:   item.medicineId,
@@ -27,23 +32,37 @@ export class SupplierReturnsService {
         expiryDate:   new Date(item.expiryDate),
         quantity:     item.quantity,
         purchaseRate: item.purchaseRate,
+        taxableAmount,
+        gstRate,
+        cgst,
+        sgst,
+        igst,
         amount,
-        reason:       item.reason,
+        reason: item.reason,
       };
     });
 
-    const totalAmount = parseFloat(items.reduce((s, i) => s + i.amount, 0).toFixed(2));
+    const subtotal      = parseFloat(items.reduce((s, i) => s + i.taxableAmount, 0).toFixed(2));
+    const totalCgst     = parseFloat(items.reduce((s, i) => s + i.cgst, 0).toFixed(2));
+    const totalSgst     = parseFloat(items.reduce((s, i) => s + i.sgst, 0).toFixed(2));
+    const totalGst      = parseFloat((totalCgst + totalSgst).toFixed(2));
+    const totalAmount   = parseFloat((subtotal + totalGst).toFixed(2));
 
-    // Return number from the durable Postgres counter — race-safe, survives Redis restarts.
     const seq          = await nextSequenceValue(this.app.prisma, pharmacyId, "SUPPLIER_RETURN");
     const returnNumber = generateSRNumber(seq);
 
     return this.repo.create(pharmacyId, userId, {
       returnNumber,
-      supplierId:  input.supplierId,
-      debitNoteNo: input.debitNoteNo,
-      notes:       input.notes,
+      supplierId:    input.supplierId,
+      debitNoteNo:   input.debitNoteNo,
+      notes:         input.notes,
       items,
+      subtotal,
+      taxableAmount: subtotal,
+      cgst:          totalCgst,
+      sgst:          totalSgst,
+      igst:          0,
+      totalGst,
       totalAmount,
     });
   }

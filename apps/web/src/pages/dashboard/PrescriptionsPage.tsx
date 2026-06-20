@@ -11,6 +11,16 @@ import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
 
+// ─── Drug schedule descriptions ───────────────────────────────────────────────
+
+const SCHEDULE_TOOLTIP: Record<string, string> = {
+  H:   "Schedule H — Prescription required (antibiotics, psychotropics, etc.)",
+  H1:  "Schedule H1 — High-risk prescription drug (stricter record keeping required)",
+  X:   "Schedule X — Controlled substance (narcotic/psychotropic, govt. license required)",
+  G:   "Schedule G — Caution: to be taken under medical supervision",
+  OTC: "OTC — Over the counter, no prescription needed",
+};
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type PrescriptionStatus = "ACTIVE" | "PARTIAL" | "DISPENSED" | "EXPIRED" | "CANCELLED";
@@ -748,7 +758,11 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
                       <td className="px-3 py-2 font-medium text-slate-800">{item.medicineName}</td>
                       <td className="px-3 py-2 text-center">
                         {item.schedule
-                          ? <span className={cn("px-1.5 py-0.5 rounded text-[10px] font-bold", item.schedule === "X" ? "bg-red-100 text-red-700" : item.schedule === "H1" ? "bg-orange-100 text-orange-700" : item.schedule === "H" ? "bg-yellow-100 text-yellow-700" : "bg-slate-100 text-slate-600")}>{item.schedule}</span>
+                          ? <span
+                              title={SCHEDULE_TOOLTIP[item.schedule] ?? item.schedule}
+                              className={cn("px-1.5 py-0.5 rounded text-[10px] font-bold cursor-help", item.schedule === "X" ? "bg-red-100 text-red-700" : item.schedule === "H1" ? "bg-orange-100 text-orange-700" : item.schedule === "H" ? "bg-yellow-100 text-yellow-700" : "bg-slate-100 text-slate-600")}>
+                              {item.schedule}
+                            </span>
                           : <span className="text-slate-300">—</span>}
                       </td>
                       <td className="px-3 py-2 text-center font-mono">{item.quantity}</td>

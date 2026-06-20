@@ -56,6 +56,7 @@ type Invoice = {
   cancelledAt: string | null;
   cancelReason: string | null;
   doctorName: string | null;
+  doctorRegNo: string | null;
   notes: string | null;
   customer: { name: string; phone: string | null; email: string | null } | null;
   user: { name: string };
@@ -168,6 +169,7 @@ export default function BillDetailPage() {
     customerPhone:   invoice.customer?.phone   || undefined,
     prescriptionNo:  invoice.prescription?.prescriptionNumber || undefined,
     doctorName:      invoice.doctorName        || undefined,
+    doctorRegNo:     invoice.doctorRegNo       || undefined,
     cashierName:     invoice.user.name         || undefined,
     paymentMode:     invoice.paymentMode,
     paymentStatus:   invoice.paymentStatus,
@@ -365,6 +367,9 @@ export default function BillDetailPage() {
                   <span className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">Doctor</span>
                 </div>
                 <p className="text-[13px] font-semibold text-slate-800">{invoice.doctorName}</p>
+                {invoice.doctorRegNo && (
+                  <p className="text-[11px] text-slate-500 mt-0.5">Reg: {invoice.doctorRegNo}</p>
+                )}
               </div>
             )}
             {invoice.notes && (

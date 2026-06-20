@@ -356,10 +356,14 @@ export default function CustomersPage() {
                     {c.creditLimit > 0 ? (
                       <div>
                         <p className="font-semibold text-slate-800">₹{c.creditLimit.toLocaleString()}</p>
-                        {c.creditUsed > 0 && (
+                        {c.creditUsed > 0 ? (
                           <p className="text-[11px] text-amber-600">₹{c.creditUsed.toLocaleString()} used</p>
+                        ) : (
+                          <p className="text-[11px] text-slate-400">None used</p>
                         )}
                       </div>
+                    ) : c.creditLimit === 0 ? (
+                      <span className="text-[11px] text-slate-400 italic" title="No credit limit configured">No credit</span>
                     ) : (
                       <span className="text-slate-300">—</span>
                     )}

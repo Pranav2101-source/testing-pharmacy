@@ -230,7 +230,7 @@ export class StockAuditRepo {
                   quantity:       Math.abs(a.varianceQty),
                   quantityBefore: a.qtyBefore,
                   quantityAfter:  a.qtyAfter,
-                  referenceType:  "StockAuditSession",
+                  referenceType:  "STOCK_AUDIT",
                   referenceId:    id,
                   notes:          `Stock audit ${session.sessionNumber}: variance ${a.varianceQty > 0 ? "+" : ""}${a.varianceQty}`,
                 })),

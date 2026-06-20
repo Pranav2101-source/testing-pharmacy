@@ -69,6 +69,7 @@ export type FullSupplier = Supplier & {
   gstin: string | null; dlNumber: string | null; email: string | null;
   address: string | null; city: string | null; state: string | null;
   creditLimit: number; creditDays: number; paymentTerms: string | null;
+  ledgerBalance: number;
   isActive: boolean; _count: { purchaseOrders: number };
 };
 

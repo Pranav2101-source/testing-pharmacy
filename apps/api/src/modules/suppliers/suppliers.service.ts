@@ -145,6 +145,7 @@ export class SuppliersService {
       subtotal += lineTotal;
       totalGst += cgst + sgst;
       return {
+        medicineId:   item.medicineId,
         medicineName: item.medicineName,
         batchNumber:  item.batchNumber,
         expiryDate:   new Date(item.expiryDate),

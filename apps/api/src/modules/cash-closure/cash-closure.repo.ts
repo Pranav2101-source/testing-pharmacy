@@ -1,6 +1,11 @@
 import type { Db } from "@pharmacy/database";
 import type { ListCashClosureQuery } from "./cash-closure.schema.js";
 
+// "YYYY-MM-DD" string → UTC midnight Date, matching how @db.Date is stored.
+function parseDate(s: string): Date {
+  return new Date(s + "T00:00:00.000Z");
+}
+
 export class CashClosureRepo {
   constructor(private db: Db) {}
 
@@ -22,8 +27,8 @@ export class CashClosureRepo {
       ...(from || to
         ? {
             closureDate: {
-              ...(from ? { gte: from } : {}),
-              ...(to   ? { lte: to }   : {}),
+              ...(from ? { gte: parseDate(from) } : {}),
+              ...(to   ? { lte: parseDate(to) }   : {}),
             },
           }
         : {}),
@@ -41,7 +46,7 @@ export class CashClosureRepo {
   }
 
   findByDate(pharmacyId: string, closureDate: string) {
-    return this.db.cashClosure.findUnique({ where: { pharmacyId_closureDate: { pharmacyId, closureDate } } });
+    return this.db.cashClosure.findUnique({ where: { pharmacyId_closureDate: { pharmacyId, closureDate: parseDate(closureDate) } } });
   }
 
   findById(id: string, pharmacyId: string) {
@@ -54,7 +59,7 @@ export class CashClosureRepo {
   create(data: {
     pharmacyId:   string;
     userId:       string;
-    closureDate:  string;
+    closureDate:  Date;
     openingCash:  number;
     cashSales:    number;
     upiSales:     number;

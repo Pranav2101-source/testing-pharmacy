@@ -216,8 +216,8 @@ export class InventoryRepo {
           quantity:      0,
           quantityBefore: item.quantity,
           quantityAfter:  item.quantity,
-          referenceType:  `STATUS_CHANGE:${item.status}->${status}`,
-          notes:          reason,
+          referenceType:  "STATUS_CHANGE",
+          notes:          `${item.status}→${status}${reason ? `: ${reason}` : ""}`,
         },
       });
 
@@ -574,12 +574,27 @@ export class InventoryRepo {
       });
 
       if (affected.length === 0)
-        throw AppError.notFound("No ACTIVE batches found matching the given batch number")
+        throw AppError.notFound("No ACTIVE batches found matching the given batch number");
 
-      // Batch all status updates + movement inserts — replaces 2N sequential queries
+      const affectedIds = affected.map((i) => i.id);
+
+      // 1. Create the authoritative recall record first so we have its ID.
+      const recall = await tx.batchRecall.create({
+        data: {
+          pharmacyId,
+          batchNumber: data.batchNumber,
+          medicineId:  data.medicineId ?? null,
+          reason:      data.reason,
+          recalledBy:  userId,
+          affectedIds,
+        },
+      });
+
+      // 2. Quarantine affected batches + write one ledger movement per item.
+      //    referenceId links each movement back to the BatchRecall row.
       await Promise.all([
         tx.inventory.updateMany({
-          where: { id: { in: affected.map((i) => i.id) } },
+          where: { id: { in: affectedIds } },
           data:  { status: "QUARANTINE" },
         }),
         tx.inventoryMovement.createMany({
@@ -593,7 +608,8 @@ export class InventoryRepo {
             quantityBefore: item.quantity,
             quantityAfter:  item.quantity,
             referenceType:  "BATCH_RECALL",
-            notes:          `RECALL: ${data.reason}`,
+            referenceId:    recall.id,
+            notes:          data.reason,
           })),
         }),
       ]);
@@ -602,19 +618,20 @@ export class InventoryRepo {
         data: {
           pharmacyId,
           userId,
-          action:   "UPDATE",
-          entity:   "BatchRecall",
-          newData:  {
+          action:  "CREATE",
+          entity:  "BatchRecall",
+          entityId: recall.id,
+          newData: {
             batchNumber:   data.batchNumber,
             medicineId:    data.medicineId,
             reason:        data.reason,
             affectedCount: affected.length,
-            affectedIds:   affected.map((i) => i.id),
+            affectedIds,
           },
         },
       });
 
-      return { affectedCount: affected.length, items: affected };
+      return { affectedCount: affected.length, recallId: recall.id, items: affected };
     });
   }
 
@@ -623,33 +640,28 @@ export class InventoryRepo {
     limit:        number;
     batchNumber?: string;
   }) {
+    // Query the dedicated BatchRecall table — no longer relies on string probing InventoryMovement.
     const where = {
       pharmacyId,
-      status: "QUARANTINE" as const,
-      inventoryMovements: {
-        some: { notes: { startsWith: "RECALL:" } },
-      },
-      ...(params.batchNumber ? { batchNumber: { contains: params.batchNumber, mode: "insensitive" as const } } : {}),
+      ...(params.batchNumber
+        ? { batchNumber: { contains: params.batchNumber, mode: "insensitive" as const } }
+        : {}),
     };
 
-    const [items, total] = await Promise.all([
-      this.db.inventory.findMany({
+    const [recalls, total] = await Promise.all([
+      this.db.batchRecall.findMany({
         where,
         include: {
-          ...INVENTORY_INCLUDE,
-          inventoryMovements: {
-            where:   { notes: { startsWith: "RECALL:" } },
-            orderBy: { createdAt: "desc" },
-            take:    1,
-          },
+          medicine: { select: { id: true, name: true, genericName: true } },
+          user:     { select: { id: true, name: true } },
         },
-        orderBy: { updatedAt: "desc" },
+        orderBy: { recalledAt: "desc" },
         skip: (params.page - 1) * params.limit,
         take: params.limit,
       }),
-      this.db.inventory.count({ where }),
+      this.db.batchRecall.count({ where }),
     ]);
 
-    return { items, total, page: params.page, limit: params.limit };
+    return { items: recalls, total, page: params.page, limit: params.limit };
   }
 }

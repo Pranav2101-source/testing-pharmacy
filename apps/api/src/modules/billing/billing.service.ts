@@ -79,7 +79,7 @@ export class BillingService {
     // 3 separate customer fetches later in the flow.
     let isInterstate = input.isInterstate;
 
-    const [pharmacyState, customerForIgst, medicineOverrides] = await Promise.all([
+    const [pharmacyState, customerForIgst, medicineOverrides, doctorForSnapshot] = await Promise.all([
       this.app.prisma.pharmacy.findUnique({
         where:  { id: pharmacyId },
         select: { state: true, name: true },
@@ -95,6 +95,13 @@ export class BillingService {
         : Promise.resolve(null),
       // Per-pharmacy GST overrides — applied over the global catalog rate
       this.repo.getMedicineOverrides(pharmacyId, [...new Set(batches.map((b) => b.medicine.id))]),
+      // Snapshot doctor registration number for regulatory invoices.
+      input.doctorId
+        ? this.app.prisma.doctor.findFirst({
+            where:  { id: input.doctorId, pharmacyId },
+            select: { registrationNo: true },
+          })
+        : Promise.resolve(null),
     ]);
 
     const overrideGstRate = new Map(
@@ -248,10 +255,11 @@ export class BillingService {
         user:          { connect: { id: userId } },
         ...(input.customerId ? { customer: { connect: { id: input.customerId } } } : {}),
         ...(input.doctorId   ? { doctor:   { connect: { id: input.doctorId   } } } : {}),
-        // Snapshot — preserved even if the customer record changes later
+        // Snapshots — preserved even if the linked records change later
         customerName:   customerForIgst?.name  ?? null,
         customerPhone:  customerForIgst?.phone ?? null,
         doctorName:     input.doctorName,
+        doctorRegNo:    doctorForSnapshot?.registrationNo ?? null,
         ...(input.prescriptionId ? { prescription: { connect: { id: input.prescriptionId } } } : {}),
         paymentMode:    input.paymentMode,
         paymentStatus:  input.paymentStatus,

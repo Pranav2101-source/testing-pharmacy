@@ -58,6 +58,12 @@ export class SupplierPaymentsRepo {
         },
       });
 
+      // Decrement supplier ledger balance by the payment amount.
+      await tx.supplier.update({
+        where: { id: data.supplierId, pharmacyId },
+        data:  { ledgerBalance: { decrement: data.amount } },
+      });
+
       await tx.auditLog.create({
         data: {
           pharmacyId, userId,

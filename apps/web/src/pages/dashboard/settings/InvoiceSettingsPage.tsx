@@ -25,6 +25,7 @@ const MOCK_INVOICE: PrintInvoiceData = {
   abha:             "91-1234-5678-9012",
   prescriptionNo:   "RX-2025-0042",
   doctorName:       "Dr. Priya Mehta",
+  doctorRegNo:      "MH-12345",
   cashierName:      "Jitesh Kumar",
   paymentMode:      "CASH",
   paymentStatus:    "PAID",

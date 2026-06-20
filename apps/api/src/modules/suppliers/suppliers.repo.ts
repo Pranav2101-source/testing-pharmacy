@@ -111,6 +111,7 @@ export class SuppliersRepo {
     totalGst:    number;
     totalAmount: number;
     items: Array<{
+      medicineId:   string;
       medicineName: string;
       batchNumber:  string;
       expiryDate:   Date;

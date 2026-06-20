@@ -131,6 +131,7 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
       {pat.showUhid           && invoice.uhid            && <div style={mono}>{row("UHID:",     invoice.uhid,            W)}</div>}
       {pat.showAbha           && invoice.abha            && <div style={mono}>{row("ABHA:",     invoice.abha,            W)}</div>}
       {pat.showDoctor         && invoice.doctorName      && <div style={mono}>{row("Doctor:",   invoice.doctorName,      W)}</div>}
+      {pat.showDoctor         && invoice.doctorRegNo     && <div style={mono}>{row("Reg No:",   invoice.doctorRegNo,     W)}</div>}
       {pat.showPrescriptionNo && invoice.prescriptionNo  && <div style={mono}>{row("Rx No:",    invoice.prescriptionNo,  W)}</div>}
       {pat.showCashier        && invoice.cashierName     && <div style={mono}>{row("Cashier:",  invoice.cashierName,     W)}</div>}
 

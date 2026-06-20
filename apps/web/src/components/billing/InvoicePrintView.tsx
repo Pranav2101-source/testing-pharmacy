@@ -17,6 +17,7 @@ export type PrintInvoiceData = {
   abha?:            string;
   prescriptionNo?:  string;
   doctorName?:      string;
+  doctorRegNo?:     string;
   paymentMode:      string;
   paymentStatus:    string;
   isInterstate?:    boolean;
@@ -252,7 +253,7 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
               {pat.showAddress        && invoice.customerAddress && <p><strong>Address:</strong>    {invoice.customerAddress}</p>}
               {pat.showUhid           && invoice.uhid            && <p><strong>UHID:</strong>       {invoice.uhid}</p>}
               {pat.showAbha           && invoice.abha            && <p><strong>ABHA:</strong>       {invoice.abha}</p>}
-              {pat.showDoctor         && invoice.doctorName      && <p><strong>Doctor:</strong>     {invoice.doctorName}</p>}
+              {pat.showDoctor         && invoice.doctorName      && <p><strong>Doctor:</strong>     {invoice.doctorName}{invoice.doctorRegNo ? ` (Reg: ${invoice.doctorRegNo})` : ""}</p>}
               {pat.showPrescriptionNo && invoice.prescriptionNo  && <p><strong>Rx No:</strong>      {invoice.prescriptionNo}</p>}
             </div>
           </div>

@@ -613,7 +613,7 @@ export class PurchasesRepo {
           `;
         }
 
-        // Mark GRN confirmed — set payment due date (#16)
+        // Mark GRN confirmed — set payment due date.
         const confirmed = await tx.goodsReceiptNote.update({
           where: { id },
           data:  { status: "CONFIRMED", confirmedAt, paymentDueDate },
@@ -621,6 +621,13 @@ export class PurchasesRepo {
             supplier: { select: { id: true, name: true } },
             items:    { include: { medicine: { select: { name: true } } } },
           },
+        });
+
+        // Increment supplier ledger balance by the GRN total.
+        // Keeps Supplier.ledgerBalance current so balance reads are O(1).
+        await tx.supplier.update({
+          where: { id: grn.supplierId, pharmacyId },
+          data:  { ledgerBalance: { increment: grn.totalAmount } },
         });
 
         // Update linked PO status

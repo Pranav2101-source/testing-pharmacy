@@ -6,45 +6,67 @@ export class SupplierReturnsRepo {
   constructor(private db: Db) {}
 
   async create(pharmacyId: string, userId: string, data: {
-    returnNumber: string;
-    supplierId:  string;
-    debitNoteNo?: string;
-    notes?:      string;
+    returnNumber:  string;
+    supplierId:    string;
+    debitNoteNo?:  string;
+    notes?:        string;
     items: {
-      inventoryId:  string;
-      medicineId:   string;
-      medicineName: string;
-      batchNumber:  string;
-      expiryDate:   Date;
-      quantity:     number;
-      purchaseRate: number;
-      amount:       number;
-      reason:       string;
+      inventoryId:   string;
+      medicineId:    string;
+      medicineName:  string;
+      batchNumber:   string;
+      expiryDate:    Date;
+      quantity:      number;
+      purchaseRate:  number;
+      taxableAmount: number;
+      gstRate:       number;
+      cgst:          number;
+      sgst:          number;
+      igst:          number;
+      amount:        number;
+      reason:        string;
     }[];
-    totalAmount: number;
+    subtotal:      number;
+    taxableAmount: number;
+    cgst:          number;
+    sgst:          number;
+    igst:          number;
+    totalGst:      number;
+    totalAmount:   number;
   }) {
     return withTenant(this.db, pharmacyId, async (tx) => {
       const sr = await tx.supplierReturn.create({
         data: {
           pharmacyId,
-          supplierId:  data.supplierId,
-          returnNumber: data.returnNumber,
-          debitNoteNo: data.debitNoteNo,
-          notes:       data.notes,
-          status:      "DRAFT",
-          totalAmount: data.totalAmount,
+          supplierId:    data.supplierId,
+          returnNumber:  data.returnNumber,
+          debitNoteNo:   data.debitNoteNo,
+          notes:         data.notes,
+          status:        "DRAFT",
+          subtotal:      data.subtotal,
+          taxableAmount: data.taxableAmount,
+          cgst:          data.cgst,
+          sgst:          data.sgst,
+          igst:          data.igst,
+          totalGst:      data.totalGst,
+          totalAmount:   data.totalAmount,
           items: {
             create: data.items.map((item) => ({
-              pharmacy:     { connect: { id: pharmacyId } },
-              inventory:    { connect: { id: item.inventoryId } },
-              medicine:     { connect: { id: item.medicineId } },
-              medicineName: item.medicineName,
-              batchNumber:  item.batchNumber,
-              expiryDate:   item.expiryDate,
-              quantity:     item.quantity,
-              purchaseRate: item.purchaseRate,
-              amount:       item.amount,
-              reason:       item.reason as any,
+              pharmacy:      { connect: { id: pharmacyId } },
+              inventory:     { connect: { id: item.inventoryId } },
+              medicine:      { connect: { id: item.medicineId } },
+              medicineName:  item.medicineName,
+              batchNumber:   item.batchNumber,
+              expiryDate:    item.expiryDate,
+              quantity:      item.quantity,
+              purchaseRate:  item.purchaseRate,
+              taxableAmount: item.taxableAmount,
+              gstRate:       item.gstRate,
+              cgst:          item.cgst,
+              sgst:          item.sgst,
+              igst:          item.igst,
+              amount:        item.amount,
+              reason:        item.reason as any,
             })),
           },
         },
@@ -116,6 +138,12 @@ export class SupplierReturnsRepo {
           },
         });
 
+        // Supplier return reduces what the pharmacy owes — decrement ledger balance.
+        await tx.supplier.update({
+          where: { id: sr.supplierId, pharmacyId },
+          data:  { ledgerBalance: { decrement: sr.totalAmount } },
+        });
+
         await tx.auditLog.create({
           data: { pharmacyId, userId, action: "CONFIRM", entity: "SupplierReturn", entityId: id, newData: { status: "CONFIRMED", returnNumber: sr.returnNumber } as Prisma.InputJsonValue },
         });
@@ -148,7 +176,7 @@ export class SupplierReturnsRepo {
     return this.db.supplierReturn.findFirst({
       where:   { id, pharmacyId },
       include: {
-        supplier: { select: { id: true, name: true, phone: true } },
+        supplier: { select: { id: true, name: true, phone: true, gstin: true } },
         items:    { include: { medicine: { select: { name: true, genericName: true, hsnCode: true } } } },
       },
     });

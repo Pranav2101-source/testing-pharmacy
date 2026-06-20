@@ -71,7 +71,7 @@ export class CashClosureService {
     const closure = await this.repo.create({
       pharmacyId,
       userId,
-      closureDate,
+      closureDate:  new Date(closureDate + "T00:00:00.000Z"),
       openingCash:  input.openingCash,
       cashSales,
       upiSales,
@@ -136,16 +136,23 @@ export class CashClosureService {
 }
 
 function normalise(c: Record<string, unknown>) {
+  const raw = c as any;
+  // closureDate is a JS Date from @db.Date; format back to "YYYY-MM-DD" string
+  // so the API contract is unchanged for all callers.
+  const closureDate = raw.closureDate instanceof Date
+    ? raw.closureDate.toISOString().slice(0, 10)
+    : raw.closureDate as string;
   return {
     ...c,
-    openingCash:  Number((c as any).openingCash),
-    cashSales:    Number((c as any).cashSales),
-    upiSales:     Number((c as any).upiSales),
-    cardSales:    Number((c as any).cardSales),
-    creditSales:  Number((c as any).creditSales),
-    walletSales:  Number((c as any).walletSales),
-    expectedCash: Number((c as any).expectedCash),
-    actualCash:   Number((c as any).actualCash),
-    variance:     Number((c as any).variance),
+    closureDate,
+    openingCash:  Number(raw.openingCash),
+    cashSales:    Number(raw.cashSales),
+    upiSales:     Number(raw.upiSales),
+    cardSales:    Number(raw.cardSales),
+    creditSales:  Number(raw.creditSales),
+    walletSales:  Number(raw.walletSales),
+    expectedCash: Number(raw.expectedCash),
+    actualCash:   Number(raw.actualCash),
+    variance:     Number(raw.variance),
   };
 }

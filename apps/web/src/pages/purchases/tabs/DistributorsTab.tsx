@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { Loader2, RefreshCw, Plus, Search, X, Building2, Phone, Mail, MapPin, Edit2, History, CreditCard } from "lucide-react";
+import { Loader2, RefreshCw, Plus, Search, X, Building2, Phone, Mail, MapPin, Edit2, History, CreditCard, Globe } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -35,9 +35,26 @@ function SupplierHistoryModal({ supplier, onClose }: { supplier: FullSupplier; o
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
           <div>
             <h2 className="text-[15px] font-bold text-slate-900">Purchase History</h2>
-            <p className="text-[12px] text-slate-400 mt-0.5">{supplier.name}</p>
+            <p className="text-[13px] font-semibold text-slate-700 mt-0.5">{supplier.name}</p>
+            <div className="flex items-center gap-3 mt-1 flex-wrap">
+              {supplier.phone && (
+                <a href={`tel:${supplier.phone}`} className="flex items-center gap-1 text-[12px] text-blue-600 hover:underline">
+                  <Phone className="w-3 h-3" />{supplier.phone}
+                </a>
+              )}
+              {supplier.email && (
+                <a href={`mailto:${supplier.email}`} className="flex items-center gap-1 text-[12px] text-blue-600 hover:underline">
+                  <Mail className="w-3 h-3" />{supplier.email}
+                </a>
+              )}
+              {(supplier.city || supplier.state) && (
+                <span className="flex items-center gap-1 text-[12px] text-slate-400">
+                  <Globe className="w-3 h-3" />{[supplier.city, supplier.state].filter(Boolean).join(", ")}
+                </span>
+              )}
+            </div>
           </div>
-          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4 text-slate-400" /></button>
+          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-slate-100 flex items-center justify-center flex-shrink-0"><X className="w-4 h-4 text-slate-400" /></button>
         </div>
         <div className="flex-1 overflow-y-auto p-5">
           {loading ? (
@@ -46,14 +63,24 @@ function SupplierHistoryModal({ supplier, onClose }: { supplier: FullSupplier; o
             <p className="text-center py-16 text-slate-400">No history found</p>
           ) : (
             <div className="space-y-5">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div className="bg-blue-50 rounded-xl p-4">
                   <p className="text-[11px] font-bold text-blue-400 uppercase tracking-wide">Total Orders</p>
                   <p className="text-[26px] font-black text-blue-700 mt-1">{data.summary.totalOrders}</p>
                 </div>
                 <div className="bg-emerald-50 rounded-xl p-4">
                   <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wide">Total Spend</p>
-                  <p className="text-[22px] font-black text-emerald-700 mt-1">₹{data.summary.totalSpend.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</p>
+                  <p className="text-[20px] font-black text-emerald-700 mt-1">₹{data.summary.totalSpend.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</p>
+                </div>
+                <div className={cn("rounded-xl p-4", supplier.ledgerBalance > 0 ? "bg-orange-50" : "bg-slate-50")}>
+                  <p className={cn("text-[11px] font-bold uppercase tracking-wide", supplier.ledgerBalance > 0 ? "text-orange-400" : "text-slate-400")}>Outstanding</p>
+                  <p className={cn("text-[18px] font-black mt-1", supplier.ledgerBalance > 0 ? "text-orange-700" : "text-slate-400")}>
+                    {supplier.ledgerBalance > 0
+                      ? `₹${supplier.ledgerBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}`
+                      : supplier.ledgerBalance < 0
+                        ? `₹${Math.abs(supplier.ledgerBalance).toLocaleString("en-IN", { minimumFractionDigits: 2 })} CR`
+                        : "Nil"}
+                  </p>
                 </div>
               </div>
               {(supplier.creditLimit > 0 || supplier.creditDays > 0) && (
@@ -148,16 +175,16 @@ export function DistributorsTab({ onSupplierAdded }: { onSupplierAdded: (s: Full
         <table className="w-full border-collapse">
           <thead className="sticky top-0 bg-white z-10 shadow-[0_1px_0_0_#e2e8f0]">
             <tr>
-              {["Distributor Name","Contact","City / State","GSTIN","Drug Lic.","Credit Limit","Credit Days","Payment Terms","POs",""].map((h) => (
+              {["Distributor Name","Contact","City / State","GSTIN","Drug Lic.","Credit Limit","Outstanding","Credit Days","Payment Terms","POs",""].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-[12px] font-semibold text-slate-500 whitespace-nowrap">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={10} className="py-24 text-center"><Loader2 className="w-8 h-8 animate-spin text-blue-400 mx-auto" /></td></tr>
+              <tr><td colSpan={11} className="py-24 text-center"><Loader2 className="w-8 h-8 animate-spin text-blue-400 mx-auto" /></td></tr>
             ) : suppliers.length === 0 ? (
-              <tr><td colSpan={10}>
+              <tr><td colSpan={11}>
                 <div className="flex flex-col items-center justify-center py-20 text-center">
                   <div className="w-16 h-16 rounded-2xl bg-blue-50 flex items-center justify-center mb-4">
                     <Building2 className="w-7 h-7 text-blue-300" />
@@ -199,6 +226,13 @@ export function DistributorsTab({ onSupplierAdded }: { onSupplierAdded: (s: Full
                 <td className="px-4 py-3 text-[11px] text-slate-500">{s.dlNumber ?? "—"}</td>
                 <td className="px-4 py-3 text-[12px] text-slate-700 tabular-nums">
                   {s.creditLimit > 0 ? `₹${s.creditLimit.toLocaleString("en-IN")}` : <span className="text-slate-300">—</span>}
+                </td>
+                <td className="px-4 py-3 text-[12px] tabular-nums">
+                  {s.ledgerBalance > 0
+                    ? <span className="font-semibold text-orange-600">₹{s.ledgerBalance.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+                    : s.ledgerBalance < 0
+                      ? <span className="font-semibold text-emerald-600">₹{Math.abs(s.ledgerBalance).toLocaleString("en-IN", { minimumFractionDigits: 2 })} CR</span>
+                      : <span className="text-slate-300">—</span>}
                 </td>
                 <td className="px-4 py-3">
                   {s.creditDays > 0

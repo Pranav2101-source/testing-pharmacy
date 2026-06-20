@@ -138,6 +138,14 @@ export class PurchasesService {
   }
 
   async approvePO(id: string, pharmacyId: string, userId: string, input: ApprovePOInput) {
+    // Verify the approver is an active member of this pharmacy before recording approval.
+    // The FK on PurchaseOrder.approvedBy references users.id globally, so we must
+    // enforce tenant scoping here — the DB cannot express cross-pharmacy membership.
+    const approver = await this.app.prisma.user.findFirst({
+      where:  { id: userId, pharmacyId, isActive: true },
+      select: { id: true },
+    });
+    if (!approver) throw AppError.forbidden("Approver does not belong to this pharmacy");
     return this.repo.approvePO(id, pharmacyId, userId, input.approved, input.rejectionReason);
   }
 
