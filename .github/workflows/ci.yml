@@ -87,7 +87,7 @@ jobs:
       # exit-code 0: reports CVEs but doesn't block the pipeline yet.
       # Change to 1 when you're ready to enforce no HIGH/CRITICAL in prod.
       - name: Scan image for vulnerabilities
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
           format:    sarif
