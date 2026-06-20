@@ -317,7 +317,7 @@ export async function buildApp() {
       success: false,
       error:   status >= 500
         ? "Something went wrong on our end. Please try again, or contact support if this keeps happening."
-        : error.message,
+        : (error as Error).message ?? String(error),
       ...(error instanceof AppError && error.data ? error.data : {}),
     });
   });
