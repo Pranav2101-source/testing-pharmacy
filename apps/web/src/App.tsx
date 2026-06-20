@@ -49,6 +49,7 @@ const QuotationsPage       = lazy(() => import("./pages/dashboard/QuotationsPage
 const DoctorsPage          = lazy(() => import("./pages/dashboard/DoctorsPage"));
 const CashClosurePage      = lazy(() => import("./pages/dashboard/CashClosurePage"));
 const PrescriptionsPage    = lazy(() => import("./pages/dashboard/PrescriptionsPage"));
+const MigrationPage        = lazy(() => import("./pages/dashboard/MigrationPage"));
 
 // ─── Support ──────────────────────────────────────────────────
 const SupportTicketsPage   = lazy(() => import("./pages/dashboard/support/SupportTicketsPage"));
@@ -134,6 +135,11 @@ export function App() {
               {/* Owner/Manager only routes */}
               <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} />}>
                 <Route path="/dashboard/cash-closure"       element={<CashClosurePage />} />
+              </Route>
+
+              {/* Migration: OWNER only — touches global catalog + financial opening balances */}
+              <Route element={<RoleGuard allow={["OWNER"]} redirectTo="/dashboard" />}>
+                <Route path="/dashboard/migration"          element={<MigrationPage />} />
               </Route>
 
               {/* Support — static routes must come before the dynamic :id segment */}

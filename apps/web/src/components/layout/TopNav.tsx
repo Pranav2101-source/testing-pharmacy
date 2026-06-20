@@ -7,7 +7,7 @@ import {
   Search, Phone, Truck, Calendar, ChevronDown, LogOut, Settings, Menu, X,
   Dot, QrCode, Coins, Send, Monitor, IndianRupee, Info, MapPin, Building2,
   Receipt, FilePlus, RotateCcw, BookmarkCheck, ClipboardList, Plus, Users,
-  MoreHorizontal, TicketCheck, Stethoscope, Banknote, BarChart2,
+  MoreHorizontal, TicketCheck, Stethoscope, Banknote, BarChart2, ArrowUpCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCalendarTodayCount } from "@/components/calendar/useCalendarEvents";
@@ -93,8 +93,9 @@ type MenuItem = {
 
 // Operational items — used daily for running the pharmacy
 const OPERATIONAL_MENU_ITEMS: MenuItem[] = [
-  { id: "settings",    icon: Settings, label: "Account & Settings", href: "/dashboard/settings/pharmacy-profile" },
-  { id: "integration", icon: Link2,    label: "Integrations",       href: "/dashboard/integration", requiredRoles: ["OWNER", "MANAGER"] },
+  { id: "settings",    icon: Settings,         label: "Account & Settings", href: "/dashboard/settings/pharmacy-profile" },
+  { id: "integration", icon: Link2,           label: "Integrations",       href: "/dashboard/integration",  requiredRoles: ["OWNER", "MANAGER"] },
+  { id: "migration",   icon: ArrowUpCircle,   label: "Data Migration",      href: "/dashboard/migration",   requiredRoles: ["OWNER"] },
   { id: "qr",          icon: QrCode,   label: "Show QR",            extraType: "blue"     },
   { id: "support",     icon: Monitor,  label: "Support Tickets",    extra: "New", extraType: "badge-new", href: "/dashboard/support" },
   { id: "shortcuts",   icon: Info,     label: "Shortcuts / Help"                           },

@@ -41,6 +41,7 @@ import supportRoutes    from "./modules/support/support.routes.js";
 import doctorsRoutes    from "./modules/doctors/doctors.routes.js";
 import cashClosureRoutes    from "./modules/cash-closure/cash-closure.routes.js";
 import prescriptionsRoutes  from "./modules/prescriptions/prescriptions.routes.js";
+import migrationRoutes      from "./modules/migration/migration.routes.js";
 
 import { env, allowedOrigins, trustProxyHops } from "./config/env.js";
 import { AppError } from "./lib/AppError.js";
@@ -83,6 +84,7 @@ export async function buildApp() {
       cb(new Error(`CORS: origin ${origin} not allowed`), false);
     },
     credentials: true,
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
 
   // ── Cookies ───────────────────────────────────────────────────────────────
@@ -112,7 +114,10 @@ export async function buildApp() {
       // Redis unavailable at startup — fall back to in-memory so the server
       // still starts. Log clearly so ops can react.
       app.log.error({ err }, "[redis] failed to connect — falling back to in-memory rate limiting");
-      await redisClient.quit().catch(() => {});
+      // disconnect() force-closes the socket immediately; quit() sends a QUIT
+      // command which hangs when the connection was never established and causes
+      // ioredis to keep emitting error events every ~2 s from its retry loop.
+      redisClient.disconnect();
       redisClient = undefined;
     }
   }
@@ -205,6 +210,7 @@ export async function buildApp() {
   await app.register(doctorsRoutes,             { prefix: "/api/v1/doctors" });
   await app.register(cashClosureRoutes,         { prefix: "/api/v1/cash-closure" });
   await app.register(prescriptionsRoutes,       { prefix: "/api/v1/prescriptions" });
+  await app.register(migrationRoutes,           { prefix: "/api/v1/migration" });
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/health", async () => ({ status: "ok", ts: new Date().toISOString() }));

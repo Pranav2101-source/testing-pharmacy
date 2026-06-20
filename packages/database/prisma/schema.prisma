@@ -69,6 +69,9 @@ model Pharmacy {
   prescriptions       Prescription[]
   prescriptionItems   PrescriptionItem[]
   batchRecalls        BatchRecall[]
+  migrationSessions       MigrationSession[]
+  migrationImportJobs     MigrationImportJob[]
+  medicineMappings        MedicineMapping[]
 
   @@map("pharmacies")
 }
@@ -139,6 +142,7 @@ model User {
   createdAuditSessions  StockAuditSession[] @relation("StockAuditCreator")
   approvedPOs           PurchaseOrder[]     @relation("POApprover")
   batchRecalls          BatchRecall[]       @relation("BatchRecallUser")
+  migrationSessions     MigrationSession[]
 
   @@unique([pharmacyId, email])
   @@index([pharmacyId, role])
@@ -194,6 +198,7 @@ model Medicine {
   pharmacyOverrides   PharmacyMedicineOverride[]
   prescriptionItems   PrescriptionItem[]
   batchRecalls        BatchRecall[]
+  medicineMappings    MedicineMapping[]
 
   @@index([name])
   @@index([genericName])
@@ -1605,4 +1610,134 @@ model CashClosure {
   @@unique([pharmacyId, closureDate])
   @@index([pharmacyId, closureDate])
   @@map("cash_closures")
+}
+
+// ─── Migration System ─────────────────────────────────────────────────────────
+// Tracks a pharmacy's onboarding migration from a competing software.
+// A session is created once per onboarding and progresses through steps:
+// inventory → suppliers → customers → doctors.
+// Rollback deletes all records created under the session in reverse order.
+
+enum MigrationSessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  ROLLED_BACK
+  FAILED
+}
+
+enum MigrationEntityType {
+  INVENTORY
+  SUPPLIERS
+  CUSTOMERS
+  DOCTORS
+  MEDICINE
+}
+
+enum ImportJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model MigrationSession {
+  id             String                 @id @default(cuid())
+  pharmacyId     String
+  status         MigrationSessionStatus @default(IN_PROGRESS)
+  // Source software the pharmacy is migrating from (informational)
+  sourceSoftware String?
+  // Steps that have been committed successfully e.g. ["inventory", "suppliers"]
+  completedSteps String[]
+  currentStep    String?
+  // Column mapping saved by user during the wizard: { "Item Name": "medicineName" }
+  columnMappings Json?
+  notes          String?
+  createdBy      String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy        Pharmacy                 @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  user            User                     @relation(fields: [createdBy], references: [id])
+  importJobs      MigrationImportJob[]
+  createdRecords  MigrationCreatedRecord[]
+
+  @@index([pharmacyId, status])
+  @@map("migration_sessions")
+}
+
+// One ImportJob per entity type per session.
+// For ≤500 rows this is created and immediately marked COMPLETED synchronously.
+// For >500 rows a pg-boss job is dispatched and progress is polled by the UI.
+model MigrationImportJob {
+  id            String              @id @default(cuid())
+  sessionId     String
+  pharmacyId    String
+  entityType    MigrationEntityType
+  status        ImportJobStatus     @default(PENDING)
+  totalRows     Int                 @default(0)
+  processedRows Int                 @default(0)
+  successRows   Int                 @default(0)
+  failedRows    Int                 @default(0)
+  // Array of { row: number, reason: string } for failed rows
+  errors        Json                @default("[]")
+  pgBossJobId   String?
+  startedAt     DateTime?
+  completedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session  MigrationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  pharmacy Pharmacy         @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([pharmacyId, entityType])
+  @@map("migration_import_jobs")
+}
+
+// Persists how a pharmacy's CSV medicine name maps to the global catalog.
+// Scoped per pharmacy so different pharmacies can map "PCM 500" differently.
+// Once confirmed, the mapping is reused on every subsequent import — the owner
+// never has to re-confirm the same medicine name.
+model MedicineMapping {
+  id          String    @id @default(cuid())
+  pharmacyId  String
+  // Normalized CSV value (lowercased + trimmed) — the lookup key
+  csvValue    String
+  // null = user confirmed this should become a new medicine (isNew = true)
+  medicineId  String?
+  isNew       Boolean   @default(false)
+  // Meilisearch ranking score (0–1) for the suggested match
+  confidence  Float?
+  confirmedAt DateTime?
+  confirmedBy String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy Pharmacy  @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  medicine Medicine? @relation(fields: [medicineId], references: [id])
+
+  // One canonical mapping per CSV value per pharmacy
+  @@unique([pharmacyId, csvValue])
+  @@index([pharmacyId])
+  @@map("medicine_mappings")
+}
+
+// Append-only log of every entity created during a migration session.
+// Used for rollback: DELETE WHERE entityId IN (SELECT entityId FROM here WHERE sessionId = ?)
+// in the correct dependency order.
+model MigrationCreatedRecord {
+  id         String              @id @default(cuid())
+  sessionId  String
+  entityType MigrationEntityType
+  entityId   String
+  createdAt  DateTime            @default(now())
+
+  session MigrationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, entityType])
+  @@map("migration_created_records")
 }

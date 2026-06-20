@@ -1,5 +1,24 @@
 import { boss } from "./boss.js";
 
+export type MigrationImportJobData = {
+  jobId:          string;
+  sessionId:      string;
+  pharmacyId:     string;
+  userId:         string;
+  entityType:     "INVENTORY";
+  csvText:        string;
+  columnMappings: Record<string, string>;
+};
+
+export async function enqueueMigrationImport(data: MigrationImportJobData): Promise<string | null> {
+  return boss.send("migration-import", data, {
+    retryLimit:      2,
+    retryDelay:      10,
+    retryBackoff:    true,
+    expireInSeconds: 3_600,  // 1 hour max for a large import
+  });
+}
+
 export type PostInvoiceJobData = {
   pharmacyId:    string;
   invoiceId:     string;
