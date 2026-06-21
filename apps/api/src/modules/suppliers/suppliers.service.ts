@@ -23,7 +23,7 @@ export class SuppliersService {
   }
 
   private bustSuppliersCache(pharmacyId: string): void {
-    suppliersCache.delete(suppliersListKey(pharmacyId, { page: 1, limit: 50 }));
+    suppliersCache.deleteByPrefix(`${pharmacyId}:`);
   }
 
   async createSupplier(pharmacyId: string, input: CreateSupplierInput) {

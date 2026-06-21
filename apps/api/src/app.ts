@@ -166,82 +166,10 @@ export async function buildApp() {
     await app.register(swaggerUi, { routePrefix: "/docs" });
   }
 
-  // ── Routes ────────────────────────────────────────────────────────────────
-  await app.register(
-    async (authApp) => {
-      authApp.addHook("onRequest", async (req, reply) => {
-        const sensitiveRoutes = ["/login", "/register", "/forgot-password", "/reset-password", "/refresh"];
-        const isSensitive = sensitiveRoutes.some((r) => req.url.endsWith(r));
-        if (!isSensitive) return;
-        try {
-          // @ts-expect-error — fastify-rate-limit augments the reply
-          await reply.rateLimit({ max: 10, timeWindow: "1 minute", keyGenerator: () => req.ip });
-        } catch {
-          // rateLimit exceeded — let the global handler return 429
-        }
-      });
-      await authApp.register(authRoutes, { prefix: "/api/v1/auth" });
-    },
-    {},
-  );
-
-  await app.register(billingRoutes,             { prefix: "/api/v1/billing" });
-  await app.register(inventoryRoutes,           { prefix: "/api/v1/inventory" });
-  await app.register(medicinesRoutes,           { prefix: "/api/v1/medicines" });
-  await app.register(suppliersRoutes,           { prefix: "/api/v1/suppliers" });
-  await app.register(purchasesRoutes,           { prefix: "/api/v1/purchases" });
-  await app.register(supplierReturnsRoutes,     { prefix: "/api/v1/supplier-returns" });
-  await app.register(supplierPaymentsRoutes,    { prefix: "/api/v1/supplier-payments" });
-  await app.register(supplierCreditNotesRoutes, { prefix: "/api/v1/supplier-credit-notes" });
-  await app.register(quotationsRoutes,          { prefix: "/api/v1/quotations" });
-  await app.register(brandsRoutes,              { prefix: "/api/v1/brands" });
-  await app.register(categoriesRoutes,          { prefix: "/api/v1/categories" });
-  await app.register(reportsRoutes,             { prefix: "/api/v1/reports" });
-  await app.register(staffRoutes,               { prefix: "/api/v1/staff" });
-  await app.register(auditRoutes,               { prefix: "/api/v1/audit" });
-  await app.register(uploadsRoutes,             { prefix: "/api/v1/uploads" });
-  await app.register(notificationsRoutes,       { prefix: "/api/v1/notifications" });
-  await app.register(customersRoutes,           { prefix: "/api/v1/customers" });
-  await app.register(locationsRoutes,           { prefix: "/api/v1/locations" });
-  await app.register(stockAuditRoutes,          { prefix: "/api/v1/stock-audit" });
-  await app.register(calendarRoutes,            { prefix: "/api/v1/calendar" });
-  await app.register(pharmacyRoutes,            { prefix: "/api/v1/pharmacy" });
-  await app.register(supportRoutes,             { prefix: "/api/v1/support" });
-  await app.register(doctorsRoutes,             { prefix: "/api/v1/doctors" });
-  await app.register(cashClosureRoutes,         { prefix: "/api/v1/cash-closure" });
-  await app.register(prescriptionsRoutes,       { prefix: "/api/v1/prescriptions" });
-  await app.register(migrationRoutes,           { prefix: "/api/v1/migration" });
-
-  // ── Health ────────────────────────────────────────────────────────────────
-  app.get("/health", async () => ({ status: "ok", ts: new Date().toISOString() }));
-
-  app.get("/health/ready", async (_, reply) => {
-    try {
-      await app.prisma.$queryRaw`SELECT 1`;
-      return { status: "ready", ts: new Date().toISOString() };
-    } catch {
-      return reply.status(503).send({ status: "unavailable", ts: new Date().toISOString() });
-    }
-  });
-
-  // ── Queue workers + scheduled jobs ───────────────────────────────────────
-  if (!env.DISABLE_QUEUES) {
-    await startWorkers();
-    await setupScheduledJobs();
-
-    app.addHook("onClose", async () => {
-      // 25 s budget — Fly sends SIGKILL at kill_timeout (30 s), leaving 5 s buffer.
-      await boss.stop({ timeout: 25_000 }).catch((err: unknown) => {
-        app.log.warn(err, "[pg-boss] error during shutdown");
-      });
-    });
-
-    app.log.info("[pg-boss] workers started, schedules registered");
-  } else {
-    app.log.info("[Queues] DISABLE_QUEUES=true — skipping job workers");
-  }
-
   // ── Global error handler ──────────────────────────────────────────────────
+  // MUST be registered before route plugins. In Fastify, child plugin scopes
+  // inherit the parent's error handler at the time the plugin is registered —
+  // a handler set AFTER register() is not visible to those child scopes.
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
       return reply.status(400).send({
@@ -327,6 +255,81 @@ export async function buildApp() {
       ...(error instanceof AppError && error.data ? error.data : {}),
     });
   });
+
+  // ── Routes ────────────────────────────────────────────────────────────────
+  await app.register(
+    async (authApp) => {
+      authApp.addHook("onRequest", async (req, reply) => {
+        const sensitiveRoutes = ["/login", "/register", "/forgot-password", "/reset-password", "/refresh"];
+        const isSensitive = sensitiveRoutes.some((r) => req.url.endsWith(r));
+        if (!isSensitive) return;
+        try {
+          // @ts-expect-error — fastify-rate-limit augments the reply
+          await reply.rateLimit({ max: 10, timeWindow: "1 minute", keyGenerator: () => req.ip });
+        } catch {
+          // rateLimit exceeded — let the global handler return 429
+        }
+      });
+      await authApp.register(authRoutes, { prefix: "/api/v1/auth" });
+    },
+    {},
+  );
+
+  await app.register(billingRoutes,             { prefix: "/api/v1/billing" });
+  await app.register(inventoryRoutes,           { prefix: "/api/v1/inventory" });
+  await app.register(medicinesRoutes,           { prefix: "/api/v1/medicines" });
+  await app.register(suppliersRoutes,           { prefix: "/api/v1/suppliers" });
+  await app.register(purchasesRoutes,           { prefix: "/api/v1/purchases" });
+  await app.register(supplierReturnsRoutes,     { prefix: "/api/v1/supplier-returns" });
+  await app.register(supplierPaymentsRoutes,    { prefix: "/api/v1/supplier-payments" });
+  await app.register(supplierCreditNotesRoutes, { prefix: "/api/v1/supplier-credit-notes" });
+  await app.register(quotationsRoutes,          { prefix: "/api/v1/quotations" });
+  await app.register(brandsRoutes,              { prefix: "/api/v1/brands" });
+  await app.register(categoriesRoutes,          { prefix: "/api/v1/categories" });
+  await app.register(reportsRoutes,             { prefix: "/api/v1/reports" });
+  await app.register(staffRoutes,               { prefix: "/api/v1/staff" });
+  await app.register(auditRoutes,               { prefix: "/api/v1/audit" });
+  await app.register(uploadsRoutes,             { prefix: "/api/v1/uploads" });
+  await app.register(notificationsRoutes,       { prefix: "/api/v1/notifications" });
+  await app.register(customersRoutes,           { prefix: "/api/v1/customers" });
+  await app.register(locationsRoutes,           { prefix: "/api/v1/locations" });
+  await app.register(stockAuditRoutes,          { prefix: "/api/v1/stock-audit" });
+  await app.register(calendarRoutes,            { prefix: "/api/v1/calendar" });
+  await app.register(pharmacyRoutes,            { prefix: "/api/v1/pharmacy" });
+  await app.register(supportRoutes,             { prefix: "/api/v1/support" });
+  await app.register(doctorsRoutes,             { prefix: "/api/v1/doctors" });
+  await app.register(cashClosureRoutes,         { prefix: "/api/v1/cash-closure" });
+  await app.register(prescriptionsRoutes,       { prefix: "/api/v1/prescriptions" });
+  await app.register(migrationRoutes,           { prefix: "/api/v1/migration" });
+
+  // ── Health ────────────────────────────────────────────────────────────────
+  app.get("/health", async () => ({ status: "ok", ts: new Date().toISOString() }));
+
+  app.get("/health/ready", async (_, reply) => {
+    try {
+      await app.prisma.$queryRaw`SELECT 1`;
+      return { status: "ready", ts: new Date().toISOString() };
+    } catch {
+      return reply.status(503).send({ status: "unavailable", ts: new Date().toISOString() });
+    }
+  });
+
+  // ── Queue workers + scheduled jobs ───────────────────────────────────────
+  if (!env.DISABLE_QUEUES) {
+    await startWorkers();
+    await setupScheduledJobs();
+
+    app.addHook("onClose", async () => {
+      // 25 s budget — Fly sends SIGKILL at kill_timeout (30 s), leaving 5 s buffer.
+      await boss.stop({ timeout: 25_000 }).catch((err: unknown) => {
+        app.log.warn(err, "[pg-boss] error during shutdown");
+      });
+    });
+
+    app.log.info("[pg-boss] workers started, schedules registered");
+  } else {
+    app.log.info("[Queues] DISABLE_QUEUES=true — skipping job workers");
+  }
 
   return app;
 }
