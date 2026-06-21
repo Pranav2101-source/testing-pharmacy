@@ -34,11 +34,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
 process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
 process.on("SIGINT",  () => void gracefulShutdown("SIGINT"));
 
+const port = parseInt(process.env.PORT ?? String(env.API_PORT), 10);
 try {
-  await app.listen({ port: env.API_PORT, host: env.API_HOST });
-  console.log(`API running at http://${env.API_HOST}:${env.API_PORT}`);
-  console.log(`[CORS] ALLOWED_ORIGINS env = "${process.env.ALLOWED_ORIGINS}"`);
-  console.log(`[CORS] NODE_ENV = "${process.env.NODE_ENV}"`);
+  await app.listen({ port, host: env.API_HOST });
+  console.log(`API running at http://${env.API_HOST}:${port}`);
+  console.log(`[PORT] PORT env="${process.env.PORT}" API_PORT env="${process.env.API_PORT}" resolved=${port}`);
   if (env.NODE_ENV !== "production") {
     console.log(`Swagger docs: http://localhost:${env.API_PORT}/docs`);
   }
