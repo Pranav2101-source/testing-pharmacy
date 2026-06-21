@@ -154,10 +154,15 @@ export class InventoryService {
   async batchRecall(pharmacyId: string, userId: string, input: BatchRecallInput) {
     const result = await this.repo.batchRecall(pharmacyId, userId, input);
 
-    void notifyOwners(this.app.prisma, pharmacyId, {
+    notifyOwners(this.app.prisma, pharmacyId, {
       subject: `🚨 URGENT: Batch Recall — ${input.batchNumber}`,
       message: `Batch ${input.batchNumber} has been recalled.\nReason: ${input.reason}\nAll affected inventory has been quarantined. Review immediately.`,
-    });
+    }).catch((err) =>
+      this.app.log.error(
+        { err, pharmacyId, batchNumber: input.batchNumber },
+        "Batch recall notification failed — owners may not have been alerted",
+      )
+    );
 
     return result;
   }

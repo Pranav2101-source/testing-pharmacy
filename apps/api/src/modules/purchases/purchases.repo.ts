@@ -515,21 +515,24 @@ export class PurchasesRepo {
 
         // Step C: bulk UPDATE existing inventory via a single CTE (no N round-trips)
         if (toUpdate.length > 0) {
-          const ids   = toUpdate.map((r) => r.existing.id);
-          const qtys  = toUpdate.map((r) => r.totalQty);
-          const rates = toUpdate.map((r) => r.item.purchaseRate);
-          const mrps  = toUpdate.map((r) => r.item.mrp);
+          const ids      = toUpdate.map((r) => r.existing.id);
+          const qtys     = toUpdate.map((r) => r.totalQty);
+          const rates    = toUpdate.map((r) => r.item.purchaseRate);
+          const mrps     = toUpdate.map((r) => r.item.mrp);
+          const expiries = toUpdate.map((r) => r.item.expiryDate);
           await tx.$executeRaw`
             UPDATE inventory inv
-            SET    quantity      = inv.quantity + b.qty,
+            SET    quantity       = inv.quantity + b.qty,
                    "purchaseRate" = b.rate,
-                   mrp           = b.mrp,
-                   status        = 'ACTIVE'
+                   mrp            = b.mrp,
+                   "expiryDate"   = b.expiry,
+                   status         = 'ACTIVE'
             FROM   (
-                     SELECT unnest(${ids}::text[])    AS id,
-                            unnest(${qtys}::int[])    AS qty,
-                            unnest(${rates}::float[]) AS rate,
-                            unnest(${mrps}::float[])  AS mrp
+                     SELECT unnest(${ids}::text[])         AS id,
+                            unnest(${qtys}::int[])         AS qty,
+                            unnest(${rates}::float[])      AS rate,
+                            unnest(${mrps}::float[])       AS mrp,
+                            unnest(${expiries}::timestamptz[]) AS expiry
                    ) AS b
             WHERE  inv.id           = b.id
               AND  inv."pharmacyId" = ${pharmacyId}::text

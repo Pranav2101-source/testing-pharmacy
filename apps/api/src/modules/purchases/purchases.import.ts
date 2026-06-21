@@ -5,7 +5,6 @@
 //
 // One GRN is created per unique supplierInvoiceNo (or one GRN for the whole file).
 
-import type { FastifyRequest } from "fastify";
 import { AppError } from "../../lib/AppError.js";
 
 export interface ImportedGRNRow {
@@ -26,11 +25,34 @@ const REQUIRED_HEADERS = [
   "receivedQty", "purchaseRate", "mrp", "gstRate",
 ] as const;
 
+/** Parse and validate a date string in YYYY-MM-DD or DD/MM/YYYY format.
+ *  Returns an ISO string or throws AppError with a row-contextual message. */
+function parseExpiryDate(raw: string, rowLabel: string): string {
+  let iso: string;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    iso = raw;
+  } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(raw)) {
+    const [dd, mm, yyyy] = raw.split("/");
+    iso = `${yyyy}-${mm}-${dd}`;
+  } else {
+    throw AppError.unprocessable(`${rowLabel}: expiryDate must be YYYY-MM-DD or DD/MM/YYYY, got "${raw}"`);
+  }
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) {
+    throw AppError.unprocessable(`${rowLabel}: expiryDate "${raw}" is not a valid calendar date`);
+  }
+  return d.toISOString();
+}
+
 export function parseGRNCSV(csvText: string): ImportedGRNRow[] {
   const lines = csvText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim().split("\n");
   if (lines.length < 2) throw AppError.unprocessable("CSV must have a header row and at least one data row");
 
-  const headers = (lines[0] ?? "").split(",").map((h) => h.trim().replace(/^"|"$/g, ""));
+  // Auto-detect delimiter: Excel / Google Sheets paste uses TAB; standard CSV uses comma.
+  const firstLine = lines[0] ?? "";
+  const delim     = firstLine.includes("\t") ? "\t" : ",";
+
+  const headers = firstLine.split(delim).map((h) => h.trim().replace(/^"|"$/g, ""));
 
   for (const required of REQUIRED_HEADERS) {
     if (!headers.includes(required)) {
@@ -46,48 +68,54 @@ export function parseGRNCSV(csvText: string): ImportedGRNRow[] {
     const line = (lines[i] ?? "").trim();
     if (!line) continue;
 
-    const cols: string[] = line.split(",").map((c) => c.trim().replace(/^"|"$/g, ""));
-
+    const cols: string[] = line.split(delim).map((c) => c.trim().replace(/^"|"$/g, ""));
     const col = (name: string): string => cols[idx(name)] ?? "";
+    const rowLabel = `Row ${i + 1}`;
+
     const medicineName  = col("medicineName");
     const batchNumber   = col("batchNumber");
     const expiryDateRaw = col("expiryDate");
-    const receivedQty   = parseFloat(col("receivedQty")  || "0");
-    const freeQty       = parseFloat(col("freeQty")      || "0");
-    const purchaseRate  = parseFloat(col("purchaseRate") || "0");
-    const mrp           = parseFloat(col("mrp")          || "0");
-    const discount      = parseFloat(col("discount")     || "0");
-    const gstRate       = parseFloat(col("gstRate")      || "12");
-    const supplierInvoiceNo = idx("supplierInvoiceNo") >= 0 ? (col("supplierInvoiceNo") || undefined) : undefined;
 
     if (!medicineName || !batchNumber || !expiryDateRaw) {
-      throw AppError.unprocessable(`Row ${i + 1}: medicineName, batchNumber, and expiryDate are required`);
-    }
-    if (isNaN(receivedQty) || receivedQty <= 0) {
-      throw AppError.unprocessable(`Row ${i + 1}: receivedQty must be a positive number`);
-    }
-    if (isNaN(purchaseRate) || purchaseRate <= 0) {
-      throw AppError.unprocessable(`Row ${i + 1}: purchaseRate must be a positive number`);
-    }
-    if (isNaN(mrp) || mrp <= 0) {
-      throw AppError.unprocessable(`Row ${i + 1}: mrp must be a positive number`);
-    }
-    if (![0, 5, 12, 18].includes(gstRate)) {
-      throw AppError.unprocessable(`Row ${i + 1}: gstRate must be 0, 5, 12, or 18`);
+      throw AppError.unprocessable(`${rowLabel}: medicineName, batchNumber, and expiryDate are required`);
     }
 
-    // Parse expiryDate — accept YYYY-MM-DD or DD/MM/YYYY
-    let expiryDate: string;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(expiryDateRaw)) {
-      expiryDate = new Date(expiryDateRaw).toISOString();
-    } else if (/^\d{2}\/\d{2}\/\d{4}$/.test(expiryDateRaw)) {
-      const [dd, mm, yyyy] = expiryDateRaw.split("/");
-      expiryDate = new Date(`${yyyy}-${mm}-${dd}`).toISOString();
-    } else {
-      throw AppError.unprocessable(`Row ${i + 1}: expiryDate must be YYYY-MM-DD or DD/MM/YYYY`);
-    }
+    // Numeric fields — reject blank/missing cells rather than silently defaulting to 0.
+    const receivedQtyRaw  = col("receivedQty").trim();
+    const purchaseRateRaw = col("purchaseRate").trim();
+    const mrpRaw          = col("mrp").trim();
 
-    rows.push({ medicineName, batchNumber, expiryDate, receivedQty: Math.floor(receivedQty), freeQty: Math.floor(freeQty), purchaseRate, mrp, discount, gstRate, supplierInvoiceNo });
+    if (!receivedQtyRaw)  throw AppError.unprocessable(`${rowLabel}: receivedQty is required`);
+    if (!purchaseRateRaw) throw AppError.unprocessable(`${rowLabel}: purchaseRate is required`);
+    if (!mrpRaw)          throw AppError.unprocessable(`${rowLabel}: mrp is required`);
+
+    const receivedQty  = parseFloat(receivedQtyRaw);
+    const freeQty      = parseFloat(col("freeQty")  || "0");
+    const purchaseRate = parseFloat(purchaseRateRaw);
+    const mrp          = parseFloat(mrpRaw);
+    const discount     = parseFloat(col("discount") || "0");
+    const gstRate      = parseFloat(col("gstRate")  || "12");
+    const supplierInvoiceNo = idx("supplierInvoiceNo") >= 0 ? (col("supplierInvoiceNo") || undefined) : undefined;
+
+    if (isNaN(receivedQty) || receivedQty <= 0)  throw AppError.unprocessable(`${rowLabel}: receivedQty must be a positive number`);
+    if (isNaN(purchaseRate) || purchaseRate <= 0) throw AppError.unprocessable(`${rowLabel}: purchaseRate must be a positive number`);
+    if (isNaN(mrp) || mrp <= 0)                  throw AppError.unprocessable(`${rowLabel}: mrp must be a positive number`);
+    if (![0, 5, 12, 18].includes(gstRate))        throw AppError.unprocessable(`${rowLabel}: gstRate must be 0, 5, 12, or 18`);
+
+    const expiryDate = parseExpiryDate(expiryDateRaw, rowLabel);
+
+    rows.push({
+      medicineName,
+      batchNumber,
+      expiryDate,
+      receivedQty:  Math.floor(receivedQty),
+      freeQty:      Math.floor(isNaN(freeQty) ? 0 : freeQty),
+      purchaseRate,
+      mrp,
+      discount:     isNaN(discount) ? 0 : discount,
+      gstRate,
+      supplierInvoiceNo,
+    });
   }
 
   if (rows.length === 0) throw AppError.unprocessable("No valid rows found in CSV");

@@ -60,6 +60,7 @@ export class InventoryRepo {
         quantity:     { increment: data.quantity },
         purchaseRate: data.purchaseRate,
         mrp:          data.mrp,
+        expiryDate:   data.expiryDate,
         ...locationUpdate,
         status:       "ACTIVE",
       },
@@ -554,22 +555,22 @@ export class InventoryRepo {
   // ── FEFO batch selection (used by billing) ─────────────────────────────────
 
   async getFEFOBatch(medicineId: string, pharmacyId: string, quantity: number) {
-    // Availability = quantity - reservedQuantity: stock held by other billing
-    // sessions is not offerable. Prisma cannot compare two columns in a where
-    // clause, so scan the earliest-expiring candidates and pick the first with
-    // enough unreserved stock (batches per medicine are rarely more than a few).
-    const candidates = await this.db.inventory.findMany({
-      where: {
-        pharmacyId,
-        medicineId,
-        status:    "ACTIVE",
-        quantity:  { gte: quantity },
-        expiryDate: { gt: new Date() },
-      },
-      orderBy: { expiryDate: "asc" },
-      take:    25,
-    });
-    return candidates.find((b) => b.quantity - b.reservedQuantity >= quantity) ?? null;
+    // Prisma cannot express a column-to-column comparison in WHERE, so we use
+    // $queryRaw to filter (quantity - reservedQuantity) >= ? at the DB level.
+    // This avoids the two-stage scan+filter pattern that could miss valid batches
+    // sitting beyond an arbitrary in-memory take() cap.
+    const rows = await this.db.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM inventory
+      WHERE  "pharmacyId" = ${pharmacyId}
+        AND  "medicineId" = ${medicineId}
+        AND  status       = 'ACTIVE'
+        AND  "expiryDate" > ${new Date()}
+        AND  (quantity - "reservedQuantity") >= ${quantity}
+      ORDER BY "expiryDate" ASC
+      LIMIT 1
+    `;
+    if (rows.length === 0) return null;
+    return this.db.inventory.findFirst({ where: { id: rows[0]!.id } });
   }
 
   // ── Batch Recall ───────────────────────────────────────────────────────────
@@ -666,7 +667,7 @@ export class InventoryRepo {
     pharmacyId: string,
     data: { shelfId: string | null; location: string | null },
   ) {
-    return this.db.inventory.update({ where: { id, pharmacyId }, data });
+    return this.db.inventory.update({ where: { id, pharmacyId }, data, include: INVENTORY_INCLUDE });
   }
 
   async listRecalledBatches(pharmacyId: string, params: {

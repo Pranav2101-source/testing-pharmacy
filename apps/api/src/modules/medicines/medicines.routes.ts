@@ -60,8 +60,11 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
       if (result.success) {
         valid.push(result.data);
       } else {
-        const row = body.rows[i] as any;
-        parseErrors.push(`Row ${i + 1} (${row?.name ?? "?"}): ${result.error.errors[0]?.message}`);
+        const row     = body.rows[i] as any;
+        const prefix  = `Row ${i + 1} (${row?.name ?? "?"})`;
+        for (const e of result.error.errors) {
+          parseErrors.push(`${prefix}: ${e.message}`);
+        }
       }
     }
 

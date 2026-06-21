@@ -38,7 +38,7 @@ const inventoryRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: item });
   });
 
-  app.patch("/:id/adjust", { preHandler: auth }, async (req, reply) => {
+  app.patch("/:id/adjust", { preHandler: ownerOnly }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const input  = adjustStockSchema.parse(req.body);
     const updated = await service.adjustStock(id, req.pharmacyId, req.user.sub, input);
@@ -85,8 +85,9 @@ const inventoryRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/fefo/:medicineId", { preHandler: auth }, async (req, reply) => {
     const { medicineId } = req.params as { medicineId: string };
-    const qty = Number((req.query as any).quantity ?? 1);
-    const batch = await service.getFEFOBatch(medicineId, req.pharmacyId, qty);
+    const rawQty = Number((req.query as Record<string, string>)["quantity"]);
+    const qty    = Number.isFinite(rawQty) && rawQty > 0 ? Math.floor(rawQty) : 1;
+    const batch  = await service.getFEFOBatch(medicineId, req.pharmacyId, qty);
     return reply.send({ success: true, data: batch });
   });
 
@@ -116,9 +117,9 @@ const inventoryRoutes: FastifyPluginAsync = async (app) => {
   app.patch("/:id/location", { preHandler: auth }, async (req, reply) => {
     const { id }     = req.params as { id: string };
     const { shelfId, location } = req.body as { shelfId?: string | null; location?: string | null };
-    const item = await service.getById(id, req.pharmacyId);
-    await service.updateLocation(id, req.pharmacyId, { shelfId, location });
-    return reply.send({ success: true, data: { id } });
+    // updateLocation already throws 404 if the item doesn't exist — no pre-read needed.
+    const updated = await service.updateLocation(id, req.pharmacyId, { shelfId, location });
+    return reply.send({ success: true, data: updated });
   });
 
   // ── Batch Recall ───────────────────────────────────────────────────────────

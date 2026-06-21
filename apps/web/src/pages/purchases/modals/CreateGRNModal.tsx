@@ -63,8 +63,8 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
         gstRate:      i.gstRate,
       }));
       setItems((p) => {
-        const existing = new Set(p.map((x) => x.medicineName.toLowerCase()));
-        return [...p, ...poItems.filter((i) => !existing.has(i.medicineName.toLowerCase()))];
+        const existing = new Set(p.map((x) => `${x.medicineName.toLowerCase()}::${x.batchNumber}`));
+        return [...p, ...poItems.filter((i) => !existing.has(`${i.medicineName.toLowerCase()}::${i.batchNumber}`))];
       });
     } catch { setError("Failed to load PO items"); }
     finally { setPoLoading(false); }
@@ -94,8 +94,8 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
         gstRate:      i.gstRate,
       }));
       setItems((p) => {
-        const existing = new Set(p.map((x) => x.medicineName.toLowerCase()));
-        return [...p, ...grnItems.filter((i) => !existing.has(i.medicineName.toLowerCase()))];
+        const existing = new Set(p.map((x) => `${x.medicineName.toLowerCase()}::${x.batchNumber}`));
+        return [...p, ...grnItems.filter((i) => !existing.has(`${i.medicineName.toLowerCase()}::${i.batchNumber}`))];
       });
     } catch { setError("Failed to load previous purchase"); }
     finally { setCopyLoading(false); }
@@ -111,7 +111,12 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
   function handleCSVImport(raw: string) {
     setImportError(null);
     const { items: parsed, errors } = csvToGRNItems(raw);
-    if (errors.length > 0) { setImportError(errors.slice(0, 3).join(" · ")); return; }
+
+    // Always surface every error — never truncate. Show them as a warning but
+    // still stage the valid rows so the user only needs to fix the bad ones.
+    if (errors.length > 0) setImportError(`${errors.length} row(s) skipped:\n${errors.join("\n")}`);
+    if (parsed.length === 0) return; // nothing valid to add
+
     const toAdd: GRNLineItem[] = parsed.map((p) => ({
       medicineId:   "",
       medicineName: p.medicineName ?? "",
@@ -126,10 +131,10 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
       gstRate:      p.gstRate      ?? 12,
     }));
     setItems((prev) => {
-      const existing = new Set(prev.map((x) => x.medicineName.toLowerCase()));
-      return [...prev, ...toAdd.filter((i) => !existing.has(i.medicineName.toLowerCase()))];
+      const existing = new Set(prev.map((x) => `${x.medicineName.toLowerCase()}::${x.batchNumber}`));
+      return [...prev, ...toAdd.filter((i) => !existing.has(`${i.medicineName.toLowerCase()}::${i.batchNumber}`))];
     });
-    setShowImport(false);
+    if (errors.length === 0) setShowImport(false); // keep panel open so user can see which rows failed
   }
 
   function upd(idx: number, key: keyof GRNLineItem, val: string | number) {
@@ -145,6 +150,24 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     e.preventDefault();
     if (!supplierId) { setError("Select a supplier"); return; }
     if (items.length === 0) { setError("Add at least one medicine"); return; }
+
+    // Validate every line item before touching the network.
+    const lineErrors: string[] = [];
+    for (let idx = 0; idx < items.length; idx++) {
+      const i   = items[idx]!;
+      const row = `Row ${idx + 1} (${i.medicineName})`;
+      if (!i.batchNumber.trim())  lineErrors.push(`${row}: Batch number is required`);
+      if (!i.expiryDate)          lineErrors.push(`${row}: Expiry date is required`);
+      else {
+        const d = new Date(i.expiryDate);
+        if (isNaN(d.getTime())) lineErrors.push(`${row}: Expiry date is not valid`);
+      }
+      if (i.receivedQty <= 0)     lineErrors.push(`${row}: Received qty must be > 0`);
+      if (i.purchaseRate <= 0)    lineErrors.push(`${row}: Purchase rate must be > 0`);
+      if (i.mrp <= 0)             lineErrors.push(`${row}: MRP must be > 0`);
+    }
+    if (lineErrors.length > 0) { setError(lineErrors.join("  ·  ")); return; }
+
     setSaving(true); setError(null);
     try {
       await api.post("/purchases/grn", {
