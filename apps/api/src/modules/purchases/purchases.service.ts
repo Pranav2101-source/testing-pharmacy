@@ -23,6 +23,26 @@ export class PurchasesService {
   // ── Purchase Orders ────────────────────────────────────────────────────────
 
   async createPO(pharmacyId: string, userId: string, userRole: string, input: CreatePOInput) {
+    const itemsNeedingId = input.items.filter((i) => !i.medicineId);
+    if (itemsNeedingId.length > 0) {
+      const names     = [...new Set(itemsNeedingId.map((i) => i.medicineName))];
+      const medicines = await this.app.prisma.medicine.findMany({
+        where:  { pharmacyId, name: { in: names, mode: "insensitive" } },
+        select: { id: true, name: true },
+      });
+      const nameToId  = new Map(medicines.map((m) => [m.name.toLowerCase(), m.id]));
+      const unmatched = names.filter((n) => !nameToId.has(n.toLowerCase()));
+      if (unmatched.length > 0) {
+        throw AppError.unprocessable(`Medicines not found in catalog: ${unmatched.join(", ")}`);
+      }
+      input = {
+        ...input,
+        items: input.items.map((i) =>
+          i.medicineId ? i : { ...i, medicineId: nameToId.get(i.medicineName.toLowerCase())! }
+        ),
+      };
+    }
+
     let subtotal = 0;
     let totalGst = 0;
 
@@ -191,6 +211,28 @@ export class PurchasesService {
   // ── GRN ───────────────────────────────────────────────────────────────────
 
   async createGRN(pharmacyId: string, userId: string, input: CreateGRNInput) {
+    // Resolve any items that have an empty medicineId (CSV-imported rows) by looking up
+    // the medicine by name. Throws a descriptive error for any unrecognised medicine names.
+    const itemsNeedingId = input.items.filter((i) => !i.medicineId);
+    if (itemsNeedingId.length > 0) {
+      const names     = [...new Set(itemsNeedingId.map((i) => i.medicineName))];
+      const medicines = await this.app.prisma.medicine.findMany({
+        where:  { pharmacyId, name: { in: names, mode: "insensitive" } },
+        select: { id: true, name: true },
+      });
+      const nameToId  = new Map(medicines.map((m) => [m.name.toLowerCase(), m.id]));
+      const unmatched = names.filter((n) => !nameToId.has(n.toLowerCase()));
+      if (unmatched.length > 0) {
+        throw AppError.unprocessable(`Medicines not found in catalog: ${unmatched.join(", ")}`);
+      }
+      input = {
+        ...input,
+        items: input.items.map((i) =>
+          i.medicineId ? i : { ...i, medicineId: nameToId.get(i.medicineName.toLowerCase())! }
+        ),
+      };
+    }
+
     // #20 Duplicate invoice detection — check supplierInvoiceNo uniqueness per supplier
     if (input.supplierInvoiceNo) {
       const duplicate = await this.app.prisma.goodsReceiptNote.findFirst({

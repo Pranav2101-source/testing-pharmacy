@@ -5,7 +5,7 @@ const GST_RATES = [0, 5, 12, 18] as const;
 // ── Purchase Order ──────────────────────────────────────────────────────────
 
 export const poItemSchema = z.object({
-  medicineId:   z.string().min(1),
+  medicineId:   z.string(),
   medicineName: z.string().min(1),
   batchNumber:  z.string().min(1).max(50),
   expiryDate:   z.string().datetime(),
@@ -57,7 +57,7 @@ export const sharePOSchema = z.object({
 // ── GRN ────────────────────────────────────────────────────────────────────
 
 export const grnItemSchema = z.object({
-  medicineId:       z.string().min(1),
+  medicineId:       z.string(),
   medicineName:     z.string().min(1),
   batchNumber:      z.string().min(1).max(50),
   expiryDate:       z.string().datetime(),
