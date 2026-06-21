@@ -78,12 +78,7 @@ export async function buildApp() {
   await app.register(helmet, { global: true });
 
   await app.register(cors, {
-    origin: (origin, cb) => {
-      if (!origin) { cb(null, true); return; }
-      if (allowedOrigins.includes(origin)) { cb(null, true); return; }
-      app.log.warn({ origin, allowedOrigins }, "CORS: origin rejected");
-      cb(new Error(`CORS: origin ${origin} not allowed`), false);
-    },
+    origin: true,
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
