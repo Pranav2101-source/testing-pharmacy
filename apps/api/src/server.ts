@@ -37,6 +37,8 @@ process.on("SIGINT",  () => void gracefulShutdown("SIGINT"));
 try {
   await app.listen({ port: env.API_PORT, host: env.API_HOST });
   console.log(`API running at http://${env.API_HOST}:${env.API_PORT}`);
+  console.log(`[CORS] ALLOWED_ORIGINS env = "${process.env.ALLOWED_ORIGINS}"`);
+  console.log(`[CORS] NODE_ENV = "${process.env.NODE_ENV}"`);
   if (env.NODE_ENV !== "production") {
     console.log(`Swagger docs: http://localhost:${env.API_PORT}/docs`);
   }
