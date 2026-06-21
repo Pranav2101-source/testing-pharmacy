@@ -27,7 +27,7 @@ export class PurchasesService {
     if (itemsNeedingId.length > 0) {
       const names     = [...new Set(itemsNeedingId.map((i) => i.medicineName))];
       const medicines = await this.app.prisma.medicine.findMany({
-        where:  { pharmacyId, name: { in: names, mode: "insensitive" } },
+        where:  { name: { in: names, mode: "insensitive" } },
         select: { id: true, name: true },
       });
       const nameToId  = new Map(medicines.map((m) => [m.name.toLowerCase(), m.id]));
@@ -217,7 +217,7 @@ export class PurchasesService {
     if (itemsNeedingId.length > 0) {
       const names     = [...new Set(itemsNeedingId.map((i) => i.medicineName))];
       const medicines = await this.app.prisma.medicine.findMany({
-        where:  { pharmacyId, name: { in: names, mode: "insensitive" } },
+        where:  { name: { in: names, mode: "insensitive" } },
         select: { id: true, name: true },
       });
       const nameToId  = new Map(medicines.map((m) => [m.name.toLowerCase(), m.id]));
