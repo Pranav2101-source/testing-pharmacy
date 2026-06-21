@@ -193,8 +193,8 @@ export function validateSupplierRow(
       address:        (fields["address"]  ?? "").trim() || undefined,
       city:           (fields["city"]     ?? "").trim() || undefined,
       state:          (fields["state"]    ?? "").trim() || undefined,
-      creditDays:     creditDays && !isNaN(creditDays) ? creditDays : undefined,
-      openingBalance: openingBalance && !isNaN(openingBalance) ? openingBalance : undefined,
+      creditDays:     creditDays !== undefined && !isNaN(creditDays) ? creditDays : undefined,
+      openingBalance: openingBalance !== undefined && !isNaN(openingBalance) ? openingBalance : undefined,
     },
     issues,
   };

@@ -196,7 +196,9 @@ export function parseCsv(
   csvText:        string,
   columnMappings: ColumnMappings,
 ): { rows: ParsedRow[]; headers: string[] } {
-  const normalised = csvText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  // Strip UTF-8 BOM (﻿) — present in most Excel-exported CSVs.
+  // Without this the first column header never matches any mapping key.
+  const normalised = csvText.replace(/^﻿/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
   const lines      = normalised.split("\n");
   if (lines.length < 2) return { rows: [], headers: [] };
 
@@ -271,7 +273,10 @@ export function normaliseDate(raw: string): string | null {
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
     const [dd, mm, yyyy] = s.split("/");
     const d = new Date(`${yyyy}-${mm}-${dd}`);
-    return isNaN(d.getTime()) ? null : d.toISOString();
+    // Reject silently-overflowed dates (e.g. month 13 → Jan next year)
+    if (isNaN(d.getTime())) return null;
+    if (d.getFullYear() !== +yyyy! || d.getMonth() + 1 !== +mm! || d.getDate() !== +dd!) return null;
+    return d.toISOString();
   }
 
   // MM/YYYY or MM-YYYY — treat as last day of that month

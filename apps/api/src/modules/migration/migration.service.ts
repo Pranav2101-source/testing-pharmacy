@@ -94,6 +94,9 @@ export class MigrationService {
     const { rows } = parseCsv(csvText, columnMappings);
     const uniqueNames = extractUniqueMedicineNames(rows); // [{ display, key }]
 
+    // No medicineName column mapped or CSV was empty
+    if (uniqueNames.length === 0) return [];
+
     // Load already-confirmed mappings using lowercase keys (that's how they're stored)
     const existing = await this.db.medicineMapping.findMany({
       where:  { pharmacyId, csvValue: { in: uniqueNames.map((n) => n.key) } },
@@ -121,7 +124,10 @@ export class MigrationService {
       const hits = await this.meili
         .index("medicines")
         .search(display, { limit: 3, attributesToRetrieve: ["id", "name", "genericName", "manufacturer", "form", "strength"] })
-        .catch(() => ({ hits: [] }));
+        .catch((err) => {
+          this.app.log.warn({ err, medicineName: display }, "[migration] Meilisearch search failed — returning no suggestions");
+          return { hits: [] };
+        });
 
       const matches: CatalogMatch[] = (hits.hits as any[]).map((h, i) => ({
         medicineId:   h.id,
@@ -147,28 +153,42 @@ export class MigrationService {
   ) {
     await this.getSession(sessionId, pharmacyId);
 
-    const ops = input.mappings.map((m) =>
-      this.db.medicineMapping.upsert({
-        where:  { pharmacyId_csvValue: { pharmacyId, csvValue: m.csvValue.toLowerCase().trim() } },
-        update: {
-          medicineId:  m.medicineId ?? null,
-          isNew:       m.isNew,
-          confirmedAt: new Date(),
-          confirmedBy: userId,
-        },
-        create: {
-          pharmacyId,
-          csvValue:    m.csvValue.toLowerCase().trim(),
-          medicineId:  m.medicineId ?? null,
-          isNew:       m.isNew,
-          confidence:  null,
-          confirmedAt: new Date(),
-          confirmedBy: userId,
-        },
-      }),
-    );
-
-    return Promise.all(ops);
+    // Sequential upserts so a failure on one mapping gives a clear error
+    // (Promise.all would give an ambiguous partial-save state)
+    const results: any[] = [];
+    for (const m of input.mappings) {
+      try {
+        results.push(
+          await this.db.medicineMapping.upsert({
+            where:  { pharmacyId_csvValue: { pharmacyId, csvValue: m.csvValue.toLowerCase().trim() } },
+            update: {
+              medicineId:  m.medicineId ?? null,
+              isNew:       m.isNew,
+              confirmedAt: new Date(),
+              confirmedBy: userId,
+            },
+            create: {
+              pharmacyId,
+              csvValue:    m.csvValue.toLowerCase().trim(),
+              medicineId:  m.medicineId ?? null,
+              isNew:       m.isNew,
+              confidence:  null,
+              confirmedAt: new Date(),
+              confirmedBy: userId,
+            },
+          }),
+        );
+      } catch (err: any) {
+        this.app.log.error({ err, csvValue: m.csvValue }, "[migration] medicine mapping upsert failed");
+        const isFk = err?.code === "P2003";
+        throw new Error(
+          isFk
+            ? `Medicine "${m.csvValue}" references a catalog entry that no longer exists — please re-select`
+            : `Could not save mapping for "${m.csvValue}" — please retry`,
+        );
+      }
+    }
+    return results;
   }
 
   // ── Preview inventory (parse + suggest, no writes) ────────────────────────
@@ -220,6 +240,10 @@ export class MigrationService {
     await this.getSession(sessionId, pharmacyId);
     const { rows } = parseCsv(csvText, columnMappings);
 
+    if (rows.length === 0) {
+      throw AppError.badRequest("The CSV produced no data rows — check your column mappings and file content");
+    }
+
     if (rows.length > ASYNC_THRESHOLD) {
       return this.dispatchInventoryJob(sessionId, pharmacyId, userId, csvText, columnMappings, rows.length);
     }
@@ -257,9 +281,14 @@ export class MigrationService {
         columnMappings,
       });
 
+      // boss.send() returns null when the queue rejects the job (full / duplicate key)
+      if (pgBossId === null) {
+        throw new Error("Import queue rejected the job — it may be at capacity. Please retry in a moment.");
+      }
+
       await this.db.migrationImportJob.update({
         where: { id: job.id },
-        data:  { pgBossJobId: pgBossId ?? undefined, status: "PROCESSING", startedAt: new Date() },
+        data:  { pgBossJobId: pgBossId, status: "PROCESSING", startedAt: new Date() },
       });
     } catch (err: any) {
       // Enqueue failed — mark the job FAILED so it doesn't stay PENDING forever
@@ -290,17 +319,23 @@ export class MigrationService {
     let   successRows  = 0;
     let   failedRows   = 0;
 
-    // Create job record to track progress
-    const importJob = await this.db.migrationImportJob.create({
-      data: {
-        sessionId,
-        pharmacyId,
-        entityType: "INVENTORY",
-        status:     "PROCESSING",
-        totalRows:  rows.length,
-        startedAt:  new Date(),
-      },
-    });
+    // Create job record to track progress (Issue 8: wrap in try/catch)
+    let importJob: { id: string };
+    try {
+      importJob = await this.db.migrationImportJob.create({
+        data: {
+          sessionId,
+          pharmacyId,
+          entityType: "INVENTORY",
+          status:     "PROCESSING",
+          totalRows:  rows.length,
+          startedAt:  new Date(),
+        },
+      });
+    } catch (err: any) {
+      this.app.log.error({ err }, "[migration] Failed to create import job record");
+      throw AppError.internal("Could not initialise the import — please retry");
+    }
 
     for (const row of rows) {
       const { data, issues } = validateInventoryRow(row);
@@ -353,10 +388,25 @@ export class MigrationService {
             });
             mappingLookup.set(csvKey, { ...mapping, medicineId: created.id });
           }
-        } catch {
-          errors.push({ row: data.rowNumber, field: "medicineName", message: `Failed to create medicine "${data.medicineName}"`, severity: "error" });
-          failedRows++;
-          continue;
+        } catch (err: any) {
+          this.app.log.warn({ err, medicineName: data.medicineName }, "[migration] medicine creation failed");
+          if (err?.code === "P2002") {
+            // Race: another session created this medicine concurrently — re-fetch and reuse it
+            const race = await this.db.medicine
+              .findFirst({ where: { name: { equals: data.medicineName, mode: "insensitive" } } })
+              .catch(() => null);
+            if (race) {
+              medicineId = race.id;
+              mappingLookup.set(csvKey, { ...mapping, medicineId: race.id });
+              // don't continue — fall through to inventory import using the recovered ID
+            } else {
+              errors.push({ row: data.rowNumber, field: "medicineName", message: `Failed to create medicine "${data.medicineName}" — please retry`, severity: "error" });
+              failedRows++; continue;
+            }
+          } else {
+            errors.push({ row: data.rowNumber, field: "medicineName", message: `Failed to create medicine "${data.medicineName}" — please retry`, severity: "error" });
+            failedRows++; continue;
+          }
         }
       }
 
@@ -433,31 +483,34 @@ export class MigrationService {
 
         successRows++;
       } catch (err: any) {
-        const isDuplicate = err?.code === "P2002";
-        errors.push({
-          row:     data.rowNumber,
-          message: isDuplicate
-            ? `Batch ${data.batchNumber} for this medicine already exists`
-            : `Failed to import row: ${err?.message ?? "unknown error"}`,
-          severity: "error",
-        });
+        this.app.log.warn({ err, rowNumber: data.rowNumber, batchNumber: data.batchNumber }, "[migration] inventory row import failed");
+        const code = err?.code;
+        const message =
+          code === "P2002" ? `Batch ${data.batchNumber} already exists for this medicine — use a unique batch number`
+          : code === "P2003" ? `Medicine "${data.medicineName}" no longer exists in the catalog`
+          : `Row ${data.rowNumber} could not be imported — please retry`;
+        errors.push({ row: data.rowNumber, message, severity: "error" });
         failedRows++;
       }
     }
 
-    await this.db.migrationImportJob.update({
-      where: { id: importJob.id },
-      data: {
-        status:       failedRows === rows.length ? "FAILED" : "COMPLETED",
-        processedRows: rows.length,
-        successRows,
-        failedRows,
-        errors:       errors as any,
-        completedAt:  new Date(),
-      },
-    });
+    // Issue 11: wrap final status update — import data is committed, only the tracking record is at risk
+    try {
+      await this.db.migrationImportJob.update({
+        where: { id: importJob.id },
+        data: {
+          status:       failedRows === rows.length ? "FAILED" : "COMPLETED",
+          processedRows: rows.length,
+          successRows,
+          failedRows,
+          errors:       errors as any,
+          completedAt:  new Date(),
+        },
+      });
+    } catch (err: any) {
+      this.app.log.error({ err, importJobId: importJob.id }, "[migration] Failed to finalize import job status — inventory data was committed");
+    }
 
-    // Mark step complete if at least some rows succeeded
     if (successRows > 0) {
       await this.markStepComplete(sessionId, "inventory");
     }
@@ -545,16 +598,28 @@ export class MigrationService {
         }
 
         successRows++;
-      } catch {
-        errors.push({ row: data.rowNumber, message: `Failed to upsert supplier "${data.supplierName}"`, severity: "error" });
+      } catch (err: unknown) {
+        this.app.log.warn({ err, supplierName: data.supplierName, rowNumber: data.rowNumber }, "[migration] supplier upsert failed");
+        errors.push({ row: data.rowNumber, message: `Could not import supplier "${data.supplierName}" — please retry`, severity: "error" });
         failedRows++;
       }
     }
 
-    await this.db.migrationImportJob.update({
-      where: { id: importJob.id },
-      data: { status: "COMPLETED", processedRows: rows.length, successRows, failedRows, errors: errors as any, completedAt: new Date() },
-    });
+    try {
+      await this.db.migrationImportJob.update({
+        where: { id: importJob.id },
+        data: {
+          status:       failedRows === rows.length ? "FAILED" : "COMPLETED",
+          processedRows: rows.length,
+          successRows,
+          failedRows,
+          errors:       errors as any,
+          completedAt:  new Date(),
+        },
+      });
+    } catch (err: unknown) {
+      this.app.log.error({ err }, "[migration] Failed to finalize supplier import job status");
+    }
 
     if (successRows > 0) await this.markStepComplete(sessionId, "suppliers");
 
@@ -639,16 +704,28 @@ export class MigrationService {
         }
 
         successRows++;
-      } catch {
-        errors.push({ row: data.rowNumber, message: `Failed to upsert customer "${data.customerName}"`, severity: "error" });
+      } catch (err: unknown) {
+        this.app.log.warn({ err, customerName: data.customerName, rowNumber: data.rowNumber }, "[migration] customer upsert failed");
+        errors.push({ row: data.rowNumber, message: `Could not import customer "${data.customerName}" — please retry`, severity: "error" });
         failedRows++;
       }
     }
 
-    await this.db.migrationImportJob.update({
-      where: { id: importJob.id },
-      data: { status: "COMPLETED", processedRows: rows.length, successRows, failedRows, errors: errors as any, completedAt: new Date() },
-    });
+    try {
+      await this.db.migrationImportJob.update({
+        where: { id: importJob.id },
+        data: {
+          status:       failedRows === rows.length ? "FAILED" : "COMPLETED",
+          processedRows: rows.length,
+          successRows,
+          failedRows,
+          errors:       errors as any,
+          completedAt:  new Date(),
+        },
+      });
+    } catch (err: unknown) {
+      this.app.log.error({ err }, "[migration] Failed to finalize customer import job status");
+    }
 
     if (successRows > 0) await this.markStepComplete(sessionId, "customers");
 
@@ -719,16 +796,28 @@ export class MigrationService {
         }
 
         successRows++;
-      } catch {
-        errors.push({ row: data.rowNumber, message: `Failed to upsert doctor "${data.doctorName}"`, severity: "error" });
+      } catch (err: unknown) {
+        this.app.log.warn({ err, doctorName: data.doctorName, rowNumber: data.rowNumber }, "[migration] doctor upsert failed");
+        errors.push({ row: data.rowNumber, message: `Could not import doctor "${data.doctorName}" — please retry`, severity: "error" });
         failedRows++;
       }
     }
 
-    await this.db.migrationImportJob.update({
-      where: { id: importJob.id },
-      data: { status: "COMPLETED", processedRows: rows.length, successRows, failedRows, errors: errors as any, completedAt: new Date() },
-    });
+    try {
+      await this.db.migrationImportJob.update({
+        where: { id: importJob.id },
+        data: {
+          status:       failedRows === rows.length ? "FAILED" : "COMPLETED",
+          processedRows: rows.length,
+          successRows,
+          failedRows,
+          errors:       errors as any,
+          completedAt:  new Date(),
+        },
+      });
+    } catch (err: unknown) {
+      this.app.log.error({ err }, "[migration] Failed to finalize doctor import job status");
+    }
 
     if (successRows > 0) await this.markStepComplete(sessionId, "doctors");
 
@@ -757,32 +846,38 @@ export class MigrationService {
       byType.set(r.entityType, list);
     }
 
-    for (const type of order) {
-      const ids = byType.get(type) ?? [];
-      if (!ids.length) continue;
+    // Wrap all deletes + the session status update in one transaction so a
+    // mid-rollback failure leaves nothing in a half-deleted state.
+    await this.db.$transaction(async (tx) => {
+      for (const type of order) {
+        const ids = byType.get(type) ?? [];
+        if (!ids.length) continue;
 
-      if (type === "INVENTORY") {
-        // Delete movements first, then the inventory batch itself
-        await this.db.inventoryMovement.deleteMany({
-          where: { referenceType: "OPENING_BALANCE", referenceId: sessionId, inventoryId: { in: ids } },
-        });
-        await this.db.inventory.deleteMany({ where: { id: { in: ids }, pharmacyId } });
-      } else if (type === "MEDICINE") {
-        // Deactivate rather than delete — other pharmacies may have referenced it
-        await this.db.medicine.updateMany({ where: { id: { in: ids } }, data: { isActive: false } });
-      } else if (type === "SUPPLIERS") {
-        await this.db.supplier.deleteMany({ where: { id: { in: ids }, pharmacyId } });
-      } else if (type === "CUSTOMERS") {
-        await this.db.customer.deleteMany({ where: { id: { in: ids }, pharmacyId } });
-      } else if (type === "DOCTORS") {
-        await this.db.doctor.deleteMany({ where: { id: { in: ids }, pharmacyId } });
+        if (type === "INVENTORY") {
+          // Delete movements first (FK dependency), then the inventory batch itself
+          await tx.inventoryMovement.deleteMany({
+            where: { referenceType: "OPENING_BALANCE", referenceId: sessionId, inventoryId: { in: ids } },
+          });
+          await tx.inventory.deleteMany({ where: { id: { in: ids }, pharmacyId } });
+        } else if (type === "MEDICINE") {
+          // Deactivate rather than delete — other pharmacies may have referenced it
+          await tx.medicine.updateMany({ where: { id: { in: ids } }, data: { isActive: false } });
+        } else if (type === "SUPPLIERS") {
+          await tx.supplier.deleteMany({ where: { id: { in: ids }, pharmacyId } });
+        } else if (type === "CUSTOMERS") {
+          await tx.customer.deleteMany({ where: { id: { in: ids }, pharmacyId } });
+        } else if (type === "DOCTORS") {
+          await tx.doctor.deleteMany({ where: { id: { in: ids }, pharmacyId } });
+        }
       }
-    }
 
-    return this.db.migrationSession.update({
-      where: { id: sessionId },
-      data:  { status: "ROLLED_BACK", completedSteps: [] },
-    });
+      await tx.migrationSession.update({
+        where: { id: sessionId },
+        data:  { status: "ROLLED_BACK", completedSteps: [] },
+      });
+    }, { timeout: 30_000 });
+
+    return this.db.migrationSession.findUniqueOrThrow({ where: { id: sessionId } });
   }
 
   // ── Complete session ──────────────────────────────────────────────────────
@@ -798,14 +893,19 @@ export class MigrationService {
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   private async markStepComplete(sessionId: string, step: string) {
-    const session = await this.db.migrationSession.findUnique({ where: { id: sessionId } });
-    if (!session) return;
-    const steps = new Set(session.completedSteps);
-    steps.add(step);
-    await this.db.migrationSession.update({
-      where: { id: sessionId },
-      data:  { completedSteps: [...steps], currentStep: step },
-    });
+    try {
+      const session = await this.db.migrationSession.findUnique({ where: { id: sessionId } });
+      if (!session) return;
+      const steps = new Set(session.completedSteps);
+      steps.add(step);
+      await this.db.migrationSession.update({
+        where: { id: sessionId },
+        data:  { completedSteps: [...steps], currentStep: step },
+      });
+    } catch (err) {
+      // Non-fatal — import data was already committed; only the step tracking record failed
+      this.app.log.warn({ err, sessionId, step }, "[migration] markStepComplete failed");
+    }
   }
 
 }

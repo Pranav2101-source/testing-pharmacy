@@ -37,7 +37,11 @@ function normaliseDate(raw: string): string | null {
   }
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
     const [dd, mm, yyyy] = s.split("/");
-    const d = new Date(`${yyyy}-${mm}-${dd}`); return isNaN(d.getTime()) ? null : d.toISOString();
+    const d = new Date(`${yyyy}-${mm}-${dd}`);
+    // Reject silently-overflowed dates (e.g. month 13 wraps to Jan next year)
+    if (isNaN(d.getTime())) return null;
+    if (d.getFullYear() !== +yyyy! || d.getMonth() + 1 !== +mm! || d.getDate() !== +dd!) return null;
+    return d.toISOString();
   }
   const mmYyyy = s.match(/^(\d{2})[\/\-](\d{4})$/);
   if (mmYyyy) {
@@ -53,7 +57,8 @@ function normaliseDate(raw: string): string | null {
 }
 
 function parseCsv(csvText: string, columnMappings: Record<string, string>): ParsedRow[] {
-  const lines = csvText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim().split("\n");
+  // Strip UTF-8 BOM — Excel exports almost always include it, silently dropping the first column otherwise
+  const lines = csvText.replace(/^﻿/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim().split("\n");
   if (lines.length < 2) return [];
   const headerLine = lines[0] ?? "";
   const delimiter  = (headerLine.match(/\t/g)?.length ?? 0) > (headerLine.match(/,/g)?.length ?? 0) ? "\t" : ",";
@@ -164,6 +169,8 @@ export async function migrationImportHandler(jobs: Job<MigrationImportJobData>[]
 
       if (entityType === "INVENTORY") {
         await processInventoryImport(jobId, sessionId, pharmacyId, userId, csvText, columnMappings);
+      } else {
+        throw new Error(`Unsupported entityType in migration job: ${entityType}`);
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -174,7 +181,9 @@ export async function migrationImportHandler(jobs: Job<MigrationImportJobData>[]
           completedAt: new Date(),
           errors:      [{ row: 0, message: `Job failed: ${message}`, severity: "error" }] as any,
         },
-      }).catch(() => {});
+      }).catch((e) => {
+        console.error("[migration-import] Failed to mark job FAILED — job will remain stuck in PROCESSING:", jobId, e);
+      });
     }
   }
 }
@@ -187,7 +196,32 @@ async function processInventoryImport(
   csvText:        string,
   columnMappings: Record<string, string>,
 ) {
+  // Guard against corrupted job payload
+  if (!csvText?.trim()) {
+    await prisma.migrationImportJob.update({
+      where: { id: jobId },
+      data: {
+        status:      "FAILED",
+        completedAt: new Date(),
+        errors:      [{ row: 0, message: "Import job contained no CSV data — please start the migration again", severity: "error" }] as any,
+      },
+    });
+    return;
+  }
+
   const rows = parseCsv(csvText, columnMappings);
+
+  if (rows.length === 0) {
+    await prisma.migrationImportJob.update({
+      where: { id: jobId },
+      data: {
+        status:      "FAILED",
+        completedAt: new Date(),
+        errors:      [{ row: 0, message: "CSV produced no data rows — check column mappings", severity: "error" }] as any,
+      },
+    });
+    return;
+  }
 
   const medicineMappings = await prisma.medicineMapping.findMany({ where: { pharmacyId } });
   const mappingLookup    = new Map(medicineMappings.map((m) => [m.csvValue, m]));
@@ -251,9 +285,24 @@ async function processInventoryImport(
             mappingLookup.set(csvKey, { ...mapping, medicineId: created.id });
           }
         } catch (err: any) {
-          errors.push({ row: data.rowNumber, field: "medicineName", message: `Failed to create medicine "${data.medicineName}": ${err?.message ?? "unknown"}`, severity: "error" });
-          failedRows++;
-          continue;
+          if (err?.code === "P2002") {
+            // Race: another worker created this medicine concurrently — re-fetch and reuse it
+            const race = await prisma.medicine
+              .findFirst({ where: { name: { equals: data.medicineName, mode: "insensitive" } } })
+              .catch(() => null);
+            if (race) {
+              resolvedMedicineId = race.id;
+              mappingLookup.set(csvKey, { ...mapping, medicineId: race.id });
+              // don't continue — fall through to inventory import using the recovered ID
+            } else {
+              errors.push({ row: data.rowNumber, field: "medicineName", message: `Failed to create medicine "${data.medicineName}" — please retry`, severity: "error" });
+              failedRows++; continue;
+            }
+          } else {
+            console.error(`[migration-import] Medicine creation failed for "${data.medicineName}":`, err);
+            errors.push({ row: data.rowNumber, field: "medicineName", message: `Failed to create medicine "${data.medicineName}" — please retry`, severity: "error" });
+            failedRows++; continue;
+          }
         }
       }
 
@@ -316,24 +365,40 @@ async function processInventoryImport(
         });
 
         // Only track NEW batches for rollback — don't track pre-existing batch updates.
+        // Issue 26: use a separate try/catch so a tracking failure doesn't lose the committed inventory row.
         if (!priorBatch) {
-          await prisma.migrationCreatedRecord.create({
-            data: { sessionId, entityType: "INVENTORY", entityId: inv.id },
-          });
+          try {
+            await prisma.migrationCreatedRecord.create({
+              data: { sessionId, entityType: "INVENTORY", entityId: inv.id },
+            });
+          } catch (trackErr) {
+            console.warn("[migration-import] Rollback tracking failed for inventory batch:", inv.id, trackErr);
+            // Inventory was committed successfully — don't fail the row
+          }
         }
 
         successRows++;
-      } catch {
-        errors.push({ row: data.rowNumber, message: `Failed to import row ${data.rowNumber}`, severity: "error" });
+      } catch (err: any) {
+        const code = err?.code;
+        const message =
+          code === "P2002" ? `Batch ${data.batchNumber} already exists for this medicine — use a unique batch number`
+          : code === "P2003" ? `Medicine "${data.medicineName}" no longer exists in the catalog`
+          : `Row ${data.rowNumber} could not be imported — please retry`;
+        console.warn("[migration-import] Row import failed:", data.rowNumber, err);
+        errors.push({ row: data.rowNumber, message, severity: "error" });
         failedRows++;
       }
     }
 
-    // Checkpoint progress after every batch
-    await prisma.migrationImportJob.update({
-      where: { id: jobId },
-      data:  { processedRows: Math.min(i + BATCH_SIZE, rows.length), successRows, failedRows },
-    });
+    // Checkpoint progress after every batch — non-fatal if this fails
+    try {
+      await prisma.migrationImportJob.update({
+        where: { id: jobId },
+        data:  { processedRows: Math.min(i + BATCH_SIZE, rows.length), successRows, failedRows },
+      });
+    } catch (err) {
+      console.warn("[migration-import] Checkpoint update failed — continuing import:", err);
+    }
   }
 
   const finalStatus = successRows === 0 ? "FAILED" : "COMPLETED";

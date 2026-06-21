@@ -16,13 +16,26 @@ import { api } from "@/lib/api-client";
 
 async function apiFetch<T>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
   const { method = "GET", body } = opts;
-  const res = await api.request<{ success: boolean; data: T; error?: string }>({
-    method,
-    url: `/migration${path}`,
-    data: body,
-  });
-  if (!res.data.success) throw new Error(res.data.error ?? "Request failed");
-  return res.data.data;
+  try {
+    const res = await api.request<{ success: boolean; data: T; error?: string }>({
+      method,
+      url: `/migration${path}`,
+      data: body,
+    });
+    if (!res.data.success) throw new Error(res.data.error ?? "Request failed");
+    return res.data.data;
+  } catch (err: any) {
+    // Prefer the server's own error message over the generic Axios HTTP-level one
+    const serverMsg = err?.response?.data?.error ?? err?.response?.data?.message;
+    if (serverMsg) throw new Error(serverMsg);
+    if (err?.code === "ECONNABORTED" || err?.message?.includes("timeout")) {
+      throw new Error("Request timed out — the server may be busy. Please retry.");
+    }
+    if (err?.message === "Network Error") {
+      throw new Error("Cannot reach the server — check your connection and retry.");
+    }
+    throw err;
+  }
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -308,8 +321,10 @@ export default function MigrationPage() {
   const [confirmedMedMaps, setConfirmedMedMaps] = useState<Record<string, { medicineId?: string; isNew: boolean }>>({});
 
   // Validation + commit
-  const [previewResult, setPreviewResult] = useState<any>(null);
-  const [commitResult,  setCommitResult]  = useState<any>(null);
+  const [previewResult,   setPreviewResult]   = useState<any>(null);
+  const [commitResult,    setCommitResult]    = useState<any>(null);
+  // True while a secondary apiFetch runs inside an onSuccess callback (no mutation spinner for those)
+  const [isFetchingNext, setIsFetchingNext]   = useState(false);
 
   // Other entities
   const [activeEntity,   setActiveEntity]   = useState<"suppliers" | "customers" | "doctors">("suppliers");
@@ -322,22 +337,53 @@ export default function MigrationPage() {
 
   // ── Live session polling (for async large imports) ────────────────────────
 
-  const { data: session } = useQuery<Session>({
+  // Issue 40: Restore sessionId on page refresh so background imports stay reconnected
+  useEffect(() => {
+    if (sessionId) return;
+    const saved = sessionStorage.getItem("migration_session_id");
+    if (saved) setSessionId(saved);
+  }, []);
+
+  useEffect(() => {
+    if (sessionId) sessionStorage.setItem("migration_session_id", sessionId);
+    else           sessionStorage.removeItem("migration_session_id");
+  }, [sessionId]);
+
+  const { data: session, isError: sessionQueryFailed } = useQuery<Session>({
     queryKey:        ["migration-session", sessionId],
     queryFn:         () => apiFetch(`/sessions/${sessionId}`),
     enabled:         !!sessionId,
+    retry:           2,
+    throwOnError:    false,
     refetchInterval: (q) => {
       const processing = q.state.data?.importJobs.some((j: ImportJob) => j.status === "PROCESSING");
       return processing ? 3000 : false;
     },
   });
 
+  // Show a toast if the session polling permanently fails (e.g. network drop)
+  useEffect(() => {
+    if (sessionQueryFailed && sessionId) {
+      toast.error("Lost connection to migration session — import status may be stale. Refresh to reconnect.");
+    }
+  }, [sessionQueryFailed, sessionId]);
+
+  // Warn before leaving while an import is actively running
+  useEffect(() => {
+    const hasActiveImport = session?.importJobs.some((j) => j.status === "PROCESSING");
+    if (!hasActiveImport) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [session?.importJobs]);
+
   // Auto-advance from commit-inventory → other-entities when an async background
-  // job finishes. Without this the polling stops but the user is left on the
-  // "large import running" screen with no navigation.
+  // job finishes. Use jobId (not entityType) so multiple sessions don't cross-match.
   useEffect(() => {
     if (step !== "commit-inventory") return;
-    const inventoryJob = session?.importJobs.find((j) => j.entityType === "INVENTORY");
+    // Only activate for async jobs (sync jobs set commitResult directly in onSuccess)
+    if (!commitResult?.jobId) return;
+    const inventoryJob = session?.importJobs.find((j) => j.id === commitResult.jobId);
     if (inventoryJob?.status === "COMPLETED" || inventoryJob?.status === "FAILED") {
       setCommitResult({
         entityType:  "INVENTORY",
@@ -348,7 +394,7 @@ export default function MigrationPage() {
         async:       false,
       });
     }
-  }, [session?.importJobs, step]);
+  }, [session?.importJobs, step, commitResult?.jobId]);
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
@@ -383,6 +429,7 @@ export default function MigrationPage() {
       });
     },
     onSuccess: async () => {
+      setIsFetchingNext(true);
       const clean = cleanMappings(columnMappings);
       try {
         const result = await apiFetch<MedicineSuggestion[]>(`/sessions/${sessionId}/medicine-suggestions`, {
@@ -405,6 +452,8 @@ export default function MigrationPage() {
         setStep("medicine-map");
       } catch (e: any) {
         toast.error(e.message ?? "Failed to fetch medicine suggestions");
+      } finally {
+        setIsFetchingNext(false);
       }
     },
     onError: (e: Error) => toast.error(e.message),
@@ -422,6 +471,7 @@ export default function MigrationPage() {
       });
     },
     onSuccess: async () => {
+      setIsFetchingNext(true);
       const clean = cleanMappings(columnMappings);
       try {
         const preview = await apiFetch(`/sessions/${sessionId}/preview/inventory`, {
@@ -431,6 +481,8 @@ export default function MigrationPage() {
         setStep("validation");
       } catch (e: any) {
         toast.error(e.message ?? "Failed to run validation");
+      } finally {
+        setIsFetchingNext(false);
       }
     },
     onError: (e: Error) => toast.error(e.message),
@@ -472,8 +524,12 @@ export default function MigrationPage() {
 
   const completeSession = useMutation({
     mutationFn: () => apiFetch(`/sessions/${sessionId}/complete`, { method: "POST" }),
-    onSuccess:  () => { qc.invalidateQueries({ queryKey: ["migration-session", sessionId] }); setStep("summary"); },
-    onError:    (e: Error) => toast.error(e.message),
+    onSuccess:  () => {
+      sessionStorage.removeItem("migration_session_id");
+      qc.invalidateQueries({ queryKey: ["migration-session", sessionId] });
+      setStep("summary");
+    },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   // ── CSV handlers ──────────────────────────────────────────────────────────
@@ -583,7 +639,7 @@ export default function MigrationPage() {
           <div className="flex items-center justify-between">
             <h2 className="font-semibold text-slate-800">Upload Inventory CSV</h2>
             <button
-              onClick={() => downloadTemplate("inventory")}
+              onClick={() => { try { downloadTemplate("inventory"); } catch { toast.error("Could not generate template file"); } }}
               className="flex items-center gap-1.5 text-[12px] text-brand-600 border border-brand-200 bg-brand-50 hover:bg-brand-100 px-3 py-1.5 rounded-lg font-medium"
             >
               <Download className="w-3.5 h-3.5" /> Download Template
@@ -671,10 +727,10 @@ export default function MigrationPage() {
                   </button>
                   <button
                     onClick={() => saveColMappings.mutate()}
-                    disabled={saveColMappings.isPending || !canProceed}
+                    disabled={saveColMappings.isPending || isFetchingNext || !canProceed}
                     className="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white text-[13px] font-semibold px-5 py-2 rounded-lg transition-colors disabled:opacity-50"
                   >
-                    {saveColMappings.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                    {(saveColMappings.isPending || isFetchingNext) ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                     Next: Map Medicines <ArrowRight className="w-4 h-4" />
                   </button>
                 </div>
@@ -800,11 +856,13 @@ export default function MigrationPage() {
               onClick={() => confirmMedicineMaps.mutate()}
               disabled={
                 confirmMedicineMaps.isPending ||
+                isFetchingNext ||
+                medSuggestions.length === 0 ||
                 medSuggestions.some((s) => !confirmedMedMaps[s.csvValue])
               }
               className="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white text-[13px] font-semibold px-5 py-2 rounded-lg transition-colors disabled:opacity-50"
             >
-              {confirmMedicineMaps.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+              {(confirmMedicineMaps.isPending || isFetchingNext) ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
               Confirm & Preview <ArrowRight className="w-4 h-4" />
             </button>
           </div>
@@ -1013,7 +1071,7 @@ export default function MigrationPage() {
                 {activeEntity} CSV
               </p>
               <button
-                onClick={() => downloadTemplate(activeEntity)}
+                onClick={() => { try { downloadTemplate(activeEntity); } catch { toast.error("Could not generate template file"); } }}
                 className="flex items-center gap-1 text-[11px] text-brand-600 border border-brand-200 bg-brand-50 hover:bg-brand-100 px-2.5 py-1 rounded-md font-medium"
               >
                 <Download className="w-3 h-3" /> Template
