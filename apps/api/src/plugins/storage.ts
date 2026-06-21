@@ -1,6 +1,7 @@
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync } from "fastify";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import ws from "ws";
 import { env } from "../config/env.js";
 
 declare module "fastify" {
@@ -12,6 +13,7 @@ declare module "fastify" {
 const storagePlugin: FastifyPluginAsync = async (fastify) => {
   const client = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
+    realtime: { transport: ws },
   });
 
   fastify.decorate("supabase", client);
