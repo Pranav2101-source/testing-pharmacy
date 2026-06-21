@@ -7,13 +7,23 @@ node_modules
 .env.*.local
 .env.production
 .env.staging
+.env.migrate
 **/.env
 **/.env.local
+**/.env.migrate
 
 # Build outputs
 dist
 .next
 .turbo
+
+# TypeScript compiled artifacts that accidentally land inside src/ directories.
+# tsc --outDir should point to dist/, but sometimes a stray build drops .js/.d.ts
+# next to source files. These are never authoritative — dist/ is the output.
+apps/api/src/**/*.js
+apps/api/src/**/*.js.map
+apps/api/src/**/*.d.ts
+apps/api/src/**/*.d.ts.map
 
 # Logs
 *.log

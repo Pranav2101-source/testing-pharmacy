@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { calcGstFromMrp, calcInvoiceTotals } from "./gst.js";
+import { calcGstFromMrp, calcInvoiceTotals, calcPurchaseLineGST } from "./gst.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -285,5 +285,147 @@ describe("calcInvoiceTotals", () => {
     const r = calcInvoiceTotals(items);
     expect(r.totalAmount).toBe(0);
     expect(r.totalGst).toBe(0);
+  });
+});
+
+// ── calcPurchaseLineGST ───────────────────────────────────────────────────────
+// Purchase-side: cost price is GST-EXCLUSIVE (tax added ON TOP).
+// Opposite of calcGstFromMrp which reverse-calculates from GST-inclusive MRP.
+
+describe("calcPurchaseLineGST", () => {
+
+  // ── 0% GST ───────────────────────────────────────────────────────────────────
+
+  describe("0% GST", () => {
+    it("amount equals lineTotal when no GST", () => {
+      const r = calcPurchaseLineGST(100, 1, 0, 0);
+      expect(r.lineTotal).toBe(100);
+      expect(r.totalGst).toBe(0);
+      expect(r.cgst).toBe(0);
+      expect(r.sgst).toBe(0);
+      expect(r.igst).toBe(0);
+      expect(r.amount).toBe(100);
+    });
+
+    it("qty 5, 0% GST: amount = lineTotal = 500", () => {
+      const r = calcPurchaseLineGST(100, 5, 0, 0);
+      expect(r.lineTotal).toBe(500);
+      expect(r.amount).toBe(500);
+      expect(r.totalGst).toBe(0);
+    });
+  });
+
+  // ── 5% GST — intrastate ───────────────────────────────────────────────────────
+
+  describe("5% GST — intrastate", () => {
+    it("₹100 cost, qty 1, no discount: cgst=sgst=2.5, amount=105", () => {
+      const r = calcPurchaseLineGST(100, 1, 0, 5);
+      expect(r.lineTotal).toBe(100);
+      expect(r.cgst).toBe(2.5);
+      expect(r.sgst).toBe(2.5);
+      expect(r.igst).toBe(0);
+      expect(r.totalGst).toBe(5);
+      expect(r.amount).toBe(105);
+    });
+
+    it("cgst === sgst (symmetric split)", () => {
+      const r = calcPurchaseLineGST(200, 3, 0, 5);
+      expect(r.cgst).toBe(r.sgst);
+    });
+
+    it("qty 10: lineTotal=1000, gst=50, amount=1050", () => {
+      const r = calcPurchaseLineGST(100, 10, 0, 5);
+      expect(r.lineTotal).toBe(1000);
+      expect(r.totalGst).toBe(50);
+      expect(r.amount).toBe(1050);
+    });
+
+    it("10% discount: lineTotal=90, cgst=sgst=2.25, amount=94.5", () => {
+      const r = calcPurchaseLineGST(100, 1, 10, 5);
+      expect(r.lineTotal).toBe(90);
+      expect(r.cgst).toBe(2.25);
+      expect(r.sgst).toBe(2.25);
+      expect(r.totalGst).toBe(4.5);
+      expect(r.amount).toBe(94.5);
+    });
+  });
+
+  // ── 5% GST — interstate ───────────────────────────────────────────────────────
+
+  describe("5% GST — interstate", () => {
+    it("igst = full 5%, cgst = sgst = 0", () => {
+      const r = calcPurchaseLineGST(100, 1, 0, 5, true);
+      expect(r.igst).toBe(5);
+      expect(r.cgst).toBe(0);
+      expect(r.sgst).toBe(0);
+      expect(r.totalGst).toBe(5);
+      expect(r.amount).toBe(105);
+    });
+
+    it("interstate and intrastate produce same amount", () => {
+      const intra = calcPurchaseLineGST(200, 2, 10, 5, false);
+      const inter = calcPurchaseLineGST(200, 2, 10, 5, true);
+      expect(inter.amount).toBe(intra.amount);
+      expect(inter.lineTotal).toBe(intra.lineTotal);
+    });
+  });
+
+  // ── 12% GST ───────────────────────────────────────────────────────────────────
+
+  describe("12% GST — intrastate", () => {
+    it("₹100 cost, qty 1: cgst=sgst=6, amount=112", () => {
+      const r = calcPurchaseLineGST(100, 1, 0, 12);
+      expect(r.cgst).toBe(6);
+      expect(r.sgst).toBe(6);
+      expect(r.totalGst).toBe(12);
+      expect(r.amount).toBe(112);
+    });
+
+    it("20% discount: lineTotal=80, gst=9.6, amount=89.6", () => {
+      const r = calcPurchaseLineGST(100, 1, 20, 12);
+      expect(r.lineTotal).toBe(80);
+      expect(r.totalGst).toBe(9.6);
+      expect(r.amount).toBe(89.6);
+    });
+
+    it("12% interstate: igst=12, cgst=sgst=0", () => {
+      const r = calcPurchaseLineGST(100, 1, 0, 12, true);
+      expect(r.igst).toBe(12);
+      expect(r.cgst).toBe(0);
+      expect(r.sgst).toBe(0);
+    });
+  });
+
+  // ── Invariants ────────────────────────────────────────────────────────────────
+
+  describe("invariants", () => {
+    it("lineTotal + totalGst === amount for all combinations", () => {
+      const cases = [
+        [50, 2, 0, 0], [100, 1, 10, 5], [200, 3, 15, 12], [500, 1, 0, 18],
+      ] as [number, number, number, number][];
+      for (const [cost, qty, disc, gst] of cases) {
+        const r = calcPurchaseLineGST(cost, qty, disc, gst);
+        expect(r.lineTotal + r.totalGst).toBeCloseTo(r.amount, 10);
+      }
+    });
+
+    it("cgst + sgst === totalGst for intrastate", () => {
+      const r = calcPurchaseLineGST(111, 3, 7, 5);
+      expect(r.cgst + r.sgst).toBe(r.totalGst);
+    });
+
+    it("100% discount → lineTotal=0, gst=0, amount=0", () => {
+      const r = calcPurchaseLineGST(100, 5, 100, 12);
+      expect(r.lineTotal).toBe(0);
+      expect(r.totalGst).toBe(0);
+      expect(r.amount).toBe(0);
+    });
+
+    it("zero quantity → all zeros", () => {
+      const r = calcPurchaseLineGST(100, 0, 0, 5);
+      expect(r.lineTotal).toBe(0);
+      expect(r.totalGst).toBe(0);
+      expect(r.amount).toBe(0);
+    });
   });
 });

@@ -78,7 +78,11 @@ export async function buildApp() {
   await app.register(helmet, { global: true });
 
   await app.register(cors, {
-    origin: true,
+    origin: (origin, cb) => {
+      // Allow server-to-server / curl / mobile requests (no Origin header)
+      if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+      cb(new Error("Not allowed by CORS"), false);
+    },
     credentials: true,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });

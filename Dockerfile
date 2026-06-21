@@ -26,4 +26,7 @@ RUN pnpm --filter @pharmacy/api... build
 
 EXPOSE 4000
 
-CMD ["node", "apps/api/dist/server.js"]
+# Run pending migrations before starting the server so every deploy is
+# schema-safe. Uses DIRECT_URL (Supabase direct connection on port 5432)
+# to bypass PgBouncer, which does not support the DDL statements in migrations.
+CMD ["sh", "-c", "node_modules/.bin/prisma migrate deploy --schema=packages/database/prisma/schema.prisma && node apps/api/dist/server.js"]

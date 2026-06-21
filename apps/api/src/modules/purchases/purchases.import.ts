@@ -41,6 +41,12 @@ function parseExpiryDate(raw: string, rowLabel: string): string {
   if (isNaN(d.getTime())) {
     throw AppError.unprocessable(`${rowLabel}: expiryDate "${raw}" is not a valid calendar date`);
   }
+  // V8 silently overflows invalid day-of-month values (e.g. Feb 30 → Mar 2).
+  // Re-check the UTC fields match the input parts so such dates are caught.
+  const [yyyy, mm, dd] = iso.split("-").map(Number);
+  if (d.getUTCFullYear() !== yyyy || d.getUTCMonth() + 1 !== mm || d.getUTCDate() !== dd) {
+    throw AppError.unprocessable(`${rowLabel}: expiryDate "${raw}" is not a valid calendar date`);
+  }
   return d.toISOString();
 }
 
