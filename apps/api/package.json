@@ -19,7 +19,6 @@
     "@fastify/jwt": "^10.1.0",
     "@fastify/multipart": "^10.0.0",
     "@fastify/rate-limit": "^11.0.0",
-    "ioredis": "^5.3.0",
     "@fastify/swagger": "^9.7.0",
     "@fastify/swagger-ui": "^6.0.0",
     "@pharmacy/database": "workspace:*",
@@ -33,10 +32,12 @@
     "fastify": "^5.8.5",
     "fastify-plugin": "^5.0.1",
     "file-type": "^22.0.1",
+    "ioredis": "^5.3.0",
     "meilisearch": "^0.44.0",
     "nodemailer": "^9.0.1",
     "pino": "^9.4.0",
     "pino-pretty": "^13.0.0",
+    "ws": "^8.21.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
