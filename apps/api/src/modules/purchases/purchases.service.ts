@@ -20,21 +20,46 @@ export class PurchasesService {
     this.repo = new PurchasesRepo(app.prisma);
   }
 
+  // Resolves medicine names → IDs. For names not found in the global catalog,
+  // a minimal Medicine record is created automatically so CSV-imported GRNs/POs
+  // never block on missing catalog entries. The pharmacist can enrich the record later.
+  private async resolveMedicineIds(
+    items: Array<{ medicineId: string; medicineName: string; gstRate: number }>
+  ): Promise<Map<string, string>> {
+    const names     = [...new Set(items.map((i) => i.medicineName))];
+    const existing  = await this.app.prisma.medicine.findMany({
+      where:  { name: { in: names, mode: "insensitive" } },
+      select: { id: true, name: true },
+    });
+    const nameToId  = new Map(existing.map((m) => [m.name.toLowerCase(), m.id]));
+    const unmatched = names.filter((n) => !nameToId.has(n.toLowerCase()));
+
+    if (unmatched.length > 0) {
+      // Auto-create minimal Medicine records for names not yet in the catalog.
+      // gstRate is taken from the first item that has this medicine name.
+      const created = await Promise.all(
+        unmatched.map((name) => {
+          const gstRate = items.find(
+            (i) => i.medicineName.toLowerCase() === name.toLowerCase()
+          )?.gstRate ?? 12;
+          return this.app.prisma.medicine.create({
+            data:   { name, gstRate },
+            select: { id: true, name: true },
+          });
+        })
+      );
+      for (const m of created) nameToId.set(m.name.toLowerCase(), m.id);
+    }
+
+    return nameToId;
+  }
+
   // ── Purchase Orders ────────────────────────────────────────────────────────
 
   async createPO(pharmacyId: string, userId: string, userRole: string, input: CreatePOInput) {
     const itemsNeedingId = input.items.filter((i) => !i.medicineId);
     if (itemsNeedingId.length > 0) {
-      const names     = [...new Set(itemsNeedingId.map((i) => i.medicineName))];
-      const medicines = await this.app.prisma.medicine.findMany({
-        where:  { name: { in: names, mode: "insensitive" } },
-        select: { id: true, name: true },
-      });
-      const nameToId  = new Map(medicines.map((m) => [m.name.toLowerCase(), m.id]));
-      const unmatched = names.filter((n) => !nameToId.has(n.toLowerCase()));
-      if (unmatched.length > 0) {
-        throw AppError.unprocessable(`Medicines not found in catalog: ${unmatched.join(", ")}`);
-      }
+      const nameToId = await this.resolveMedicineIds(input.items);
       input = {
         ...input,
         items: input.items.map((i) =>
@@ -211,20 +236,9 @@ export class PurchasesService {
   // ── GRN ───────────────────────────────────────────────────────────────────
 
   async createGRN(pharmacyId: string, userId: string, input: CreateGRNInput) {
-    // Resolve any items that have an empty medicineId (CSV-imported rows) by looking up
-    // the medicine by name. Throws a descriptive error for any unrecognised medicine names.
     const itemsNeedingId = input.items.filter((i) => !i.medicineId);
     if (itemsNeedingId.length > 0) {
-      const names     = [...new Set(itemsNeedingId.map((i) => i.medicineName))];
-      const medicines = await this.app.prisma.medicine.findMany({
-        where:  { name: { in: names, mode: "insensitive" } },
-        select: { id: true, name: true },
-      });
-      const nameToId  = new Map(medicines.map((m) => [m.name.toLowerCase(), m.id]));
-      const unmatched = names.filter((n) => !nameToId.has(n.toLowerCase()));
-      if (unmatched.length > 0) {
-        throw AppError.unprocessable(`Medicines not found in catalog: ${unmatched.join(", ")}`);
-      }
+      const nameToId = await this.resolveMedicineIds(input.items);
       input = {
         ...input,
         items: input.items.map((i) =>
@@ -408,18 +422,9 @@ export class PurchasesService {
   // Resolves medicineName → medicineId via DB lookup, then creates a DRAFT GRN.
 
   async importGRNFromCSV(pharmacyId: string, userId: string, supplierId: string, rows: ImportedGRNRow[], allowNearExpiry = false) {
-    // Resolve medicineIds by name — case-insensitive
-    const names    = [...new Set(rows.map((r) => r.medicineName))];
-    const medicines = await this.app.prisma.medicine.findMany({
-      where:  { name: { in: names, mode: "insensitive" } },
-      select: { id: true, name: true },
-    });
-
-    const nameToId = new Map(medicines.map((m) => [m.name.toLowerCase(), m.id]));
-    const unmatched = names.filter((n) => !nameToId.has(n.toLowerCase()));
-    if (unmatched.length > 0) {
-      throw AppError.unprocessable(`Medicines not found in catalog: ${unmatched.join(", ")}`);
-    }
+    const nameToId = await this.resolveMedicineIds(
+      rows.map((r) => ({ medicineId: "", medicineName: r.medicineName, gstRate: r.gstRate }))
+    );
 
     // Group by supplierInvoiceNo — one GRN per invoice
     const groups = new Map<string, ImportedGRNRow[]>();
