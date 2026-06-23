@@ -30,6 +30,19 @@ export async function startWorkers(): Promise<void> {
     boss.createQueue("reservation-cleanup"),
     boss.createQueue("migration-import"),
   ]);
+  const queues = [
+    "expiry-alerts",
+    "low-stock-alerts",
+    "grn-overdue",
+    "quotation-expiry",
+    "eod-summary",
+    "pending-credit",
+    "calendar-digest",
+    "reservation-cleanup",
+    "post-invoice",
+  ];
+
+  await Promise.all(queues.map((q) => boss.createQueue(q)));
 
   // Fan-out jobs: one worker handles all pharmacies in-process.
   // localConcurrency = max concurrent jobs fetched per poll; concurrency within each team.
