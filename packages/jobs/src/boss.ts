@@ -1,11 +1,13 @@
 import { PgBoss } from "pg-boss";
 
-// pg-boss uses LISTEN/NOTIFY which requires a persistent, direct connection.
-// Supabase's Transaction pooler (DATABASE_URL, port 6543) does not support
-// LISTEN/NOTIFY — always use the direct connection string (DIRECT_URL, port 5432).
+// pg-boss uses LISTEN/NOTIFY which requires session mode — the transaction pooler
+// (DATABASE_URL, port 6543) does not support it. Use PGBOSS_URL which points to
+// Supabase's session mode pooler (same pooler host, port 5432). The true direct
+// connection (DIRECT_URL, db.xxx.supabase.co:5432) is often blocked by ISP
+// firewalls, so we avoid it here.
 function buildConnectionString(): string {
-  const raw = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
-  if (!raw) throw new Error("DIRECT_URL (or DATABASE_URL) is not set — pg-boss cannot start");
+  const raw = process.env.PGBOSS_URL ?? process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+  if (!raw) throw new Error("PGBOSS_URL (or DATABASE_URL) is not set — pg-boss cannot start");
   try {
     const url = new URL(raw);
     url.searchParams.delete("connection_limit");
@@ -16,7 +18,7 @@ function buildConnectionString(): string {
     url.searchParams.delete("sslmode");
     return url.toString();
   } catch {
-    return raw; // not a valid URL — pass as-is and let pg fail loudly
+    return raw;
   }
 }
 

@@ -17,12 +17,17 @@ const envSchema = z.object({
 
   DATABASE_URL: z.string().min(1),
 
-  // Direct (non-pooled) connection — required for pg-boss (LISTEN/NOTIFY) and
-  // Prisma migrations. On Supabase: port 5432. On Neon: the non-pooler URL.
+  // Direct (non-pooled) connection — required for Prisma migrations (DDL; port 5432).
   DIRECT_URL: z.string().min(1),
 
+  // Session-mode pooler for pg-boss LISTEN/NOTIFY. Falls back to DIRECT_URL if
+  // unset. Transaction-mode pooler (DATABASE_URL, port 6543) does NOT work with
+  // pg-boss because it doesn't support LISTEN/NOTIFY.
+  PGBOSS_URL: z.string().optional(),
+
   MEILISEARCH_HOST:    z.string().default("http://localhost:7700"),
-  MEILISEARCH_API_KEY: z.string().min(1),
+  // Optional — omit to disable medicine search (sync errors are non-fatal).
+  MEILISEARCH_API_KEY: z.string().default(""),
 
   JWT_SECRET:              z.string().min(32),
   JWT_EXPIRES_IN:          z.string().default("15m"),

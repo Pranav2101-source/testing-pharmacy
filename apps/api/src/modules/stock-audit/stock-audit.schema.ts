@@ -9,7 +9,7 @@ export const updateItemSchema = z
     countedQty: z.number().int().min(0).optional(),
     notes:      z.string().max(500).trim().nullable().optional(),
   })
-  .refine((d) => d.countedQty !== undefined || d.notes !== undefined, {
+  .refine((d) => d.countedQty !== undefined || (d.notes !== undefined && d.notes !== null), {
     message: "At least one of countedQty or notes is required",
   })
 

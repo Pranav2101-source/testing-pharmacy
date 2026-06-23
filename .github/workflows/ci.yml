@@ -33,13 +33,11 @@ jobs:
         run: pnpm audit --audit-level=high
 
   # ── 2. Build · Push to ECR · Scan ──────────────────────────────────────────
-  # Only runs on push to main (not on PRs).
-  # Requires GitHub secrets: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
-  #                          AWS_REGION, ECR_REPOSITORY
+  # Disabled — deployment is now handled by Railway (not AWS App Runner).
   docker:
     name: Build · Push to ECR · Scan
     needs: [ci]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
