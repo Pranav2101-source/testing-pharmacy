@@ -424,6 +424,47 @@ const CATEGORIES: HelpCategory[] = [
         ],
       },
       {
+        id: "po-statuses", question: "What do the PO statuses mean? (Draft → Pending → Partial → Received)",
+        tags: ["po status", "draft", "pending", "partial", "received", "cancelled", "purchase order status", "status change"],
+        blocks: [
+          { type: "text", content: "A Purchase Order moves through these stages from creation to completion. Stock is never affected until goods are physically received." },
+          {
+            type: "badges", items: [
+              { label: "Draft",    color: "bg-slate-100 text-slate-700",   desc: "PO just created. You can still edit or delete it. Nothing has been sent to the supplier yet." },
+              { label: "Pending",  color: "bg-amber-100 text-amber-700",   desc: "PO has been sent to the supplier. Editing is locked. Waiting for stock to arrive." },
+              { label: "Partial",  color: "bg-blue-100 text-blue-700",     desc: "Some stock has arrived and been received via Gate Inward (GRN). More deliveries are expected." },
+              { label: "Received", color: "bg-emerald-100 text-emerald-700", desc: "All stock has been received. PO is complete. Inventory is updated, supplier balance is added." },
+              { label: "Cancelled",color: "bg-red-100 text-red-700",       desc: "PO was cancelled. Cannot cancel once stock has already been received." },
+            ],
+          },
+          {
+            type: "steps", steps: [
+              "Create a PO → status is Draft",
+              "Click 'Send' on the PO → status changes to Pending",
+              "Stock arrives → go to Gate Inward → create and confirm a GRN → status becomes Partial",
+              "All deliveries confirmed → status automatically becomes Received",
+            ],
+          },
+          { type: "tip", content: "Stock is added to inventory only when a GRN is confirmed — not when the PO is created or sent." },
+        ],
+      },
+      {
+        id: "po-approval", question: "What is PO Approval and when is it needed?",
+        tags: ["po approval", "pending approval", "approved", "rejected", "pharmacist", "owner approve"],
+        blocks: [
+          { type: "text", content: "If a Pharmacist creates a PO, the Owner must approve it before it can be sent to the supplier. This is a safety check so large orders don't go out without owner knowledge." },
+          {
+            type: "badges", items: [
+              { label: "Not Required",      color: "bg-slate-100 text-slate-600",    desc: "PO created by Owner — no approval needed, can be sent immediately." },
+              { label: "Pending Approval",  color: "bg-orange-100 text-orange-700",  desc: "PO created by Pharmacist — Owner needs to approve before it can be sent." },
+              { label: "Approved",          color: "bg-emerald-100 text-emerald-700", desc: "Owner approved it — PO can now be sent to the supplier." },
+              { label: "Rejected",          color: "bg-red-100 text-red-700",        desc: "Owner rejected it — PO cannot be sent. Edit and resubmit if needed." },
+            ],
+          },
+          { type: "tip", content: "As an Owner, you will see 'Approve' and 'Reject' buttons on any PO created by your staff. Pending Approvals count is shown on the Purchase page summary bar." },
+        ],
+      },
+      {
         id: "grn", question: "What is a GRN (Goods Receipt Note)?",
         tags: ["grn", "goods receipt", "inward", "receive stock"],
         blocks: [
