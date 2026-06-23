@@ -12,6 +12,7 @@ import { EmptyState } from "../components/EmptyState";
 import { StatusBadge } from "../components/StatusBadge";
 import { ActionBtn } from "../modals/shared";
 import { CreatePOModal } from "../modals/CreatePOModal";
+import { POSharePanel } from "../panels/POSharePanel";
 
 export function POTab({ suppliers }: { suppliers: Supplier[] }) {
   const [orders, setOrders]       = useState<PurchaseOrder[]>([]);
@@ -26,6 +27,7 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
   const [showCreate, setShow]     = useState(false);
   const [actionId, setAction]     = useState<string | null>(null);
   const [approveId, setApproveId] = useState<string | null>(null);
+  const [sharePoId, setSharePoId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -42,12 +44,6 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
   }, [page, search, supplierId, status, dateFrom, dateTo]);
 
   useEffect(() => { const t = setTimeout(load, search ? 350 : 0); return () => clearTimeout(t); }, [load]);
-
-  async function sendPO(id: string) {
-    setAction(id);
-    try { await api.patch(`/purchases/orders/${id}/send`); load(); }
-    catch (e: any) { alert(e?.response?.data?.error ?? "Cannot send"); } finally { setAction(null); }
-  }
 
   async function cancelPO(id: string) {
     if (!window.confirm("Cancel this purchase order?")) return;
@@ -130,8 +126,8 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
                       </>
                     )}
                     {po.status === "DRAFT" && po.approvalStatus !== "PENDING_APPROVAL" && po.approvalStatus !== "REJECTED" && (
-                      <ActionBtn onClick={() => sendPO(po.id)} disabled={actionId === po.id}
-                        icon={actionId === po.id ? Loader2 : Send} label="Send"
+                      <ActionBtn onClick={() => setSharePoId(po.id)} disabled={false}
+                        icon={Send} label="Send"
                         cls="text-amber-600 border-amber-200 hover:bg-amber-50" />
                     )}
                     {!["RECEIVED", "CANCELLED"].includes(po.status) && (
@@ -150,6 +146,16 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
 
       <AnimatePresence>
         {showCreate && <CreatePOModal suppliers={suppliers} onClose={() => setShow(false)} onDone={() => { setShow(false); load(); }} />}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {sharePoId && (
+          <POSharePanel
+            poId={sharePoId}
+            onClose={() => setSharePoId(null)}
+            onSent={() => { setSharePoId(null); load(); }}
+          />
+        )}
       </AnimatePresence>
     </div>
   );

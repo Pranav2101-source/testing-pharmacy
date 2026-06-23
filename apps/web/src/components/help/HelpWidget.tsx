@@ -465,6 +465,69 @@ const CATEGORIES: HelpCategory[] = [
         ],
       },
       {
+        id: "po-send", question: "How do I send a PO to my supplier?",
+        tags: ["send po", "share po", "whatsapp po", "pdf po", "download po", "po supplier", "send purchase order", "mark as sent"],
+        blocks: [
+          { type: "text", content: "When a Draft PO is ready, click the 'Send' button on the PO row. A panel slides in with three ways to share the order — no email service needed." },
+          {
+            type: "grid", items: [
+              { icon: FileText,    label: "Download PDF",      desc: "Opens a print-ready A4 document. Choose 'Save as PDF' and email it yourself.",              color: "bg-blue-100 text-blue-600"    },
+              { icon: Phone,       label: "Share on WhatsApp", desc: "Opens WhatsApp with the PO details pre-filled. Just hit Send.",                            color: "bg-emerald-100 text-emerald-600" },
+              { icon: CheckCircle2, label: "Mark as Sent",     desc: "If you already shared it another way, use this to move the PO to Pending without sharing.", color: "bg-slate-100 text-slate-600"   },
+            ],
+          },
+          {
+            type: "steps", steps: [
+              "Go to Purchase → Orders and find a Draft PO",
+              "Hover over the row — the 'Send' button appears in the Actions column",
+              "Click 'Send' — the share panel slides in and loads the PO details",
+              "Choose Download PDF → save as PDF → email it to your supplier yourself",
+              "Or choose Share on WhatsApp → the message is pre-filled, just tap Send",
+              "The PO status changes to Pending automatically when you take any action",
+            ],
+          },
+          { type: "tip", content: "The PDF includes your pharmacy letterhead, GSTIN, Drug License, supplier details, item-wise breakdown, GST amounts, and a signature block — ready to send or print." },
+          { type: "warning", content: "Once you click Send (any option), the PO moves to Pending and is locked for editing. Double-check quantities and prices before sharing." },
+        ],
+      },
+      {
+        id: "po-send-pdf", question: "How does the PDF / Print option work?",
+        tags: ["pdf", "print po", "save pdf", "download po", "po document", "letterhead"],
+        blocks: [
+          { type: "text", content: "Clicking 'Download PDF' opens a formatted purchase order in a new browser tab and auto-triggers the print dialog. From there you can save it as a PDF file." },
+          {
+            type: "steps", steps: [
+              "Click 'Send' on the Draft PO row",
+              "In the panel, click 'Download PDF'",
+              "A new tab opens with the formatted PO document",
+              "The browser print dialog opens automatically",
+              "Change the destination to 'Save as PDF'",
+              "Save the file and email it to your supplier from your Gmail or Outlook",
+            ],
+          },
+          { type: "tip", content: "The document is formatted for A4 paper and includes: pharmacy name, address, GSTIN, Drug License, supplier name, all ordered medicines with batch/expiry/MRP, subtotal, GST breakdown, grand total, and an authorised signatory block." },
+          { type: "warning", content: "If the print dialog does not open automatically, your browser may have blocked the pop-up. Click 'Allow' on the pop-up blocked notification in the address bar and try again." },
+        ],
+      },
+      {
+        id: "po-send-whatsapp", question: "How does the WhatsApp share option work?",
+        tags: ["whatsapp", "share", "wp", "wa", "whatsapp po", "message supplier"],
+        blocks: [
+          { type: "text", content: "Clicking 'Share on WhatsApp' opens WhatsApp Web (or your WhatsApp app) with a pre-written message already filled in. The supplier's phone number is picked automatically from their profile." },
+          {
+            type: "steps", steps: [
+              "Click 'Send' on the Draft PO row",
+              "In the panel, click 'Share on WhatsApp'",
+              "WhatsApp opens in a new tab with the supplier's number pre-filled",
+              "The message includes PO number, date, expected delivery, total amount, and a confirmation request",
+              "Just click 'Send' in WhatsApp — no typing needed",
+            ],
+          },
+          { type: "tip", content: "Make sure the supplier's phone number is saved in their profile (Purchase → Suppliers → Edit). The WhatsApp button is greyed out if there is no phone number on file." },
+          { type: "warning", content: "WhatsApp does not support sending files via URL links. The message is text-only. If you need to send the full PDF, use the Download PDF option and attach it manually to a WhatsApp chat." },
+        ],
+      },
+      {
         id: "grn", question: "What is a GRN (Goods Receipt Note)?",
         tags: ["grn", "goods receipt", "inward", "receive stock"],
         blocks: [
