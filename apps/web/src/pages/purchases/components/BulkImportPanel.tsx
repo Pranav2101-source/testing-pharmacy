@@ -52,12 +52,19 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
   const [mapping,  setMapping]  = useState<Record<string, string>>(() =>
     initialRaw ? inferColumnMapping(parseRawRows(initialRaw).headers) : {},
   );
-  const [dragging, setDragging] = useState(false);
+  const [dragging,   setDragging]   = useState(false);
+  const [fileError,  setFileError]  = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   // ── Load raw text (file or paste) ────────────────────────────────────────
 
   const loadRaw = useCallback((text: string) => {
+    // Guard: binary content (ZIP / Excel) starts with "PK\x03\x04" magic bytes
+    if (text.startsWith("PK") || /[\x00-\x08\x0E-\x1F]/.test(text.slice(0, 200))) {
+      setFileError("This looks like a binary Excel file. Use the file picker above to upload it — or copy cells inside Excel first, then paste.");
+      return;
+    }
+    setFileError(null);
     setRaw(text);
     const { headers: h, rows: r } = parseRawRows(text);
     setHeaders(h);
@@ -66,25 +73,48 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
   }, []);
 
   function readFile(file: File) {
-    const isExcel = /\.(xlsx|xls|ods)$/i.test(file.name);
-    const r = new FileReader();
+    setFileError(null);
+    const isExcel = /\.(xlsx|xls|ods)$/i.test(file.name) ||
+      file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+      file.type === "application/vnd.ms-excel";
+    const reader = new FileReader();
     if (isExcel) {
-      r.onload = (e) => {
-        const data = new Uint8Array(e.target?.result as ArrayBuffer);
-        const wb   = XLSX.read(data, { type: "array", cellDates: true });
-        const ws   = wb.Sheets[wb.SheetNames[0]!];
-        // Convert to TSV so parseRawRows handles it like a pasted spreadsheet
-        const tsv  = XLSX.utils.sheet_to_csv(ws!, { FS: "\t" });
-        loadRaw(tsv);
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const wb   = XLSX.read(data, { type: "array", cellDates: true });
+          const ws   = wb.Sheets[wb.SheetNames[0]!];
+          const tsv  = XLSX.utils.sheet_to_csv(ws!, { FS: "\t" });
+          setFileError(null);
+          setRaw(tsv);
+          const { headers: h, rows: r } = parseRawRows(tsv);
+          setHeaders(h);
+          setRows(r);
+          setMapping(h.length > 0 ? inferColumnMapping(h) : {});
+        } catch {
+          setFileError("Could not read the Excel file. Make sure it is a valid .xlsx/.xls file and try again.");
+        }
       };
-      r.readAsArrayBuffer(file);
+      reader.onerror = () => setFileError("Failed to read the file.");
+      reader.readAsArrayBuffer(file);
     } else {
-      r.onload = (e) => loadRaw((e.target?.result as string) ?? "");
-      r.readAsText(file);
+      reader.onload = (e) => loadRaw((e.target?.result as string) ?? "");
+      reader.onerror = () => setFileError("Failed to read the file.");
+      reader.readAsText(file);
     }
   }
 
-  function reset() { setRaw(""); setHeaders([]); setRows([]); setMapping({}); }
+  function handleFileDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragging(false);
+    const f = e.dataTransfer.files[0];
+    if (f) readFile(f);
+  }
+
+  function reset() {
+    setRaw(""); setHeaders([]); setRows([]); setMapping({});
+    setFileError(null);
+  }
 
   // ── Derived state ─────────────────────────────────────────────────────────
 
@@ -146,10 +176,7 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
             <div
               onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
               onDragLeave={() => setDragging(false)}
-              onDrop={(e) => {
-                e.preventDefault(); setDragging(false);
-                const f = e.dataTransfer.files[0]; if (f) readFile(f);
-              }}
+              onDrop={handleFileDrop}
               onClick={() => fileRef.current?.click()}
               className={cn(
                 "border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all",
@@ -184,6 +211,8 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
                 <textarea
                   value={raw}
                   onChange={(e) => loadRaw(e.target.value)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={handleFileDrop}
                   placeholder={"Paste your rows here…\n(Include the header row — column order doesn't matter)"}
                   rows={4}
                   className="w-full px-3 py-2.5 text-[11px] font-mono resize-none focus:outline-none placeholder-slate-300 bg-white" />
@@ -196,6 +225,14 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
               <span className="flex items-center gap-1"><Check className="w-3 h-3 text-emerald-400" /> Indian date formats (MM/YYYY, DD/MM/YYYY)</span>
               <span className="flex items-center gap-1"><Check className="w-3 h-3 text-emerald-400" /> Live preview before import</span>
             </div>
+
+            {/* File-read error */}
+            {fileError && (
+              <div className="flex items-start gap-2.5 bg-red-50 border border-red-200 rounded-xl px-3 py-2.5">
+                <AlertTriangle className="w-3.5 h-3.5 text-red-500 flex-shrink-0 mt-0.5" />
+                <p className="text-[12px] text-red-700">{fileError}</p>
+              </div>
+            )}
           </div>
         )}
 
