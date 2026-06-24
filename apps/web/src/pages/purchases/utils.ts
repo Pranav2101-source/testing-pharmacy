@@ -107,30 +107,47 @@ export function csvToPOItems(raw: string): { items: Partial<POLineItem>[]; error
   const { headers, rows } = parseRawRows(raw);
   const errors: string[]  = [];
   const items: Partial<POLineItem>[] = [];
-  const col = (row: string[], name: string) => row[headers.indexOf(name)] ?? "";
+
+  // Flexible column mapping — handles "Medicine Name", "Qty", "P. Rate", etc.
+  const mapping = inferColumnMapping(headers);
+  const fieldIdx: Record<string, number> = {};
+  for (let i = 0; i < headers.length; i++) {
+    const f = mapping[headers[i]!] ?? "";
+    if (f) fieldIdx[f] = i;
+  }
+  const get = (row: string[], field: string) => {
+    const idx = fieldIdx[field];
+    return idx !== undefined ? (row[idx] ?? "").trim() : "";
+  };
 
   for (let i = 0; i < rows.length; i++) {
     const row  = rows[i] ?? [];
     const line = i + 2;
-    const name = col(row, "medicineName");
-    if (!name) { errors.push(`Row ${line}: medicineName is required`); continue; }
-    const qty  = parseFloat(col(row, "quantity")     || "1");
-    const rate = parseFloat(col(row, "purchaseRate") || "0");
-    const mrp  = parseFloat(col(row, "mrp")          || "0");
-    const gst  = parseFloat(col(row, "gstRate")       || "12");
-    if (isNaN(qty)  || qty  <= 0) { errors.push(`Row ${line}: quantity must be positive`);       continue; }
-    if (isNaN(rate) || rate <= 0) { errors.push(`Row ${line}: purchaseRate must be positive`);   continue; }
-    if (isNaN(mrp)  || mrp  <= 0) { errors.push(`Row ${line}: mrp must be positive`);            continue; }
-    if (![0,5,12,18].includes(gst)){ errors.push(`Row ${line}: gstRate must be 0,5,12 or 18`);  continue; }
-    let expiry = col(row, "expiryDate");
+    if (row.every((c) => !c.trim())) continue; // skip blank rows
+
+    const name = get(row, "medicineName");
+    if (!name) { errors.push(`Row ${line}: medicine name is required`); continue; }
+
+    const qty  = parseFloat(get(row, "receivedQty") || get(row, "quantity") || "1");
+    if (isNaN(qty) || qty <= 0) { errors.push(`Row ${line} (${name}): quantity must be > 0`); continue; }
+
+    // Rate, MRP, GST are optional at PO stage — filled in when goods arrive
+    const rate = parseFloat(get(row, "purchaseRate") || "0") || 0;
+    const mrp  = parseFloat(get(row, "mrp")          || "0") || 0;
+    const rawGst = parseFloat(get(row, "gstRate")    || "12");
+    const gst  = [0, 5, 12, 18].includes(rawGst) ? rawGst : 12;
+
+    const expRaw = get(row, "expiryDate");
+    let expiry = expRaw;
     if (/^\d{2}\/\d{2}\/\d{4}$/.test(expiry)) {
       const [dd, mm, yyyy] = expiry.split("/");
       expiry = `${yyyy}-${mm}-${dd}`;
     }
+
     items.push({
       medicineName: name,
       medicineId:   "",
-      batchNumber:  col(row, "batchNumber"),
+      batchNumber:  get(row, "batchNumber"),
       expiryDate:   expiry,
       quantity:     Math.floor(qty),
       purchaseRate: rate,
@@ -160,6 +177,7 @@ const COL_ALIASES: Record<string, string[]> = {
   receivedQty: [
     "qty","quantity","received","received qty","rcvd","units",
     "pcs","nos","received quantity","rcvd qty","recv qty","quantity received",
+    "order qty","order quantity","req qty","required qty",
   ],
   purchaseRate: [
     "rate","purchase rate","buy rate","price","cost","ptr","pts",
@@ -284,27 +302,52 @@ export function csvToReturnItems(raw: string): { items: Partial<SRLineItem>[]; e
   const { headers, rows } = parseRawRows(raw);
   const errors: string[]  = [];
   const items: Partial<SRLineItem>[] = [];
-  const col = (row: string[], name: string) => row[headers.indexOf(name)] ?? "";
+
+  // Flexible column mapping — handles "Medicine Name", "Batch", "Return Qty", etc.
+  const mapping = inferColumnMapping(headers);
+  // "returnQty" isn't in COL_ALIASES; treat it as receivedQty alias
+  const returnQtyIdx = headers.findIndex((h) => {
+    const lc = h.toLowerCase().trim();
+    return lc.includes("return") && (lc.includes("qty") || lc.includes("quantity"));
+  });
+
+  const fieldIdx: Record<string, number> = {};
+  for (let i = 0; i < headers.length; i++) {
+    const f = mapping[headers[i]!] ?? "";
+    if (f) fieldIdx[f] = i;
+  }
+  if (returnQtyIdx >= 0) fieldIdx["returnQty"] = returnQtyIdx;
+
+  const get = (row: string[], field: string) => {
+    const idx = fieldIdx[field];
+    return idx !== undefined ? (row[idx] ?? "").trim() : "";
+  };
 
   for (let i = 0; i < rows.length; i++) {
     const row  = rows[i] ?? [];
     const line = i + 2;
-    const name = col(row, "medicineName");
-    if (!name) { errors.push(`Row ${line}: medicineName is required`); continue; }
-    const qty  = parseFloat(col(row, "returnQty") || "1");
-    const rate = parseFloat(col(row, "purchaseRate") || "0");
-    if (isNaN(qty)  || qty  <= 0) { errors.push(`Row ${line}: returnQty must be positive`);    continue; }
-    if (isNaN(rate) || rate <= 0) { errors.push(`Row ${line}: purchaseRate must be positive`); continue; }
-    let expiry = col(row, "expiryDate");
+    if (row.every((c) => !c.trim())) continue;
+
+    const name = get(row, "medicineName");
+    if (!name) { errors.push(`Row ${line}: medicine name is required`); continue; }
+
+    const qty  = parseFloat(get(row, "returnQty") || get(row, "receivedQty") || "1");
+    const rate = parseFloat(get(row, "purchaseRate") || "0");
+    if (isNaN(qty)  || qty  <= 0) { errors.push(`Row ${line} (${name}): return qty must be > 0`);  continue; }
+    if (isNaN(rate) || rate <  0) { errors.push(`Row ${line} (${name}): purchase rate must be ≥ 0`); continue; }
+
+    const expRaw = get(row, "expiryDate");
+    let expiry = expRaw;
     if (/^\d{2}\/\d{2}\/\d{4}$/.test(expiry)) {
       const [dd, mm, yyyy] = expiry.split("/");
       expiry = `${yyyy}-${mm}-${dd}`;
     }
+
     items.push({
       inventoryId:  "",
       medicineId:   "",
       medicineName: name,
-      batchNumber:  col(row, "batchNumber"),
+      batchNumber:  get(row, "batchNumber"),
       expiryDate:   expiry,
       quantity:     Math.floor(qty),
       purchaseRate: rate,

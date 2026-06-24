@@ -71,6 +71,8 @@ export class PurchasesService {
     let subtotal = 0;
     let totalGst = 0;
 
+    const placeholderExpiry = new Date(Date.now() + 365 * 86_400_000);
+
     const items = input.items.map((item) => {
       const { lineTotal, cgst, sgst, amount } = calcPurchaseLineGST(item.purchaseRate, item.quantity, 0, item.gstRate);
       subtotal += lineTotal;
@@ -78,8 +80,9 @@ export class PurchasesService {
       return {
         medicineId:   item.medicineId,
         medicineName: item.medicineName,
-        batchNumber:  item.batchNumber,
-        expiryDate:   new Date(item.expiryDate),
+        // Batch/expiry are filled in when goods arrive (GRN); use placeholders for draft POs
+        batchNumber:  item.batchNumber ?? "PENDING",
+        expiryDate:   item.expiryDate ? new Date(item.expiryDate) : placeholderExpiry,
         quantity:     item.quantity,
         purchaseRate: item.purchaseRate,
         mrp:          item.mrp,
@@ -138,6 +141,8 @@ export class PurchasesService {
     let subtotal: number | undefined;
     let totalGst: number | undefined;
 
+    const placeholderExpiry = new Date(Date.now() + 365 * 86_400_000);
+
     const items = input.items?.map((item) => {
       const { lineTotal, cgst, sgst, amount } = calcPurchaseLineGST(item.purchaseRate, item.quantity, 0, item.gstRate);
       subtotal = (subtotal ?? 0) + lineTotal;
@@ -145,8 +150,8 @@ export class PurchasesService {
       return {
         medicineId:   item.medicineId,
         medicineName: item.medicineName,
-        batchNumber:  item.batchNumber,
-        expiryDate:   new Date(item.expiryDate),
+        batchNumber:  item.batchNumber ?? "PENDING",
+        expiryDate:   item.expiryDate ? new Date(item.expiryDate) : placeholderExpiry,
         quantity:     item.quantity,
         purchaseRate: item.purchaseRate,
         mrp:          item.mrp,

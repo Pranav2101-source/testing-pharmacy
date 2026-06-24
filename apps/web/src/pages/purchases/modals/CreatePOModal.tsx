@@ -74,7 +74,10 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
   function handleCSVImport(raw: string) {
     setImportError(null);
     const { items: parsed, errors } = csvToPOItems(raw);
-    if (errors.length > 0) { setImportError(errors.slice(0, 3).join(" · ")); return; }
+    if (parsed.length === 0) {
+      setImportError(errors.length > 0 ? errors.slice(0, 3).join(" · ") : "No valid rows found in the imported data.");
+      return;
+    }
     const toAdd: POLineItem[] = parsed.map((p) => ({
       medicineId:   "",
       medicineName: p.medicineName ?? "",
@@ -90,6 +93,7 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
       return [...prev, ...toAdd.filter((i) => !existing.has(i.medicineName.toLowerCase()))];
     });
     setShowImport(false);
+    if (errors.length > 0) setImportError(`${toAdd.length} medicines added. ${errors.length} row(s) skipped.`);
   }
 
   function upd(idx: number, key: keyof POLineItem, val: string | number) {
@@ -105,14 +109,17 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
     e.preventDefault();
     if (!supplierId) { setError("Select a supplier"); return; }
     if (items.length === 0) { setError("Add at least one medicine"); return; }
-    const bad = items.find((i) => !i.batchNumber || !i.expiryDate || i.purchaseRate <= 0 || i.mrp <= 0);
-    if (bad) { setError("Fill all item fields (batch, expiry, rates)"); return; }
     setSaving(true); setError(null);
     try {
       await api.post("/purchases/orders", {
         supplierId, invoiceNo: invoiceNo || undefined, notes: notes || undefined,
         expectedDate: expectedDate ? new Date(expectedDate).toISOString() : undefined,
-        items: items.map((i) => ({ ...i, expiryDate: new Date(i.expiryDate).toISOString() })),
+        // Send batch/expiry only when they have real values; API fills in placeholders otherwise
+        items: items.map(({ expiryDate, batchNumber, ...rest }) => ({
+          ...rest,
+          ...(batchNumber ? { batchNumber } : {}),
+          ...(expiryDate  ? { expiryDate: new Date(expiryDate).toISOString() } : {}),
+        })),
       });
       onDone(lastAddedSupplier.current);
     } catch (err: any) {
@@ -182,7 +189,7 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
               <table className="w-full">
                 <thead className="bg-slate-50 border-b border-slate-200">
                   <tr>
-                    {["Medicine", "Batch No.", "Expiry Date", "Qty", "Buy Rate ₹", "MRP ₹", "GST %", "Amount", ""].map((h) => (
+                    {["Medicine", "Qty", "Est. Buy Rate ₹", "Est. MRP ₹", "GST %", "Est. Amount", ""].map((h) => (
                       <th key={h} className="px-3 py-2.5 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -192,28 +199,20 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
                     const amt = item.purchaseRate * item.quantity * (1 + item.gstRate / 100);
                     return (
                       <tr key={idx} className="border-b border-slate-100 last:border-0 hover:bg-blue-50/20">
-                        <td className="px-3 py-2 max-w-[140px]">
+                        <td className="px-3 py-2 max-w-[180px]">
                           <p className="text-[12px] font-semibold text-slate-800 truncate">{item.medicineName}</p>
-                        </td>
-                        <td className="px-2 py-2 w-24">
-                          <input value={item.batchNumber} onChange={(e) => upd(idx, "batchNumber", e.target.value)} placeholder="Batch"
-                            className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-[12px] focus:outline-none focus:border-blue-400" />
-                        </td>
-                        <td className="px-2 py-2 w-32">
-                          <input type="date" value={item.expiryDate} onChange={(e) => upd(idx, "expiryDate", e.target.value)}
-                            className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-[12px] focus:outline-none focus:border-blue-400" />
                         </td>
                         <td className="px-2 py-2 w-16">
                           <input type="number" value={item.quantity} min={1} onChange={(e) => upd(idx, "quantity", +e.target.value)}
                             className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-[12px] text-center focus:outline-none focus:border-blue-400" />
                         </td>
                         <td className="px-2 py-2 w-24">
-                          <input type="number" value={item.purchaseRate || ""} placeholder="0.00" step="0.01" min={0}
+                          <input type="number" value={item.purchaseRate || ""} placeholder="Optional" step="0.01" min={0}
                             onChange={(e) => upd(idx, "purchaseRate", +e.target.value)}
                             className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-[12px] focus:outline-none focus:border-blue-400" />
                         </td>
                         <td className="px-2 py-2 w-24">
-                          <input type="number" value={item.mrp || ""} placeholder="0.00" step="0.01" min={0}
+                          <input type="number" value={item.mrp || ""} placeholder="Optional" step="0.01" min={0}
                             onChange={(e) => upd(idx, "mrp", +e.target.value)}
                             className="w-full border border-slate-200 rounded-md px-2 py-1.5 text-[12px] focus:outline-none focus:border-blue-400" />
                         </td>
@@ -223,7 +222,9 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
                             {GST_RATES.map((r) => <option key={r} value={r}>{r}%</option>)}
                           </select>
                         </td>
-                        <td className="px-3 py-2 text-[12px] font-semibold text-slate-700 tabular-nums whitespace-nowrap">{currency(amt)}</td>
+                        <td className="px-3 py-2 text-[12px] font-semibold text-slate-700 tabular-nums whitespace-nowrap">
+                          {amt > 0 ? currency(amt) : <span className="text-slate-300">—</span>}
+                        </td>
                         <td className="px-2 py-2">
                           <button type="button" onClick={() => setItems((p) => p.filter((_, i) => i !== idx))}
                             className="w-6 h-6 rounded hover:bg-red-50 flex items-center justify-center text-slate-300 hover:text-red-500">
@@ -236,12 +237,16 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
                 </tbody>
                 <tfoot className="bg-slate-50 border-t border-slate-200">
                   <tr>
-                    <td colSpan={7} className="px-3 py-2.5 text-right text-[12px] text-slate-500">
-                      Subtotal <span className="font-semibold text-slate-700">{currency(totals.sub)}</span>
-                      {"  ·  "}GST <span className="font-semibold text-slate-700">{currency(totals.gst)}</span>
-                      {"  ·  "}Total
+                    <td colSpan={5} className="px-3 py-2.5 text-right text-[12px] text-slate-500">
+                      {totals.sub > 0 ? <>
+                        Subtotal <span className="font-semibold text-slate-700">{currency(totals.sub)}</span>
+                        {"  ·  "}GST <span className="font-semibold text-slate-700">{currency(totals.gst)}</span>
+                        {"  ·  "}Est. Total
+                      </> : <span className="italic">Add rates above for estimated order value</span>}
                     </td>
-                    <td className="px-3 py-2.5 text-[14px] font-bold text-slate-900 tabular-nums">{currency(totals.sub + totals.gst)}</td>
+                    <td className="px-3 py-2.5 text-[14px] font-bold text-slate-900 tabular-nums">
+                      {totals.sub > 0 ? currency(totals.sub + totals.gst) : ""}
+                    </td>
                     <td />
                   </tr>
                 </tfoot>

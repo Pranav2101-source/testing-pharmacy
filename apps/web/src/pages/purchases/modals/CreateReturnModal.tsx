@@ -60,8 +60,12 @@ export function CreateReturnModal({ suppliers: initialSuppliers, onClose, onDone
   }
 
   function handleCSVImport(raw: string) {
+    setError(null);
     const { items: parsed, errors } = csvToReturnItems(raw);
-    if (errors.length > 0) { setError(errors.slice(0, 2).join(" · ")); return; }
+    if (parsed.length === 0) {
+      setError(errors.length > 0 ? errors.slice(0, 3).join(" · ") : "No valid rows found.");
+      return;
+    }
     const toAdd: SRLineItem[] = parsed.map((p) => ({
       inventoryId:  "",
       medicineId:   "",
@@ -76,6 +80,7 @@ export function CreateReturnModal({ suppliers: initialSuppliers, onClose, onDone
       !prev.some((x) => x.medicineName.toLowerCase() === i.medicineName.toLowerCase())
     )]);
     setShowImport(false);
+    if (errors.length > 0) setError(`${toAdd.length} items added. ${errors.length} row(s) skipped.`);
   }
 
   function upd(idx: number, key: string, val: string | number) {
