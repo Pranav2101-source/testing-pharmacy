@@ -10,6 +10,7 @@
  * One click imports all valid rows into the GRN form.
  */
 import { useState, useRef, useCallback } from "react";
+import * as XLSX from "xlsx";
 import {
   FileSpreadsheet, Download, X, Check, AlertTriangle,
   ChevronRight, ClipboardPaste, Loader2, RotateCcw,
@@ -65,9 +66,22 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
   }, []);
 
   function readFile(file: File) {
+    const isExcel = /\.(xlsx|xls|ods)$/i.test(file.name);
     const r = new FileReader();
-    r.onload = (e) => loadRaw((e.target?.result as string) ?? "");
-    r.readAsText(file);
+    if (isExcel) {
+      r.onload = (e) => {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const wb   = XLSX.read(data, { type: "array", cellDates: true });
+        const ws   = wb.Sheets[wb.SheetNames[0]!];
+        // Convert to TSV so parseRawRows handles it like a pasted spreadsheet
+        const tsv  = XLSX.utils.sheet_to_csv(ws!, { FS: "\t" });
+        loadRaw(tsv);
+      };
+      r.readAsArrayBuffer(file);
+    } else {
+      r.onload = (e) => loadRaw((e.target?.result as string) ?? "");
+      r.readAsText(file);
+    }
   }
 
   function reset() { setRaw(""); setHeaders([]); setRows([]); setMapping({}); }
@@ -143,12 +157,12 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
                   ? "border-blue-400 bg-blue-50"
                   : "border-slate-200 hover:border-blue-300 hover:bg-slate-50/60",
               )}>
-              <input ref={fileRef} type="file" accept=".csv,.tsv,.txt" className="hidden"
+              <input ref={fileRef} type="file" accept=".xlsx,.xls,.ods,.csv,.tsv,.txt" className="hidden"
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f); e.target.value = ""; }} />
               <FileSpreadsheet className={cn("w-8 h-8 mx-auto mb-2", dragging ? "text-blue-400" : "text-slate-300")} />
-              <p className="text-[13px] font-semibold text-slate-600">Drop CSV file here or click to browse</p>
+              <p className="text-[13px] font-semibold text-slate-600">Drop Excel or CSV file here, or click to browse</p>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Excel → Save As → CSV, then drop here &nbsp;·&nbsp; Or use the template above
+                Supports .xlsx, .xls, .ods, .csv &nbsp;·&nbsp; Or use the template above
               </p>
             </div>
 
