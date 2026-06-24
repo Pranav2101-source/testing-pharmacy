@@ -1,11 +1,11 @@
-import { useState, useRef } from "react";
-import { Plus, Loader2, Truck, Trash2, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Plus, Loader2, Truck, Trash2, AlertTriangle, CheckCircle2, FileSpreadsheet } from "lucide-react";
 import { api } from "@/lib/api-client";
 import type { Supplier, Medicine, GRNLineItem, FullSupplier } from "../types";
 import { GST_RATES } from "../types";
-import { currency, csvToGRNItems } from "../utils";
+import { currency } from "../utils";
 import { MedicineCombobox } from "../components/MedicineCombobox";
-import { ImportPanel } from "../components/ImportPanel";
+import { BulkImportPanel } from "../components/BulkImportPanel";
 import { ModalShell, ErrorBanner, FieldLabel, FInput, SmartAddBar } from "./shared";
 import { QuickAddHint } from "./SupplierFormModal";
 
@@ -23,8 +23,7 @@ function daysUntil(dateStr: string) {
 
 function buildPayload(
   supplierId: string, invNo: string, invDate: string,
-  poId: string, notes: string, items: GRNLineItem[],
-  allowNearExpiry: boolean,
+  poId: string, notes: string, items: GRNLineItem[], allowNearExpiry: boolean,
 ) {
   return {
     supplierId,
@@ -37,44 +36,86 @@ function buildPayload(
   };
 }
 
+function isTabularText(text: string): boolean {
+  const lines = text.trim().split("\n").filter(Boolean);
+  return lines.length >= 2 && (text.includes("\t") || (lines[0]?.split(",").length ?? 0) >= 3);
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }: {
   suppliers: Supplier[]; onClose: () => void; onDone: (newSupplier?: FullSupplier) => void;
 }) {
-  const [suppliers,     setSuppliers]    = useState<Supplier[]>(initialSuppliers);
-  const [supplierId,    setSupplierId]   = useState("");
-  const [invNo,         setInvNo]        = useState("");
-  const [invDate,       setInvDate]      = useState("");
-  const [poId,          setPoId]         = useState("");
-  const [notes,         setNotes]        = useState("");
-  const [items,         setItems]        = useState<GRNLineItem[]>([]);
-  const [saving,        setSaving]       = useState(false);
-  const [error,         setError]        = useState<string | null>(null);
-  const [showImport,    setShowImport]   = useState(false);
-  const [copyLoading,   setCopyLoading]  = useState(false);
-  const [poLoading,     setPoLoading]    = useState(false);
-  const [poOptions,     setPoOptions]    = useState<{ id: string; orderNumber: string; itemCount: number }[]>([]);
-  const [importError,   setImportError]  = useState<string | null>(null);
-  // Near-expiry override state — set when API returns the 90-day guard error
-  const [nearExpiryHits, setNearExpiryHits] = useState<NearExpiryHit[]>([]);
-  const lastAddedSupplier                    = useRef<FullSupplier | undefined>(undefined);
+  const [suppliers,      setSuppliers]     = useState<Supplier[]>(initialSuppliers);
+  const [supplierId,     setSupplierId]    = useState("");
+  const [invNo,          setInvNo]         = useState("");
+  const [invDate,        setInvDate]       = useState("");
+  const [poId,           setPoId]          = useState("");
+  const [notes,          setNotes]         = useState("");
+  const [items,          setItems]         = useState<GRNLineItem[]>([]);
+  const [saving,         setSaving]        = useState(false);
+  const [error,          setError]         = useState<string | null>(null);
+  const [showBulkImport, setShowBulkImport]= useState(false);
+  const [pasteRaw,       setPasteRaw]      = useState("");
+  const [copyLoading,    setCopyLoading]   = useState(false);
+  const [poLoading,      setPoLoading]     = useState(false);
+  const [poOptions,      setPoOptions]     = useState<{ id: string; orderNumber: string; itemCount: number }[]>([]);
+  const [nearExpiryHits, setNearExpiryHits]= useState<NearExpiryHit[]>([]);
+  const lastAddedSupplier = useRef<FullSupplier | undefined>(undefined);
 
-  // Derived: set of medicine names (lowercase) currently flagged as near-expiry
   const nearExpiryNames = new Set(nearExpiryHits.map((h) => h.name.toLowerCase()));
 
-  // Load PENDING POs whenever supplier changes
+  // ── Global Ctrl+V handler (Option B) ──────────────────────────────────────
+  // When the user presses Ctrl+V anywhere in the modal (not inside a text
+  // input), and the clipboard looks like tabular data (Excel/Sheets copy),
+  // we capture it and open the BulkImportPanel pre-loaded with that data.
+
+  useEffect(() => {
+    function onGlobalPaste(e: ClipboardEvent) {
+      const tag = (e.target as Element)?.tagName ?? "";
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      const text = e.clipboardData?.getData("text") ?? "";
+      if (!isTabularText(text)) return;
+      e.preventDefault();
+      setPasteRaw(text);
+      setShowBulkImport(true);
+    }
+    document.addEventListener("paste", onGlobalPaste);
+    return () => document.removeEventListener("paste", onGlobalPaste);
+  }, []);
+
+  // ── Load pending POs when supplier changes ────────────────────────────────
+
   function loadPOOptions(sid: string) {
     if (!sid) { setPoOptions([]); return; }
     api.get("/purchases/orders", { params: { supplierId: sid, status: "PENDING", limit: 20 } })
       .then(({ data }) => setPoOptions((data.data.items ?? []).map((po: any) => ({
         id: po.id, orderNumber: po.orderNumber, itemCount: po._count?.items ?? 0,
-      })))
-      ).catch(() => setPoOptions([]));
+      }))))
+      .catch(() => setPoOptions([]));
   }
 
+  // ── Add helpers ───────────────────────────────────────────────────────────
+
   function addMed(m: Medicine) {
-    setItems((p) => [...p, { medicineId: m.id, medicineName: m.name, batchNumber: "", expiryDate: "", orderedQty: 0, receivedQty: 1, freeQty: 0, purchaseRate: 0, mrp: 0, discount: 0, gstRate: m.gstRate }]);
+    setItems((p) => [...p, {
+      medicineId: m.id, medicineName: m.name,
+      batchNumber: "", expiryDate: "",
+      orderedQty: 0, receivedQty: 1, freeQty: 0,
+      purchaseRate: 0, mrp: 0, discount: 0, gstRate: m.gstRate,
+    }]);
+  }
+
+  function handleBulkImport(incoming: GRNLineItem[]) {
+    setItems((prev) => {
+      const existing = new Set(prev.map((x) => `${x.medicineName.toLowerCase()}::${x.batchNumber}`));
+      const fresh = incoming.filter(
+        (i) => !existing.has(`${i.medicineName.toLowerCase()}::${i.batchNumber}`),
+      );
+      return [...prev, ...fresh];
+    });
+    setShowBulkImport(false);
+    setPasteRaw("");
   }
 
   async function loadFromPO() {
@@ -125,28 +166,8 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     } catch { setError("No medicine found for this barcode"); }
   }
 
-  function handleCSVImport(raw: string) {
-    setImportError(null);
-    const { items: parsed, errors } = csvToGRNItems(raw);
-    if (errors.length > 0) setImportError(`${errors.length} row(s) skipped:\n${errors.join("\n")}`);
-    if (parsed.length === 0) return;
-    const toAdd: GRNLineItem[] = parsed.map((p) => ({
-      medicineId: "", medicineName: p.medicineName ?? "",
-      batchNumber: p.batchNumber ?? "", expiryDate: p.expiryDate ?? "",
-      orderedQty: 0, receivedQty: p.receivedQty ?? 1, freeQty: p.freeQty ?? 0,
-      purchaseRate: p.purchaseRate ?? 0, mrp: p.mrp ?? 0, discount: p.discount ?? 0,
-      gstRate: p.gstRate ?? 12,
-    }));
-    setItems((prev) => {
-      const existing = new Set(prev.map((x) => `${x.medicineName.toLowerCase()}::${x.batchNumber}`));
-      return [...prev, ...toAdd.filter((i) => !existing.has(`${i.medicineName.toLowerCase()}::${i.batchNumber}`))];
-    });
-    if (errors.length === 0) setShowImport(false);
-  }
-
   function upd(idx: number, key: keyof GRNLineItem, val: string | number) {
     setItems((p) => { const n = [...p]; (n[idx] as any)[key] = val; return n; });
-    // Clear the near-expiry warning whenever the user edits anything — they may have fixed the dates
     if (nearExpiryHits.length > 0) setNearExpiryHits([]);
   }
 
@@ -155,7 +176,7 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     return { sub: a.sub + sub, gst: a.gst + (sub * i.gstRate) / 100 };
   }, { sub: 0, gst: 0 });
 
-  // ── Validate form before any network call ─────────────────────────────────
+  // ── Validation ────────────────────────────────────────────────────────────
 
   function validate(): string[] {
     const errs: string[] = [];
@@ -174,7 +195,7 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     return errs;
   }
 
-  // ── Primary save (allowNearExpiry = false by default) ─────────────────────
+  // ── Submit (normal) ───────────────────────────────────────────────────────
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -188,7 +209,6 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     } catch (err: any) {
       const msg: string = err?.response?.data?.error ?? "";
       if (msg.includes("expire within")) {
-        // Identify which items are the culprits from local state
         const threshold = new Date(Date.now() + NEAR_EXPIRY_DAYS * 86_400_000);
         const hits = items
           .filter((i) => i.expiryDate && new Date(i.expiryDate) <= threshold)
@@ -200,7 +220,7 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     } finally { setSaving(false); }
   }
 
-  // ── Override save (allowNearExpiry = true) ────────────────────────────────
+  // ── Submit with near-expiry override ─────────────────────────────────────
 
   async function submitWithNearExpiry() {
     const errs = validate();
@@ -233,7 +253,12 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
                 <option value="">Select supplier…</option>
                 {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
-              <QuickAddHint suppliers={suppliers} onAdded={(s) => { lastAddedSupplier.current = s; setSuppliers((p) => [...p, s]); setSupplierId(s.id); loadPOOptions(s.id); }} />
+              <QuickAddHint suppliers={suppliers} onAdded={(s) => {
+                lastAddedSupplier.current = s;
+                setSuppliers((p) => [...p, s]);
+                setSupplierId(s.id);
+                loadPOOptions(s.id);
+              }} />
             </div>
             <div>
               <FieldLabel>Supplier Invoice No.</FieldLabel>
@@ -245,11 +270,11 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
             </div>
           </div>
 
-          {/* ── Smart add bar (PO load / copy last / CSV / scan) ───────── */}
+          {/* ── Smart add bar ──────────────────────────────────────────── */}
           <SmartAddBar
             type="grn"
             supplierId={supplierId}
-            onImportCSV={() => setShowImport((v) => !v)}
+            onImportCSV={() => { setPasteRaw(""); setShowBulkImport((v) => !v); }}
             onCopyLast={copyLastPurchase}
             onLoadFromPO={loadFromPO}
             poOptions={poOptions}
@@ -259,10 +284,30 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
             loadingCopy={copyLoading}
             loadingPO={poLoading}
           />
-          {showImport && (
-            <ImportPanel type="grn" onImport={handleCSVImport} onClose={() => setShowImport(false)} />
+
+          {/* ── Bulk import panel (Option A + B) ───────────────────────── */}
+          {showBulkImport && (
+            <BulkImportPanel
+              initialRaw={pasteRaw}
+              onImport={handleBulkImport}
+              onClose={() => { setShowBulkImport(false); setPasteRaw(""); }}
+            />
           )}
-          {importError && <ErrorBanner msg={importError} />}
+
+          {/* ── Ctrl+V hint (shown when panel is closed + items exist) ─── */}
+          {!showBulkImport && items.length === 0 && (
+            <button type="button"
+              onClick={() => setShowBulkImport(true)}
+              className="w-full flex items-center justify-center gap-2.5 border-2 border-dashed border-blue-200 rounded-xl py-5 text-blue-500 hover:border-blue-400 hover:bg-blue-50/40 transition-colors group">
+              <FileSpreadsheet className="w-5 h-5 text-blue-400 group-hover:text-blue-500" />
+              <div className="text-left">
+                <p className="text-[13px] font-semibold">Import from Excel, CSV or paste</p>
+                <p className="text-[11px] text-blue-400 font-normal mt-0.5">
+                  Or press <kbd className="px-1 py-0.5 bg-blue-100 border border-blue-200 rounded text-[10px] font-mono">Ctrl+V</kbd> anywhere with Excel cells copied
+                </p>
+              </div>
+            </button>
+          )}
 
           {/* ── Medicine search ────────────────────────────────────────── */}
           <div>
@@ -283,14 +328,15 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
                 </thead>
                 <tbody>
                   {items.map((item, idx) => {
-                    const sub        = item.purchaseRate * item.receivedQty * (1 - item.discount / 100);
-                    const amt        = sub + (sub * item.gstRate) / 100;
-                    const isNearExp  = nearExpiryNames.has(item.medicineName.toLowerCase());
+                    const sub       = item.purchaseRate * item.receivedQty * (1 - item.discount / 100);
+                    const amt       = sub + (sub * item.gstRate) / 100;
+                    const isNearExp = nearExpiryNames.has(item.medicineName.toLowerCase());
+                    const missBatch = !item.batchNumber.trim();
+                    const missExp   = !item.expiryDate;
                     return (
-                      <tr key={idx}
-                        className={`border-b border-slate-100 last:border-0 transition-colors ${
-                          isNearExp ? "bg-orange-50 hover:bg-orange-50/80" : "hover:bg-emerald-50/20"
-                        }`}>
+                      <tr key={idx} className={`border-b border-slate-100 last:border-0 transition-colors ${
+                        isNearExp ? "bg-orange-50 hover:bg-orange-50/80" : "hover:bg-emerald-50/20"
+                      }`}>
                         <td className="px-2 py-2 max-w-[110px]">
                           <div className="flex items-center gap-1.5">
                             {isNearExp && <AlertTriangle className="w-3 h-3 text-orange-500 flex-shrink-0" />}
@@ -298,24 +344,30 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
                           </div>
                         </td>
                         <td className="px-1.5 py-2 w-20">
-                          <input value={item.batchNumber} onChange={(e) => upd(idx, "batchNumber", e.target.value)} placeholder="Batch"
-                            className="w-full border border-slate-200 rounded px-2 py-1.5 text-[11px] focus:outline-none focus:border-blue-400" />
+                          <input value={item.batchNumber} onChange={(e) => upd(idx, "batchNumber", e.target.value)}
+                            placeholder="Batch"
+                            className={`w-full border rounded px-2 py-1.5 text-[11px] focus:outline-none focus:border-blue-400 ${
+                              missBatch ? "border-amber-300 bg-amber-50 placeholder-amber-400" : "border-slate-200"
+                            }`} />
                         </td>
                         <td className="px-1.5 py-2 w-28">
                           <input type="date" value={item.expiryDate} onChange={(e) => upd(idx, "expiryDate", e.target.value)}
                             className={`w-full border rounded px-2 py-1.5 text-[11px] focus:outline-none focus:border-blue-400 ${
-                              isNearExp ? "border-orange-300 bg-orange-50" : "border-slate-200"
+                              isNearExp ? "border-orange-300 bg-orange-50" :
+                              missExp   ? "border-amber-300 bg-amber-50"   : "border-slate-200"
                             }`} />
                         </td>
                         {[{k:"orderedQty",mn:0},{k:"receivedQty",mn:1},{k:"freeQty",mn:0}].map(({k,mn}) => (
                           <td key={k} className="px-1.5 py-2 w-12">
-                            <input type="number" value={(item as any)[k]||""} min={mn} onChange={(e) => upd(idx, k as keyof GRNLineItem, +e.target.value)}
+                            <input type="number" value={(item as any)[k]||""} min={mn}
+                              onChange={(e) => upd(idx, k as keyof GRNLineItem, +e.target.value)}
                               className="w-full border border-slate-200 rounded px-1 py-1.5 text-[11px] text-center focus:outline-none focus:border-blue-400" />
                           </td>
                         ))}
                         {[{k:"purchaseRate",step:"0.01"},{k:"mrp",step:"0.01"},{k:"discount",step:"0.5"}].map(({k,step}) => (
                           <td key={k} className="px-1.5 py-2 w-20">
-                            <input type="number" value={(item as any)[k]||""} step={step} min={0} onChange={(e) => upd(idx, k as keyof GRNLineItem, +e.target.value)}
+                            <input type="number" value={(item as any)[k]||""} step={step} min={0}
+                              onChange={(e) => upd(idx, k as keyof GRNLineItem, +e.target.value)}
                               className="w-full border border-slate-200 rounded px-2 py-1.5 text-[11px] focus:outline-none focus:border-blue-400" />
                           </td>
                         ))}
@@ -365,7 +417,6 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
                   <p className="text-[12px] text-orange-700 mt-0.5">
                     Fix the expiry dates above, or accept this stock if you bought it at a discount.
                   </p>
-
                   <ul className="mt-3 space-y-1.5">
                     {nearExpiryHits.map((h, i) => (
                       <li key={i} className="flex items-center gap-2">
@@ -379,30 +430,34 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
                   </ul>
                 </div>
               </div>
-
               <div className="border-t border-orange-200 bg-orange-100/60 px-4 py-3 flex items-center justify-between gap-3">
                 <p className="text-[11px] text-orange-600 leading-snug">
                   Common for short-dated discounted stock.<br />
-                  Your inventory report will flag these batches automatically.
+                  These batches will appear in your near-expiry report automatically.
                 </p>
                 <button type="button" onClick={submitWithNearExpiry} disabled={saving}
                   className="flex-shrink-0 flex items-center gap-2 px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white text-[12px] font-bold shadow-sm disabled:opacity-60 transition-colors">
-                  {saving
-                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    : <CheckCircle2 className="w-3.5 h-3.5" />}
+                  {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
                   Accept &amp; Save GRN
                 </button>
               </div>
             </div>
           )}
 
-          {/* ── Generic error banner ───────────────────────────────────── */}
           {error && <ErrorBanner msg={error} />}
         </div>
 
         {/* ── Footer ────────────────────────────────────────────────────── */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 bg-white">
-          <span className="text-[12px] text-slate-400">{items.length} line item{items.length !== 1 ? "s" : ""}</span>
+          <div className="flex items-center gap-3">
+            <span className="text-[12px] text-slate-400">{items.length} line item{items.length !== 1 ? "s" : ""}</span>
+            {items.length > 0 && !showBulkImport && (
+              <button type="button" onClick={() => { setPasteRaw(""); setShowBulkImport(true); }}
+                className="flex items-center gap-1 text-[11px] text-blue-500 hover:text-blue-700 font-medium">
+                <FileSpreadsheet className="w-3 h-3" />Add more via import
+              </button>
+            )}
+          </div>
           <div className="flex gap-3">
             <button type="button" onClick={onClose}
               className="px-5 py-2 rounded-lg border border-slate-200 text-[13px] text-slate-600 hover:bg-slate-50 font-medium">
