@@ -108,6 +108,15 @@ const CATEGORIES: HelpCategory[] = [
           { type: "tip", content: "Use Enter to move through rows quickly without touching the mouse — ideal when counting shelf by shelf." },
         ],
       },
+      {
+        id: "grn-shortcuts", question: "GRN (Gate Inward) shortcuts",
+        tags: ["grn", "shortcut", "ctrl v", "paste", "import", "gate inward", "bulk import shortcut"],
+        blocks: [
+          { type: "text", content: "These shortcuts work inside the New GRN modal (Purchase → Gate Inward → New GRN)." },
+          { type: "shortcut", keys: ["Ctrl", "V"], desc: "Paste copied Excel/Sheets cells to open the bulk import panel pre-loaded with your data" },
+          { type: "tip", content: "Ctrl+V only triggers the importer when your cursor is NOT inside a text input. Click on any empty area of the modal first, then paste." },
+        ],
+      },
     ],
   },
 
@@ -540,7 +549,53 @@ const CATEGORIES: HelpCategory[] = [
               { icon: Hash,        label: "PO Linked",      desc: "GRN auto-links to the original PO",     color: "bg-slate-100 text-slate-600"  },
             ],
           },
+          { type: "tip", content: "You can add medicines one by one, or import a full invoice from Excel/Google Sheets in seconds — press Ctrl+V anywhere on the GRN screen with cells copied." },
           { type: "warning", content: "Always verify the physical quantities against the supplier's invoice before confirming the GRN. Short deliveries or damaged items should be noted immediately." },
+        ],
+      },
+      {
+        id: "grn-bulk-import", question: "How do I import medicines into a GRN from Excel or CSV?",
+        tags: ["grn", "bulk import", "excel", "csv", "paste", "ctrl v", "import medicines", "spreadsheet", "column mapping", "distributor invoice", "copy paste"],
+        blocks: [
+          { type: "text", content: "Instead of entering medicines one by one, you can paste an entire supplier invoice from Excel or Google Sheets directly into the GRN screen. The system reads your columns automatically and maps them to the right fields." },
+          {
+            type: "steps", steps: [
+              "Open a new GRN (Purchase → Gate Inward → New GRN)",
+              "In Excel or Google Sheets, select all the rows of your invoice and press Ctrl+C",
+              "Switch to the GRN screen and press Ctrl+V anywhere (not inside a text box) — the import panel opens instantly with your data pre-loaded",
+              "Alternatively, click the 'Import from Excel, CSV or paste' button to open the panel and paste or drag a CSV file",
+              "The column mapper auto-detects Medicine Name, Batch, Expiry, Qty, Rate, MRP, GST and highlights any it couldn't recognise",
+              "Use the dropdowns in the mapper to assign any unrecognised columns manually",
+              "The preview table shows a sample of valid rows and lists any rows with errors (e.g. missing name, invalid rate)",
+              "Click 'Add X medicines to GRN' — all valid rows are added to the GRN table instantly",
+            ],
+          },
+          { type: "tip", content: "The importer recognises 50+ column name variants used by Indian distributors — PTR, P. Rate, P/Rate, Drug Name, Particulars, Batch No., Exp. Date, Exp(MM/YYYY), IGST, M.R.P., Disc%, Bonus Qty, and more. Most invoices work without any manual mapping." },
+          { type: "shortcut", keys: ["Ctrl", "V"], desc: "Paste copied Excel/Sheets cells anywhere on the GRN screen to open the bulk import panel" },
+          { type: "warning", content: "If any medicines are expiring within 90 days, a near-expiry warning banner appears before the GRN is saved. Click 'Accept & Save GRN' to confirm you are aware and want to proceed, or go back and remove those items." },
+        ],
+      },
+      {
+        id: "grn-near-expiry", question: "What happens when a GRN has near-expiry medicines?",
+        tags: ["grn", "near expiry", "expiry warning", "90 days", "accept", "override", "near expiry grn"],
+        blocks: [
+          { type: "text", content: "When you try to save a GRN that contains medicines expiring within 90 days, Checkup blocks the save and shows a near-expiry warning. This is a safety check to prevent accidentally receiving stock that will expire before it can be sold." },
+          {
+            type: "badges", items: [
+              { label: "< 90 days",  color: "bg-amber-100 text-amber-700", desc: "Near-expiry warning shown — you must explicitly accept before saving" },
+              { label: "≥ 90 days",  color: "bg-emerald-100 text-emerald-700", desc: "Normal save — no warning, GRN is created immediately" },
+            ],
+          },
+          {
+            type: "steps", steps: [
+              "Fill in the GRN and click 'Save GRN'",
+              "If any item expires within 90 days, a warning card appears listing the affected medicines and their expiry dates",
+              "Review the list — decide if you want to accept the stock or negotiate a return with the supplier",
+              "Click 'Accept & Save GRN' to acknowledge and save the GRN as-is",
+              "Or go back and delete the near-expiry rows from the table, then save normally",
+            ],
+          },
+          { type: "tip", content: "The near-expiry rows are highlighted in orange in the GRN table so you can spot them easily even before saving." },
         ],
       },
       {
