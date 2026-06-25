@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect, memo } from "react";
 import {
   Search, Loader2, Pill, ChevronRight, ScanBarcode,
-  X, AlertTriangle, Clock,
+  X, AlertTriangle, Clock, Shuffle, Layers,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
@@ -95,13 +95,14 @@ const BatchPickerDialog = memo(function BatchPickerDialog({
         className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden"
       >
         {/* Header */}
-        <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
-            <Pill className="w-4 h-4 text-blue-500" />
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3 bg-gradient-to-br from-blue-50/80 to-white">
+          <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center flex-shrink-0 shadow-sm shadow-blue-200">
+            <Layers className="w-5 h-5 text-white" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="font-bold text-slate-900 text-[14px] truncate">{med.name}</p>
-            <p className="text-[11px] text-slate-400">{batches.length} batch{batches.length !== 1 ? "es" : ""} available — select one</p>
+            <p className="text-[10px] font-bold text-blue-500 uppercase tracking-wider mb-0.5">Select a Batch</p>
+            <p className="font-bold text-slate-900 text-[15px] truncate">{med.name}</p>
+            <p className="text-[11px] text-slate-400">{batches.length} batch{batches.length !== 1 ? "es" : ""} available — oldest expiry shown first</p>
           </div>
           <button
             onClick={onClose}
@@ -593,7 +594,7 @@ export function MedicineSearchCombobox({
                           <span className="pill bg-emerald-100 text-emerald-600 uppercase tracking-wide">↵</span>
                         )}
 
-                        {/* A badge — shown when alternatives confirmed, or medicine has a genericName */}
+                        {/* Alternatives — shown when alternatives confirmed, or medicine has a genericName */}
                         {(med.hasAlternatives || med.genericName) && (
                           <button
                             onMouseDown={(e) => {
@@ -605,13 +606,14 @@ export function MedicineSearchCombobox({
                             }}
                             title={med.hasAlternatives ? "View Alternatives (→)" : "Find Alternatives (→)"}
                             className={cn(
-                              "w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-extrabold transition-colors flex-shrink-0",
+                              "flex items-center gap-1 h-6 px-2 rounded-full text-[10px] font-bold transition-colors flex-shrink-0",
                               med.hasAlternatives
                                 ? "bg-violet-100 hover:bg-violet-200 text-violet-700"
                                 : "bg-slate-100 hover:bg-slate-200 text-slate-500"
                             )}
                           >
-                            A
+                            <Shuffle className="w-3 h-3" />
+                            Alt
                           </button>
                         )}
 
