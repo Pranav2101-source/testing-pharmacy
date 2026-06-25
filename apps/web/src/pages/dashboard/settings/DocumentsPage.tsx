@@ -33,6 +33,7 @@ interface DocEntry {
   docNumber:  string;
   expiryDate: string;
   fileName:   string | null;
+  fileUrl:    string | null;
   status:     DocStatus;
   required:   boolean;
 }
@@ -70,6 +71,7 @@ function DocCard({
     const file = e.target.files?.[0];
     if (!file) return;
     onChange(doc.id, "fileName", file.name);
+    onChange(doc.id, "fileUrl", URL.createObjectURL(file));
     onChange(doc.id, "status", "uploaded");
   }
 
@@ -168,7 +170,11 @@ function DocCard({
             >
               <X className="w-3.5 h-3.5" />
             </button>
-            <button className="text-emerald-500 hover:text-emerald-700 transition-colors" aria-label="View file">
+            <button
+              onClick={() => doc.fileUrl && window.open(doc.fileUrl, "_blank", "noopener,noreferrer")}
+              className="text-emerald-500 hover:text-emerald-700 transition-colors"
+              aria-label="View file"
+            >
               <Eye className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -258,13 +264,13 @@ function AddCustomModal({
 
 // ─── Default documents ────────────────────────────────────────
 const DEFAULT_DOCS: DocEntry[] = [
-  { id: "drug-license",    title: "Drug License",                icon: ShieldCheck,    docNumber: "", expiryDate: "", fileName: null, status: "pending", required: true  },
-  { id: "gst-cert",        title: "GST Certificate",            icon: FileText,       docNumber: "", expiryDate: "", fileName: null, status: "pending", required: true  },
-  { id: "pan",             title: "PAN Card",                   icon: CreditCard,     docNumber: "", expiryDate: "", fileName: null, status: "pending", required: true  },
-  { id: "aadhaar",         title: "Aadhaar Card",               icon: FileBadge,      docNumber: "", expiryDate: "", fileName: null, status: "pending", required: false },
-  { id: "shop-reg",        title: "Shop Registration",          icon: Store,          docNumber: "", expiryDate: "", fileName: null, status: "pending", required: true  },
-  { id: "pharma-cert",     title: "Pharmacist Certificate",     icon: GraduationCap,  docNumber: "", expiryDate: "", fileName: null, status: "pending", required: true  },
-  { id: "bank-details",    title: "Cancelled Cheque / Bank",    icon: Banknote,       docNumber: "", expiryDate: "", fileName: null, status: "pending", required: false },
+  { id: "drug-license",    title: "Drug License",                icon: ShieldCheck,    docNumber: "", expiryDate: "", fileName: null, fileUrl: null, status: "pending", required: true  },
+  { id: "gst-cert",        title: "GST Certificate",            icon: FileText,       docNumber: "", expiryDate: "", fileName: null, fileUrl: null, status: "pending", required: true  },
+  { id: "pan",             title: "PAN Card",                   icon: CreditCard,     docNumber: "", expiryDate: "", fileName: null, fileUrl: null, status: "pending", required: true  },
+  { id: "aadhaar",         title: "Aadhaar Card",               icon: FileBadge,      docNumber: "", expiryDate: "", fileName: null, fileUrl: null, status: "pending", required: false },
+  { id: "shop-reg",        title: "Shop Registration",          icon: Store,          docNumber: "", expiryDate: "", fileName: null, fileUrl: null, status: "pending", required: true  },
+  { id: "pharma-cert",     title: "Pharmacist Certificate",     icon: GraduationCap,  docNumber: "", expiryDate: "", fileName: null, fileUrl: null, status: "pending", required: true  },
+  { id: "bank-details",    title: "Cancelled Cheque / Bank",    icon: Banknote,       docNumber: "", expiryDate: "", fileName: null, fileUrl: null, status: "pending", required: false },
 ];
 
 // ─── Page ─────────────────────────────────────────────────────
@@ -280,7 +286,11 @@ export default function DocumentsPage() {
 
   function handleRemoveFile(id: string) {
     setDocs((prev) =>
-      prev.map((d) => d.id === id ? { ...d, fileName: null, status: "pending" } : d)
+      prev.map((d) => {
+        if (d.id !== id) return d;
+        if (d.fileUrl) URL.revokeObjectURL(d.fileUrl);
+        return { ...d, fileName: null, fileUrl: null, status: "pending" };
+      })
     );
   }
 
@@ -292,6 +302,7 @@ export default function DocumentsPage() {
       docNumber:  "",
       expiryDate: "",
       fileName:   null,
+      fileUrl:    null,
       status:     "pending",
       required:   false,
     };

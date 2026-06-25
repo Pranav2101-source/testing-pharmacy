@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { Loader2, FileX, RefreshCw, AlertTriangle, Eye } from "lucide-react";
+import { AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import type { GRN, Supplier } from "../types";
@@ -7,9 +8,11 @@ import { fmtDate, currency, isOverdue, daysUntil } from "../utils";
 import { FilterBar } from "../components/FilterBar";
 import { Pagination } from "../components/Pagination";
 import { EmptyState } from "../components/EmptyState";
+import { GRNViewModal } from "../modals/GRNViewModal";
 
 export function PurchaseTab({ suppliers }: { suppliers: Supplier[] }) {
   const [grns, setGRNs]           = useState<GRN[]>([]);
+  const [viewGrnId, setViewGrnId] = useState<string | null>(null);
   const [total, setTotal]         = useState(0);
   const [page, setPage]           = useState(1);
   const [loading, setLoading]     = useState(true);
@@ -89,7 +92,11 @@ export function PurchaseTab({ suppliers }: { suppliers: Supplier[] }) {
                     ) : "—"}
                   </td>
                   <td className="px-4 py-3">
-                    <button className="w-7 h-7 rounded-lg hover:bg-blue-50 flex items-center justify-center text-slate-400 hover:text-blue-600 transition-colors">
+                    <button
+                      onClick={() => setViewGrnId(grn.id)}
+                      title="View GRN details"
+                      className="w-7 h-7 rounded-lg hover:bg-blue-50 flex items-center justify-center text-slate-400 hover:text-blue-600 transition-colors"
+                    >
                       <Eye className="w-3.5 h-3.5" />
                     </button>
                   </td>
@@ -101,6 +108,12 @@ export function PurchaseTab({ suppliers }: { suppliers: Supplier[] }) {
       </div>
 
       <Pagination page={page} totalPages={Math.ceil(total / 20) || 1} total={total} limit={20} onChange={setPage} />
+
+      <AnimatePresence>
+        {viewGrnId && (
+          <GRNViewModal grnId={viewGrnId} onClose={() => setViewGrnId(null)} />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

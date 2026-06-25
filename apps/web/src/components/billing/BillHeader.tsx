@@ -991,12 +991,9 @@ export function BillHeader() {
           <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest leading-none mb-1">
             Bill Date
           </p>
-          <button className="flex items-center gap-1 group">
-            <span className="text-[14px] font-bold text-slate-800 tabnum leading-none">
-              {TODAY_LABEL}
-            </span>
-            <ChevronDown className="w-3 h-3 text-slate-300 group-hover:text-slate-600 transition-colors" />
-          </button>
+          <span className="text-[14px] font-bold text-slate-800 tabnum leading-none">
+            {TODAY_LABEL}
+          </span>
         </div>
       </div>
 

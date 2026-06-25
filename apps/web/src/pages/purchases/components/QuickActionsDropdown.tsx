@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Zap, ChevronDown, ArrowRight,
@@ -8,17 +9,44 @@ import {
   TrendingUp, Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { Tab, PanelType, QABtn } from "../types";
+import { api } from "@/lib/api-client";
+import type { Tab, PanelType, QABtn, FullSupplier } from "../types";
 
-export function QuickActionsDropdown({ tab, onTabChange, onPanelOpen, pendingApprovals, overdueCount }: {
+export function QuickActionsDropdown({ tab, onTabChange, onPanelOpen, onOpenCreate, pendingApprovals, overdueCount }: {
   tab:              Tab;
   onTabChange:      (t: Tab) => void;
   onPanelOpen:      (p: PanelType) => void;
+  onOpenCreate:     () => void;
   pendingApprovals: number;
   overdueCount:     number;
 }) {
   const [open, setOpen] = useState(false);
   const ref             = useRef<HTMLDivElement>(null);
+  const navigate        = useNavigate();
+
+  async function exportDistributors() {
+    try {
+      const { data } = await api.get("/suppliers", { params: { limit: 1000 } });
+      const rows: FullSupplier[] = data.data.items ?? [];
+      const header = ["Name", "Phone", "Email", "City", "State", "GSTIN", "Drug License", "Credit Limit", "Credit Days", "Payment Terms", "Outstanding"];
+      const csvRows = rows.map((s) => [
+        s.name, s.phone ?? "", s.email ?? "", s.city ?? "", s.state ?? "",
+        s.gstin ?? "", s.dlNumber ?? "", s.creditLimit, s.creditDays, s.paymentTerms ?? "", s.ledgerBalance,
+      ]);
+      const csv = [header, ...csvRows]
+        .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
+        .join("\n");
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = `distributors-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch { /* best-effort export */ }
+  }
 
   useEffect(() => {
     function handler(e: MouseEvent) {
@@ -38,11 +66,11 @@ export function QuickActionsDropdown({ tab, onTabChange, onPanelOpen, pendingApp
       { icon: Banknote,       label: "Record Payment",    sub: "Log a payment to distributor",   action: () => onPanelOpen("quick-payment")   },
       { icon: FileText,       label: "Raise Credit Note", sub: "Track supplier-issued credit",    action: () => onPanelOpen("credit-note")     },
       { icon: AlertTriangle,  label: "Overdue Bills",     sub: "Bills past payment due date",     action: () => onPanelOpen("overdue-bills"),   badge: overdueCount,  danger: overdueCount > 0 },
-      { icon: BarChart3,      label: "Purchase Analytics",sub: "Monthly spend & cost analysis",   action: () => {},                            divider: true },
+      { icon: BarChart3,      label: "Purchase Analytics",sub: "Monthly spend & cost analysis",   action: () => navigate("/dashboard/reports?tab=purchases"), divider: true },
     ],
     "gate-inward": [
       { icon: Lightbulb,      label: "Auto Suggest",      sub: "Reorder low-stock medicines",    action: () => onPanelOpen("auto-suggest")    },
-      { icon: FileSpreadsheet,label: "Import CSV",        sub: "Bulk-add GRN items from Excel",  action: () => {}                             },
+      { icon: FileSpreadsheet,label: "Import CSV",        sub: "Bulk-add GRN items from Excel",  action: () => onOpenCreate()                 },
       { icon: ClipboardList,  label: "View POs",          sub: "Go to Purchase Orders tab",      action: () => onTabChange("po"),              divider: true },
       { icon: Banknote,       label: "Record Payment",    sub: "Log payment after GRN confirm",  action: () => onPanelOpen("quick-payment")   },
     ],
@@ -61,7 +89,7 @@ export function QuickActionsDropdown({ tab, onTabChange, onPanelOpen, pendingApp
       { icon: Zap,            label: "New Purchase Order",sub: "Place a PO with a distributor", action: () => onTabChange("po")              },
       { icon: Banknote,       label: "Record Payment",    sub: "Log a supplier payment",         action: () => onPanelOpen("quick-payment"),  divider: true },
       { icon: AlertTriangle,  label: "Overdue Bills",     sub: "Check outstanding dues",         action: () => onPanelOpen("overdue-bills"),  badge: overdueCount, danger: overdueCount > 0 },
-      { icon: Download,       label: "Export List",       sub: "Download distributor CSV",       action: () => {}                            },
+      { icon: Download,       label: "Export List",       sub: "Download distributor CSV",       action: () => exportDistributors()          },
     ],
   };
 

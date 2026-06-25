@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { X, Loader2, ChevronRight } from "lucide-react";
+import { X, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -198,12 +198,6 @@ export function CustomerModal({
                   placeholder="Mobile Number"
                   className="flex-1 text-[14px] text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none"
                 />
-                <button
-                  type="button"
-                  className="text-[11px] font-bold text-blue-600 flex items-center gap-0.5 whitespace-nowrap hover:text-blue-800 transition-colors flex-shrink-0"
-                >
-                  Verify Mobile <ChevronRight className="w-3 h-3" />
-                </button>
               </div>
             </div>
             <div>

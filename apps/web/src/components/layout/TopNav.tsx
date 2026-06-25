@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import {
   Home, FileText, ShoppingCart, Package2, FlaskConical, Zap, Link2,
-  Search, Phone, Truck, Calendar, ChevronDown, LogOut, Settings, Menu, X,
+  Search, Phone, Calendar, ChevronDown, LogOut, Settings, Menu, X,
   Dot, QrCode, Coins, Send, Monitor, IndianRupee, Info, MapPin,
   Receipt, RotateCcw, BookmarkCheck, ClipboardList, Plus, Users,
   MoreHorizontal, TicketCheck, Stethoscope, Banknote, BarChart2, ArrowUpCircle,
@@ -271,9 +271,10 @@ const GlobalSearchBar = memo(function GlobalSearchBar() {
 });
 
 // ─── Icon Btn ─────────────────────────────────────────────────────
-const IconBtn = memo(function IconBtn({ icon: Icon, label, badge }: { icon: React.ElementType; label: string; badge?: number }) {
+const IconBtn = memo(function IconBtn({ icon: Icon, label, badge, onClick }: { icon: React.ElementType; label: string; badge?: number; onClick?: () => void }) {
   return (
     <button
+      onClick={onClick}
       aria-label={label}
       className="relative w-8 h-8 rounded-lg bg-white/8 hover:bg-white/16 flex items-center justify-center transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/40"
     >
@@ -1139,9 +1140,12 @@ export function TopNav() {
 
         <div className="h-5 w-px bg-white/15 mx-1" />
 
-        <IconBtn icon={Truck}  label="Delivery status" />
         <NotificationBell />
-        <IconBtn icon={Phone}  label="Support"         />
+        <IconBtn
+          icon={Phone}
+          label="Support"
+          onClick={() => window.dispatchEvent(new CustomEvent("checkup:open-help", { detail: { category: "support" } }))}
+        />
 
         <div className="h-5 w-px bg-white/15 mx-1" />
 

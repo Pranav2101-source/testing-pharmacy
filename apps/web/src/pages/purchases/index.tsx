@@ -115,6 +115,7 @@ export default function PurchasePage() {
             tab={tab}
             onTabChange={handleTabChange}
             onPanelOpen={setPanel}
+            onOpenCreate={openCreateModal}
             pendingApprovals={pendingApprovals}
             overdueCount={overdueCount}
           />
