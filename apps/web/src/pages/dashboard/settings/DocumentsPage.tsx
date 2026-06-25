@@ -16,7 +16,6 @@ import {
   Calendar,
   FileBadge,
   CreditCard,
-  Landmark,
   Store,
   GraduationCap,
   Banknote,

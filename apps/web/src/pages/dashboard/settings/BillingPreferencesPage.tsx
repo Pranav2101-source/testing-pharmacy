@@ -1,7 +1,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Pin, PinOff, ChevronUp, ChevronDown, RotateCcw, Info,
-  Eye, EyeOff, CheckCircle2,
+  CheckCircle2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {

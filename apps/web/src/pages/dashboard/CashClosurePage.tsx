@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Banknote, Plus, Loader2, CheckCircle2, AlertTriangle,
+  Banknote, Plus, Loader2, AlertTriangle,
   ChevronLeft, ChevronRight, X, Lock, AlertCircle,
 } from "lucide-react";
 import { api } from "@/lib/api-client";

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, memo } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import {
   Search, Loader2, Pill, ChevronRight, ScanBarcode,
   X, AlertTriangle, Clock,

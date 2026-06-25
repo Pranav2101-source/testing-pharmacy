@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { FileSpreadsheet, Download, X, Check, AlertTriangle } from "lucide-react";
-import * as XLSX from "xlsx";
+import * as XLSX from "@e965/xlsx";
 import { cn } from "@/lib/utils";
 import { GRN_CSV_TEMPLATE, PO_CSV_TEMPLATE, RETURN_CSV_TEMPLATE, downloadTemplate } from "../utils";
 
@@ -16,6 +16,7 @@ export function ImportPanel({ type, onImport, onClose }: {
 
   function loadText(raw: string) {
     // Guard: binary content (ZIP / Excel) starts with "PK" magic bytes
+    // eslint-disable-next-line no-control-regex
     if (raw.startsWith("PK") || /[\x00-\x08\x0E-\x1F]/.test(raw.slice(0, 200))) {
       setFileError("This looks like a binary Excel file. Use the file picker above to upload it — or copy cells inside Excel first, then paste.");
       return;

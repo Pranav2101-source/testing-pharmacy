@@ -51,7 +51,7 @@ export function downloadTemplate(filename: string, content: string) {
 
 export function parseRawRows(raw: string): { headers: string[]; rows: string[][] } {
   const lines = raw
-    .replace(/^﻿/, "") // strip Excel UTF-8 BOM
+    .replace(/^\uFEFF/, "") // strip Excel UTF-8 BOM
     .replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim().split("\n").filter(Boolean);
   if (lines.length < 2) return { headers: [], rows: [] };
   const delim   = (lines[0] ?? "").includes("\t") ? "\t" : ",";
@@ -221,8 +221,8 @@ export function inferColumnMapping(headers: string[]): Record<string, string> {
 function normalizeExpiryDate(s: string): string {
   s = s.trim();
   // MM/YYYY or MM-YYYY (Indian strip format: 06/2027)
-  if (/^\d{1,2}[/\-]\d{4}$/.test(s)) {
-    const [m, y] = s.split(/[/\-]/);
+  if (/^\d{1,2}[/-]\d{4}$/.test(s)) {
+    const [m, y] = s.split(/[/-]/);
     return `${y}-${String(m).padStart(2, "0")}-01`;
   }
   // DD/MM/YYYY

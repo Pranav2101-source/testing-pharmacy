@@ -5,9 +5,8 @@ import {
   Receipt, Package2, ShoppingCart, BarChart3, TicketCheck,
   BookOpen, Zap, Users, RotateCcw, AlertTriangle,
   Calendar, TrendingUp, Tag, Truck, CreditCard,
-  Settings, FlaskConical, MapPin, Bell, FileText,
-  Building2, Phone, UserPlus, BookmarkCheck, ClipboardList,
-  Monitor, CheckCircle2, DollarSign, Hash, Keyboard,
+  Settings, FlaskConical, Bell, FileText,
+  Phone, CheckCircle2, DollarSign, Hash, Keyboard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { isSupportStaff } from "@/lib/auth";
@@ -252,18 +251,27 @@ const CATEGORIES: HelpCategory[] = [
       },
       {
         id: "return", question: "How do I process a Sales Return?",
-        tags: ["return", "refund", "sales return", "reverse"],
+        tags: ["return", "refund", "sales return", "reverse", "credit note", "restock", "writeoff", "disposition", "partial return"],
         blocks: [
-          { type: "text", content: "A Sales Return lets you refund a customer when they return medicines. Stock is automatically credited back to inventory." },
+          { type: "text", content: "A Sales Return lets you accept medicines back from a customer and issue a credit note. You control whether each returned item goes back into stock (Restock) or is discarded (Write-off)." },
           {
             type: "steps", steps: [
-              "Go to Sales → Returns, or find the original invoice and click 'Return'",
-              "Select which items are being returned and the quantity",
-              "Choose how the refund is given (cash / credit against next purchase)",
-              "Confirm — the stock is added back to the batch it came from",
+              "Open the original invoice — go to Sales → All Bills and click the bill",
+              "Click the 'Process Return' button (red border) in the top-right",
+              "Set the return quantity for each medicine — use +/– or type directly (max = qty sold)",
+              "For each item choose a disposition: Restock or Write-off",
+              "Type a return reason in the text box (required, e.g. 'Patient didn't need it')",
+              "Click Submit — a credit note number is generated instantly",
             ],
           },
-          { type: "warning", content: "Returns can only be processed within the return window configured in your pharmacy settings. Once stock is returned, the GST liability is also adjusted." },
+          {
+            type: "badges", items: [
+              { label: "Restock ↩",   color: "bg-emerald-100 text-emerald-700", desc: "Medicine goes back into inventory — use for sealed, unopened packs" },
+              { label: "Write-off ✕", color: "bg-red-100 text-red-700",         desc: "Medicine is discarded — use for opened, damaged, or unusable packs" },
+            ],
+          },
+          { type: "tip", content: "You can do a partial return — return only some items from the bill. The invoice shows Partially Returned. You can return the remaining items later." },
+          { type: "warning", content: "Returns are only accepted within the return window (default 30 days, configurable in Settings). If the original bill was a credit sale and unpaid, the customer's credit limit is freed up automatically on return." },
         ],
       },
       {
@@ -629,6 +637,32 @@ const CATEGORIES: HelpCategory[] = [
             ],
           },
           { type: "tip", content: "The Purchase Report shows you supplier-wise payable balances so you can plan your cash flow." },
+        ],
+      },
+      {
+        id: "supplier-return", question: "How do I return stock to a supplier?",
+        tags: ["supplier return", "return to supplier", "debit note", "damaged stock", "near expiry return", "wrong product", "sr"],
+        blocks: [
+          { type: "text", content: "When medicines are damaged, near-expiry, expired, or incorrectly supplied, you can return them to the distributor. Checkup creates a Supplier Return (Debit Note) and reduces the amount you owe that supplier." },
+          {
+            type: "steps", steps: [
+              "Go to Purchase → Returns tab",
+              "Click 'New Return' and select the supplier",
+              "Optionally enter the supplier's Debit Note number",
+              "Add medicines to return — scan a barcode, pick from inventory batches, copy from last purchase, or import from CSV",
+              "For each item set the quantity and pick a reason (Damaged, Near Expiry, Expired, Wrong Product, etc.)",
+              "Save the return as Draft, then click Confirm to finalise",
+            ],
+          },
+          {
+            type: "badges", items: [
+              { label: "Draft",     color: "bg-slate-100 text-slate-700",    desc: "Saved but not confirmed. You can still edit or cancel." },
+              { label: "Confirmed", color: "bg-emerald-100 text-emerald-700", desc: "Finalised — stock deducted and supplier balance reduced." },
+              { label: "Cancelled", color: "bg-red-100 text-red-700",        desc: "Cancelled before confirming. No inventory or balance change." },
+            ],
+          },
+          { type: "tip", content: "Confirming a supplier return automatically reduces the outstanding balance you owe that supplier — you don't need to record a separate payment." },
+          { type: "warning", content: "There is no return window for supplier returns. However, confirm only after you have physically dispatched the goods — confirming immediately deducts the stock from inventory." },
         ],
       },
       {

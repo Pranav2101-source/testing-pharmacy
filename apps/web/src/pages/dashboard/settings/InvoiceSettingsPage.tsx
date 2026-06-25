@@ -1,8 +1,8 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Save, CheckCircle2, Loader2, Lock, RefreshCw, Plus, Trash2,
-  AlertTriangle, Eye, ChevronDown, ChevronRight,
+  AlertTriangle, Eye, ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api-client";

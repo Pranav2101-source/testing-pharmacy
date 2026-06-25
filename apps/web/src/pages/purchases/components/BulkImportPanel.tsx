@@ -10,7 +10,7 @@
  * One click imports all valid rows into the GRN form.
  */
 import { useState, useRef, useCallback } from "react";
-import * as XLSX from "xlsx";
+import * as XLSX from "@e965/xlsx";
 import {
   FileSpreadsheet, Download, X, Check, AlertTriangle,
   ChevronRight, ClipboardPaste, Loader2, RotateCcw,
@@ -60,6 +60,7 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
 
   const loadRaw = useCallback((text: string) => {
     // Guard: binary content (ZIP / Excel) starts with "PK\x03\x04" magic bytes
+    // eslint-disable-next-line no-control-regex
     if (text.startsWith("PK") || /[\x00-\x08\x0E-\x1F]/.test(text.slice(0, 200))) {
       setFileError("This looks like a binary Excel file. Use the file picker above to upload it — or copy cells inside Excel first, then paste.");
       return;

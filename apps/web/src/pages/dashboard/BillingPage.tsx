@@ -6,7 +6,7 @@ import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  Plus, Lightbulb, RefreshCw, ChevronRight, Search, Calendar,
+  Plus, Lightbulb, ChevronRight, Search, Calendar,
   ChevronDown, SlidersHorizontal, Loader2, ArrowUpDown,
   ArrowUp, ArrowDown, FileX, AlertCircle, TrendingUp, RotateCcw,
   BadgeIndianRupee, CreditCard, X, Banknote, Smartphone, Clock3, Package,
@@ -63,11 +63,6 @@ function formatDate(iso: string) {
 
 function fmtCurrency(n: number) {
   return "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function fmtDateInput(iso: string) {
-  const d = new Date(iso);
-  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
 }
 
 function getCurrentFY() {

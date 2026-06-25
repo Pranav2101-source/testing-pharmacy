@@ -7,8 +7,8 @@ import { NotificationBell } from "@/components/notifications/NotificationBell";
 import {
   Home, FileText, ShoppingCart, Package2, FlaskConical, Zap, Link2,
   Search, Phone, Truck, Calendar, ChevronDown, LogOut, Settings, Menu, X,
-  Dot, QrCode, Coins, Send, Monitor, IndianRupee, Info, MapPin, Building2,
-  Receipt, FilePlus, RotateCcw, BookmarkCheck, ClipboardList, Plus, Users,
+  Dot, QrCode, Coins, Send, Monitor, IndianRupee, Info, MapPin,
+  Receipt, RotateCcw, BookmarkCheck, ClipboardList, Plus, Users,
   MoreHorizontal, TicketCheck, Stethoscope, Banknote, BarChart2, ArrowUpCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -54,6 +54,7 @@ type SalesItem = {
   description: string;
   icon:        React.ElementType;
   kbd?:        string;
+  activeTab:   string;   // which ?tab= value makes this item highlighted
   iconBg:      string;
   iconColor:   string;
   hoverBg:     string;
@@ -63,28 +64,25 @@ type SalesItem = {
 };
 const SALES_ITEMS: SalesItem[] = [
   {
-    href: "/dashboard/billing/new", label: "New Bill", description: "Create a new invoice",
-    icon: FilePlus, kbd: "F2",
-    iconBg: "bg-blue-600", iconColor: "text-white",
-    hoverBg: "hover:bg-blue-50", activeBg: "bg-blue-50", activeText: "text-blue-700", accent: "bg-blue-500",
-  },
-  {
-    href: "/dashboard/billing", label: "All Bills", description: "View and search invoices",
+    href: "/dashboard/billing",             activeTab: "bills",
+    label: "All Bills",   description: "View and search invoices",
     icon: FileText,
     iconBg: "bg-slate-600", iconColor: "text-white",
     hoverBg: "hover:bg-slate-50", activeBg: "bg-slate-50", activeText: "text-slate-800", accent: "bg-slate-500",
   },
   {
-    href: "/dashboard/billing/drafts", label: "Draft Bills", description: "Resume saved drafts",
+    href: "/dashboard/billing?tab=drafts",  activeTab: "drafts",
+    label: "Draft Bills", description: "Resume saved drafts",
     icon: BookmarkCheck,
     iconBg: "bg-amber-500", iconColor: "text-white",
     hoverBg: "hover:bg-amber-50", activeBg: "bg-amber-50", activeText: "text-amber-800", accent: "bg-amber-500",
   },
   {
-    href: "/dashboard/billing/returns", label: "Returns", description: "Process sales returns",
+    href: "/dashboard/billing?tab=returns", activeTab: "returns",
+    label: "Returns",     description: "Process & view sales returns",
     icon: RotateCcw,
-    iconBg: "bg-violet-500", iconColor: "text-white",
-    hoverBg: "hover:bg-violet-50", activeBg: "bg-violet-50", activeText: "text-violet-700", accent: "bg-violet-500",
+    iconBg: "bg-rose-500", iconColor: "text-white",
+    hoverBg: "hover:bg-rose-50", activeBg: "bg-rose-50", activeText: "text-rose-700", accent: "bg-rose-500",
   },
 ];
 
@@ -473,7 +471,10 @@ function ProfileDropdown() {
 // ─── Sales Nav Dropdown ────────────────────────────────────────────
 const SalesNavDropdown = memo(function SalesNavDropdown({ pathname }: { pathname: string }) {
   const { open, setOpen, ref } = useDropdown();
+  const { search } = useLocation();
   const salesActive = pathname.startsWith("/dashboard/billing");
+  // Current tab on the SalesPage (defaults to "bills" when absent)
+  const currentTab  = new URLSearchParams(search).get("tab") ?? "bills";
 
   return (
     <div ref={ref} className="relative">
@@ -521,11 +522,10 @@ const SalesNavDropdown = memo(function SalesNavDropdown({ pathname }: { pathname
             {/* Items */}
             <div className="p-1.5 space-y-0.5">
               {SALES_ITEMS.map((item) => {
-                const { href, label, description, icon: Icon, kbd,
+                const { href, label, description, icon: Icon, kbd, activeTab,
                         iconBg, iconColor, hoverBg, activeBg, activeText, accent } = item;
-                const active = href === "/dashboard/billing"
-                  ? pathname === href
-                  : pathname.startsWith(href);
+                // Active when on the billing page with the matching tab
+                const active = pathname === "/dashboard/billing" && currentTab === activeTab;
 
                 return (
                   <Link
@@ -582,13 +582,13 @@ const SalesNavDropdown = memo(function SalesNavDropdown({ pathname }: { pathname
 
             {/* Footer */}
             <div className="mx-2 mb-1.5 px-2.5 py-1.5 bg-slate-50 rounded-lg flex items-center justify-between">
-              <span className="text-[10px] text-slate-400 font-medium">Quick access</span>
+              <span className="text-[10px] text-slate-400 font-medium">New Bill → <kbd className="text-[9px] bg-slate-200 px-1 rounded">F2</kbd></span>
               <Link
                 to="/dashboard/billing"
                 onClick={() => setOpen(false)}
                 className="text-[10px] font-bold text-blue-600 hover:text-blue-700 transition-colors"
               >
-                View all →
+                Open Sales →
               </Link>
             </div>
           </motion.div>

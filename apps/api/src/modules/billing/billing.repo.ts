@@ -795,6 +795,14 @@ export class BillingRepo {
       });
 
       return salesReturn;
+    }, {
+      isolationLevel: "Serializable",
+      timeout:        15_000,
+    }).catch((err: { code?: string }) => {
+      if (err.code === "P2034") {
+        throw AppError.conflict("Return was modified concurrently — please try again.");
+      }
+      throw err;
     });
   }
 

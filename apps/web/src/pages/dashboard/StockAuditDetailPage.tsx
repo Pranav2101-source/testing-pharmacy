@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowLeft, Loader2, CheckCircle2, PlayCircle, Check,
   AlertCircle, Ban, Clock, TrendingUp, TrendingDown, Minus,
-  FileX, MapPin, Package, Keyboard, MessageSquare, IndianRupee,
+  FileX, MapPin, Package, Keyboard, MessageSquare,
   ClipboardCheck, ShieldAlert,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
@@ -406,11 +406,6 @@ export default function StockAuditDetailPage() {
     })).filter((rg) => rg.shelves.length > 0);
   }, [allGroups, search, filterMode]);
 
-  const flatItemIds = useMemo(
-    () => filteredGroups.flatMap((rg) => rg.shelves.flatMap((sg) => sg.items.map((i) => i.id))),
-    [filteredGroups],
-  );
-
   // Walking-order IDs over ALL items (unfiltered) — used by focusNext so Enter
   // navigation works correctly regardless of which filter tab is active.
   const allFlatItemIds = useMemo(
@@ -565,7 +560,7 @@ export default function StockAuditDetailPage() {
   function toggleNote(itemId: string) {
     setExpandedNotes((prev) => {
       const next = new Set(prev);
-      next.has(itemId) ? next.delete(itemId) : next.add(itemId);
+      if (next.has(itemId)) { next.delete(itemId); } else { next.add(itemId); }
       return next;
     });
   }

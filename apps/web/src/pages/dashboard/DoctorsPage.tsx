@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Stethoscope, Plus, Search, Pencil, Power, X, Loader2, Phone, Mail, Hash } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";

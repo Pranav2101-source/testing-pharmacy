@@ -101,7 +101,7 @@ export default function ChangePasswordPage() {
   const [next,     setNext]     = useState("");
   const [confirm,  setConfirm]  = useState("");
   const [state,    setState_]   = useState<"idle" | "loading" | "success" | "error">("idle");
-  const [errMsg,   setErrMsg]   = useState("");
+  const [errMsg,   _setErrMsg]  = useState("");
 
   const strength    = getStrength(next);
   const matchOk     = next.length > 0 && next === confirm;
