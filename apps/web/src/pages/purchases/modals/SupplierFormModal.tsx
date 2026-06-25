@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Check, Loader2, Building2, CreditCard, AlertCircle, AlertTriangle } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import type { FullSupplier, SupplierFormState, Supplier } from "../types";
 import { SUPPLIER_BLANK } from "../types";
@@ -76,7 +76,7 @@ export function SupplierFormModal({ supplier, onClose, onSaved }: {
         : await api.post("/suppliers", body);
       onSaved(data.data);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to save distributor");
+      setError(getErrorMessage(err, "Failed to save distributor"));
     } finally { setSaving(false); }
   }
 

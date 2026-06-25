@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Loader2, CheckCircle2, Banknote, AlertTriangle } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import type { Supplier } from "../types";
 import { SlidePanel } from "./AutoSuggestPanel";
@@ -47,7 +47,7 @@ export function QuickPaymentPanel({ suppliers, onClose }: { suppliers: Supplier[
       setSuccess(true);
       setTimeout(onClose, 1500);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to record payment");
+      setError(getErrorMessage(err, "Failed to record payment"));
     } finally { setSaving(false); }
   }
 

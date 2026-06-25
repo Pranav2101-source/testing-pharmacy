@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { Plus, Loader2, RotateCcw, Trash2, FileSpreadsheet, RefreshCw, Package } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { AnimatePresence } from "framer-motion";
 import { BarcodeInput } from "@/components/BarcodeInput";
 import { cn } from "@/lib/utils";
@@ -101,7 +101,7 @@ export function CreateReturnModal({ suppliers: initialSuppliers, onClose, onDone
       });
       onDone(lastAddedSupplier.current);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to create return");
+      setError(getErrorMessage(err, "Failed to create return"));
     } finally { setSaving(false); }
   }
 

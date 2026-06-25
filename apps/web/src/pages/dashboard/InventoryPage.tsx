@@ -9,7 +9,7 @@ import {
   ShieldAlert, Skull, MinusCircle, PlusCircle, Info, Printer, ShoppingCart, MapPin,
 } from "lucide-react";
 import { BarcodeLabelModal } from "@/components/BarcodeLabelModal";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
 
@@ -179,7 +179,7 @@ function AdjustStockModal({ item, onClose, onDone, onToast }: {
       onDone();
     } catch (err: any) {
       // Keep error inline inside the modal so the user can correct and retry
-      setError(err?.response?.data?.error ?? "Failed to adjust stock");
+      setError(getErrorMessage(err, "Failed to adjust stock"));
     } finally { setSaving(false); }
   }
 
@@ -301,7 +301,7 @@ function BatchStatusModal({ item, onClose, onDone, onToast }: {
       onDone();
     } catch (err: any) {
       // Keep error inline so user can see it and retry without losing their input
-      setError(err?.response?.data?.error ?? "Failed to update status");
+      setError(getErrorMessage(err, "Failed to update status"));
     } finally { setSaving(false); }
   }
 
@@ -406,7 +406,7 @@ function AssignLocationModal({ item, onClose, onDone, onToast }: {
       );
       onDone();
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to update location");
+      setError(getErrorMessage(err, "Failed to update location"));
     } finally { setSaving(false); }
   }
 

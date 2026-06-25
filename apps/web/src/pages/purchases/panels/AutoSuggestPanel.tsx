@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { X, Loader2, CheckCircle2, ShoppingCart, AlertTriangle } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
 
@@ -118,7 +118,7 @@ export function AutoSuggestPanel({ onClose }: { onClose: () => void }) {
       toast.success(`Draft PO ${res.data.data.orderNumber} created`);
       onClose();
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Failed to create PO");
+      toast.error(getErrorMessage(err, "Failed to create PO"));
     } finally { setCreating(false); }
   }
 

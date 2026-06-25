@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Loader2, CheckCircle2, FileText, AlertTriangle } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import type { Supplier } from "../types";
 import { SlidePanel } from "./AutoSuggestPanel";
@@ -36,7 +36,7 @@ export function QuickCreditNotePanel({ suppliers, onClose }: { suppliers: Suppli
       setSuccess(true);
       setTimeout(onClose, 1500);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to create credit note");
+      setError(getErrorMessage(err, "Failed to create credit note"));
     } finally { setSaving(false); }
   }
 

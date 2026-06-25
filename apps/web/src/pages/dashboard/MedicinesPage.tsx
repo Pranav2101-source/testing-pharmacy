@@ -8,7 +8,7 @@ import {
   RefreshCw, FlaskConical, Upload, Download, CheckCircle2, XCircle,
   BadgePercent,
 } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
 import { isPlatformAdmin } from "@/lib/auth";
@@ -478,7 +478,7 @@ function MedicineModal({
         : await api.post("/medicines", body);
       onSaved(data.data, !medicine);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to save medicine.");
+      setError(getErrorMessage(err, "Failed to save medicine."));
     } finally {
       setSaving(false);
     }
@@ -632,7 +632,7 @@ function OverrideModal({
       });
       onSaved(data.data);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to save override.");
+      setError(getErrorMessage(err, "Failed to save override."));
     } finally {
       setSaving(false);
     }
@@ -645,7 +645,7 @@ function OverrideModal({
       await api.delete(`/medicines/${medicine.id}/override`);
       onRemoved(medicine.id);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to remove override.");
+      setError(getErrorMessage(err, "Failed to remove override."));
       setRemoving(false);
     }
   }

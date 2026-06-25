@@ -144,3 +144,19 @@ api.interceptors.response.use(
     return Promise.reject(err);
   },
 );
+
+/**
+ * Extract a user-facing message from a caught request error.
+ *
+ * Prefers the backend's specific validation message, but falls back to the
+ * friendlier message the response interceptor above already attaches for
+ * network failures, CORS blocks, rate limiting, etc. — instead of dropping
+ * straight to a generic fallback string that hides what actually went wrong.
+ */
+export function getErrorMessage(err: unknown, fallback: string): string {
+  if (axios.isAxiosError(err)) {
+    const data = err.response?.data as { error?: string; message?: string } | undefined;
+    return data?.error ?? data?.message ?? err.message ?? fallback;
+  }
+  return fallback;
+}

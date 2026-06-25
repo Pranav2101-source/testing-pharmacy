@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Stethoscope, Plus, Search, Pencil, Power, X, Loader2, Phone, Mail, Hash } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
 
@@ -51,7 +51,7 @@ function DoctorModal({ doctor, onClose }: { doctor: Doctor | null; onClose: () =
       qc.invalidateQueries({ queryKey: ["doctors"] });
       onClose();
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Failed to save doctor");
+      toast.error(getErrorMessage(err, "Failed to save doctor"));
     } finally { setSaving(false); }
   }
 

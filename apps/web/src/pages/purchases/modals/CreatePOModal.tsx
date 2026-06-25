@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { Plus, Loader2, FileText, Trash2 } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { AnimatePresence } from "framer-motion";
 import type { Supplier, Medicine, POLineItem, FullSupplier } from "../types";
 import { GST_RATES } from "../types";
@@ -123,7 +123,7 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
       });
       onDone(lastAddedSupplier.current);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to create purchase order");
+      setError(getErrorMessage(err, "Failed to create purchase order"));
     } finally { setSaving(false); }
   }
 

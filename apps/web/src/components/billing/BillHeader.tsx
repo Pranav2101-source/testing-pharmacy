@@ -11,7 +11,7 @@ import { useBillingStore } from "./useBillingStore";
 import { CustomerSearchCombobox } from "./CustomerSearchCombobox";
 import { DoctorQuickAddModal } from "@/components/doctors/DoctorQuickAddModal";
 import type { DoctorRecord } from "@/components/doctors/DoctorQuickAddModal";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";
 
 // Computed once per session — bill date never changes mid-session
@@ -310,7 +310,7 @@ function QuickPrescriptionModal({
       setUploadId(data.data.id);
       setUploadMeta({ fileName: data.data.fileName, signedUrl: data.data.signedUrl ?? "", mimeType: data.data.mimeType });
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Upload failed");
+      toast.error(getErrorMessage(err, "Upload failed"));
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -358,7 +358,7 @@ function QuickPrescriptionModal({
       qc.invalidateQueries({ queryKey: ["prescriptions"] });
       onCreated(data.data.prescriptionNumber, data.data.id);
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Failed to create prescription");
+      toast.error(getErrorMessage(err, "Failed to create prescription"));
     } finally {
       setSaving(false);
     }

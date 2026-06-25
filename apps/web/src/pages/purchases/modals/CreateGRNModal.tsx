@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, Loader2, Truck, Trash2, AlertTriangle, CheckCircle2, FileSpreadsheet } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import type { Supplier, Medicine, GRNLineItem, FullSupplier } from "../types";
 import { GST_RATES } from "../types";
 import { currency } from "../utils";
@@ -215,7 +215,7 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
           .map((i) => ({ name: i.medicineName, date: i.expiryDate, days: daysUntil(i.expiryDate) }));
         setNearExpiryHits(hits);
       } else {
-        setError(msg || "Failed to create GRN");
+        setError(msg || getErrorMessage(err, "Failed to create GRN"));
       }
     } finally { setSaving(false); }
   }
@@ -231,7 +231,7 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
       await api.post("/purchases/grn", buildPayload(supplierId, invNo, invDate, poId, notes, items, true));
       onDone(lastAddedSupplier.current);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to create GRN");
+      setError(getErrorMessage(err, "Failed to create GRN"));
     } finally { setSaving(false); }
   }
 
