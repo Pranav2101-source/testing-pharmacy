@@ -137,12 +137,7 @@ export function csvToPOItems(raw: string): { items: Partial<POLineItem>[]; error
     const rawGst = parseFloat(get(row, "gstRate")    || "12");
     const gst  = [0, 5, 12, 18].includes(rawGst) ? rawGst : 12;
 
-    const expRaw = get(row, "expiryDate");
-    let expiry = expRaw;
-    if (/^\d{2}\/\d{2}\/\d{4}$/.test(expiry)) {
-      const [dd, mm, yyyy] = expiry.split("/");
-      expiry = `${yyyy}-${mm}-${dd}`;
-    }
+    const expiry = normalizeExpiryDate(get(row, "expiryDate"));
 
     items.push({
       medicineName: name,
@@ -336,12 +331,7 @@ export function csvToReturnItems(raw: string): { items: Partial<SRLineItem>[]; e
     if (isNaN(qty)  || qty  <= 0) { errors.push(`Row ${line} (${name}): return qty must be > 0`);  continue; }
     if (isNaN(rate) || rate <  0) { errors.push(`Row ${line} (${name}): purchase rate must be ≥ 0`); continue; }
 
-    const expRaw = get(row, "expiryDate");
-    let expiry = expRaw;
-    if (/^\d{2}\/\d{2}\/\d{4}$/.test(expiry)) {
-      const [dd, mm, yyyy] = expiry.split("/");
-      expiry = `${yyyy}-${mm}-${dd}`;
-    }
+    const expiry = normalizeExpiryDate(get(row, "expiryDate"));
 
     items.push({
       inventoryId:  "",

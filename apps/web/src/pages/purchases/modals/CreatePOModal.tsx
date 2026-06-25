@@ -114,12 +114,18 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
       await api.post("/purchases/orders", {
         supplierId, invoiceNo: invoiceNo || undefined, notes: notes || undefined,
         expectedDate: expectedDate ? new Date(expectedDate).toISOString() : undefined,
-        // Send batch/expiry only when they have real values; API fills in placeholders otherwise
-        items: items.map(({ expiryDate, batchNumber, ...rest }) => ({
-          ...rest,
-          ...(batchNumber ? { batchNumber } : {}),
-          ...(expiryDate  ? { expiryDate: new Date(expiryDate).toISOString() } : {}),
-        })),
+        // Send batch/expiry only when they have real values; API fills in placeholders otherwise.
+        // expiryDate may come from pasted/CSV-imported text that isn't a parseable date —
+        // guard against that instead of letting toISOString() throw and silently abort the
+        // whole submit before any request is even sent.
+        items: items.map(({ expiryDate, batchNumber, ...rest }) => {
+          const expiryMs = expiryDate ? new Date(expiryDate).getTime() : NaN;
+          return {
+            ...rest,
+            ...(batchNumber ? { batchNumber } : {}),
+            ...(!isNaN(expiryMs) ? { expiryDate: new Date(expiryMs).toISOString() } : {}),
+          };
+        }),
       });
       onDone(lastAddedSupplier.current);
     } catch (err: any) {
