@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Plus } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { useSearchParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { queryKeys } from "@/lib/queryKeys";
 
 import type { Tab, PanelType, Supplier, FullSupplier } from "./types";
 import { TABS } from "./types";
@@ -33,7 +35,6 @@ import { SupplierFormModal } from "./modals/SupplierFormModal";
 export default function PurchasePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab,              setTab]         = useState<Tab>("purchase");
-  const [suppliers,        setSuppliers]   = useState<Supplier[]>([]);
   const [showCreate,       setShow]        = useState(false);
   const [activePanel,      setPanel]       = useState<PanelType>(null);
   const [pendingApprovals, setPending]     = useState(0);
@@ -41,13 +42,17 @@ export default function PurchasePage() {
   const [reorderMedicine,  setReorderMed]  = useState<{ id: string; name: string; gstRate: number } | undefined>(undefined);
   const prevTab                            = useRef<Tab>("purchase");
 
-  const refreshSuppliers = useCallback(() => {
-    api.get("/suppliers/all")
-      .then(({ data }) => setSuppliers(data.data ?? []))
-      .catch(() => {});
-  }, []);
+  const queryClient = useQueryClient();
 
-  const refreshBadges = useCallback(() => {
+  // Suppliers — cached for 5 min; any component can trigger refetch via queryClient
+  const { data: supplierData, refetch: refreshSuppliers } = useQuery({
+    queryKey: queryKeys.suppliers.all(),
+    queryFn:  () => api.get("/suppliers/all").then((r) => (r.data.data ?? []) as Supplier[]),
+    staleTime: 5 * 60_000,
+  });
+  const suppliers = supplierData ?? [];
+
+  useEffect(() => {
     Promise.all([
       api.get("/purchases/orders", { params: { approvalStatus: "PENDING_APPROVAL", limit: 1 } }),
       api.get("/purchases/grn",    { params: { overdue: true, status: "CONFIRMED",  limit: 1 } }),
@@ -56,11 +61,6 @@ export default function PurchasePage() {
       setOverdue(grnRes.data.data.total ?? 0);
     }).catch(() => {});
   }, []);
-
-  useEffect(() => {
-    refreshSuppliers();
-    refreshBadges();
-  }, [refreshSuppliers, refreshBadges]);
 
   // Deep-link: /dashboard/purchase?create-po=1&medicineId=X&medicine=Y&gstRate=Z
   // Used by the Inventory alerts "Create PO" button to pre-seed a medicine.
@@ -72,7 +72,6 @@ export default function PurchasePage() {
     setSearchParams({}, { replace: true }); // clean the URL immediately
     if (!medicineId || !medicineName) return;
     setTab("po");
-    refreshSuppliers();
     setReorderMed({ id: medicineId, name: medicineName, gstRate });
     setShow(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -80,21 +79,22 @@ export default function PurchasePage() {
 
   function handleTabChange(next: Tab) {
     if (prevTab.current === "distributors" && next !== "distributors") {
-      refreshSuppliers();
+      void refreshSuppliers();
     }
     prevTab.current = next;
     setTab(next);
   }
 
   function openCreateModal() {
-    refreshSuppliers();
     setShow(true);
   }
 
   function handleSupplierAdded(s: FullSupplier) {
-    setSuppliers((p) => {
-      if (p.some((x) => x.id === s.id)) return p;
-      return [...p, { id: s.id, name: s.name, phone: s.phone ?? undefined }];
+    // Optimistically update the cache so downstream components see the new
+    // supplier immediately, without waiting for the next background refetch.
+    queryClient.setQueryData<Supplier[]>(queryKeys.suppliers.all(), (prev = []) => {
+      if (prev.some((x) => x.id === s.id)) return prev;
+      return [...prev, { id: s.id, name: s.name, phone: s.phone ?? undefined }];
     });
   }
 
@@ -157,7 +157,7 @@ export default function PurchasePage() {
         {tab === "gate-inward"  && <GateInwardTab    suppliers={suppliers} />}
         {tab === "po"           && <POTab            suppliers={suppliers} />}
         {tab === "returns"      && <ReturnsTab       suppliers={suppliers} />}
-        {tab === "distributors" && <DistributorsTab  onSupplierAdded={(s) => { handleSupplierAdded(s); refreshSuppliers(); }} />}
+        {tab === "distributors" && <DistributorsTab  onSupplierAdded={handleSupplierAdded} />}
       </div>
 
       {/* Slide-in Panels */}

@@ -633,16 +633,36 @@ export class PurchasesRepo {
           data:  { ledgerBalance: { increment: grn.totalAmount } },
         });
 
-        // Update linked PO status
+        // Update linked PO status using item-level coverage check:
+        // PARTIAL = at least one confirmed GRN exists
+        // RECEIVED = every PO item (by medicineId) has total received qty >= ordered qty across all confirmed GRNs
         if (grn.purchaseOrderId) {
           const po = await tx.purchaseOrder.findUnique({
             where:   { id: grn.purchaseOrderId },
-            include: { grns: { select: { status: true } } },
+            include: {
+              items: { select: { medicineId: true, quantity: true } },
+              grns:  {
+                where:   { status: "CONFIRMED" },
+                include: { items: { select: { medicineId: true, receivedQty: true, freeQty: true } } },
+              },
+            },
           });
           if (po && po.status !== "CANCELLED") {
-            const allGrns        = po.grns;
-            const confirmedCount = allGrns.filter((g) => g.status === "CONFIRMED").length;
-            const newStatus      = confirmedCount >= allGrns.length ? "RECEIVED" : "PARTIAL";
+            const receivedByMedicine = new Map<string, number>();
+            for (const confirmedGrn of po.grns) {
+              for (const item of confirmedGrn.items) {
+                if (item.medicineId) {
+                  receivedByMedicine.set(
+                    item.medicineId,
+                    (receivedByMedicine.get(item.medicineId) ?? 0) + item.receivedQty + item.freeQty,
+                  );
+                }
+              }
+            }
+            const namedPOItems = po.items.filter((i) => i.medicineId);
+            const allCovered   = namedPOItems.length > 0 &&
+              namedPOItems.every((i) => (receivedByMedicine.get(i.medicineId) ?? 0) >= i.quantity);
+            const newStatus    = allCovered ? "RECEIVED" : "PARTIAL";
             await tx.purchaseOrder.update({
               where: { id: po.id },
               data:  { status: newStatus, receivedAt: newStatus === "RECEIVED" ? new Date() : undefined },

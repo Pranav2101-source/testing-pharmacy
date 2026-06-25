@@ -124,7 +124,10 @@ export async function buildApp() {
 
   await app.register(rateLimit, {
     global:       true,
-    max:          200,
+    // In test mode use an effectively unlimited cap — integration tests hammer
+    // the same 127.0.0.1 IP rapidly and accumulated counts across repeated runs
+    // trip the 1-minute window, causing spurious 429s.
+    max:          env.NODE_ENV === "test" ? 999_999 : 200,
     timeWindow:   "1 minute",
     keyGenerator: (req) => req.ip,
     ...(redisClient ? { redis: redisClient } : {}),
@@ -260,6 +263,7 @@ export async function buildApp() {
   await app.register(
     async (authApp) => {
       authApp.addHook("onRequest", async (req, reply) => {
+        if (env.NODE_ENV === "test") return;
         const sensitiveRoutes = ["/login", "/register", "/forgot-password", "/reset-password", "/refresh"];
         const isSensitive = sensitiveRoutes.some((r) => req.url.endsWith(r));
         if (!isSensitive) return;

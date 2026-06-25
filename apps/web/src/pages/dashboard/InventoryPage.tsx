@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/queryKeys";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -522,12 +524,7 @@ function AssignLocationModal({ item, onClose, onDone, onToast }: {
 
 function BatchesTab() {
   const toast = useToast();
-  const [items,      setItems]      = useState<InventoryItem[]>([]);
-  const [total,      setTotal]      = useState(0);
   const [page,       setPage]       = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [loading,    setLoading]    = useState(true);
-  const [error,      setError]      = useState<string | null>(null);
   const [search,     setSearch]     = useState("");
   const [status,     setStatus]     = useState<BatchStatus | "">("");
   const [inStock,    setInStock]    = useState(false);
@@ -538,31 +535,35 @@ function BatchesTab() {
   const [locationModal,    setLocationModal]    = useState<InventoryItem | null>(null);
   const [barcodePrintItem, setBarcodePrintItem] = useState<InventoryItem | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true); setError(null);
-    try {
-      const params: Record<string, string | number | boolean> = { page, limit: 20 };
-      if (search.trim()) params.search     = search.trim();
-      if (status)        params.status     = status;
-      if (inStock)       params.inStock    = true;
-      if (lowStock)      params.lowStock   = true;
-      if (nearExpiry)    params.nearExpiry = true;
-      const { data } = await api.get("/inventory", { params });
-      setItems(data.data.items);
-      setTotal(data.data.total);
-      setTotalPages(Math.ceil(data.data.total / 20));
-    } catch {
-      setError("Failed to load inventory");
-      setItems([]);
-      setTotalPages(1);
-    }
-    finally  { setLoading(false); }
-  }, [page, search, status, inStock, lowStock, nearExpiry]);
-
+  // Debounce search input before it becomes part of the query key
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   useEffect(() => {
-    const t = setTimeout(load, search ? 350 : 0);
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), search ? 350 : 0);
     return () => clearTimeout(t);
-  }, [load]);
+  }, [search]);
+
+  const queryParams = { page, search: debouncedSearch, status, inStock, lowStock, nearExpiry };
+  const { data, isFetching: loading, error: queryError, refetch: load } = useQuery({
+    queryKey:        queryKeys.inventory.list(queryParams),
+    queryFn:         () => {
+      const p: Record<string, string | number | boolean> = { page, limit: 20 };
+      if (debouncedSearch) p.search     = debouncedSearch;
+      if (status)          p.status     = status;
+      if (inStock)         p.inStock    = true;
+      if (lowStock)        p.lowStock   = true;
+      if (nearExpiry)      p.nearExpiry = true;
+      return api.get("/inventory", { params: p }).then((r) => r.data.data as { items: InventoryItem[]; total: number });
+    },
+    staleTime:       30_000,
+    // Keep previous page's rows visible while the next page or a filtered result loads —
+    // eliminates the spinner flash on every page change and filter toggle.
+    placeholderData: keepPreviousData,
+  });
+
+  const items      = data?.items      ?? [];
+  const total      = data?.total      ?? 0;
+  const totalPages = Math.ceil(total / 20) || 1;
+  const error      = queryError ? "Failed to load inventory" : null;
 
   return (
     <div className="flex flex-col h-full">
@@ -593,11 +594,15 @@ function BatchesTab() {
             {label}
           </button>
         ))}
-        <span className="text-[12px] text-slate-400 ml-auto">{total} batches</span>
+        <span className="text-[12px] text-slate-400 ml-auto flex items-center gap-1.5">
+          {/* Subtle spinner shown only during background re-fetches (data already visible) */}
+          {loading && items.length > 0 && <Loader2 className="w-3 h-3 animate-spin text-blue-400" />}
+          {total} batches
+        </span>
       </div>
 
-      {/* Table */}
-      <div className="flex-1 overflow-auto min-h-0">
+      {/* Table — dim rows slightly during background re-fetch so the user knows data is refreshing */}
+      <div className={cn("flex-1 overflow-auto min-h-0 transition-opacity duration-150", loading && items.length > 0 && "opacity-60")}>
         <table className="w-full border-collapse">
           <thead className="sticky top-0 bg-white z-10">
             <tr className="border-b border-slate-200">
@@ -618,10 +623,10 @@ function BatchesTab() {
             </tr>
           </thead>
           <tbody>
-            {loading ? (
+            {loading && items.length === 0 ? (
               <tr><td colSpan={10} className="py-24 text-center"><Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" /></td></tr>
             ) : error ? (
-              <tr><td colSpan={10} className="py-16 text-center"><AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-2" /><p className="text-red-500 text-[13px]">{error}</p><button onClick={load} className="mt-2 text-blue-600 text-[12px] hover:underline">Retry</button></td></tr>
+              <tr><td colSpan={10} className="py-16 text-center"><AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-2" /><p className="text-red-500 text-[13px]">{error}</p><button onClick={() => void load()} className="mt-2 text-blue-600 text-[12px] hover:underline">Retry</button></td></tr>
             ) : items.length === 0 ? (
               <tr><td colSpan={10} className="py-24 text-center"><FileX className="w-10 h-10 text-slate-200 mx-auto mb-3" /><p className="text-slate-500 text-[14px] font-medium">No batches found</p></td></tr>
             ) : items.map((item) => {
@@ -704,17 +709,17 @@ function BatchesTab() {
       <AnimatePresence>
         {statusModal && (
           <BatchStatusModal item={statusModal} onClose={() => setStatusModal(null)}
-            onDone={() => { setStatusModal(null); load(); }}
+            onDone={() => { setStatusModal(null); void load(); }}
             onToast={(msg, v) => v === "success" ? toast.success(msg) : toast.error(msg)} />
         )}
         {adjustModal && (
           <AdjustStockModal item={adjustModal} onClose={() => setAdjustModal(null)}
-            onDone={() => { setAdjustModal(null); load(); }}
+            onDone={() => { setAdjustModal(null); void load(); }}
             onToast={(msg, v) => v === "success" ? toast.success(msg) : toast.error(msg)} />
         )}
         {locationModal && (
           <AssignLocationModal item={locationModal} onClose={() => setLocationModal(null)}
-            onDone={() => { setLocationModal(null); load(); }}
+            onDone={() => { setLocationModal(null); void load(); }}
             onToast={(msg, v) => v === "success" ? toast.success(msg) : toast.error(msg)} />
         )}
       </AnimatePresence>

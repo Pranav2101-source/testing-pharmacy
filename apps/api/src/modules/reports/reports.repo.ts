@@ -79,13 +79,33 @@ export class ReportsRepo {
   }
 
   topPurchasedItems(pharmacyId: string, from: Date, to: Date, take = 10) {
-    return this.db.gRNItem.groupBy({
-      by:      ["medicineName"],
-      where:   { grn: { pharmacyId, status: "CONFIRMED", confirmedAt: { gte: from, lte: to } } },
-      _sum:    { receivedQty: true, freeQty: true, amount: true },
-      orderBy: { _sum: { receivedQty: "desc" } },
-      take,
-    });
+    // Raw SQL to group by medicineId + JOIN medicines for the current name.
+    // The Prisma groupBy("medicineName") approach bakes the name at receipt time;
+    // if a medicine is later renamed the report shows the stale label.
+    return this.db.$queryRaw<Array<{
+      medicineId:       string;
+      medicineName:     string;
+      totalReceivedQty: bigint;
+      totalFreeQty:     bigint;
+      totalAmount:      unknown; // SUM(Decimal) → numeric, converted via Number() in service
+    }>>`
+      SELECT
+        gi."medicineId",
+        m.name                AS "medicineName",
+        SUM(gi."receivedQty") AS "totalReceivedQty",
+        SUM(gi."freeQty")     AS "totalFreeQty",
+        SUM(gi.amount)        AS "totalAmount"
+      FROM  grn_items           gi
+      JOIN  goods_receipt_notes grn ON grn.id           = gi."grnId"
+      JOIN  medicines           m   ON m.id             = gi."medicineId"
+      WHERE grn."pharmacyId"   = ${pharmacyId}
+        AND grn.status         = 'CONFIRMED'
+        AND grn."confirmedAt" >= ${from}
+        AND grn."confirmedAt" <= ${to}
+      GROUP BY gi."medicineId", m.name
+      ORDER BY SUM(gi."receivedQty") DESC
+      LIMIT ${take}
+    `;
   }
 
   overdueGrnCount(pharmacyId: string) {

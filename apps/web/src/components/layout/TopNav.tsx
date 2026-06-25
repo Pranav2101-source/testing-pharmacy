@@ -1,4 +1,6 @@
-import { useState, useRef, useEffect, memo } from "react";
+import { useState, useRef, useEffect, memo, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/queryKeys";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
@@ -140,13 +142,27 @@ function useDropdown() {
 // ─── NavItem ──────────────────────────────────────────────────────
 // memo: pathname changes on every navigation, but most tabs aren't affected
 const NavItem = memo(function NavItem({ tab, pathname }: { tab: NavTab; pathname: string }) {
-  const active = isActive(pathname, tab.href);
-  const Icon = tab.icon;
+  const active       = isActive(pathname, tab.href);
+  const Icon         = tab.icon;
+  const queryClient  = useQueryClient();
+
+  const handleMouseEnter = useCallback(() => {
+    if (tab.href === "/dashboard/purchase") {
+      // Warm the suppliers list so the Purchase page renders instantly
+      void queryClient.prefetchQuery({
+        queryKey: queryKeys.suppliers.all(),
+        queryFn:  () => api.get("/suppliers/all").then((r) => r.data.data ?? []),
+        staleTime: 5 * 60_000,
+      });
+    }
+  }, [queryClient, tab.href]);
+
   return (
     <Link
       to={tab.href}
       role="tab"
       aria-selected={active}
+      onMouseEnter={handleMouseEnter}
       className={cn(
         "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
         "text-[13px] font-semibold transition-all duration-150 outline-none",
@@ -666,6 +682,7 @@ const MoreNavDropdown = memo(function MoreNavDropdown({ pathname }: { pathname: 
 // ─── Inventory Nav Dropdown ───────────────────────────────────────
 const InventoryNavDropdown = memo(function InventoryNavDropdown({ pathname, rawRole }: { pathname: string; rawRole: string }) {
   const { open, setOpen, ref } = useDropdown();
+  const queryClient = useQueryClient();
   const visibleInventoryItems = INVENTORY_ITEMS.filter(
     (item) => !item.requiredRoles || item.requiredRoles.includes(rawRole),
   );
@@ -674,10 +691,22 @@ const InventoryNavDropdown = memo(function InventoryNavDropdown({ pathname, rawR
     pathname.startsWith("/dashboard/locations") ||
     pathname.startsWith("/dashboard/stock-audit");
 
+  const handleMouseEnter = useCallback(() => {
+    // Warm the default inventory list so the Inventory page renders instantly
+    const defaultParams = { page: 1, search: "", status: "", inStock: false, lowStock: false, nearExpiry: false };
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.inventory.list(defaultParams),
+      queryFn:  () =>
+        api.get("/inventory", { params: { page: 1, limit: 20 } }).then((r) => r.data.data),
+      staleTime: 30_000,
+    });
+  }, [queryClient]);
+
   return (
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(v => !v)}
+        onMouseEnter={handleMouseEnter}
         aria-haspopup="menu"
         aria-expanded={open}
         className={cn(
