@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus } from "lucide-react";
+import { Plus, ShoppingCart } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -30,11 +30,22 @@ import { CreateGRNModal }    from "./modals/CreateGRNModal";
 import { CreateReturnModal } from "./modals/CreateReturnModal";
 import { SupplierFormModal } from "./modals/SupplierFormModal";
 
+// Each module tab carries its own brand color for the active underline/text —
+// gives Purchase/Gate Inward/PO/Returns/Distributors a distinct identity.
+const TAB_ACTIVE_CLS: Record<string, string> = {
+  emerald: "border-emerald-600 text-emerald-700",
+  amber:   "border-amber-500   text-amber-700",
+  blue:    "border-blue-600    text-blue-700",
+  red:     "border-red-500     text-red-600",
+  slate:   "border-slate-600   text-slate-800",
+};
+
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function PurchasePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab,              setTab]         = useState<Tab>("purchase");
+  const [mounted,          setMounted]     = useState<Set<Tab>>(() => new Set(["purchase"]));
   const [showCreate,       setShow]        = useState(false);
   const [activePanel,      setPanel]       = useState<PanelType>(null);
   const [pendingApprovals, setPending]     = useState(0);
@@ -72,6 +83,7 @@ export default function PurchasePage() {
     setSearchParams({}, { replace: true }); // clean the URL immediately
     if (!medicineId || !medicineName) return;
     setTab("po");
+    setMounted((prev) => (prev.has("po") ? prev : new Set(prev).add("po")));
     setReorderMed({ id: medicineId, name: medicineName, gstRate });
     setShow(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -83,6 +95,7 @@ export default function PurchasePage() {
     }
     prevTab.current = next;
     setTab(next);
+    setMounted((prev) => (prev.has(next) ? prev : new Set(prev).add(next)));
   }
 
   function openCreateModal() {
@@ -98,17 +111,18 @@ export default function PurchasePage() {
     });
   }
 
-  const activeTab = TABS.find((t) => t.key === tab)!;
-
   return (
     <div className="flex flex-col h-full bg-white overflow-hidden">
       {/* Page Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <h1 className="text-[18px] font-bold text-slate-900">Purchase</h1>
-          <span className="text-[11px] font-medium text-slate-400 bg-slate-100 rounded-full px-2 py-0.5">
-            {activeTab.label}
-          </span>
+        <div className="flex items-center gap-2.5">
+          <div
+            className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+            style={{ background: "linear-gradient(135deg,#0a1a52 0%,#162870 100%)" }}
+          >
+            <ShoppingCart className="w-3.5 h-3.5 text-white" strokeWidth={2} />
+          </div>
+          <h1 className="text-[17px] font-bold text-slate-900 tracking-tight">Purchase</h1>
         </div>
         <div className="flex items-center gap-2">
           <QuickActionsDropdown
@@ -120,7 +134,7 @@ export default function PurchasePage() {
             overdueCount={overdueCount}
           />
           <button onClick={openCreateModal}
-            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold h-8 px-4 rounded-lg transition-colors shadow-sm">
+            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white text-[13px] font-semibold h-8 px-4 rounded-lg transition-all shadow-sm shadow-blue-200">
             <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />New
           </button>
         </div>
@@ -134,11 +148,12 @@ export default function PurchasePage() {
         {TABS.map((t) => {
           const Icon     = t.icon;
           const isActive = tab === t.key;
+          const cls      = TAB_ACTIVE_CLS[t.color] ?? TAB_ACTIVE_CLS.blue;
           return (
             <button key={t.key} onClick={() => handleTabChange(t.key)}
               className={cn(
                 "relative flex items-center gap-1.5 px-4 py-3 text-[13px] font-semibold border-b-2 transition-all whitespace-nowrap flex-shrink-0",
-                isActive ? "border-blue-600 text-blue-600" : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50",
+                isActive ? cls : "border-transparent text-slate-500 hover:text-slate-700 hover:bg-slate-50",
               )}>
               <Icon className="w-3.5 h-3.5" />{t.label}
               {t.key === "po"      && pendingApprovals > 0 && (
@@ -152,13 +167,34 @@ export default function PurchasePage() {
         })}
       </div>
 
-      {/* Tab Content */}
+      {/* Tab Content — lazy-mount once, then keep alive and hide via CSS.
+          Avoids remounting + refetching every panel on every tab switch. */}
       <div className="flex-1 overflow-hidden min-h-0">
-        {tab === "purchase"     && <PurchaseTab      suppliers={suppliers} />}
-        {tab === "gate-inward"  && <GateInwardTab    suppliers={suppliers} />}
-        {tab === "po"           && <POTab            suppliers={suppliers} />}
-        {tab === "returns"      && <ReturnsTab       suppliers={suppliers} />}
-        {tab === "distributors" && <DistributorsTab  onSupplierAdded={handleSupplierAdded} />}
+        {mounted.has("purchase") && (
+          <div className={cn("h-full", tab !== "purchase" && "hidden")}>
+            <PurchaseTab suppliers={suppliers} />
+          </div>
+        )}
+        {mounted.has("gate-inward") && (
+          <div className={cn("h-full", tab !== "gate-inward" && "hidden")}>
+            <GateInwardTab suppliers={suppliers} />
+          </div>
+        )}
+        {mounted.has("po") && (
+          <div className={cn("h-full", tab !== "po" && "hidden")}>
+            <POTab suppliers={suppliers} />
+          </div>
+        )}
+        {mounted.has("returns") && (
+          <div className={cn("h-full", tab !== "returns" && "hidden")}>
+            <ReturnsTab suppliers={suppliers} />
+          </div>
+        )}
+        {mounted.has("distributors") && (
+          <div className={cn("h-full", tab !== "distributors" && "hidden")}>
+            <DistributorsTab onSupplierAdded={handleSupplierAdded} />
+          </div>
+        )}
       </div>
 
       {/* Slide-in Panels */}

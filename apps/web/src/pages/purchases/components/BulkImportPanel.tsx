@@ -10,7 +10,6 @@
  * One click imports all valid rows into the GRN form.
  */
 import { useState, useRef, useCallback } from "react";
-import * as XLSX from "@e965/xlsx";
 import {
   FileSpreadsheet, Download, X, Check, AlertTriangle,
   ChevronRight, ClipboardPaste, Loader2, RotateCcw,
@@ -80,9 +79,12 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
       file.type === "application/vnd.ms-excel";
     const reader = new FileReader();
     if (isExcel) {
-      reader.onload = (e) => {
+      // SheetJS is loaded on demand — keeps it out of the main Purchase bundle
+      // since most visits never touch the Excel-import flow.
+      reader.onload = async (e) => {
         try {
           const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const XLSX = await import("@e965/xlsx");
           const wb   = XLSX.read(data, { type: "array", cellDates: true });
           const ws   = wb.Sheets[wb.SheetNames[0]!];
           const tsv  = XLSX.utils.sheet_to_csv(ws!, { FS: "\t" });

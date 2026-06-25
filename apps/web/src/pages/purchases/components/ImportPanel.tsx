@@ -1,6 +1,5 @@
 import { useState, useRef } from "react";
 import { FileSpreadsheet, Download, X, Check, AlertTriangle } from "lucide-react";
-import * as XLSX from "@e965/xlsx";
 import { cn } from "@/lib/utils";
 import { GRN_CSV_TEMPLATE, PO_CSV_TEMPLATE, RETURN_CSV_TEMPLATE, downloadTemplate } from "../utils";
 
@@ -34,9 +33,12 @@ export function ImportPanel({ type, onImport, onClose }: {
 
     const reader = new FileReader();
     if (isExcel) {
-      reader.onload = (e) => {
+      // SheetJS is loaded on demand — keeps it out of the main Purchase bundle
+      // since most visits never touch the Excel-import flow.
+      reader.onload = async (e) => {
         try {
           const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const XLSX = await import("@e965/xlsx");
           const wb   = XLSX.read(data, { type: "array", cellDates: true });
           const ws   = wb.Sheets[wb.SheetNames[0]!];
           const tsv  = XLSX.utils.sheet_to_csv(ws!, { FS: "\t" });

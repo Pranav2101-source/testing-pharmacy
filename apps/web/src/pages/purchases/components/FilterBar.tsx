@@ -1,4 +1,4 @@
-import { Search, X } from "lucide-react";
+import { Search, X, Calendar } from "lucide-react";
 import type { Supplier } from "../types";
 
 export function FilterBar({ search, onSearch, supplierId, onSupplier, suppliers, dateFrom, dateTo,
@@ -13,9 +13,9 @@ export function FilterBar({ search, onSearch, supplierId, onSupplier, suppliers,
   rightSlot?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-2 px-4 py-2 border-b border-slate-100 bg-white flex-shrink-0 flex-wrap">
+    <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-100 bg-white flex-shrink-0 flex-wrap">
       {/* Search */}
-      <div className="flex items-center border border-slate-200 rounded-lg bg-white overflow-hidden h-8 flex-1 min-w-[180px] max-w-[260px]">
+      <div className="flex items-center border border-slate-200 rounded-lg bg-slate-50/60 overflow-hidden h-8 flex-1 min-w-[180px] max-w-[260px] transition-colors focus-within:bg-white focus-within:border-blue-300 focus-within:ring-2 focus-within:ring-blue-50">
         <Search className="w-3.5 h-3.5 text-slate-400 ml-2.5 flex-shrink-0" />
         <input type="text" value={search} onChange={(e) => onSearch(e.target.value)}
           placeholder="Search by number, name…"
@@ -28,7 +28,8 @@ export function FilterBar({ search, onSearch, supplierId, onSupplier, suppliers,
       </div>
 
       {/* Date range */}
-      <div className="flex items-center gap-1 border border-slate-200 rounded-lg bg-white h-8 px-2.5 text-[12px] text-slate-600">
+      <div className="flex items-center gap-1.5 border border-slate-200 rounded-lg bg-slate-50/60 h-8 px-2.5 text-[12px] text-slate-600">
+        <Calendar className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
         <input type="date" value={dateFrom} onChange={(e) => onDateFrom(e.target.value)}
           className="focus:outline-none bg-transparent text-[12px] text-slate-600 w-[92px]" />
         <span className="text-slate-300">–</span>
@@ -38,14 +39,14 @@ export function FilterBar({ search, onSearch, supplierId, onSupplier, suppliers,
 
       {/* Distributor */}
       <select value={supplierId} onChange={(e) => onSupplier(e.target.value)}
-        className="border border-slate-200 rounded-lg bg-white h-8 px-2.5 text-[12px] text-slate-600 focus:outline-none min-w-[140px] max-w-[180px]">
+        className="border border-slate-200 rounded-lg bg-slate-50/60 h-8 px-2.5 text-[12px] text-slate-600 focus:outline-none focus:bg-white focus:border-blue-300 min-w-[140px] max-w-[180px] transition-colors">
         <option value="">All Distributors</option>
         {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
       </select>
 
       {/* Status */}
       <select value={statusValue} onChange={(e) => onStatus(e.target.value)}
-        className="border border-slate-200 rounded-lg bg-white h-8 px-2.5 text-[12px] text-slate-600 focus:outline-none min-w-[110px]">
+        className="border border-slate-200 rounded-lg bg-slate-50/60 h-8 px-2.5 text-[12px] text-slate-600 focus:outline-none focus:bg-white focus:border-blue-300 min-w-[110px] transition-colors">
         <option value="">All Status</option>
         {statusOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
       </select>

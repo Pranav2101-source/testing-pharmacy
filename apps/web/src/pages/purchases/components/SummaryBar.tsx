@@ -36,41 +36,52 @@ export function SummaryBar() {
       label: "This Month Spend",
       value: stats ? currency(stats.monthSpend) : "—",
       icon: IndianRupee,
-      cls:  "text-blue-700  bg-blue-50",
+      iconBg: "bg-gradient-to-br from-blue-500 to-indigo-600",
+      accent: "before:bg-blue-500",
     },
     {
       label: "Pending Gate Inward",
       value: stats ? `${stats.pendingGRNs} GRN${stats.pendingGRNs !== 1 ? "s" : ""}` : "—",
       icon: Truck,
-      cls:  "text-amber-700 bg-amber-50",
+      iconBg: "bg-gradient-to-br from-amber-400 to-orange-500",
+      accent: "before:bg-amber-500",
       warn: stats ? stats.pendingGRNs > 0 : false,
     },
     {
       label: "Overdue Payments",
       value: stats ? `${stats.overduePayments} bill${stats.overduePayments !== 1 ? "s" : ""}` : "—",
       icon: AlertTriangle,
-      cls:  stats?.overduePayments ? "text-red-700 bg-red-50" : "text-slate-500 bg-slate-50",
+      iconBg: stats?.overduePayments ? "bg-gradient-to-br from-red-500 to-rose-600" : "bg-gradient-to-br from-slate-300 to-slate-400",
+      accent: "before:bg-red-500",
       warn: stats ? stats.overduePayments > 0 : false,
     },
     {
       label: "Pending Approval",
       value: stats ? `${stats.pendingApprovals} PO${stats.pendingApprovals !== 1 ? "s" : ""}` : "—",
       icon: ShieldAlert,
-      cls:  stats?.pendingApprovals ? "text-orange-700 bg-orange-50" : "text-slate-500 bg-slate-50",
+      iconBg: stats?.pendingApprovals ? "bg-gradient-to-br from-orange-400 to-amber-600" : "bg-gradient-to-br from-slate-300 to-slate-400",
+      accent: "before:bg-orange-500",
       warn: stats ? stats.pendingApprovals > 0 : false,
     },
   ];
 
   return (
-    <div className="grid grid-cols-4 gap-3 px-5 py-3 bg-[#f7f9fc] border-b border-slate-200">
+    <div className="grid grid-cols-4 gap-3 px-5 py-3.5 bg-gradient-to-b from-slate-50 to-[#f7f9fc] border-b border-slate-200">
       {cards.map((c) => (
-        <div key={c.label} className={cn("flex items-center gap-2.5 rounded-xl px-3.5 py-2.5 border", c.warn ? "border-current/20 shadow-sm" : "border-slate-200 bg-white")}>
-          <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0", c.cls)}>
-            <c.icon className="w-4 h-4" />
+        <div
+          key={c.label}
+          className={cn(
+            "relative flex items-center gap-3 rounded-2xl px-4 py-3 border bg-white overflow-hidden transition-shadow hover:shadow-card-md",
+            "before:absolute before:left-0 before:top-0 before:bottom-0 before:w-[3px]",
+            c.warn ? cn("border-slate-200 shadow-sm", c.accent) : "border-slate-200 shadow-card before:bg-transparent",
+          )}
+        >
+          <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm", c.iconBg)}>
+            <c.icon className="w-5 h-5 text-white" strokeWidth={2} />
           </div>
-          <div>
-            <p className="text-[11px] font-medium text-slate-500 leading-none mb-0.5">{c.label}</p>
-            <p className={cn("text-[14px] font-bold leading-none", c.warn ? "text-red-700" : "text-slate-800")}>{c.value}</p>
+          <div className="min-w-0">
+            <p className="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wide leading-none mb-1 truncate">{c.label}</p>
+            <p className={cn("text-[16px] font-black leading-none tabular-nums", c.warn ? "text-red-700" : "text-slate-800")}>{c.value}</p>
           </div>
         </div>
       ))}

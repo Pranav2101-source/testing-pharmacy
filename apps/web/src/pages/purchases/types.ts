@@ -104,6 +104,8 @@ export type QABtn = {
   badge?:   number;
   divider?: boolean;
   danger?:  boolean;
+  iconBg?:  string;
+  iconCls?: string;
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
