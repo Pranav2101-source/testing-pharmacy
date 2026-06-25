@@ -6,7 +6,7 @@ import {
   BookOpen, Zap, Users, RotateCcw, AlertTriangle,
   Calendar, TrendingUp, Tag, Truck, CreditCard,
   Settings, FlaskConical, Bell, FileText, BookmarkCheck,
-  Phone, CheckCircle2, DollarSign, Hash, Keyboard,
+  Phone, CheckCircle2, DollarSign, Hash, Keyboard, Building2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { isSupportStaff } from "@/lib/auth";
@@ -232,7 +232,7 @@ const CATEGORIES: HelpCategory[] = [
           { type: "text", content: "Checkup bills are designed for speed — complete a full GST invoice in under 30 seconds." },
           {
             type: "steps", steps: [
-              "Press F2 or click 'New Bill' in the Sales dropdown",
+              "Press F2, or click the blue 'New Bill' button in the top navigation bar",
               "Optionally search for a registered customer/patient",
               "Type the medicine name in the search box — results appear from your stock instantly",
               "Select the medicine; price, batch, MRP, and GST are auto-filled",
@@ -437,6 +437,22 @@ const CATEGORIES: HelpCategory[] = [
     id: "purchase", label: "Purchase", icon: ShoppingCart,
     color: "text-purple-600", bg: "bg-purple-50", activeBg: "bg-purple-600",
     items: [
+      {
+        id: "purchase-tabs", question: "Purchase, Gate Inward, PO, Returns, Distributors — what's each tab for?",
+        tags: ["purchase tabs", "gate inward", "po", "returns", "distributors", "overview", "tabs", "difference"],
+        blocks: [
+          {
+            type: "grid", items: [
+              { icon: FileText,  label: "Purchase",       desc: "Confirmed invoices — payment due dates & purchase history",      color: "bg-emerald-100 text-emerald-600" },
+              { icon: Truck,     label: "Gate Inward",    desc: "Draft GRNs waiting to be confirmed when stock physically arrives", color: "bg-amber-100 text-amber-600"    },
+              { icon: BarChart3, label: "Purchase Order", desc: "Orders sent to suppliers, before any stock arrives",               color: "bg-blue-100 text-blue-600"      },
+              { icon: RotateCcw, label: "Returns",        desc: "Stock sent back to a distributor — damaged, expired, wrong item",  color: "bg-red-100 text-red-600"        },
+              { icon: Building2, label: "Distributors",   desc: "Your supplier directory — contacts, credit & payment history",     color: "bg-slate-200 text-slate-700"    },
+            ],
+          },
+          { type: "tip", content: "Typical flow: Purchase Order → send to supplier → Gate Inward (confirm GRN when stock arrives) → moves into Purchase. Returns and Distributors are managed independently." },
+        ],
+      },
       {
         id: "po", question: "What is a Purchase Order (PO)?",
         tags: ["purchase order", "po", "order", "supplier order"],
@@ -808,20 +824,6 @@ const CATEGORIES: HelpCategory[] = [
           },
           { type: "tip", content: "Access Ginni from the 'More' menu or the Ginni icon in the nav. Type your question in natural language — Hindi or English." },
           { type: "warning", content: "Ginni provides general medical information only. Always use clinical judgement and refer to a licensed prescriber for patient-specific decisions." },
-        ],
-      },
-      {
-        id: "vitacoin", question: "What are VitalCoins?",
-        tags: ["vitacoin", "coins", "reward", "points"],
-        blocks: [
-          { type: "text", content: "VitalCoins are reward points earned for actively using Checkup features — billing, maintaining inventory, completing audits, referring other pharmacies, etc." },
-          {
-            type: "badges", items: [
-              { label: "Earn",   color: "bg-amber-100 text-amber-700",   desc: "By billing, auditing stock, referring pharmacies, and completing profile setup" },
-              { label: "Redeem", color: "bg-emerald-100 text-emerald-700", desc: "Against your subscription fee or to unlock premium features" },
-            ],
-          },
-          { type: "tip", content: "Check your VitalCoin balance from the profile dropdown → VitalCoins." },
         ],
       },
     ],
