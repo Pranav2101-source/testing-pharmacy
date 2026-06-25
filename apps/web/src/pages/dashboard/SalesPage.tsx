@@ -856,11 +856,11 @@ function ReturnsPanel({ onCount }: { onCount: (n: number) => void }) {
 
 const TAB_CFG: {
   id: Tab; label: string; icon: ElementType;
-  activeText: string; countBg: string; countText: string;
+  activeBg: string; countBg: string; countText: string;
 }[] = [
-  { id: "bills",   label: "Bills",   icon: FileText,      activeText: "text-blue-700",  countBg: "bg-blue-100",  countText: "text-blue-700"  },
-  { id: "drafts",  label: "Drafts",  icon: BookmarkCheck, activeText: "text-amber-700", countBg: "bg-amber-100", countText: "text-amber-700" },
-  { id: "returns", label: "Returns", icon: RotateCcw,     activeText: "text-rose-700",  countBg: "bg-rose-100",  countText: "text-rose-600"  },
+  { id: "bills",   label: "Bills",   icon: FileText,      activeBg: "bg-blue-600",  countBg: "bg-white/25", countText: "text-white" },
+  { id: "drafts",  label: "Drafts",  icon: BookmarkCheck, activeBg: "bg-amber-500", countBg: "bg-white/25", countText: "text-white" },
+  { id: "returns", label: "Returns", icon: RotateCcw,     activeBg: "bg-rose-500",  countBg: "bg-white/25", countText: "text-white" },
 ];
 
 // ─── SalesPage ─────────────────────────────────────────────────────────────────
@@ -921,8 +921,8 @@ export default function SalesPage() {
         </div>
 
         {/* Segmented tab control */}
-        <div className="flex items-center gap-0.5 bg-slate-100 rounded-xl p-0.5">
-          {TAB_CFG.map(({ id, label, icon: Icon, activeText, countBg, countText }) => {
+        <div className="flex items-center gap-1 bg-slate-100 rounded-2xl p-1">
+          {TAB_CFG.map(({ id, label, icon: Icon, activeBg, countBg, countText }) => {
             const active = tab === id;
             const count  = counts[id];
             return (
@@ -936,15 +936,17 @@ export default function SalesPage() {
                   }
                 }}
                 className={cn(
-                  "flex items-center gap-1.5 px-3.5 py-1.5 rounded-[10px] text-[12px] font-semibold transition-all duration-150 select-none",
-                  active ? cn("bg-white shadow-sm", activeText) : "text-slate-500 hover:text-slate-700 hover:bg-white/60"
+                  "flex items-center gap-2 px-5 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-150 select-none",
+                  active
+                    ? cn(activeBg, "text-white shadow-md scale-[1.02]")
+                    : "text-slate-500 hover:text-slate-700 hover:bg-white/70 hover:shadow-sm"
                 )}
               >
-                <Icon className={cn("w-3.5 h-3.5 flex-shrink-0", active ? activeText : "text-slate-400")} strokeWidth={active ? 2.2 : 1.8} />
+                <Icon className="w-4 h-4 flex-shrink-0" strokeWidth={active ? 2.3 : 1.9} />
                 {label}
                 {count !== undefined && (
                   <span className={cn(
-                    "text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[18px] text-center leading-none",
+                    "text-[11px] font-bold px-1.5 py-0.5 rounded-full min-w-[20px] text-center leading-none",
                     active ? cn(countBg, countText) : "bg-slate-200 text-slate-500"
                   )}>
                     {count > 999 ? "999+" : count}

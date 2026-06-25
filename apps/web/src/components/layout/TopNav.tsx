@@ -786,7 +786,6 @@ function MobileMenu({ pathname, rawRole }: { pathname: string; rawRole: string }
   const visibleInventoryItems = INVENTORY_ITEMS.filter(
     (item) => !item.requiredRoles || item.requiredRoles.includes(rawRole),
   );
-  const [salesExpanded,     setSalesExpanded]     = useState(() => pathname.startsWith("/dashboard/billing"));
   const [inventoryExpanded, setInventoryExpanded] = useState(() =>
     pathname.startsWith("/dashboard/inventory") ||
     pathname.startsWith("/dashboard/locations") ||
@@ -805,7 +804,6 @@ function MobileMenu({ pathname, rawRole }: { pathname: string; rawRole: string }
 
   useEffect(() => {
     setOpen(false);
-    if (pathname.startsWith("/dashboard/billing")) setSalesExpanded(true);
     if (isInventoryActive) setInventoryExpanded(true);
     if (isMoreActive) setMoreExpanded(true);
   }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -884,38 +882,14 @@ function MobileMenu({ pathname, rawRole }: { pathname: string; rawRole: string }
                   );
                 })()}
 
-                <div>
-                  <button
-                    onClick={() => setSalesExpanded(v => !v)}
-                    className={cn("w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all",
-                      isSalesActive ? "bg-white/10 text-white" : "text-white/65 hover:text-white hover:bg-white/10")}
-                  >
-                    <Receipt className={cn("w-3.5 h-3.5", isSalesActive ? "text-white/80" : "text-white/50")} strokeWidth={1.8} />
-                    Sales
-                    <ChevronDown className={cn("w-3 h-3 ml-auto transition-transform duration-200", salesExpanded && "rotate-180")} />
-                  </button>
-                  <AnimatePresence initial={false}>
-                    {salesExpanded && (
-                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.16 }} className="overflow-hidden">
-                        <div className="ml-4 mt-0.5 mb-0.5 space-y-0.5 border-l border-white/10 pl-2.5">
-                          {SALES_ITEMS.map(({ href, label, icon: Icon }) => {
-                            const active = href === "/dashboard/billing" ? pathname === href : pathname.startsWith(href);
-                            return (
-                              <Link key={href} to={href} onClick={() => setOpen(false)}
-                                className={cn("flex items-center gap-2 px-2.5 py-2 rounded-lg text-[12px] font-semibold transition-all",
-                                  active ? "bg-white text-brand-700" : "text-white/60 hover:text-white hover:bg-white/10")}
-                              >
-                                <Icon className={cn("w-3 h-3", active ? "text-brand-600" : "text-white/40")} strokeWidth={1.8} />
-                                {label}
-                                {active && <Dot className="ml-auto w-3.5 h-3.5 text-brand-500" />}
-                              </Link>
-                            );
-                          })}
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
+                <Link to="/dashboard/billing" onClick={() => setOpen(false)}
+                  className={cn("flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all",
+                    isSalesActive ? "bg-white text-brand-700" : "text-white/65 hover:text-white hover:bg-white/10")}
+                >
+                  <Receipt className={cn("w-3.5 h-3.5", isSalesActive ? "text-brand-600" : "text-white/50")} strokeWidth={1.8} />
+                  Sales
+                  {isSalesActive && <Dot className="ml-auto w-3.5 h-3.5 text-brand-500" />}
+                </Link>
 
                 {/* Inventory — expandable section */}
                 <div>
@@ -1141,7 +1115,7 @@ export function TopNav() {
       {/* Nav tabs — desktop */}
       <nav role="tablist" aria-label="Main navigation" className="hidden xl:flex items-center gap-0.5">
         {NAV_TABS[0] && <NavItem tab={NAV_TABS[0]} pathname={pathname} />}
-        <SalesNavDropdown pathname={pathname} />
+        <NavItem tab={{ href: "/dashboard/billing", label: "Sales", icon: Receipt }} pathname={pathname} />
         {NAV_TABS[1] && <NavItem tab={NAV_TABS[1]} pathname={pathname} />}
         <InventoryNavDropdown pathname={pathname} rawRole={rawRole} />
         <MoreNavDropdown pathname={pathname} />
