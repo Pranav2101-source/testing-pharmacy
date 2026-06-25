@@ -5,7 +5,7 @@ import {
   Receipt, Package2, ShoppingCart, BarChart3, TicketCheck,
   BookOpen, Zap, Users, RotateCcw, AlertTriangle,
   Calendar, TrendingUp, Tag, Truck, CreditCard,
-  Settings, FlaskConical, Bell, FileText,
+  Settings, FlaskConical, Bell, FileText, BookmarkCheck,
   Phone, CheckCircle2, DollarSign, Hash, Keyboard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -211,6 +211,20 @@ const CATEGORIES: HelpCategory[] = [
     id: "billing", label: "Billing & Sales", icon: Receipt,
     color: "text-blue-600", bg: "bg-blue-50", activeBg: "bg-blue-600",
     items: [
+      {
+        id: "bills-drafts-returns", question: "Bills, Drafts, Returns — what's the difference?",
+        tags: ["bill", "draft", "return", "tabs", "sales", "overview", "difference"],
+        blocks: [
+          {
+            type: "grid", items: [
+              { icon: FileText,      label: "Bill",    desc: "A finalised invoice given to a customer after selling medicines. Stock is deducted the moment you save it. Cannot be edited once saved.",      color: "bg-blue-100 text-blue-600"  },
+              { icon: BookmarkCheck, label: "Draft",   desc: "An unfinished bill saved midway. Nothing changes in stock until you open it and finalise it. Great when a customer is interrupted or needs time.",  color: "bg-amber-100 text-amber-600" },
+              { icon: RotateCcw,     label: "Return",  desc: "When a customer brings medicines back. Linked to the original bill. Stock can go back into inventory (restock) or be discarded (write-off).", color: "bg-rose-100 text-rose-600"  },
+            ],
+          },
+          { type: "tip", content: "Think of it this way — Bill = done sale, Draft = parked sale, Return = reversed sale." },
+        ],
+      },
       {
         id: "new-bill", question: "How do I create a new bill?",
         tags: ["bill", "invoice", "new", "create", "f2", "billing"],
