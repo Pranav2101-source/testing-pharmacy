@@ -6,6 +6,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
+import { usePurchaseSummary } from "./hooks/usePurchaseSummary";
 
 import type { Tab, PanelType, Supplier, FullSupplier } from "./types";
 import { TABS } from "./types";
@@ -48,8 +49,6 @@ export default function PurchasePage() {
   const [mounted,          setMounted]     = useState<Set<Tab>>(() => new Set(["purchase"]));
   const [showCreate,       setShow]        = useState(false);
   const [activePanel,      setPanel]       = useState<PanelType>(null);
-  const [pendingApprovals, setPending]     = useState(0);
-  const [overdueCount,     setOverdue]     = useState(0);
   const [reorderMedicine,  setReorderMed]  = useState<{ id: string; name: string; gstRate: number } | undefined>(undefined);
   const prevTab                            = useRef<Tab>("purchase");
 
@@ -63,15 +62,9 @@ export default function PurchasePage() {
   });
   const suppliers = supplierData ?? [];
 
-  useEffect(() => {
-    Promise.all([
-      api.get("/purchases/orders", { params: { approvalStatus: "PENDING_APPROVAL", limit: 1 } }),
-      api.get("/purchases/grn",    { params: { overdue: true, status: "CONFIRMED",  limit: 1 } }),
-    ]).then(([poRes, grnRes]) => {
-      setPending(poRes.data.data.total  ?? 0);
-      setOverdue(grnRes.data.data.total ?? 0);
-    }).catch(() => {});
-  }, []);
+  const { data: summary } = usePurchaseSummary();
+  const pendingApprovals   = summary?.pendingApprovals ?? 0;
+  const overdueCount       = summary?.overdueGRNs ?? 0;
 
   // Deep-link: /dashboard/purchase?create-po=1&medicineId=X&medicine=Y&gstRate=Z
   // Used by the Inventory alerts "Create PO" button to pre-seed a medicine.
@@ -201,7 +194,10 @@ export default function PurchasePage() {
       <AnimatePresence>
         {activePanel === "auto-suggest"       && <AutoSuggestPanel       onClose={() => setPanel(null)} />}
         {activePanel === "overdue-bills"      && <OverdueBillsPanel      suppliers={suppliers} onClose={() => setPanel(null)} />}
-        {activePanel === "pending-approvals"  && <PendingApprovalsPanel  onClose={() => setPanel(null)} onDone={() => { setPending((p) => Math.max(0, p - 1)); }} />}
+        {activePanel === "pending-approvals"  && <PendingApprovalsPanel  onClose={() => setPanel(null)} onDone={() => {
+          queryClient.setQueryData(queryKeys.purchases.summary(), (old: typeof summary) =>
+            old ? { ...old, pendingApprovals: Math.max(0, old.pendingApprovals - 1) } : old);
+        }} />}
         {activePanel === "quick-payment"      && <QuickPaymentPanel      suppliers={suppliers} onClose={() => setPanel(null)} />}
         {activePanel === "credit-note"        && <QuickCreditNotePanel   suppliers={suppliers} onClose={() => setPanel(null)} />}
       </AnimatePresence>

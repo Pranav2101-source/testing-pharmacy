@@ -1,35 +1,10 @@
-import { useState, useEffect } from "react";
 import { IndianRupee, Truck, AlertTriangle, ShieldAlert } from "lucide-react";
-import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { currency } from "../utils";
+import { usePurchaseSummary } from "../hooks/usePurchaseSummary";
 
 export function SummaryBar() {
-  const [stats, setStats] = useState<{
-    pendingGRNs: number; overduePayments: number; pendingApprovals: number; monthSpend: number;
-  } | null>(null);
-
-  useEffect(() => {
-    async function load() {
-      const now  = new Date();
-      const from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-      const to   = now.toISOString();
-      try {
-        const [grnRes, poRes, summaryRes] = await Promise.all([
-          api.get("/purchases/grn", { params: { status: "DRAFT", limit: 1 } }),
-          api.get("/purchases/orders", { params: { approvalStatus: "PENDING_APPROVAL", limit: 1 } }),
-          api.get("/reports/purchases/summary", { params: { from, to } }),
-        ]);
-        setStats({
-          pendingGRNs:       grnRes.data.data.total,
-          overduePayments:   summaryRes.data.data.overduePayments,
-          pendingApprovals:  poRes.data.data.total,
-          monthSpend:        summaryRes.data.data.totalSpend,
-        });
-      } catch {/* */}
-    }
-    load();
-  }, []);
+  const { data: stats } = usePurchaseSummary();
 
   const cards = [
     {
