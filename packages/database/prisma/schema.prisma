@@ -1391,6 +1391,13 @@ model BatchRecall {
 
 // ─── Support Module ───────────────────────────────────────────────────────────
 
+model TicketSequence {
+  id      String @id
+  current Int    @default(1)
+
+  @@map("ticket_sequences")
+}
+
 enum TicketStatus {
   OPEN
   ASSIGNED
@@ -1403,6 +1410,22 @@ enum TicketStatus {
 enum TicketLanguage {
   HINDI
   ENGLISH
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketSLA {
+  SLA_4H
+  SLA_8H
+  SLA_24H
+  SLA_48H
+  SLA_72H
+  SLA_3D
 }
 
 enum AttachmentFileType {
@@ -1448,7 +1471,10 @@ model SupportTicket {
   customTitle     String?
   assignedAgentId String?
   status          TicketStatus   @default(OPEN)
+  priority        TicketPriority @default(MEDIUM)
+  sla             TicketSLA?
   language        TicketLanguage @default(ENGLISH)
+  dueDate         DateTime?
   description     String
   mobile          String
   altMobile       String?

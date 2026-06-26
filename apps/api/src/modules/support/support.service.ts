@@ -34,12 +34,25 @@ export class SupportService {
   async createTicket(pharmacyId: string, raisedById: string, input: CreateTicketInput) {
     const ticketNumber = await this.repo.nextTicketNumber();
 
-    // Round-robin assignment
-    const agent = await this.repo.pickNextAgent();
-    const assignedAgentId = agent?.id ?? undefined;
-    const status = agent ? "ASSIGNED" : "OPEN";
+    let assignedAgentId: string | undefined = undefined;
+    let status = "OPEN";
 
-    if (agent) await this.repo.markAgentAssigned(agent.id);
+    if (input.assignmentType === "UNASSIGNED") {
+      assignedAgentId = undefined;
+      status = "OPEN";
+    } else if (input.assignmentType === "MANUAL" && input.agentId) {
+      assignedAgentId = input.agentId;
+      status = "ASSIGNED";
+      await this.repo.markAgentAssigned(assignedAgentId);
+    } else {
+      // ROUND_ROBIN or default fallback
+      const agent = await this.repo.pickNextAgent();
+      if (agent) {
+        assignedAgentId = agent.id;
+        status = "ASSIGNED";
+        await this.repo.markAgentAssigned(agent.id);
+      }
+    }
 
     const ticket = await this.repo.create({
       ticketNumber,
@@ -49,9 +62,12 @@ export class SupportService {
       customTitle:     input.customTitle || undefined,
       assignedAgentId,
       status:          status as any,
+      priority:        input.priority as any,
+      sla:             input.sla as any,
+      dueDate:         input.dueDate ? new Date(input.dueDate) : null,
       language:        input.language,
       description:     input.description,
-      mobile:          input.mobile,
+      mobile:          input.mobile || "",
       altMobile:       input.altMobile || undefined,
     });
 

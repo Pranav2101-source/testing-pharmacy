@@ -6,14 +6,24 @@ export const TICKET_STATUSES = [
 
 export const TICKET_LANGUAGES = ["HINDI", "ENGLISH"] as const;
 
-// ── Ticket creation (pharmacy user) ──────────────────────────────────────────
+export const TICKET_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"] as const;
+
+export const TICKET_SLAS = ["SLA_4H", "SLA_8H", "SLA_24H", "SLA_48H", "SLA_72H", "SLA_3D"] as const;
+
+// ── Ticket creation (pharmacy user & admin) ──────────────────────────────────
 
 export const createTicketSchema = z.object({
   categoryId:  z.string().min(1, "Category required"),
   customTitle: z.string().max(200).optional(),
   language:    z.enum(TICKET_LANGUAGES).default("ENGLISH"),
+  priority:    z.enum(TICKET_PRIORITIES).default("MEDIUM"),
+  sla:         z.enum(TICKET_SLAS).optional(),
+  dueDate:     z.string().datetime().optional(),
+  pharmacyId:  z.string().uuid().optional(),
+  assignmentType: z.enum(["UNASSIGNED", "ROUND_ROBIN", "MANUAL"]).optional(),
+  agentId:     z.string().uuid().optional().nullable(),
   description: z.string().min(10, "Description must be at least 10 characters").max(2000),
-  mobile:      z.string().regex(/^[6-9]\d{9}$/, "Enter a valid 10-digit mobile number"),
+  mobile:      z.string().regex(/^[6-9]\d{9}$/, "Enter a valid 10-digit mobile number").optional().or(z.literal("")),
   altMobile:   z.string().regex(/^[6-9]\d{9}$/).optional().or(z.literal("")),
 });
 
