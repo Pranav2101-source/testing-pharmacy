@@ -260,24 +260,7 @@ export async function buildApp() {
   });
 
   // ── Routes ────────────────────────────────────────────────────────────────
-  await app.register(
-    async (authApp) => {
-      authApp.addHook("onRequest", async (req, reply) => {
-        if (env.NODE_ENV === "test") return;
-        const sensitiveRoutes = ["/login", "/register", "/forgot-password", "/reset-password", "/refresh"];
-        const isSensitive = sensitiveRoutes.some((r) => req.url.endsWith(r));
-        if (!isSensitive) return;
-        try {
-          // @ts-expect-error — fastify-rate-limit augments the reply
-          await reply.rateLimit({ max: 10, timeWindow: "1 minute", keyGenerator: () => req.ip });
-        } catch {
-          // rateLimit exceeded — let the global handler return 429
-        }
-      });
-      await authApp.register(authRoutes, { prefix: "/api/v1/auth" });
-    },
-    {},
-  );
+  await app.register(authRoutes, { prefix: "/api/v1/auth" });
 
   await app.register(billingRoutes,             { prefix: "/api/v1/billing" });
   await app.register(inventoryRoutes,           { prefix: "/api/v1/inventory" });

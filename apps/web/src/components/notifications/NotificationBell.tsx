@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { formatDistanceToNow } from "date-fns";
@@ -6,7 +7,7 @@ import {
   Bell, X, Clock, Package, AlertCircle, BarChart2,
   Wallet, FileText, AlertOctagon, ShoppingCart,
   User, Lock, FileQuestion, CheckCheck, Loader2,
-  CalendarDays,
+  CalendarDays, ChevronRight,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
@@ -28,6 +29,25 @@ interface NotifLog {
   error:     string | null;
   sentAt:    string | null;
   createdAt: string;
+}
+
+// ─── Deep-link mapping — IN_APP only ──────────────────────────────────────────
+// Maps subject keywords → the page the notification is about.
+// Returns null for EMAIL/SMS/WHATSAPP records (those are outgoing log entries,
+// not action items for the logged-in user).
+
+function getNotifLink(subject: string | null, type: NotifType): string | null {
+  if (type !== "IN_APP") return null;
+  const s = (subject ?? "").toLowerCase();
+  if (s.includes("expir"))                                          return "/dashboard/inventory?tab=alerts";
+  if (s.includes("stock") || s.includes("restock"))                return "/dashboard/inventory?tab=alerts";
+  if (s.includes("recall"))                                         return "/dashboard/inventory";
+  if (s.includes("eod") || s.includes("summary") || s.includes("sales")) return "/dashboard/reports";
+  if (s.includes("overdue") || s.includes("grn"))                  return "/dashboard/purchases";
+  if (s.includes("quotation"))                                      return "/dashboard/quotations";
+  if (s.includes("calendar") || s.startsWith("📅"))                return "/dashboard/calendar";
+  if (s.includes("pending credit") || s.includes("credit"))        return "/dashboard/billing";
+  return null;
 }
 
 // ─── Icon mapping ─────────────────────────────────────────────────────────────
@@ -86,9 +106,21 @@ function StatusPill({ status }: { status: NotifStatus }) {
 
 // ─── Single row ───────────────────────────────────────────────────────────────
 
-function NotifRow({ notif, onRead }: { notif: NotifLog; onRead: (id: string) => void }) {
+function NotifRow({
+  notif, onRead, onNavigate,
+}: {
+  notif:       NotifLog;
+  onRead:      (id: string) => void;
+  onNavigate:  (link: string) => void;
+}) {
   const { Icon, color, bg } = getNotifMeta(notif.subject);
+  const link    = getNotifLink(notif.subject, notif.type);
   const timeAgo = formatDistanceToNow(new Date(notif.createdAt), { addSuffix: true });
+
+  function handleClick() {
+    if (!notif.isRead) onRead(notif.id);
+    if (link) onNavigate(link);
+  }
 
   return (
     <motion.div
@@ -96,11 +128,12 @@ function NotifRow({ notif, onRead }: { notif: NotifLog; onRead: (id: string) => 
       initial={{ opacity: 0, x: 8 }}
       animate={{ opacity: 1, x: 0 }}
       className={cn(
-        "flex gap-3 px-4 py-3.5 cursor-default border-b border-slate-50 last:border-0",
+        "flex gap-3 px-4 py-3.5 border-b border-slate-50 last:border-0",
         "hover:bg-slate-50/70 transition-colors duration-100 group",
         !notif.isRead && "bg-blue-50/40",
+        link ? "cursor-pointer" : "cursor-default",
       )}
-      onClick={() => { if (!notif.isRead) onRead(notif.id); }}
+      onClick={handleClick}
     >
       {/* Icon */}
       <div className={cn("w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 mt-0.5", bg)}>
@@ -113,9 +146,14 @@ function NotifRow({ notif, onRead }: { notif: NotifLog; onRead: (id: string) => 
           <p className={cn("text-[13px] leading-snug line-clamp-1", notif.isRead ? "text-slate-600 font-medium" : "text-slate-900 font-semibold")}>
             {notif.subject ?? "Notification"}
           </p>
-          {!notif.isRead && (
-            <span className="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0 mt-1" aria-label="Unread" />
-          )}
+          <div className="flex items-center gap-1 flex-shrink-0 mt-0.5">
+            {!notif.isRead && (
+              <span className="w-2 h-2 rounded-full bg-blue-500" aria-label="Unread" />
+            )}
+            {link && (
+              <ChevronRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-500 transition-colors" strokeWidth={2} />
+            )}
+          </div>
         </div>
 
         <p className="text-[12px] text-slate-400 mt-0.5 line-clamp-2 leading-relaxed">
@@ -125,6 +163,11 @@ function NotifRow({ notif, onRead }: { notif: NotifLog; onRead: (id: string) => 
         <div className="flex items-center gap-2 mt-1.5">
           <span className="text-[11px] text-slate-400">{timeAgo}</span>
           <StatusPill status={notif.status} />
+          {link && (
+            <span className="text-[10px] font-medium text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity">
+              Open →
+            </span>
+          )}
         </div>
       </div>
     </motion.div>
@@ -151,6 +194,7 @@ export function NotificationBell() {
   const [open, setOpen]     = useState(false);
   const ref                 = useRef<HTMLDivElement>(null);
   const queryClient         = useQueryClient();
+  const navigate            = useNavigate();
 
   // ── Unread count — polls every 30s while window is focused ───────────────
 
@@ -322,6 +366,7 @@ export function NotificationBell() {
                       key={notif.id}
                       notif={notif}
                       onRead={(id) => markOneRead(id)}
+                      onNavigate={(link) => { setOpen(false); navigate(link); }}
                     />
                   ))}
                 </div>

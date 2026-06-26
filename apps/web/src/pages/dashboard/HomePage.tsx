@@ -748,7 +748,7 @@ export default function DashboardHomePage() {
     { href: "/dashboard/billing/new",  label: "New Bill",        icon: FilePlus,     kbd: "F2",  primary: true  },
     { href: "/dashboard/purchase",     label: "Purchase Order",  icon: ShoppingCart, kbd: null,  primary: false },
     { href: "/dashboard/inventory",    label: "Check Inventory", icon: Package2,     kbd: null,  primary: false },
-    { href: "/dashboard/stock-audit",  label: "Stock Audit",     icon: ClipboardList,kbd: null,  primary: false },
+    { href: "/dashboard/inventory?tab=audit", label: "Stock Audit", icon: ClipboardList, kbd: null, primary: false },
     { href: "/dashboard/billing",      label: "All Bills",       icon: FileText,     kbd: null,  primary: false },
     ...(_canViewReports ? [{ href: "/dashboard/reports", label: "Reports", icon: TrendingUp, kbd: null, primary: false }] : []),
   ];

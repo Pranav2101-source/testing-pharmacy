@@ -234,9 +234,11 @@ function SessionRow({ session, onClick }: { session: AuditSession; onClick: () =
   );
 }
 
-// ─── Main Page ────────────────────────────────────────────────────────────────
+// ─── Audit Content (embeddable) ──────────────────────────────────────────────
+// Exported without its own page title so it can be rendered as a tab inside
+// InventoryPage. StockAuditPage (the default export) wraps this with a header.
 
-export default function StockAuditPage() {
+export function StockAuditContent() {
   const navigate = useNavigate();
   const [sessions,   setSessions]   = useState<AuditSession[]>([]);
   const [loading,    setLoading]    = useState(true);
@@ -265,14 +267,11 @@ export default function StockAuditPage() {
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-5">
 
-      {/* ── Header ──────────────────────────────────────────────────────────── */}
+      {/* ── Action row ──────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-[22px] font-bold text-slate-900">Stock Audit</h1>
-          <p className="text-[13px] text-slate-500 mt-0.5">Physical inventory count sessions</p>
-        </div>
+        <p className="text-[13px] text-slate-500">Physical inventory count sessions</p>
         <button onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-[13px] font-semibold rounded-xl hover:bg-blue-700 transition-colors shadow-sm">
+          className="flex items-center gap-2 px-4 py-2 bg-orange-500 text-white text-[13px] font-semibold rounded-xl hover:bg-orange-600 transition-colors shadow-sm">
           <Plus className="w-4 h-4" /> New Audit
         </button>
       </div>
@@ -382,6 +381,20 @@ export default function StockAuditPage() {
           />
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+export default function StockAuditPage() {
+  return (
+    <div className="flex flex-col h-full bg-white overflow-hidden">
+      <div className="flex items-center gap-3 px-5 border-b border-slate-200 flex-shrink-0" style={{ height: "52px" }}>
+        <ClipboardList className="w-4 h-4 text-orange-500" />
+        <h1 className="text-[18px] font-bold text-slate-900 leading-none">Stock Audit</h1>
+      </div>
+      <div className="flex-1 overflow-auto min-h-0">
+        <StockAuditContent />
+      </div>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import type { Job } from "pg-boss";
 import { prisma } from "@pharmacy/database";
-import { notifyOwners } from "@pharmacy/mailer";
+import { notifyOwners, inAppNotify } from "@pharmacy/mailer";
 
 type LowStockRow = { medicineName: string; batchNumber: string; quantity: number; minimumStock: number };
 
@@ -74,6 +74,17 @@ async function processPharmacy(pharmacyId: string): Promise<void> {
     subject: `Stock Alert: ${lowStock.length}${truncated ? "+" : ""} item(s) need restocking — ${pharmacy.name}`,
     message: `Stock Alert for ${pharmacy.name}\n\n${lines}${truncated ? "\n\n⚠️ Report truncated — log in to view all." : ""}`,
     html:    buildHtml(outOfStock, low, pharmacy.name, truncated),
+  });
+
+  // In-app notification — concise breakdown for the bell
+  const inAppLines: string[] = [];
+  if (outOfStock.length > 0) inAppLines.push(`⛔ ${outOfStock.length} item${outOfStock.length !== 1 ? "s" : ""} out of stock`);
+  if (low.length > 0)        inAppLines.push(`🟡 ${low.length} item${low.length !== 1 ? "s" : ""} below minimum stock`);
+  if (truncated)             inAppLines.push(`⚠️ Showing first 200 — open app for full list`);
+
+  await inAppNotify(prisma, pharmacy.id, {
+    subject: `Stock Alert: ${lowStock.length}${truncated ? "+" : ""} item(s) need restocking`,
+    message: inAppLines.join("\n"),
   });
 
   console.info(`[low-stock-alert][${pharmacy.name}] sent alert: ${lowStock.length} items`);

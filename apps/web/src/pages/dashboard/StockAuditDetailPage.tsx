@@ -451,8 +451,7 @@ export default function StockAuditDetailPage() {
     setActionLoading(true); setError(null);
     try {
       await api.delete(`/stock-audit/${id}`);
-      // Navigate back to the list — there's nothing actionable on a cancelled session.
-      navigate("/dashboard/stock-audit");
+      navigate("/dashboard/inventory?tab=audit");
     }
     catch (err: any) { setError((err as Error).message || "Failed to cancel"); }
     finally { setActionLoading(false); }
@@ -587,7 +586,7 @@ export default function StockAuditDetailPage() {
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <div className="flex items-start gap-4">
-        <button onClick={() => navigate("/dashboard/stock-audit")}
+        <button onClick={() => navigate("/dashboard/inventory?tab=audit")}
           className="w-9 h-9 rounded-xl border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition-colors flex-shrink-0 mt-0.5">
           <ArrowLeft className="w-4 h-4 text-slate-500" />
         </button>

@@ -45,17 +45,24 @@ function clearRefreshCookie(reply: FastifyReply): void {
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
+// Per-route limit for credential/token endpoints — stricter than the 200/min global.
+// In test mode mirror the global's 999_999 cap so integration tests never hit 429.
+const AUTH_RATE_LIMIT = {
+  max:        env.NODE_ENV === "test" ? 999_999 : 10,
+  timeWindow: "1 minute",
+};
+
 const authRoutes: FastifyPluginAsync = async (app) => {
   const service = new AuthService(app);
 
-  app.post("/register", async (req, reply) => {
+  app.post("/register", { config: { rateLimit: AUTH_RATE_LIMIT } }, async (req, reply) => {
     const input  = registerSchema.parse(req.body);
     const tokens = await service.register(input);
     setRefreshCookie(reply, tokens.refreshToken);
     return reply.status(201).send({ success: true, data: { accessToken: tokens.accessToken } });
   });
 
-  app.post("/login", async (req, reply) => {
+  app.post("/login", { config: { rateLimit: AUTH_RATE_LIMIT } }, async (req, reply) => {
     const input  = loginSchema.parse(req.body);
     const result = await service.login(input);
     setRefreshCookie(reply, result.tokens.refreshToken);
@@ -72,7 +79,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
   // Origin check provides CSRF protection: a cross-site form POST cannot fake
   // the Origin header, and even if it triggers a rotation, the attacker's page
   // cannot read the new access token (CORS blocks the response body).
-  app.post("/refresh", async (req, reply) => {
+  app.post("/refresh", { config: { rateLimit: AUTH_RATE_LIMIT } }, async (req, reply) => {
     const refreshToken = req.cookies[REFRESH_COOKIE];
     if (!refreshToken) {
       return reply.status(401).send({ success: false, error: "No refresh token" });
@@ -83,13 +90,13 @@ const authRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // Returns 200 even when email is not registered — prevents enumeration
-  app.post("/forgot-password", async (req, reply) => {
+  app.post("/forgot-password", { config: { rateLimit: AUTH_RATE_LIMIT } }, async (req, reply) => {
     const input = forgotPasswordSchema.parse(req.body);
     await service.forgotPassword(input);
     return reply.send({ success: true, data: { message: "If that email is registered you will receive a reset link shortly" } });
   });
 
-  app.post("/reset-password", async (req, reply) => {
+  app.post("/reset-password", { config: { rateLimit: AUTH_RATE_LIMIT } }, async (req, reply) => {
     const input = resetPasswordSchema.parse(req.body);
     await service.resetPassword(input);
     return reply.send({ success: true, data: { message: "Password updated — please log in with your new credentials" } });

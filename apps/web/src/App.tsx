@@ -39,7 +39,6 @@ const StaffPage           = lazy(() => import("./pages/dashboard/StaffPage"));
 const GinniPage           = lazy(() => import("./pages/dashboard/GinniPage"));
 const IntegrationPage     = lazy(() => import("./pages/dashboard/IntegrationPage"));
 const LocationsPage       = lazy(() => import("./pages/dashboard/LocationsPage"));
-const StockAuditPage      = lazy(() => import("./pages/dashboard/StockAuditPage"));
 const StockAuditDetailPage = lazy(() => import("./pages/dashboard/StockAuditDetailPage"));
 const CalendarPage         = lazy(() => import("./pages/dashboard/CalendarPage"));
 const CustomersPage        = lazy(() => import("./pages/dashboard/CustomersPage"));
@@ -122,7 +121,7 @@ export function App() {
                 <Route path="/dashboard/integration"         element={<IntegrationPage />} />
                 <Route path="/dashboard/locations"           element={<LocationsPage />} />
               </Route>
-              <Route path="/dashboard/stock-audit"           element={<StockAuditPage />} />
+              <Route path="/dashboard/stock-audit"           element={<Navigate to="/dashboard/inventory?tab=audit" replace />} />
               <Route path="/dashboard/stock-audit/:id"       element={<StockAuditDetailPage />} />
               <Route path="/dashboard/calendar"              element={<CalendarPage />} />
               <Route path="/dashboard/customers"            element={<CustomersPage />} />

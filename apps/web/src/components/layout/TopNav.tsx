@@ -33,6 +33,7 @@ type StyledItem = {
 };
 
 const MORE_ITEMS: StyledItem[] = [
+  { href: "/dashboard/locations",   label: "Locations",   description: "Store shelf locations",   icon: MapPin,       iconBg: "bg-teal-500",    iconColor: "text-white", hoverBg: "hover:bg-teal-50",   activeBg: "bg-teal-50",   activeText: "text-teal-700",   accent: "bg-teal-500",   requiredRoles: ["OWNER", "MANAGER"] },
   { href: "/dashboard/customers",    label: "Customers",    description: "Manage registered patients",         icon: Users,        iconBg: "bg-sky-500",     iconColor: "text-white", hoverBg: "hover:bg-sky-50",    activeBg: "bg-sky-50",    activeText: "text-sky-700",    accent: "bg-sky-500"    },
   { href: "/dashboard/quotations",   label: "Quotations",   description: "Request & compare supplier prices",  icon: FileText,     iconBg: "bg-slate-500",   iconColor: "text-white", hoverBg: "hover:bg-slate-50",  activeBg: "bg-slate-50",  activeText: "text-slate-800",  accent: "bg-slate-500"  },
   { href: "/dashboard/medicines",    label: "Medicines",    description: "Global medicines catalogue",         icon: FlaskConical, iconBg: "bg-emerald-500", iconColor: "text-white", hoverBg: "hover:bg-emerald-50",activeBg: "bg-emerald-50",activeText: "text-emerald-700",accent: "bg-emerald-500"},
@@ -40,12 +41,6 @@ const MORE_ITEMS: StyledItem[] = [
   { href: "/dashboard/prescriptions", label: "Prescriptions", description: "Manage Rx for Schedule H/H1/X drugs", icon: ClipboardList, iconBg: "bg-violet-600",  iconColor: "text-white", hoverBg: "hover:bg-violet-50",  activeBg: "bg-violet-50",  activeText: "text-violet-700",  accent: "bg-violet-600"  },
   { href: "/dashboard/cash-closure",  label: "Cash Closure",  description: "Day-end cash reconciliation",          icon: Banknote,      iconBg: "bg-amber-500",   iconColor: "text-white", hoverBg: "hover:bg-amber-50",   activeBg: "bg-amber-50",   activeText: "text-amber-800",   accent: "bg-amber-500"   },
   { href: "/dashboard/ginni",        label: "Ginni",        description: "AI assistant",                       icon: Zap,          iconBg: "bg-violet-500",  iconColor: "text-white", hoverBg: "hover:bg-violet-50", activeBg: "bg-violet-50", activeText: "text-violet-700", accent: "bg-violet-500" },
-];
-
-const INVENTORY_ITEMS: StyledItem[] = [
-  { href: "/dashboard/inventory",   label: "Inventory",   description: "Stock levels & batches",  icon: Package2,     iconBg: "bg-blue-600",    iconColor: "text-white", hoverBg: "hover:bg-blue-50",   activeBg: "bg-blue-50",   activeText: "text-blue-700",   accent: "bg-blue-600",   requiredRoles: undefined },
-  { href: "/dashboard/locations",   label: "Locations",   description: "Store shelf locations",   icon: MapPin,       iconBg: "bg-teal-500",    iconColor: "text-white", hoverBg: "hover:bg-teal-50",   activeBg: "bg-teal-50",   activeText: "text-teal-700",   accent: "bg-teal-500",   requiredRoles: ["OWNER", "MANAGER"] },
-  { href: "/dashboard/stock-audit", label: "Stock Audit", description: "Audit & reconcile stock", icon: ClipboardList,iconBg: "bg-orange-500",  iconColor: "text-white", hoverBg: "hover:bg-orange-50", activeBg: "bg-orange-50", activeText: "text-orange-700", accent: "bg-orange-500", requiredRoles: undefined },
 ];
 
 
@@ -396,9 +391,10 @@ function ProfileDropdown() {
 }
 
 // ─── More Nav Dropdown ────────────────────────────────────────────
-const MoreNavDropdown = memo(function MoreNavDropdown({ pathname }: { pathname: string }) {
+const MoreNavDropdown = memo(function MoreNavDropdown({ pathname, rawRole }: { pathname: string; rawRole: string }) {
   const { open, setOpen, ref } = useDropdown();
-  const moreActive = MORE_ITEMS.some((item) => pathname.startsWith(item.href));
+  const visibleMoreItems = MORE_ITEMS.filter((item) => !item.requiredRoles || item.requiredRoles.includes(rawRole));
+  const moreActive = visibleMoreItems.some((item) => pathname.startsWith(item.href));
 
   return (
     <div ref={ref} className="relative">
@@ -444,107 +440,7 @@ const MoreNavDropdown = memo(function MoreNavDropdown({ pathname }: { pathname: 
             </div>
             {/* Items */}
             <div className="p-1.5 space-y-0.5">
-              {MORE_ITEMS.map(({ href, label, description, icon: Icon, iconBg, iconColor, hoverBg, activeBg, activeText, accent }) => {
-                const active = pathname.startsWith(href);
-                return (
-                  <Link
-                    key={href}
-                    to={href}
-                    role="menuitem"
-                    onClick={() => setOpen(false)}
-                    className={cn(
-                      "relative flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-all duration-100 group overflow-hidden",
-                      active ? cn(activeBg, activeText) : cn("text-slate-700", hoverBg)
-                    )}
-                  >
-                    <span className={cn("absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full transition-opacity duration-150", accent, active ? "opacity-100" : "opacity-0")} />
-                    <span className={cn("w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 shadow-sm transition-transform duration-100 group-hover:scale-105", active ? iconBg : cn(iconBg, "opacity-80 group-hover:opacity-100"))}>
-                      <Icon className={cn("w-3.5 h-3.5", iconColor)} strokeWidth={2} />
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className={cn("text-[12px] font-bold leading-tight", active ? activeText : "text-slate-800")}>{label}</p>
-                      <p className={cn("text-[10px] mt-0.5 leading-tight", active ? "opacity-70" : "text-slate-400")}>{description}</p>
-                    </div>
-                  </Link>
-                );
-              })}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-});
-
-// ─── Inventory Nav Dropdown ───────────────────────────────────────
-const InventoryNavDropdown = memo(function InventoryNavDropdown({ pathname, rawRole }: { pathname: string; rawRole: string }) {
-  const { open, setOpen, ref } = useDropdown();
-  const queryClient = useQueryClient();
-  const visibleInventoryItems = INVENTORY_ITEMS.filter(
-    (item) => !item.requiredRoles || item.requiredRoles.includes(rawRole),
-  );
-  const inventoryActive =
-    pathname.startsWith("/dashboard/inventory") ||
-    pathname.startsWith("/dashboard/locations") ||
-    pathname.startsWith("/dashboard/stock-audit");
-
-  const handleMouseEnter = useCallback(() => {
-    // Warm the default inventory list so the Inventory page renders instantly
-    const defaultParams = { page: 1, search: "", status: "", inStock: false, lowStock: false, nearExpiry: false };
-    void queryClient.prefetchQuery({
-      queryKey: queryKeys.inventory.list(defaultParams),
-      queryFn:  () =>
-        api.get("/inventory", { params: { page: 1, limit: 20 } }).then((r) => r.data.data),
-      staleTime: 30_000,
-    });
-  }, [queryClient]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(v => !v)}
-        onMouseEnter={handleMouseEnter}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className={cn(
-          "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-          "text-[13px] font-semibold transition-all duration-150 outline-none",
-          "focus-visible:ring-2 focus-visible:ring-white/50",
-          inventoryActive
-            ? "bg-white text-brand-700 shadow-sm"
-            : "text-white/70 hover:text-white hover:bg-white/10"
-        )}
-      >
-        <Package2 className={cn("w-3 h-3 flex-shrink-0", inventoryActive ? "text-brand-600" : "text-white/55")} strokeWidth={inventoryActive ? 2.3 : 1.9} />
-        <span>Inventory</span>
-        <ChevronDown className={cn("w-2.5 h-2.5 transition-transform duration-200", open && "rotate-180", inventoryActive ? "text-brand-400" : "text-white/35")} />
-      </button>
-
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            role="menu"
-            initial={{ opacity: 0, y: -8, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0,  scale: 1    }}
-            exit={{   opacity: 0, y: -6, scale: 0.97 }}
-            transition={{ duration: 0.15, ease: [0.25, 0.1, 0.25, 1] }}
-            className="absolute left-0 top-full mt-1.5 w-52 rounded-xl bg-white overflow-hidden z-50"
-            style={{ boxShadow: "0 20px 48px -8px rgba(0,0,0,0.22), 0 4px 16px -4px rgba(0,0,0,0.10)", border: "1px solid rgba(226,232,240,0.8)" }}
-          >
-            {/* Header */}
-            <div
-              className="px-3 py-2 flex items-center justify-between"
-              style={{ background: "linear-gradient(135deg,#0a1a52 0%,#162870 100%)" }}
-            >
-              <div className="flex items-center gap-2">
-                <Package2 className="w-3.5 h-3.5 text-white/70" strokeWidth={1.8} />
-                <span className="text-[12px] font-bold text-white tracking-wide">Inventory</span>
-              </div>
-              <span className="text-[9px] font-semibold text-white/40 bg-white/10 px-1.5 py-0.5 rounded-md uppercase tracking-wider">Module</span>
-            </div>
-            {/* Items */}
-            <div className="p-1.5 space-y-0.5">
-              {visibleInventoryItems.map(({ href, label, description, icon: Icon, iconBg, iconColor, hoverBg, activeBg, activeText, accent }) => {
+              {visibleMoreItems.map(({ href, label, description, icon: Icon, iconBg, iconColor, hoverBg, activeBg, activeText, accent }) => {
                 const active = pathname.startsWith(href);
                 return (
                   <Link
@@ -580,28 +476,19 @@ const InventoryNavDropdown = memo(function InventoryNavDropdown({ pathname, rawR
 function MobileMenu({ pathname, rawRole }: { pathname: string; rawRole: string }) {
   const [open, setOpen] = useState(false);
   const brand = useCurrentUser();
-  const visibleInventoryItems = INVENTORY_ITEMS.filter(
-    (item) => !item.requiredRoles || item.requiredRoles.includes(rawRole),
-  );
-  const [inventoryExpanded, setInventoryExpanded] = useState(() =>
-    pathname.startsWith("/dashboard/inventory") ||
-    pathname.startsWith("/dashboard/locations") ||
-    pathname.startsWith("/dashboard/stock-audit"),
-  );
+  const visibleMoreItems = MORE_ITEMS.filter((item) => !item.requiredRoles || item.requiredRoles.includes(rawRole));
   const [moreExpanded, setMoreExpanded] = useState(() =>
-    MORE_ITEMS.some((item) => pathname.startsWith(item.href)),
+    visibleMoreItems.some((item) => pathname.startsWith(item.href)),
   );
 
   const isSalesActive     = pathname.startsWith("/dashboard/billing");
   const isInventoryActive =
     pathname.startsWith("/dashboard/inventory") ||
-    pathname.startsWith("/dashboard/locations") ||
     pathname.startsWith("/dashboard/stock-audit");
-  const isMoreActive = MORE_ITEMS.some((item) => pathname.startsWith(item.href));
+  const isMoreActive = visibleMoreItems.some((item) => pathname.startsWith(item.href));
 
   useEffect(() => {
     setOpen(false);
-    if (isInventoryActive) setInventoryExpanded(true);
     if (isMoreActive) setMoreExpanded(true);
   }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
@@ -688,39 +575,15 @@ function MobileMenu({ pathname, rawRole }: { pathname: string; rawRole: string }
                   {isSalesActive && <Dot className="ml-auto w-3.5 h-3.5 text-brand-500" />}
                 </Link>
 
-                {/* Inventory — expandable section */}
-                <div>
-                  <button
-                    onClick={() => setInventoryExpanded(v => !v)}
-                    className={cn("w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all",
-                      isInventoryActive ? "bg-white/10 text-white" : "text-white/65 hover:text-white hover:bg-white/10")}
-                  >
-                    <Package2 className={cn("w-3.5 h-3.5", isInventoryActive ? "text-white/80" : "text-white/50")} strokeWidth={1.8} />
-                    Inventory
-                    <ChevronDown className={cn("w-3 h-3 ml-auto transition-transform duration-200", inventoryExpanded && "rotate-180")} />
-                  </button>
-                  <AnimatePresence initial={false}>
-                    {inventoryExpanded && (
-                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.16 }} className="overflow-hidden">
-                        <div className="ml-4 mt-0.5 mb-0.5 space-y-0.5 border-l border-white/10 pl-2.5">
-                          {visibleInventoryItems.map(({ href, label, icon: Icon }) => {
-                            const active = pathname.startsWith(href);
-                            return (
-                              <Link key={href} to={href} onClick={() => setOpen(false)}
-                                className={cn("flex items-center gap-2 px-2.5 py-2 rounded-lg text-[12px] font-semibold transition-all",
-                                  active ? "bg-white text-brand-700" : "text-white/60 hover:text-white hover:bg-white/10")}
-                              >
-                                <Icon className={cn("w-3 h-3", active ? "text-brand-600" : "text-white/40")} strokeWidth={1.8} />
-                                {label}
-                                {active && <Dot className="ml-auto w-3.5 h-3.5 text-brand-500" />}
-                              </Link>
-                            );
-                          })}
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
+                {/* Inventory — direct link (Stock Audit is now a tab inside the page) */}
+                <Link to="/dashboard/inventory" onClick={() => setOpen(false)}
+                  className={cn("flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all",
+                    isInventoryActive ? "bg-white text-brand-700" : "text-white/65 hover:text-white hover:bg-white/10")}
+                >
+                  <Package2 className={cn("w-3.5 h-3.5", isInventoryActive ? "text-brand-600" : "text-white/50")} strokeWidth={1.8} />
+                  Inventory
+                  {isInventoryActive && <Dot className="ml-auto w-3.5 h-3.5 text-brand-500" />}
+                </Link>
 
                 {/* Purchase — flat tab */}
                 {NAV_TABS[1] && (() => {
@@ -769,7 +632,7 @@ function MobileMenu({ pathname, rawRole }: { pathname: string; rawRole: string }
                     {moreExpanded && (
                       <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.16 }} className="overflow-hidden">
                         <div className="ml-4 mt-0.5 mb-0.5 space-y-0.5 border-l border-white/10 pl-2.5">
-                          {MORE_ITEMS.map(({ href, label, icon: Icon }) => {
+                          {visibleMoreItems.map(({ href, label, icon: Icon }) => {
                             const active = pathname.startsWith(href);
                             return (
                               <Link key={href} to={href} onClick={() => setOpen(false)}
@@ -914,8 +777,35 @@ export function TopNav() {
         {NAV_TABS[0] && <NavItem tab={NAV_TABS[0]} pathname={pathname} />}
         <NavItem tab={{ href: "/dashboard/billing", label: "Sales", icon: Receipt }} pathname={pathname} />
         {NAV_TABS[1] && <NavItem tab={NAV_TABS[1]} pathname={pathname} />}
-        <InventoryNavDropdown pathname={pathname} rawRole={rawRole} />
-        <MoreNavDropdown pathname={pathname} />
+        {/* Inventory — direct link; stays active for /stock-audit detail pages too */}
+        {(() => {
+          const inventoryActive =
+            pathname.startsWith("/dashboard/inventory") ||
+            pathname.startsWith("/dashboard/stock-audit");
+          return (
+            <Link
+              to="/dashboard/inventory"
+              role="tab"
+              aria-selected={inventoryActive}
+              className={cn(
+                "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
+                "text-[13px] font-semibold transition-all duration-150 outline-none",
+                "focus-visible:ring-2 focus-visible:ring-white/50",
+                inventoryActive
+                  ? "bg-white text-brand-700 shadow-sm"
+                  : "text-white/70 hover:text-white hover:bg-white/10",
+              )}
+            >
+              <Package2
+                className={cn("w-3 h-3 flex-shrink-0", inventoryActive ? "text-brand-600" : "text-white/55")}
+                strokeWidth={inventoryActive ? 2.3 : 1.9}
+                aria-hidden
+              />
+              <span>Inventory</span>
+            </Link>
+          );
+        })()}
+        <MoreNavDropdown pathname={pathname} rawRole={rawRole} />
         {(rawRole === "OWNER" || rawRole === "MANAGER") && (
           <NavItem tab={{ href: "/dashboard/reports", label: "Reports", icon: BarChart2 }} pathname={pathname} />
         )}

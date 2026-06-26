@@ -1,6 +1,6 @@
 import type { Job } from "pg-boss";
 import { prisma } from "@pharmacy/database";
-import { notifyOwners } from "@pharmacy/mailer";
+import { notifyOwners, inAppNotify } from "@pharmacy/mailer";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -112,6 +112,23 @@ async function processPharmacy(pharmacyId: string): Promise<void> {
     subject: `Expiry Alert: ${allItems.length} batch(es) — ${pharmacy.name}`,
     message,
     html:    buildHtml(allItems, pharmacy.name),
+  });
+
+  // In-app notification — tier breakdown so staff sees severity at a glance
+  const tierExpired   = alreadyExpired.length;
+  const tierCritical  = expiring.filter((i) => daysUntil(i.expiryDate) <= 30).length;
+  const tierWarning   = expiring.filter((i) => { const d = daysUntil(i.expiryDate); return d > 30 && d <= 60; }).length;
+  const tierNotice    = expiring.filter((i) => daysUntil(i.expiryDate) > 60).length;
+
+  const lines: string[] = [];
+  if (tierExpired  > 0) lines.push(`⛔ ${tierExpired} already expired`);
+  if (tierCritical > 0) lines.push(`🔴 ${tierCritical} expiring within 30 days`);
+  if (tierWarning  > 0) lines.push(`🟡 ${tierWarning} expiring within 60 days`);
+  if (tierNotice   > 0) lines.push(`🔵 ${tierNotice} expiring within 90 days`);
+
+  await inAppNotify(prisma, pharmacy.id, {
+    subject: `Expiry Alert: ${allItems.length} batch(es) need attention`,
+    message: lines.join("\n"),
   });
 
   console.info(`[expiry-alert][${pharmacy.name}] sent alert: ${allItems.length} items`);
