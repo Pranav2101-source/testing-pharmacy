@@ -96,6 +96,46 @@ export const listBatchRecallQuerySchema = z.object({
   batchNumber: z.string().optional(),
 });
 
+// ── Merged PATCH /:id — one endpoint handles adjust / status / location ───────
+// Each operation is optional; at least one must be present (enforced by refine).
+// Role enforcement (adjust + status require owner) happens inside the route handler
+// because middleware-level auth cannot inspect the request body.
+export const patchInventorySchema = z.object({
+  // Stock quantity adjustment
+  adjust: z.object({
+    delta:  z.number().int().refine((n) => n !== 0, "Delta must be non-zero"),
+    reason: z.string().min(1, "Reason is required").max(500),
+    type:   z.enum(ADJUSTMENT_REASONS).default("CORRECTION"),
+    notes:  z.string().max(500).optional(),
+  }).optional(),
+  // Batch lifecycle status
+  status:       z.enum(["ACTIVE", "QUARANTINE", "DAMAGED"] as const).optional(),
+  statusReason: z.string().max(500).optional(),
+  // Shelf / free-text location (mutually exclusive — shelfId wins if both sent)
+  shelfId:  z.string().nullable().optional(),
+  location: z.string().max(100).nullable().optional(),
+})
+.refine(
+  (d) => d.adjust || d.status !== undefined || d.shelfId !== undefined || d.location !== undefined,
+  { message: "At least one field must be provided" },
+)
+.refine(
+  (d) => !d.status || (d.statusReason && d.statusReason.trim().length > 0),
+  { message: "statusReason is required when changing status", path: ["statusReason"] },
+);
+
+// ── Merged GET /alerts — optional type filter ─────────────────────────────────
+export const listAlertsQuerySchema = z.object({
+  type: z.enum(["expiry", "lowStock"]).optional(),
+});
+
+// ── POST /calibrate-stock ──────────────────────────────────────────────────────
+// dryRun=true returns the preview without writing anything to the DB, so the
+// UI can show a confirmation screen before the owner commits the change.
+export const calibrateStockSchema = z.object({
+  dryRun: z.boolean().default(false),
+});
+
 export type AddStockInput          = z.infer<typeof addStockSchema>;
 export type UpdateStockInput       = z.infer<typeof updateStockSchema>;
 export type AdjustStockInput       = z.infer<typeof adjustStockSchema>;
@@ -105,3 +145,6 @@ export type ListInventoryQuery     = z.infer<typeof listInventoryQuerySchema>;
 export type ListLedgerQuery        = z.infer<typeof listLedgerQuerySchema>;
 export type BatchRecallInput       = z.infer<typeof batchRecallSchema>;
 export type ListBatchRecallQuery   = z.infer<typeof listBatchRecallQuerySchema>;
+export type PatchInventoryInput    = z.infer<typeof patchInventorySchema>;
+export type ListAlertsQuery        = z.infer<typeof listAlertsQuerySchema>;
+export type CalibrateStockInput    = z.infer<typeof calibrateStockSchema>;

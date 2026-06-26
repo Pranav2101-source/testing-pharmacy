@@ -5,6 +5,7 @@ import type {
   UpdateBatchStatusInput, ListInventoryQuery, ListLedgerQuery,
   BatchRecallInput, ListBatchRecallQuery,
 } from "./inventory.schema.js";
+
 import { AppError } from "../../lib/AppError.js";
 import { notifyOwners } from "../../lib/notifications.js";
 import { TtlCache } from "../../lib/ttl-cache.js";
@@ -114,12 +115,14 @@ export class InventoryService {
     });
   }
 
-  async getExpiryAlerts(pharmacyId: string) {
-    return this.repo.getExpiryAlerts(pharmacyId);
-  }
-
-  async getLowStockAlerts(pharmacyId: string) {
-    return this.repo.getLowStockAlerts(pharmacyId);
+  // Unified alerts — runs only the requested type(s) in parallel.
+  // Caller passes type="expiry"|"lowStock" to skip the unused query.
+  async getAlerts(pharmacyId: string, type?: "expiry" | "lowStock") {
+    const [expiry, lowStock] = await Promise.all([
+      !type || type === "expiry"   ? this.repo.getExpiryAlerts(pharmacyId)  : Promise.resolve([]),
+      !type || type === "lowStock" ? this.repo.getLowStockAlerts(pharmacyId) : Promise.resolve([]),
+    ]);
+    return { expiry, lowStock };
   }
 
   async upsertReservations(pharmacyId: string, input: ReserveStockInput) {
@@ -169,5 +172,9 @@ export class InventoryService {
 
   async listRecalledBatches(pharmacyId: string, query: ListBatchRecallQuery) {
     return this.repo.listRecalledBatches(pharmacyId, query);
+  }
+
+  async calibrateMinimumStock(pharmacyId: string, dryRun: boolean) {
+    return this.repo.calibrateMinimumStock(pharmacyId, dryRun);
   }
 }

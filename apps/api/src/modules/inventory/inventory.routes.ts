@@ -2,9 +2,10 @@ import type { FastifyPluginAsync } from "fastify";
 import { InventoryService } from "./inventory.service.js";
 import { AppError } from "../../lib/AppError.js";
 import {
-  addStockSchema, adjustStockSchema, reserveStockSchema,
-  updateBatchStatusSchema, listInventoryQuerySchema, listLedgerQuerySchema,
+  addStockSchema, reserveStockSchema,
+  listInventoryQuerySchema, listLedgerQuerySchema,
   batchRecallSchema, listBatchRecallQuerySchema,
+  patchInventorySchema, listAlertsQuerySchema, calibrateStockSchema,
 } from "./inventory.schema.js";
 import { authenticate, requireOwner } from "../../middleware/auth.js";
 import { resolvePharmacy } from "../../middleware/tenant.js";
@@ -38,19 +39,42 @@ const inventoryRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: item });
   });
 
-  app.patch("/:id/adjust", { preHandler: ownerOnly }, async (req, reply) => {
+  // ── Unified PATCH /:id ────────────────────────────────────────────────────
+  // One endpoint handles adjust / status / location. adjust + status require
+  // owner/manager role (checked in-handler); location is open to all staff.
+  app.patch("/:id", { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as { id: string };
-    const input  = adjustStockSchema.parse(req.body);
-    const updated = await service.adjustStock(id, req.pharmacyId, req.user.sub, input);
-    return reply.send({ success: true, data: updated });
-  });
+    const body   = patchInventorySchema.parse(req.body);
 
-  // Batch status lifecycle: ACTIVE ↔ QUARANTINE | DAMAGED | EXPIRED
-  app.patch("/:id/status", { preHandler: ownerOnly }, async (req, reply) => {
-    const { id } = req.params as { id: string };
-    const input  = updateBatchStatusSchema.parse(req.body);
-    const updated = await service.updateBatchStatus(id, req.pharmacyId, req.user.sub, input);
-    return reply.send({ success: true, data: updated });
+    // Role gate for destructive operations — must be OWNER or MANAGER
+    if (body.adjust || body.status !== undefined) {
+      const user = await app.prisma.user.findFirst({
+        where:  { id: req.user.sub },
+        select: { role: true },
+      });
+      if (!user || !["OWNER", "MANAGER"].includes(user.role)) {
+        throw AppError.forbidden("Only owners and managers can adjust stock or change batch status");
+      }
+    }
+
+    let result: unknown;
+    if (body.adjust) {
+      result = await service.adjustStock(id, req.pharmacyId, req.user.sub, body.adjust);
+    }
+    if (body.status !== undefined) {
+      result = await service.updateBatchStatus(id, req.pharmacyId, req.user.sub, {
+        status: body.status,
+        reason: body.statusReason!,
+      });
+    }
+    if (body.shelfId !== undefined || body.location !== undefined) {
+      result = await service.updateLocation(id, req.pharmacyId, {
+        shelfId:  body.shelfId,
+        location: body.location,
+      });
+    }
+
+    return reply.send({ success: true, data: result });
   });
 
   // ── Stock Ledger ───────────────────────────────────────────────────────────
@@ -61,24 +85,17 @@ const inventoryRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: result });
   });
 
-  // ── Alerts ─────────────────────────────────────────────────────────────────
-
-  app.get("/alerts/expiry", { preHandler: auth }, async (req, reply) => {
-    const items = await service.getExpiryAlerts(req.pharmacyId);
-    // Expiry status changes daily at most — a 10-minute cache reduces redundant
-    // DB queries when staff open the alerts panel multiple times in a shift.
-    reply.header("Cache-Control", "private, max-age=600");
-    reply.header("Vary", "Authorization");
-    return reply.send({ success: true, data: items });
-  });
-
-  app.get("/alerts/low-stock", { preHandler: auth }, async (req, reply) => {
-    const items = await service.getLowStockAlerts(req.pharmacyId);
-    // Low-stock levels change on purchase receipt or sale — 5-minute cache
-    // balances freshness with DB load reduction during peak dispensing hours.
+  // ── Unified alerts ─────────────────────────────────────────────────────────
+  // GET /alerts               → { expiry: [...], lowStock: [...] }
+  // GET /alerts?type=expiry   → { expiry: [...], lowStock: [] }
+  // GET /alerts?type=lowStock → { expiry: [], lowStock: [...] }
+  // Cache 5 min — low-stock changes most frequently so we use the shorter TTL.
+  app.get("/alerts", { preHandler: auth }, async (req, reply) => {
+    const { type } = listAlertsQuerySchema.parse(req.query);
+    const data = await service.getAlerts(req.pharmacyId, type);
     reply.header("Cache-Control", "private, max-age=300");
     reply.header("Vary", "Authorization");
-    return reply.send({ success: true, data: items });
+    return reply.send({ success: true, data });
   });
 
   // ── FEFO (used by billing POS) ─────────────────────────────────────────────
@@ -112,14 +129,14 @@ const inventoryRoutes: FastifyPluginAsync = async (app) => {
     return reply.status(204).send();
   });
 
-  // ── Shelf / Location assignment ────────────────────────────────────────────
-
-  app.patch("/:id/location", { preHandler: auth }, async (req, reply) => {
-    const { id }     = req.params as { id: string };
-    const { shelfId, location } = req.body as { shelfId?: string | null; location?: string | null };
-    // updateLocation already throws 404 if the item doesn't exist — no pre-read needed.
-    const updated = await service.updateLocation(id, req.pharmacyId, { shelfId, location });
-    return reply.send({ success: true, data: updated });
+  // ── Smart Stock Calibration ────────────────────────────────────────────────
+  // Analyzes 90 days of sales → recomputes minimumStock per medicine.
+  // dryRun=true returns the preview without writing, so the UI can show a
+  // confirmation screen before the owner commits.
+  app.post("/calibrate-stock", { preHandler: ownerOnly }, async (req, reply) => {
+    const { dryRun } = calibrateStockSchema.parse(req.body);
+    const result = await service.calibrateMinimumStock(req.pharmacyId, dryRun);
+    return reply.send({ success: true, data: result });
   });
 
   // ── Batch Recall ───────────────────────────────────────────────────────────

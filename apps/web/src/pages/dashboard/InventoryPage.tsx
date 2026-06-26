@@ -1,17 +1,20 @@
 import { useState, useEffect, useCallback } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { StockAuditContent } from "./StockAuditPage";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Layers, BookOpen, Bell, Search, Loader2, FileX, AlertCircle,
   Plus, X, Check, AlertTriangle, Clock, TrendingDown, ArrowUp, ArrowDown,
   ShieldAlert, Skull, MinusCircle, PlusCircle, Info, Printer, ShoppingCart, MapPin,
+  ClipboardList, Package2, Sparkles,
 } from "lucide-react";
 import { BarcodeLabelModal } from "@/components/BarcodeLabelModal";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
+import { getStoredUser } from "@/lib/auth";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -28,6 +31,7 @@ type InventoryItem = {
   location:         string | null;
   shelfId:          string | null;
   minimumStock:     number;
+  reorderLevel:     number;
   status:           BatchStatus;
   medicine: {
     id:          string;
@@ -98,19 +102,30 @@ const MOVEMENT_TYPE_CFG: Record<string, string> = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function TabBtn({ active, onClick, icon: Icon, label, badge }: {
+const TAB_COLORS = {
+  blue:   { border: "border-blue-600",   text: "text-blue-700",   badge: "bg-blue-100 text-blue-700",     icon: "text-blue-600"   },
+  purple: { border: "border-purple-600", text: "text-purple-700", badge: "bg-purple-100 text-purple-700", icon: "text-purple-600" },
+  red:    { border: "border-red-600",    text: "text-red-700",    badge: "bg-red-100 text-red-700",       icon: "text-red-600"    },
+  orange: { border: "border-orange-500", text: "text-orange-700", badge: "bg-orange-100 text-orange-700", icon: "text-orange-500" },
+} as const;
+
+function TabBtn({ active, onClick, icon: Icon, label, badge, color = "blue" }: {
   active: boolean; onClick: () => void; icon: React.ElementType; label: string; badge?: number;
+  color?: keyof typeof TAB_COLORS;
 }) {
+  const c = TAB_COLORS[color];
   return (
     <button onClick={onClick} className={cn(
       "flex items-center gap-2 px-4 py-2.5 text-[13px] font-semibold border-b-2 transition-all whitespace-nowrap",
-      active ? "border-blue-600 text-blue-600" : "border-transparent text-slate-500 hover:text-slate-700",
+      active
+        ? cn(c.border, c.text)
+        : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-200",
     )}>
-      <Icon className="w-3.5 h-3.5" />
+      <Icon className={cn("w-3.5 h-3.5", active ? c.icon : "text-slate-400")} />
       {label}
       {badge !== undefined && badge > 0 && (
         <span className={cn("text-[11px] font-bold rounded-full px-1.5 leading-[18px]",
-          active ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"
+          active ? c.badge : "bg-slate-100 text-slate-500"
         )}>{badge}</span>
       )}
     </button>
@@ -174,7 +189,7 @@ function AdjustStockModal({ item, onClose, onDone, onToast }: {
     setSaving(true); setError(null);
     try {
       const delta = mode === "add" ? qty : -qty;
-      await api.patch(`/inventory/${item.id}/adjust`, { delta, reason, type });
+      await api.patch(`/inventory/${item.id}`, { adjust: { delta, reason, type } });
       onToast(`Stock updated — ${item.medicine.name} (Batch ${item.batchNumber})`, "success");
       onDone();
     } catch (err: any) {
@@ -192,7 +207,7 @@ function AdjustStockModal({ item, onClose, onDone, onToast }: {
         exit={{ opacity: 0, scale: 0.96, y: 10 }} transition={{ duration: 0.18 }}
         className="bg-white rounded-2xl shadow-2xl w-full max-w-lg"
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-slate-100">
           <div>
             <h2 className="text-[15px] font-bold text-slate-900">Adjust Stock</h2>
             <p className="text-[12px] text-slate-400 mt-0.5">{item.medicine.name} · Batch {item.batchNumber} · Current: <span className="font-bold text-slate-600">{item.quantity}</span></p>
@@ -202,7 +217,7 @@ function AdjustStockModal({ item, onClose, onDone, onToast }: {
           </button>
         </div>
 
-        <form onSubmit={submit} className="p-6 space-y-4">
+        <form onSubmit={submit} className="p-4 sm:p-6 space-y-4">
           {/* Add / Remove toggle */}
           <div className="flex rounded-xl border border-slate-200 overflow-hidden">
             {(["add", "remove"] as const).map((m) => (
@@ -221,13 +236,15 @@ function AdjustStockModal({ item, onClose, onDone, onToast }: {
           {/* Quantity */}
           <div>
             <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Quantity</label>
-            <div className="flex items-center gap-3">
-              <button type="button" onClick={() => setQty((q) => Math.max(1, q - 1))}
-                className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 text-slate-600 font-bold">−</button>
-              <input type="number" value={qty} min={1} onChange={(e) => setQty(Math.max(1, +e.target.value))}
-                className="w-20 text-center border border-slate-200 rounded-lg px-3 py-2 text-[14px] font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400" />
-              <button type="button" onClick={() => setQty((q) => q + 1)}
-                className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 text-slate-600 font-bold">+</button>
+            <div className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-3">
+                <button type="button" onClick={() => setQty((q) => Math.max(1, q - 1))}
+                  className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 text-slate-600 font-bold">−</button>
+                <input type="number" value={qty} min={1} onChange={(e) => setQty(Math.max(1, +e.target.value))}
+                  className="w-20 text-center border border-slate-200 rounded-lg px-3 py-2 text-[14px] font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400" />
+                <button type="button" onClick={() => setQty((q) => q + 1)}
+                  className="w-9 h-9 rounded-lg border border-slate-200 flex items-center justify-center hover:bg-slate-50 text-slate-600 font-bold">+</button>
+              </div>
               <span className="text-[12px] text-slate-400">
                 → New qty: <span className={cn("font-bold", newQty < 0 ? "text-red-600" : "text-slate-700")}>{newQty}</span>
               </span>
@@ -237,7 +254,7 @@ function AdjustStockModal({ item, onClose, onDone, onToast }: {
           {/* Reason Code */}
           <div>
             <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-2">Reason Code</label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {ADJUSTMENT_REASONS.map((r) => (
                 <button key={r.value} type="button" onClick={() => setType(r.value)}
                   className={cn("text-left border rounded-lg px-2.5 py-2 transition-all",
@@ -296,7 +313,7 @@ function BatchStatusModal({ item, onClose, onDone, onToast }: {
     if (!reason.trim()) { setError("Reason is required"); return; }
     setSaving(true); setError(null);
     try {
-      await api.patch(`/inventory/${item.id}/status`, { status, reason });
+      await api.patch(`/inventory/${item.id}`, { status, statusReason: reason });
       onToast(`Batch status updated to ${BATCH_STATUS_CFG[status].label}`, "success");
       onDone();
     } catch (err: any) {
@@ -312,7 +329,7 @@ function BatchStatusModal({ item, onClose, onDone, onToast }: {
         exit={{ opacity: 0, scale: 0.96, y: 10 }} transition={{ duration: 0.18 }}
         className="bg-white rounded-2xl shadow-2xl w-full max-w-md"
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-slate-100">
           <div>
             <h2 className="text-[15px] font-bold text-slate-900">Update Batch Status</h2>
             <p className="text-[12px] text-slate-400 mt-0.5">{item.medicine.name} · Batch {item.batchNumber}</p>
@@ -321,7 +338,7 @@ function BatchStatusModal({ item, onClose, onDone, onToast }: {
             <X className="w-4 h-4 text-slate-400" />
           </button>
         </div>
-        <form onSubmit={submit} className="p-6 space-y-4">
+        <form onSubmit={submit} className="p-4 sm:p-6 space-y-4">
           <div className="grid grid-cols-2 gap-2">
             {(Object.keys(BATCH_STATUS_CFG) as BatchStatus[]).map((s) => {
               const cfg = BATCH_STATUS_CFG[s]; const Icon = cfg.icon;
@@ -399,7 +416,7 @@ function AssignLocationModal({ item, onClose, onDone, onToast }: {
         mode === "shelf" ? { shelfId } :
         mode === "text"  ? { location: freeText.trim() } :
                            { shelfId: null, location: null };
-      await api.patch(`/inventory/${item.id}/location`, payload);
+      await api.patch(`/inventory/${item.id}`, payload);
       onToast(
         mode === "none" ? `Location cleared — ${item.medicine.name}` : `Location assigned — ${item.medicine.name}`,
         "success",
@@ -421,7 +438,7 @@ function AssignLocationModal({ item, onClose, onDone, onToast }: {
         exit={{ opacity: 0, scale: 0.96, y: 10 }} transition={{ duration: 0.18 }}
         className="bg-white rounded-2xl shadow-2xl w-full max-w-md"
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-slate-100">
           <div>
             <h2 className="text-[15px] font-bold text-slate-900">Assign Location</h2>
             <p className="text-[12px] text-slate-400 mt-0.5">
@@ -433,7 +450,7 @@ function AssignLocationModal({ item, onClose, onDone, onToast }: {
           </button>
         </div>
 
-        <form onSubmit={submit} className="p-6 space-y-4">
+        <form onSubmit={submit} className="p-4 sm:p-6 space-y-4">
           {/* Mode toggle */}
           <div className="flex rounded-xl border border-slate-200 overflow-hidden">
             {([
@@ -520,9 +537,184 @@ function AssignLocationModal({ item, onClose, onDone, onToast }: {
   );
 }
 
+// ─── Calibrate Modal ───────────────────────────────────────────────────────────
+
+const WASTE_RISK_CFG: Record<WasteRiskTier, { label: string; cls: string }> = {
+  HIGH:    { label: "High Risk",  cls: "bg-red-50    text-red-700   border-red-300"    },
+  MEDIUM:  { label: "Med Risk",   cls: "bg-orange-50 text-orange-700 border-orange-200" },
+  LOW:     { label: "Low Risk",   cls: "bg-yellow-50 text-yellow-700 border-yellow-200" },
+  SAFE:    { label: "All Clear",  cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
+  NO_DATA: { label: "No Data",   cls: "bg-slate-100 text-slate-500  border-slate-200"  },
+};
+
+function CalibrateModal({ onClose, onApplied }: { onClose: () => void; onApplied: () => void }) {
+  type Phase = "loading" | "preview" | "applying" | "done";
+  const [phase,   setPhase]   = useState<Phase>("loading");
+  const [preview, setPreview] = useState<CalibrateResult | null>(null);
+  const [applied, setApplied] = useState<CalibrateResult | null>(null);
+  const [error,   setError]   = useState<string | null>(null);
+
+  // Dry run on mount
+  useEffect(() => {
+    api.post("/inventory/calibrate-stock", { dryRun: true })
+      .then((r) => { setPreview(r.data.data as CalibrateResult); setPhase("preview"); })
+      .catch((e) => { setError(getErrorMessage(e, "Failed to analyze inventory")); setPhase("preview"); });
+  }, []);
+
+  async function applyChanges() {
+    setPhase("applying");
+    try {
+      const r = await api.post("/inventory/calibrate-stock", { dryRun: false });
+      setApplied(r.data.data as CalibrateResult);
+      setPhase("done");
+      onApplied();
+    } catch (e: any) {
+      setError(getErrorMessage(e, "Failed to apply changes"));
+      setPhase("preview");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96, y: 8 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden"
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-slate-100">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center flex-shrink-0">
+              <Sparkles className="w-4.5 h-4.5 text-blue-600" />
+            </div>
+            <div className="min-w-0">
+              <h2 className="text-[15px] font-bold text-slate-900">Smart Stock Calibration</h2>
+              <p className="text-[12px] text-slate-400 truncate">90-day sales analysis → optimal minimum stock levels</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center transition-colors flex-shrink-0">
+            <X className="w-4 h-4 text-slate-400" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+          {phase === "loading" && (
+            <div className="flex flex-col items-center justify-center py-16 gap-3">
+              <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
+              <p className="text-[13px] text-slate-500">Analyzing 90 days of sales data…</p>
+            </div>
+          )}
+
+          {(phase === "preview" || phase === "applying") && (
+            <>
+              {error && (
+                <div className="mb-4 px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-[13px] text-red-600">{error}</div>
+              )}
+              {preview && (
+                <>
+                  {/* Summary stats */}
+                  <div className="grid grid-cols-3 gap-2 sm:gap-3 mb-5">
+                    {[
+                      { label: "Will Update",     value: preview.updated, cls: "text-blue-600 bg-blue-50 border-blue-100" },
+                      { label: "Already Optimal", value: Math.max(0, preview.analyzed - preview.updated - preview.skipped), cls: "text-emerald-600 bg-emerald-50 border-emerald-100" },
+                      { label: "No Sales Data",   value: preview.skipped, cls: "text-slate-500 bg-slate-50 border-slate-100" },
+                    ].map(({ label, value, cls }) => (
+                      <div key={label} className={cn("rounded-xl border p-2.5 sm:p-3 text-center", cls)}>
+                        <p className="text-[18px] sm:text-[22px] font-bold tabular-nums">{value}</p>
+                        <p className="text-[10px] sm:text-[11px] font-medium mt-0.5 opacity-75">{label}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {preview.changes.length === 0 ? (
+                    <div className="text-center py-10 bg-emerald-50 rounded-xl border border-emerald-100">
+                      <Check className="w-8 h-8 text-emerald-500 mx-auto mb-2" />
+                      <p className="text-[14px] font-semibold text-emerald-700">All minimum stock levels are already optimal</p>
+                      <p className="text-[12px] text-emerald-500 mt-1">No changes needed based on your sales patterns</p>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-[12px] text-slate-500 mb-2">
+                        Formula: <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">avg_daily × 7 days × 1.5 safety</span> · floor: 5 units
+                      </p>
+                      <div className="border border-slate-200 rounded-xl overflow-x-auto">
+                        <table className="w-full min-w-[420px]">
+                          <thead className="bg-slate-50 border-b border-slate-200">
+                            <tr>
+                              {["Medicine", "Old Min", "New Min", "Avg / Day"].map((h) => (
+                                <th key={h} className="px-4 py-2.5 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {preview.changes.map((c) => (
+                              <tr key={c.medicineId} className="border-b border-slate-100 last:border-0 hover:bg-blue-50/30">
+                                <td className="px-4 py-2.5 text-[13px] font-medium text-slate-800 whitespace-nowrap">{c.medicineName}</td>
+                                <td className="px-4 py-2.5 text-[13px] text-slate-400 tabular-nums">{c.oldMin}</td>
+                                <td className="px-4 py-2.5">
+                                  <span className={cn("text-[13px] font-bold tabular-nums whitespace-nowrap", c.newMin > c.oldMin ? "text-blue-600" : "text-emerald-600")}>
+                                    {c.newMin > c.oldMin ? "↑" : "↓"} {c.newMin}
+                                  </span>
+                                </td>
+                                <td className="px-4 py-2.5 text-[12px] text-slate-500 tabular-nums whitespace-nowrap">{c.avgDailySales}/day</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </>
+          )}
+
+          {phase === "done" && applied && (
+            <div className="flex flex-col items-center justify-center py-12 gap-4 text-center">
+              <div className="w-16 h-16 rounded-2xl bg-emerald-50 flex items-center justify-center">
+                <Check className="w-8 h-8 text-emerald-500" />
+              </div>
+              <div>
+                <p className="text-[16px] font-bold text-slate-800">Calibration Complete</p>
+                <p className="text-[13px] text-slate-500 mt-1">
+                  {applied.updated} medicine{applied.updated !== 1 ? "s" : ""} updated · {applied.skipped} skipped
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between gap-2 px-4 sm:px-6 py-4 border-t border-slate-100 bg-slate-50/60 flex-shrink-0">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-[13px] text-slate-600 font-medium hover:bg-slate-100 transition-colors">
+            {phase === "done" ? "Close" : "Cancel"}
+          </button>
+          {phase === "preview" && preview && preview.changes.length > 0 && !error && (
+            <button
+              onClick={applyChanges}
+              className="flex items-center gap-2 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Apply {preview.updated} Change{preview.updated !== 1 ? "s" : ""}
+            </button>
+          )}
+          {phase === "applying" && (
+            <button disabled className="flex items-center gap-2 px-5 py-2 rounded-lg bg-blue-400 text-white text-[13px] font-semibold opacity-70">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Applying…
+            </button>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 // ─── Tab: Batches ──────────────────────────────────────────────────────────────
 
-function BatchesTab() {
+type AlertCounts = { expiry: number; lowStock: number };
+
+function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts) => void }) {
   const toast = useToast();
   const [page,       setPage]       = useState(1);
   const [search,     setSearch]     = useState("");
@@ -534,6 +726,9 @@ function BatchesTab() {
   const [adjustModal,      setAdjustModal]      = useState<InventoryItem | null>(null);
   const [locationModal,    setLocationModal]    = useState<InventoryItem | null>(null);
   const [barcodePrintItem, setBarcodePrintItem] = useState<InventoryItem | null>(null);
+  const [showCalibrate,    setShowCalibrate]    = useState(false);
+
+  const isOwnerOrManager = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
 
   // Debounce search input before it becomes part of the query key
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -542,6 +737,7 @@ function BatchesTab() {
     return () => clearTimeout(t);
   }, [search]);
 
+  type ListResponse = { items: InventoryItem[]; total: number; alertCounts: AlertCounts };
   const queryParams = { page, search: debouncedSearch, status, inStock, lowStock, nearExpiry };
   const { data, isFetching: loading, error: queryError, refetch: load } = useQuery({
     queryKey:        queryKeys.inventory.list(queryParams),
@@ -552,13 +748,16 @@ function BatchesTab() {
       if (inStock)         p.inStock    = true;
       if (lowStock)        p.lowStock   = true;
       if (nearExpiry)      p.nearExpiry = true;
-      return api.get("/inventory", { params: p }).then((r) => r.data.data as { items: InventoryItem[]; total: number });
+      return api.get("/inventory", { params: p }).then((r) => r.data.data as ListResponse);
     },
     staleTime:       30_000,
-    // Keep previous page's rows visible while the next page or a filtered result loads —
-    // eliminates the spinner flash on every page change and filter toggle.
     placeholderData: keepPreviousData,
   });
+
+  // Propagate alert counts to the parent header badge whenever a fresh response arrives.
+  useEffect(() => {
+    if (data?.alertCounts) onCountsLoaded(data.alertCounts);
+  }, [data?.alertCounts, onCountsLoaded]);
 
   const items      = data?.items      ?? [];
   const total      = data?.total      ?? 0;
@@ -595,15 +794,30 @@ function BatchesTab() {
           </button>
         ))}
         <span className="text-[12px] text-slate-400 ml-auto flex items-center gap-1.5">
-          {/* Subtle spinner shown only during background re-fetches (data already visible) */}
           {loading && items.length > 0 && <Loader2 className="w-3 h-3 animate-spin text-blue-400" />}
           {total} batches
         </span>
+        {isOwnerOrManager && (
+          <button
+            onClick={() => setShowCalibrate(true)}
+            title="Auto-calibrate minimum stock levels from sales data"
+            className="flex items-center gap-1.5 h-[30px] px-3 rounded-md text-[12px] font-semibold border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors shadow-sm whitespace-nowrap"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            Calibrate Stock
+          </button>
+        )}
       </div>
+      {showCalibrate && (
+        <CalibrateModal
+          onClose={() => setShowCalibrate(false)}
+          onApplied={() => { void load(); }}
+        />
+      )}
 
-      {/* Table — dim rows slightly during background re-fetch so the user knows data is refreshing */}
+      {/* Table (desktop) / Cards (phone) — dim slightly during background re-fetch */}
       <div className={cn("flex-1 overflow-auto min-h-0 transition-opacity duration-150", loading && items.length > 0 && "opacity-60")}>
-        <table className="w-full border-collapse">
+        <table className="w-full border-collapse hidden md:table">
           <thead className="sticky top-0 bg-white z-10">
             <tr className="border-b border-slate-200">
               {["Medicine","Batch No.","Expiry","Stock"].map((h) => (
@@ -692,11 +906,96 @@ function BatchesTab() {
             })}
           </tbody>
         </table>
+
+        {/* Phone cards */}
+        <div className="md:hidden">
+          {loading && items.length === 0 ? (
+            <div className="py-24 text-center"><Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" /></div>
+          ) : error ? (
+            <div className="py-16 text-center px-4">
+              <AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-2" />
+              <p className="text-red-500 text-[13px]">{error}</p>
+              <button onClick={() => void load()} className="mt-2 text-blue-600 text-[12px] hover:underline">Retry</button>
+            </div>
+          ) : items.length === 0 ? (
+            <div className="py-24 text-center"><FileX className="w-10 h-10 text-slate-200 mx-auto mb-3" /><p className="text-slate-500 text-[14px] font-medium">No batches found</p></div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {items.map((item) => {
+                const days = daysUntil(item.expiryDate);
+                const isNE = days <= 90 && days > 0;
+                const isEx = days <= 0;
+                return (
+                  <div key={item.id} className="p-4">
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="min-w-0">
+                        <p className="text-[14px] font-semibold text-slate-800 truncate">{item.medicine.name}</p>
+                        {item.medicine.genericName && <p className="text-[11px] text-slate-400 truncate">{item.medicine.genericName}</p>}
+                        {item.medicine.brand && <p className="text-[10px] text-blue-400">{item.medicine.brand.name}</p>}
+                      </div>
+                      <StatusBadge status={item.status} />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[12px] mb-3">
+                      <div><span className="text-slate-400">Batch</span><p className="font-mono text-slate-700">{item.batchNumber}</p></div>
+                      <div>
+                        <span className="text-slate-400">Expiry</span>
+                        <p className={cn("font-semibold", isEx ? "text-red-600" : isNE ? "text-amber-600" : "text-slate-600")}>
+                          {fmt(item.expiryDate)}{isNE && ` · ${days}d left`}{isEx && " · Expired"}
+                        </p>
+                      </div>
+                      <div>
+                        <span className="text-slate-400">Stock</span>
+                        <p>
+                          {item.quantity === 0
+                            ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">Out of stock</span>
+                            : item.quantity <= item.minimumStock
+                              ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">Low: {item.quantity}</span>
+                              : <span className="font-semibold text-slate-800 tabular-nums">{item.quantity}</span>}
+                        </p>
+                      </div>
+                      <div><span className="text-slate-400">Reserved</span><p className="text-slate-600 tabular-nums">{item.reservedQuantity || "—"}</p></div>
+                      <div><span className="text-slate-400">MRP</span><p className="text-slate-700 tabular-nums">₹{item.mrp.toFixed(2)}</p></div>
+                      <div><span className="text-slate-400">Buy Rate</span><p className="text-slate-500 tabular-nums">₹{item.purchaseRate.toFixed(2)}</p></div>
+                    </div>
+
+                    {(item.shelf || item.location) && (
+                      <div className="mb-3">
+                        {item.shelf
+                          ? <span className="inline-flex items-center gap-1 text-[11px] font-semibold bg-blue-50 text-blue-700 px-2 py-0.5 rounded-md">{item.shelf.rack.code}/{item.shelf.code}</span>
+                          : <span className="text-[12px] text-slate-500">{item.location}</span>}
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button onClick={() => setAdjustModal(item)}
+                        className="text-[12px] font-semibold text-emerald-600 border border-emerald-200 bg-emerald-50/50 active:bg-emerald-100 rounded-md px-3 py-1.5">
+                        Adjust
+                      </button>
+                      <button onClick={() => setStatusModal(item)}
+                        className="text-[12px] font-semibold text-blue-600 border border-blue-200 bg-blue-50/50 active:bg-blue-100 rounded-md px-3 py-1.5">
+                        Status
+                      </button>
+                      <button onClick={() => setLocationModal(item)} title="Assign location"
+                        className="p-2 rounded-md border border-slate-200 text-slate-400 active:bg-slate-100">
+                        <MapPin className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => setBarcodePrintItem(item)} title="Print barcode label"
+                        className="p-2 rounded-md border border-slate-200 text-slate-400 active:bg-slate-100">
+                        <Printer className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Pagination */}
       {!loading && total > 20 && (
-        <div className="flex items-center justify-between px-5 py-2.5 border-t border-slate-100 bg-slate-50/60 flex-shrink-0">
+        <div className="flex items-center justify-between flex-wrap gap-2 px-5 py-2.5 border-t border-slate-100 bg-slate-50/60 flex-shrink-0">
           <span className="text-[12px] text-slate-500">Showing <span className="font-semibold text-slate-700">{Math.min((page-1)*20+1,total)}–{Math.min(page*20,total)}</span> of <span className="font-semibold text-slate-700">{total}</span></span>
           <div className="flex items-center gap-1.5">
             <button onClick={() => setPage((p) => Math.max(1,p-1))} disabled={page===1} className="px-3 py-1 rounded-lg border border-slate-200 text-[12px] font-medium hover:bg-white disabled:opacity-40">‹ Prev</button>
@@ -793,7 +1092,7 @@ function LedgerTab() {
       </div>
 
       <div className="flex-1 overflow-auto min-h-0">
-        <table className="w-full border-collapse">
+        <table className="w-full border-collapse hidden md:table">
           <thead className="sticky top-0 bg-white z-10">
             <tr className="border-b border-slate-200">
               {["Date/Time","Medicine","Batch","Type","Dir","Qty","Before→After","Reference","User"].map((h) => (
@@ -845,10 +1144,57 @@ function LedgerTab() {
             ))}
           </tbody>
         </table>
+
+        {/* Phone cards */}
+        <div className="md:hidden">
+          {loading ? (
+            <div className="py-24 text-center"><Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" /></div>
+          ) : loadError ? (
+            <div className="py-24 text-center px-4">
+              <AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-2" />
+              <p className="text-[13px] text-red-500 font-medium mb-2">{loadError}</p>
+              <button onClick={load} className="text-[12px] text-blue-600 hover:underline">Retry</button>
+            </div>
+          ) : entries.length === 0 ? (
+            <div className="py-24 text-center"><FileX className="w-10 h-10 text-slate-200 mx-auto mb-3" /><p className="text-slate-500 text-[14px] font-medium">No movements yet</p></div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {entries.map((e) => (
+                <div key={e.id} className="p-4">
+                  <div className="flex items-start justify-between gap-2 mb-1.5">
+                    <div className="min-w-0">
+                      <p className="text-[13px] font-semibold text-slate-800 truncate">{e.inventory?.medicine?.name ?? "—"}</p>
+                      {e.inventory?.medicine?.genericName && <p className="text-[11px] text-slate-400 truncate">{e.inventory.medicine.genericName}</p>}
+                    </div>
+                    <span className={cn("inline-flex items-center gap-1 text-[12px] font-bold flex-shrink-0", e.direction === "IN" ? "text-emerald-600" : "text-red-600")}>
+                      {e.direction === "IN" ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
+                      {e.quantity}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px] mb-1.5">
+                    <span className={cn("font-bold", MOVEMENT_TYPE_CFG[e.type] ?? "text-slate-600")}>{e.type}</span>
+                    <span className="text-slate-300">·</span>
+                    <span className="font-mono text-slate-500">{e.inventory?.batchNumber ?? "—"}</span>
+                    <span className="text-slate-300">·</span>
+                    <span className="text-slate-400 tabular-nums">{e.quantityBefore} → {e.quantityAfter}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>{e.referenceType ? (REFERENCE_TYPE_LABEL[e.referenceType] ?? e.referenceType) : "—"} · {e.user?.name ?? "—"}</span>
+                    <span className="whitespace-nowrap">
+                      {new Date(e.createdAt).toLocaleDateString("en-IN",{day:"2-digit",month:"short"})}{" "}
+                      {new Date(e.createdAt).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}
+                    </span>
+                  </div>
+                  {e.notes && <p className="text-[11px] text-slate-400 mt-1 truncate">{e.notes}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {!loading && total > 50 && (
-        <div className="flex items-center justify-between px-5 py-2.5 border-t border-slate-100 bg-slate-50/60 flex-shrink-0">
+        <div className="flex items-center justify-between flex-wrap gap-2 px-5 py-2.5 border-t border-slate-100 bg-slate-50/60 flex-shrink-0">
           <span className="text-[12px] text-slate-500">Showing <span className="font-semibold text-slate-700">{Math.min((page-1)*50+1,total)}–{Math.min(page*50,total)}</span> of <span className="font-semibold text-slate-700">{total}</span></span>
           <div className="flex items-center gap-1.5">
             <button onClick={() => setPage((p) => Math.max(1,p-1))} disabled={page===1} className="px-3 py-1 rounded-lg border border-slate-200 text-[12px] font-medium hover:bg-white disabled:opacity-40">‹ Prev</button>
@@ -861,13 +1207,48 @@ function LedgerTab() {
   );
 }
 
+// ─── AI insight types ──────────────────────────────────────────────────────────
+
+type WasteRiskTier = "HIGH" | "MEDIUM" | "LOW" | "SAFE" | "NO_DATA";
+
+type WasteRisk = {
+  avgDailySales: number;
+  willSellUnits: number;
+  atRiskUnits:   number;
+  potentialLoss: number;
+  riskTier:      WasteRiskTier;
+};
+
+type ReorderInsight = {
+  avgDailySales: number;
+  suggestedQty:  number;
+  coverDays:     number;
+  leadTimeDays:  number;
+  hasData:       boolean;
+};
+
+type CalibrateChange = {
+  medicineId:    string;
+  medicineName:  string;
+  oldMin:        number;
+  newMin:        number;
+  avgDailySales: number;
+};
+
+type CalibrateResult = {
+  updated:  number;
+  skipped:  number;
+  analyzed: number;
+  changes:  CalibrateChange[];
+};
+
 // ─── Alert tier configs ────────────────────────────────────────────────────────
 
 type ExpiryTier  = "EXPIRED" | "CRITICAL" | "WARNING" | "NOTICE";
 type StockTier   = "OUT_OF_STOCK" | "REORDER" | "LOW";
 
-type ExpiryAlert = InventoryItem & { tier: ExpiryTier; daysToExpiry: number };
-type StockAlert  = InventoryItem & { tier: StockTier };
+type ExpiryAlert = InventoryItem & { tier: ExpiryTier; daysToExpiry: number; wasteRisk: WasteRisk };
+type StockAlert  = InventoryItem & { tier: StockTier; reorder: ReorderInsight };
 
 const EXPIRY_TIER_CFG: Record<ExpiryTier, { label: string; rowCls: string; badgeCls: string }> = {
   EXPIRED:  { label: "Expired",   rowCls: "bg-red-50/40",    badgeCls: "bg-red-100     text-red-700   border-red-300"   },
@@ -886,7 +1267,7 @@ const STOCK_TIER_CFG: Record<StockTier, { label: string; badgeCls: string }> = {
 
 const ALERTS_PAGE_SIZE = 25;
 
-function AlertsTab() {
+function AlertsTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts) => void }) {
   const navigate = useNavigate();
   const [expiryItems, setExpiryItems] = useState<ExpiryAlert[]>([]);
   const [lowItems,    setLowItems]    = useState<StockAlert[]>([]);
@@ -899,16 +1280,16 @@ function AlertsTab() {
   const loadAlerts = useCallback(async () => {
     setLoading(true); setLoadError(null);
     try {
-      const [ex, lw] = await Promise.all([
-        api.get("/inventory/alerts/expiry"),
-        api.get("/inventory/alerts/low-stock"),
-      ]);
-      setExpiryItems(ex.data.data ?? []);
-      setLowItems(lw.data.data ?? []);
+      const res = await api.get("/inventory/alerts");
+      const expiry   = res.data.data.expiry   ?? [];
+      const lowStock = res.data.data.lowStock  ?? [];
+      setExpiryItems(expiry);
+      setLowItems(lowStock);
+      onCountsLoaded({ expiry: expiry.length, lowStock: lowStock.length });
     } catch {
       setLoadError("Failed to load alerts. Check your connection and try again.");
     } finally { setLoading(false); }
-  }, []);
+  }, [onCountsLoaded]);
 
   useEffect(() => { loadAlerts(); }, [loadAlerts]);
 
@@ -973,13 +1354,15 @@ function AlertsTab() {
           </div>
         ) : (
           <div className="border border-slate-200 rounded-xl overflow-hidden">
-            <table className="w-full">
+            <table className="w-full hidden md:table">
               <thead className="bg-slate-50"><tr className="border-b border-slate-200">
-                {["Severity","Medicine","Batch","Expiry Date","Days Left","Stock","Location"].map((h) => <th key={h} className={thCls}>{h}</th>)}
+                {["Severity","Medicine","Batch","Expiry Date","Days Left","Stock","Waste Risk","Location"].map((h) => <th key={h} className={thCls}>{h}</th>)}
               </tr></thead>
               <tbody>
                 {pagedExpiry.map((item) => {
-                  const cfg = EXPIRY_TIER_CFG[item.tier];
+                  const cfg  = EXPIRY_TIER_CFG[item.tier];
+                  const risk = item.wasteRisk;
+                  const rCfg = WASTE_RISK_CFG[risk.riskTier];
                   return (
                     <tr key={item.id} className={cn("border-b border-slate-100 last:border-0 transition-colors hover:brightness-95", cfg.rowCls)}>
                       <td className="px-4 py-3">
@@ -995,14 +1378,61 @@ function AlertsTab() {
                         {item.daysToExpiry <= 0 ? <span className="text-red-600">Expired</span> : `${item.daysToExpiry}d`}
                       </td>
                       <td className="px-4 py-3 text-[13px] font-semibold text-slate-700 tabular-nums">{item.quantity}</td>
+                      <td className="px-4 py-3">
+                        <span className={cn("text-[11px] font-bold px-2 py-0.5 rounded-full border", rCfg.cls)}>{rCfg.label}</span>
+                        {risk.riskTier !== "SAFE" && risk.riskTier !== "NO_DATA" && risk.atRiskUnits > 0 && (
+                          <p className="text-[11px] text-slate-400 mt-1 whitespace-nowrap">
+                            {risk.atRiskUnits} units · ₹{risk.potentialLoss.toLocaleString("en-IN")}
+                          </p>
+                        )}
+                        {risk.riskTier === "SAFE" && (
+                          <p className="text-[11px] text-emerald-600 mt-1">All will sell</p>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-[12px] text-slate-400">{item.location ?? "—"}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
+
+            {/* Phone cards */}
+            <div className="md:hidden divide-y divide-slate-100">
+              {pagedExpiry.map((item) => {
+                const cfg  = EXPIRY_TIER_CFG[item.tier];
+                const risk = item.wasteRisk;
+                const rCfg = WASTE_RISK_CFG[risk.riskTier];
+                return (
+                  <div key={item.id} className={cn("p-4", cfg.rowCls)}>
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="min-w-0">
+                        <p className="text-[13px] font-semibold text-slate-800 truncate">{item.medicine.name}</p>
+                        {item.medicine.genericName && <p className="text-[11px] text-slate-400 truncate">{item.medicine.genericName}</p>}
+                      </div>
+                      <span className={cn("text-[11px] font-bold px-2 py-0.5 rounded-full border flex-shrink-0", cfg.badgeCls)}>{cfg.label}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[12px] mb-2">
+                      <div><span className="text-slate-400">Batch</span><p className="font-mono text-slate-600">{item.batchNumber}</p></div>
+                      <div>
+                        <span className="text-slate-400">Expiry</span>
+                        <p className="font-semibold text-slate-700 tabular-nums">
+                          {fmt(item.expiryDate)} · {item.daysToExpiry <= 0 ? <span className="text-red-600">Expired</span> : `${item.daysToExpiry}d`}
+                        </p>
+                      </div>
+                      <div><span className="text-slate-400">Stock</span><p className="font-semibold text-slate-700 tabular-nums">{item.quantity}</p></div>
+                      <div><span className="text-slate-400">Location</span><p className="text-slate-500">{item.location ?? "—"}</p></div>
+                    </div>
+                    <span className={cn("text-[11px] font-bold px-2 py-0.5 rounded-full border", rCfg.cls)}>{rCfg.label}</span>
+                    {risk.riskTier !== "SAFE" && risk.riskTier !== "NO_DATA" && risk.atRiskUnits > 0 && (
+                      <p className="text-[11px] text-slate-400 mt-1">{risk.atRiskUnits} units · ₹{risk.potentialLoss.toLocaleString("en-IN")}</p>
+                    )}
+                    {risk.riskTier === "SAFE" && <p className="text-[11px] text-emerald-600 mt-1">All will sell</p>}
+                  </div>
+                );
+              })}
+            </div>
             {filteredExpiry.length > ALERTS_PAGE_SIZE && (
-              <div className="flex items-center justify-between px-4 py-2.5 border-t border-slate-100 bg-slate-50/60">
+              <div className="flex items-center justify-between flex-wrap gap-2 px-4 py-2.5 border-t border-slate-100 bg-slate-50/60">
                 <span className="text-[12px] text-slate-500">
                   Showing <span className="font-semibold text-slate-700">{(expiryPage - 1) * ALERTS_PAGE_SIZE + 1}–{Math.min(expiryPage * ALERTS_PAGE_SIZE, filteredExpiry.length)}</span> of <span className="font-semibold text-slate-700">{filteredExpiry.length}</span>
                 </span>
@@ -1033,7 +1463,7 @@ function AlertsTab() {
           </div>
         ) : (
           <div className="border border-slate-200 rounded-xl overflow-hidden">
-            <table className="w-full">
+            <table className="w-full hidden md:table">
               <thead className="bg-slate-50"><tr className="border-b border-slate-200">
                 {["Status","Medicine","Batch","Stock","Reorder Level","Min Stock","MRP",""].map((h) => <th key={h} className={thCls}>{h}</th>)}
               </tr></thead>
@@ -1050,10 +1480,24 @@ function AlertsTab() {
                         {item.medicine.genericName && <p className="text-[11px] text-slate-400">{item.medicine.genericName}</p>}
                       </td>
                       <td className="px-4 py-3 text-[12px] font-mono text-slate-600">{item.batchNumber}</td>
-                      <td className="px-4 py-3 text-[14px] font-bold text-red-600 tabular-nums">{item.quantity}</td>
-                      <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{(item as any).reorderLevel ?? "—"}</td>
+                      <td className="px-4 py-3">
+                        <p className="text-[14px] font-bold text-red-600 tabular-nums">{item.quantity}</p>
+                        {item.reorder.hasData ? (
+                          <p className="text-[11px] text-blue-600 font-semibold mt-0.5 whitespace-nowrap">
+                            📦 Order {item.reorder.suggestedQty}
+                          </p>
+                        ) : (
+                          <p className="text-[11px] text-slate-400 mt-0.5">No sales data</p>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{item.reorderLevel}</td>
                       <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{item.minimumStock}</td>
-                      <td className="px-4 py-3 text-[12px] text-slate-600 tabular-nums">₹{item.mrp.toFixed(2)}</td>
+                      <td className="px-4 py-3">
+                        <p className="text-[12px] text-slate-600 tabular-nums">₹{item.mrp.toFixed(2)}</p>
+                        {item.reorder.hasData && (
+                          <p className="text-[10px] text-slate-400 mt-0.5">{item.reorder.avgDailySales}/day avg</p>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         <button
                           onClick={() => navigate(
@@ -1069,8 +1513,49 @@ function AlertsTab() {
                 })}
               </tbody>
             </table>
+
+            {/* Phone cards */}
+            <div className="md:hidden divide-y divide-slate-100">
+              {pagedStock.map((item) => {
+                const cfg = STOCK_TIER_CFG[item.tier];
+                return (
+                  <div key={item.id} className="p-4">
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="min-w-0">
+                        <p className="text-[13px] font-semibold text-slate-800 truncate">{item.medicine.name}</p>
+                        {item.medicine.genericName && <p className="text-[11px] text-slate-400 truncate">{item.medicine.genericName}</p>}
+                      </div>
+                      <span className={cn("text-[11px] font-bold px-2 py-0.5 rounded-full border flex-shrink-0", cfg.badgeCls)}>{cfg.label}</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[12px] mb-3">
+                      <div><span className="text-slate-400">Batch</span><p className="font-mono text-slate-600">{item.batchNumber}</p></div>
+                      <div>
+                        <span className="text-slate-400">Stock</span>
+                        <p className="font-bold text-red-600 tabular-nums">{item.quantity}</p>
+                      </div>
+                      <div><span className="text-slate-400">Reorder Lvl</span><p className="text-slate-500 tabular-nums">{item.reorderLevel}</p></div>
+                      <div><span className="text-slate-400">Min Stock</span><p className="text-slate-500 tabular-nums">{item.minimumStock}</p></div>
+                      <div><span className="text-slate-400">MRP</span><p className="text-slate-600 tabular-nums">₹{item.mrp.toFixed(2)}</p></div>
+                      <div>
+                        {item.reorder.hasData
+                          ? <p className="text-blue-600 font-semibold">📦 Order {item.reorder.suggestedQty}</p>
+                          : <p className="text-slate-400">No sales data</p>}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => navigate(
+                        `/dashboard/purchase?create-po=1&medicineId=${encodeURIComponent(item.medicine.id)}&medicine=${encodeURIComponent(item.medicine.name)}&gstRate=${item.medicine.gstRate}`
+                      )}
+                      className="flex items-center justify-center gap-1.5 w-full text-[12px] font-semibold text-blue-600 active:bg-blue-100 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 transition-colors"
+                    >
+                      <ShoppingCart className="w-3.5 h-3.5" />Create PO
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
             {lowItems.length > ALERTS_PAGE_SIZE && (
-              <div className="flex items-center justify-between px-4 py-2.5 border-t border-slate-100 bg-slate-50/60">
+              <div className="flex items-center justify-between flex-wrap gap-2 px-4 py-2.5 border-t border-slate-100 bg-slate-50/60">
                 <span className="text-[12px] text-slate-500">
                   Showing <span className="font-semibold text-slate-700">{(stockPage - 1) * ALERTS_PAGE_SIZE + 1}–{Math.min(stockPage * ALERTS_PAGE_SIZE, lowItems.length)}</span> of <span className="font-semibold text-slate-700">{lowItems.length}</span>
                 </span>
@@ -1092,47 +1577,72 @@ function AlertsTab() {
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
-type Tab = "batches" | "ledger" | "alerts";
+type PageTab = "batches" | "ledger" | "alerts" | "audit";
+const VALID_TABS: PageTab[] = ["batches", "ledger", "alerts", "audit"];
 
 export default function InventoryPage() {
-  const [tab,         setTab]         = useState<Tab>("batches");
-  const [alertCounts, setAlertCounts] = useState({ expiry: 0, lowStock: 0 });
+  const [searchParams, setSearchParams] = useSearchParams();
+  const raw     = searchParams.get("tab") as PageTab | null;
+  const pageTab: PageTab = VALID_TABS.includes(raw as PageTab) ? (raw as PageTab) : "batches";
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const [ex, lw] = await Promise.all([api.get("/inventory/alerts/expiry"), api.get("/inventory/alerts/low-stock")]);
-        setAlertCounts({ expiry: ex.data.data.length, lowStock: lw.data.data.length });
-      } catch {/* */}
-    })();
-  }, []);
+  const [alertCounts, setAlertCounts] = useState<AlertCounts>({ expiry: 0, lowStock: 0 });
+
+  // Stable callback — BatchesTab and AlertsTab both call this whenever they
+  // receive fresh data, so the header badge is always up-to-date regardless of
+  // which tab was active when the page loaded.
+  const handleCountsLoaded = useCallback((c: AlertCounts) => setAlertCounts(c), []);
 
   const totalAlerts = alertCounts.expiry + alertCounts.lowStock;
+  const go = (t: PageTab) => setSearchParams(t === "batches" ? {} : { tab: t });
 
   return (
     <div className="flex flex-col h-full bg-white overflow-hidden">
-      <div className="flex items-center justify-between px-5 border-b border-slate-200 flex-shrink-0" style={{ height: "52px" }}>
-        <div className="flex items-center gap-3">
-          <h1 className="text-[18px] font-bold text-slate-900 leading-none">Inventory</h1>
-          {totalAlerts > 0 && (
-            <span className="flex items-center gap-1 text-[12px] font-bold bg-red-50 text-red-600 border border-red-200 rounded-full px-2.5 py-0.5">
-              <AlertTriangle className="w-3 h-3" />{totalAlerts} alerts
-            </span>
-          )}
+
+      {/* ── Page header ─────────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-3 px-5 border-b border-slate-200 flex-shrink-0" style={{ height: "52px" }}>
+        <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
+          <Package2 className="w-4 h-4 text-blue-600" />
         </div>
-        <Plus className="w-4 h-4 text-slate-400" />
+        <h1 className="text-[18px] font-bold text-slate-900 leading-none">Inventory</h1>
+        {totalAlerts > 0 && (
+          <span className="flex items-center gap-1 text-[11px] font-bold bg-red-50 text-red-600 border border-red-200 rounded-full px-2 py-0.5">
+            <AlertTriangle className="w-3 h-3" />
+            {totalAlerts} alert{totalAlerts !== 1 ? "s" : ""}
+          </span>
+        )}
       </div>
 
-      <div className="flex items-center gap-0 px-5 border-b border-slate-200 bg-white flex-shrink-0 overflow-x-auto">
-        <TabBtn active={tab==="batches"} onClick={() => setTab("batches")} icon={Layers}   label="Batches" />
-        <TabBtn active={tab==="ledger"}  onClick={() => setTab("ledger")}  icon={BookOpen} label="Stock Ledger" />
-        <TabBtn active={tab==="alerts"}  onClick={() => setTab("alerts")}  icon={Bell}     label="Alerts" badge={totalAlerts} />
+      {/* ── Unified tab bar ─────────────────────────────────────────────────── */}
+      <div className="flex items-center px-2 border-b border-slate-200 bg-white flex-shrink-0 overflow-x-auto">
+        <TabBtn
+          active={pageTab === "batches"} onClick={() => go("batches")}
+          icon={Layers} label="Batches" color="blue"
+        />
+        <TabBtn
+          active={pageTab === "ledger"} onClick={() => go("ledger")}
+          icon={BookOpen} label="Stock Ledger" color="purple"
+        />
+        <TabBtn
+          active={pageTab === "alerts"} onClick={() => go("alerts")}
+          icon={Bell} label="Alerts" color="red" badge={totalAlerts}
+        />
+        <div className="h-5 w-px bg-slate-200 mx-1 flex-shrink-0" />
+        <TabBtn
+          active={pageTab === "audit"} onClick={() => go("audit")}
+          icon={ClipboardList} label="Stock Audit" color="orange"
+        />
       </div>
 
+      {/* ── Tab content ─────────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-hidden min-h-0">
-        {tab === "batches" && <BatchesTab />}
-        {tab === "ledger"  && <LedgerTab />}
-        {tab === "alerts"  && <AlertsTab />}
+        {pageTab === "batches" && <BatchesTab onCountsLoaded={handleCountsLoaded} />}
+        {pageTab === "ledger"  && <LedgerTab />}
+        {pageTab === "alerts"  && <AlertsTab onCountsLoaded={handleCountsLoaded} />}
+        {pageTab === "audit"   && (
+          <div className="h-full overflow-auto">
+            <StockAuditContent />
+          </div>
+        )}
       </div>
     </div>
   );

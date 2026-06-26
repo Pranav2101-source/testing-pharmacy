@@ -1,6 +1,7 @@
 import { Prisma, withTenant, type Db, type BatchStatus, type MovementType, type MovementDirection } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
 import { env } from "../../config/env.js";
+import { computeWasteRisk, computeReorderInsight, computeCalibratedMin } from "./inventory.calc.js";
 
 const RESERVATION_TTL_MS = env.RESERVATION_TTL_MINUTES * 60 * 1000;
 
@@ -29,6 +30,32 @@ const INVENTORY_INCLUDE = {
 
 export class InventoryRepo {
   constructor(readonly db: Db) {}
+
+  // Two lightweight COUNT queries run in parallel — both use existing indexes
+  // (pharmacyId+status+expiryDate and pharmacyId+status+quantity) so they are
+  // sub-millisecond even at 100k rows. Called inside list() via Promise.all.
+  async getAlertCounts(pharmacyId: string): Promise<{ expiry: number; lowStock: number }> {
+    const d90 = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+    const [expiryRows, lowRows] = await Promise.all([
+      this.db.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(*) AS count FROM inventory
+        WHERE  "pharmacyId" = ${pharmacyId}
+          AND  "expiryDate" <= ${d90}
+          AND  quantity > 0
+          AND  status::text IN ('ACTIVE','EXPIRED')
+      `,
+      this.db.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(*) AS count FROM inventory
+        WHERE  "pharmacyId" = ${pharmacyId}
+          AND  status::text = 'ACTIVE'
+          AND  quantity     <= "minimumStock"
+      `,
+    ]);
+    return {
+      expiry:   Number(expiryRows[0]?.count  ?? 0),
+      lowStock: Number(lowRows[0]?.count ?? 0),
+    };
+  }
 
   async upsertBatch(pharmacyId: string, data: {
     medicineId:   string;
@@ -112,7 +139,7 @@ export class InventoryRepo {
         ? Prisma.sql`AND i.status::text = ${params.status}`
         : Prisma.empty;
 
-      const [countRows, idRows] = await Promise.all([
+      const [countRows, idRows, alertCounts] = await Promise.all([
         this.db.$queryRaw<[{ count: bigint }]>`
           SELECT COUNT(*) AS count
           FROM   inventory i
@@ -133,6 +160,7 @@ export class InventoryRepo {
           ORDER BY i."expiryDate" ASC, i."createdAt" DESC
           LIMIT  ${params.limit} OFFSET ${offset}
         `,
+        this.getAlertCounts(pharmacyId),
       ]);
 
       const ids   = idRows.map((r) => r.id);
@@ -149,6 +177,7 @@ export class InventoryRepo {
         total: Number(countRows[0]?.count ?? 0),
         page:  params.page,
         limit: params.limit,
+        alertCounts,
       };
     }
 
@@ -169,7 +198,7 @@ export class InventoryRepo {
         : {}),
     };
 
-    const [items, total] = await Promise.all([
+    const [items, total, alertCounts] = await Promise.all([
       this.db.inventory.findMany({
         where,
         orderBy: [{ expiryDate: "asc" }, { createdAt: "desc" }],
@@ -178,9 +207,10 @@ export class InventoryRepo {
         include: INVENTORY_INCLUDE,
       }),
       this.db.inventory.count({ where }),
+      this.getAlertCounts(pharmacyId),
     ]);
 
-    return { items, total, page: params.page, limit: params.limit };
+    return { items, total, page: params.page, limit: params.limit, alertCounts };
   }
 
   async getById(id: string, pharmacyId: string) {
@@ -495,16 +525,45 @@ export class InventoryRepo {
 
   // ── Alerts ────────────────────────────────────────────────────────────────
 
+  // Single batched query — sums sales for all requested medicines over the
+  // given window (days) without N+1 trips. Uses LEFT JOIN so medicines with
+  // zero sales still appear in the result map (mapped to 0).
+  private async getMedicineDailySales(
+    pharmacyId:  string,
+    medicineIds: string[],
+    windowDays:  number,
+  ): Promise<Map<string, number>> {
+    if (medicineIds.length === 0) return new Map();
+    const fromDate = new Date(Date.now() - windowDays * 86_400_000);
+    const idList   = Prisma.join(medicineIds.map((id) => Prisma.sql`${id}`));
+
+    const rows = await this.db.$queryRaw<Array<{ medicineId: string; avgDaily: number }>>`
+      SELECT
+        i."medicineId",
+        COALESCE(SUM(mv.quantity), 0)::float / ${windowDays} AS "avgDaily"
+      FROM inventory i
+      LEFT JOIN "inventory_movements" mv
+            ON  mv."inventoryId" = i.id
+           AND  mv.direction     = 'OUT'
+           AND  mv.type          = 'SALE'
+           AND  mv."createdAt"  >= ${fromDate}
+      WHERE i."pharmacyId" = ${pharmacyId}
+        AND i."medicineId" IN (${idList})
+      GROUP BY i."medicineId"
+    `;
+
+    return new Map(rows.map((r) => [r.medicineId, Number(r.avgDaily)]));
+  }
+
   async getExpiryAlerts(pharmacyId: string) {
-    const now      = new Date();
-    const d30      = new Date(Date.now() +  30 * 86400_000);
-    const d60      = new Date(Date.now() +  60 * 86400_000);
-    const d90      = new Date(Date.now() +  90 * 86400_000);
+    const now = new Date();
+    const d30 = new Date(Date.now() +  30 * 86400_000);
+    const d60 = new Date(Date.now() +  60 * 86400_000);
+    const d90 = new Date(Date.now() +  90 * 86400_000);
 
     const items = await this.db.inventory.findMany({
-      // ACTIVE + EXPIRED only: the EXPIRED tier below must keep showing batches the
-      // auto-expire job has already flagged, but QUARANTINE/DAMAGED batches are
-      // handled through recall/adjustment flows and would only add noise here.
+      // ACTIVE + EXPIRED only: QUARANTINE/DAMAGED are handled through recall/
+      // adjustment flows and would only add noise here.
       where: {
         pharmacyId,
         expiryDate: { lte: d90 },
@@ -515,19 +574,32 @@ export class InventoryRepo {
       orderBy: { expiryDate: "asc" },
     });
 
-    return items.map((i) => ({
-      ...i,
-      tier: i.expiryDate <= now ? "EXPIRED"  as const
-          : i.expiryDate <= d30 ? "CRITICAL" as const
-          : i.expiryDate <= d60 ? "WARNING"  as const
-                                : "NOTICE"   as const,
-      daysToExpiry: Math.ceil((i.expiryDate.getTime() - now.getTime()) / 86400_000),
-    }));
+    if (items.length === 0) return [];
+
+    // One batched query for 30-day avg daily sales — no N+1
+    const medicineIds = [...new Set(items.map((i) => i.medicineId))];
+    const salesMap    = await this.getMedicineDailySales(pharmacyId, medicineIds, 30);
+
+    return items.map((i) => {
+      const daysToExpiry = Math.ceil((i.expiryDate.getTime() - now.getTime()) / 86400_000);
+      const tier = i.expiryDate <= now ? "EXPIRED"  as const
+                 : i.expiryDate <= d30 ? "CRITICAL" as const
+                 : i.expiryDate <= d60 ? "WARNING"  as const
+                                       : "NOTICE"   as const;
+
+      const avgDailySales = salesMap.get(i.medicineId) ?? 0;
+      const hasData       = salesMap.has(i.medicineId);
+      const wasteRisk     = computeWasteRisk(
+        i.quantity, daysToExpiry, tier === "EXPIRED",
+        avgDailySales, hasData, Number(i.purchaseRate),
+      );
+
+      return { ...i, tier, daysToExpiry, wasteRisk };
+    });
   }
 
   async getLowStockAlerts(pharmacyId: string) {
-    // column-to-column comparison (quantity <= minimumStock) requires raw SQL;
-    // fetch matching IDs at the DB level then reload with the full include shape.
+    // Column-to-column comparison (quantity <= minimumStock) requires raw SQL.
     const idRows = await this.db.$queryRaw<Array<{ id: string }>>`
       SELECT id FROM inventory
       WHERE  "pharmacyId" = ${pharmacyId}
@@ -544,12 +616,100 @@ export class InventoryRepo {
       orderBy: { quantity: "asc" },
     });
 
-    return items.map((i) => ({
-      ...i,
-      tier: i.quantity === 0             ? "OUT_OF_STOCK" as const
-          : i.quantity <= i.reorderLevel ? "REORDER"      as const
-                                         : "LOW"          as const,
-    }));
+    const medicineIds = [...new Set(items.map((i) => i.medicineId))];
+    const salesMap    = await this.getMedicineDailySales(pharmacyId, medicineIds, 30);
+
+    const COVER_DAYS     = 30;
+    const LEAD_TIME_DAYS = 7;
+
+    return items.map((i) => {
+      const tier = i.quantity === 0             ? "OUT_OF_STOCK" as const
+                 : i.quantity <= i.reorderLevel ? "REORDER"      as const
+                                                : "LOW"          as const;
+
+      const avgDailySales = salesMap.get(i.medicineId) ?? 0;
+      const hasData       = salesMap.has(i.medicineId) && avgDailySales > 0;
+      const reorder       = computeReorderInsight(avgDailySales, hasData, COVER_DAYS, LEAD_TIME_DAYS);
+
+      return { ...i, tier, reorder };
+    });
+  }
+
+  // Analyzes windowDays of sales and recalculates minimumStock for every
+  // active medicine. Returns a preview of proposed changes; dryRun=true
+  // skips the DB write so the UI can show a confirmation screen first.
+  async calibrateMinimumStock(pharmacyId: string, dryRun: boolean) {
+    const WINDOW_DAYS    = 90;
+    const LEAD_TIME_DAYS = 7;
+    const SAFETY_FACTOR  = 1.5;
+    const MIN_FLOOR      = 5;   // never set below 5 even for very slow movers
+
+    // One representative row per medicine (most recently created batch)
+    const medicineRows = await this.db.$queryRaw<
+      Array<{ medicineId: string; medicineName: string; currentMin: number }>
+    >`
+      SELECT DISTINCT ON (i."medicineId")
+        i."medicineId",
+        m.name        AS "medicineName",
+        i."minimumStock" AS "currentMin"
+      FROM inventory i
+      JOIN medicines m ON m.id = i."medicineId"
+      WHERE i."pharmacyId" = ${pharmacyId}
+        AND i.status       = 'ACTIVE'
+      ORDER BY i."medicineId", i."createdAt" DESC
+    `;
+
+    if (medicineRows.length === 0) return { updated: 0, skipped: 0, analyzed: 0, changes: [] };
+
+    const medIds   = medicineRows.map((r) => r.medicineId);
+    const salesMap = await this.getMedicineDailySales(pharmacyId, medIds, WINDOW_DAYS);
+
+    type CalibrateChange = {
+      medicineId:    string;
+      medicineName:  string;
+      oldMin:        number;
+      newMin:        number;
+      avgDailySales: number;
+    };
+
+    const changes: CalibrateChange[] = [];
+    let skipped = 0;
+
+    for (const row of medicineRows) {
+      const avgDaily = salesMap.get(row.medicineId) ?? 0;
+      if (avgDaily === 0) { skipped++; continue; }
+
+      const newMin = computeCalibratedMin(avgDaily, LEAD_TIME_DAYS, SAFETY_FACTOR, MIN_FLOOR);
+      if (newMin === row.currentMin) continue; // already optimal
+
+      changes.push({
+        medicineId:    row.medicineId,
+        medicineName:  row.medicineName,
+        oldMin:        row.currentMin,
+        newMin,
+        avgDailySales: Math.round(avgDaily * 10) / 10,
+      });
+    }
+
+    if (!dryRun && changes.length > 0) {
+      const ids     = changes.map((c) => c.medicineId);
+      const newMins = changes.map((c) => c.newMin);
+      // Single SQL statement updates all medicines in one round-trip
+      await this.db.$executeRaw`
+        UPDATE inventory inv
+        SET "minimumStock" = b.new_min::integer
+        FROM (
+          SELECT
+            unnest(${ids}::text[])        AS medicine_id,
+            unnest(${newMins}::integer[]) AS new_min
+        ) AS b
+        WHERE inv."medicineId" = b.medicine_id
+          AND inv."pharmacyId" = ${pharmacyId}
+          AND inv.status       = 'ACTIVE'
+      `;
+    }
+
+    return { updated: changes.length, skipped, analyzed: medicineRows.length, changes };
   }
 
   // ── FEFO batch selection (used by billing) ─────────────────────────────────

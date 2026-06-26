@@ -316,6 +316,9 @@ model Inventory {
   @@index([pharmacyId, status, quantity])
   // Covering index for FEFO batch selection: WHERE pharmacyId=? AND medicineId=? AND status='ACTIVE' ORDER BY expiryDate ASC
   @@index([pharmacyId, medicineId, status, expiryDate])
+  // Calibrate DISTINCT ON: WHERE pharmacyId=? AND status='ACTIVE' ORDER BY medicineId, createdAt DESC
+  // Allows Postgres to resolve DISTINCT ON without a sort step.
+  @@index([pharmacyId, status, medicineId, createdAt(sort: Desc)])
   @@map("inventory")
 }
 
@@ -832,6 +835,9 @@ model InventoryMovement {
   @@index([pharmacyId, type, createdAt(sort: Desc)])
   // User-wise stock movement audit
   @@index([pharmacyId, userId, createdAt(sort: Desc)])
+  // AI sales-velocity: getMedicineDailySales JOINs on inventoryId then filters
+  // direction+type+createdAt — without this Postgres scans all movements per batch.
+  @@index([inventoryId, direction, type, createdAt(sort: Desc)])
   @@map("inventory_movements")
 }
 
