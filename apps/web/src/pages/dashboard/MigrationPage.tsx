@@ -27,12 +27,12 @@ async function apiFetch<T>(path: string, opts: { method?: string; body?: unknown
   } catch (err: any) {
     // Prefer the server's own error message over the generic Axios HTTP-level one
     const serverMsg = err?.response?.data?.error ?? err?.response?.data?.message;
-    if (serverMsg) throw new Error(serverMsg);
+    if (serverMsg) throw new Error(serverMsg, { cause: err });
     if (err?.code === "ECONNABORTED" || err?.message?.includes("timeout")) {
-      throw new Error("Request timed out — the server may be busy. Please retry.");
+      throw new Error("Request timed out — the server may be busy. Please retry.", { cause: err });
     }
     if (err?.message === "Network Error") {
-      throw new Error("Cannot reach the server — check your connection and retry.");
+      throw new Error("Cannot reach the server — check your connection and retry.", { cause: err });
     }
     throw err;
   }

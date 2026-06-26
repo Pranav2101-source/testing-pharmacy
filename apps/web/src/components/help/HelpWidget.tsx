@@ -5,9 +5,8 @@ import {
   Receipt, Package2, ShoppingCart, BarChart3, TicketCheck,
   BookOpen, Zap, Users, RotateCcw, AlertTriangle,
   Calendar, TrendingUp, Tag, Truck, CreditCard,
-  Settings, FlaskConical, MapPin, Bell, FileText,
-  Building2, Phone, UserPlus, BookmarkCheck, ClipboardList,
-  Monitor, CheckCircle2, DollarSign, Hash, Keyboard,
+  Settings, FlaskConical, Bell, FileText, BookmarkCheck,
+  Phone, CheckCircle2, DollarSign, Hash, Keyboard, Building2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { isSupportStaff } from "@/lib/auth";
@@ -108,6 +107,15 @@ const CATEGORIES: HelpCategory[] = [
           { type: "tip", content: "Use Enter to move through rows quickly without touching the mouse — ideal when counting shelf by shelf." },
         ],
       },
+      {
+        id: "grn-shortcuts", question: "GRN (Gate Inward) shortcuts",
+        tags: ["grn", "shortcut", "ctrl v", "paste", "import", "gate inward", "bulk import shortcut"],
+        blocks: [
+          { type: "text", content: "These shortcuts work inside the New GRN modal (Purchase → Gate Inward → New GRN)." },
+          { type: "shortcut", keys: ["Ctrl", "V"], desc: "Paste copied Excel/Sheets cells to open the bulk import panel pre-loaded with your data" },
+          { type: "tip", content: "Ctrl+V only triggers the importer when your cursor is NOT inside a text input. Click on any empty area of the modal first, then paste." },
+        ],
+      },
     ],
   },
 
@@ -204,13 +212,27 @@ const CATEGORIES: HelpCategory[] = [
     color: "text-blue-600", bg: "bg-blue-50", activeBg: "bg-blue-600",
     items: [
       {
+        id: "bills-drafts-returns", question: "Bills, Drafts, Returns — what's the difference?",
+        tags: ["bill", "draft", "return", "tabs", "sales", "overview", "difference"],
+        blocks: [
+          {
+            type: "grid", items: [
+              { icon: FileText,      label: "Bill",    desc: "A finalised invoice given to a customer after selling medicines. Stock is deducted the moment you save it. Cannot be edited once saved.",      color: "bg-blue-100 text-blue-600"  },
+              { icon: BookmarkCheck, label: "Draft",   desc: "An unfinished bill saved midway. Nothing changes in stock until you open it and finalise it. Great when a customer is interrupted or needs time.",  color: "bg-amber-100 text-amber-600" },
+              { icon: RotateCcw,     label: "Return",  desc: "When a customer brings medicines back. Linked to the original bill. Stock can go back into inventory (restock) or be discarded (write-off).", color: "bg-rose-100 text-rose-600"  },
+            ],
+          },
+          { type: "tip", content: "Think of it this way — Bill = done sale, Draft = parked sale, Return = reversed sale." },
+        ],
+      },
+      {
         id: "new-bill", question: "How do I create a new bill?",
         tags: ["bill", "invoice", "new", "create", "f2", "billing"],
         blocks: [
           { type: "text", content: "Checkup bills are designed for speed — complete a full GST invoice in under 30 seconds." },
           {
             type: "steps", steps: [
-              "Press F2 or click 'New Bill' in the Sales dropdown",
+              "Press F2, or click the blue 'New Bill' button in the top navigation bar",
               "Optionally search for a registered customer/patient",
               "Type the medicine name in the search box — results appear from your stock instantly",
               "Select the medicine; price, batch, MRP, and GST are auto-filled",
@@ -243,18 +265,27 @@ const CATEGORIES: HelpCategory[] = [
       },
       {
         id: "return", question: "How do I process a Sales Return?",
-        tags: ["return", "refund", "sales return", "reverse"],
+        tags: ["return", "refund", "sales return", "reverse", "credit note", "restock", "writeoff", "disposition", "partial return"],
         blocks: [
-          { type: "text", content: "A Sales Return lets you refund a customer when they return medicines. Stock is automatically credited back to inventory." },
+          { type: "text", content: "A Sales Return lets you accept medicines back from a customer and issue a credit note. You control whether each returned item goes back into stock (Restock) or is discarded (Write-off)." },
           {
             type: "steps", steps: [
-              "Go to Sales → Returns, or find the original invoice and click 'Return'",
-              "Select which items are being returned and the quantity",
-              "Choose how the refund is given (cash / credit against next purchase)",
-              "Confirm — the stock is added back to the batch it came from",
+              "Open the original invoice — go to Sales → All Bills and click the bill",
+              "Click the 'Process Return' button (red border) in the top-right",
+              "Set the return quantity for each medicine — use +/– or type directly (max = qty sold)",
+              "For each item choose a disposition: Restock or Write-off",
+              "Type a return reason in the text box (required, e.g. 'Patient didn't need it')",
+              "Click Submit — a credit note number is generated instantly",
             ],
           },
-          { type: "warning", content: "Returns can only be processed within the return window configured in your pharmacy settings. Once stock is returned, the GST liability is also adjusted." },
+          {
+            type: "badges", items: [
+              { label: "Restock ↩",   color: "bg-emerald-100 text-emerald-700", desc: "Medicine goes back into inventory — use for sealed, unopened packs" },
+              { label: "Write-off ✕", color: "bg-red-100 text-red-700",         desc: "Medicine is discarded — use for opened, damaged, or unusable packs" },
+            ],
+          },
+          { type: "tip", content: "You can do a partial return — return only some items from the bill. The invoice shows Partially Returned. You can return the remaining items later." },
+          { type: "warning", content: "Returns are only accepted within the return window (default 30 days, configurable in Settings). If the original bill was a credit sale and unpaid, the customer's credit limit is freed up automatically on return." },
         ],
       },
       {
@@ -407,6 +438,22 @@ const CATEGORIES: HelpCategory[] = [
     color: "text-purple-600", bg: "bg-purple-50", activeBg: "bg-purple-600",
     items: [
       {
+        id: "purchase-tabs", question: "Purchase, Gate Inward, PO, Returns, Distributors — what's each tab for?",
+        tags: ["purchase tabs", "gate inward", "po", "returns", "distributors", "overview", "tabs", "difference"],
+        blocks: [
+          {
+            type: "grid", items: [
+              { icon: FileText,  label: "Purchase",       desc: "Confirmed invoices — payment due dates & purchase history",      color: "bg-emerald-100 text-emerald-600" },
+              { icon: Truck,     label: "Gate Inward",    desc: "Draft GRNs waiting to be confirmed when stock physically arrives", color: "bg-amber-100 text-amber-600"    },
+              { icon: BarChart3, label: "Purchase Order", desc: "Orders sent to suppliers, before any stock arrives",               color: "bg-blue-100 text-blue-600"      },
+              { icon: RotateCcw, label: "Returns",        desc: "Stock sent back to a distributor — damaged, expired, wrong item",  color: "bg-red-100 text-red-600"        },
+              { icon: Building2, label: "Distributors",   desc: "Your supplier directory — contacts, credit & payment history",     color: "bg-slate-200 text-slate-700"    },
+            ],
+          },
+          { type: "tip", content: "Typical flow: Purchase Order → send to supplier → Gate Inward (confirm GRN when stock arrives) → moves into Purchase. Returns and Distributors are managed independently." },
+        ],
+      },
+      {
         id: "po", question: "What is a Purchase Order (PO)?",
         tags: ["purchase order", "po", "order", "supplier order"],
         blocks: [
@@ -424,6 +471,110 @@ const CATEGORIES: HelpCategory[] = [
         ],
       },
       {
+        id: "po-statuses", question: "What do the PO statuses mean? (Draft → Pending → Partial → Received)",
+        tags: ["po status", "draft", "pending", "partial", "received", "cancelled", "purchase order status", "status change"],
+        blocks: [
+          { type: "text", content: "A Purchase Order moves through these stages from creation to completion. Stock is never affected until goods are physically received." },
+          {
+            type: "badges", items: [
+              { label: "Draft",    color: "bg-slate-100 text-slate-700",   desc: "PO just created. You can still edit or delete it. Nothing has been sent to the supplier yet." },
+              { label: "Pending",  color: "bg-amber-100 text-amber-700",   desc: "PO has been sent to the supplier. Editing is locked. Waiting for stock to arrive." },
+              { label: "Partial",  color: "bg-blue-100 text-blue-700",     desc: "Some stock has arrived and been received via Gate Inward (GRN). More deliveries are expected." },
+              { label: "Received", color: "bg-emerald-100 text-emerald-700", desc: "All stock has been received. PO is complete. Inventory is updated, supplier balance is added." },
+              { label: "Cancelled",color: "bg-red-100 text-red-700",       desc: "PO was cancelled. Cannot cancel once stock has already been received." },
+            ],
+          },
+          {
+            type: "steps", steps: [
+              "Create a PO → status is Draft",
+              "Click 'Send' on the PO → status changes to Pending",
+              "Stock arrives → go to Gate Inward → create and confirm a GRN → status becomes Partial",
+              "All deliveries confirmed → status automatically becomes Received",
+            ],
+          },
+          { type: "tip", content: "Stock is added to inventory only when a GRN is confirmed — not when the PO is created or sent." },
+        ],
+      },
+      {
+        id: "po-approval", question: "What is PO Approval and when is it needed?",
+        tags: ["po approval", "pending approval", "approved", "rejected", "pharmacist", "owner approve"],
+        blocks: [
+          { type: "text", content: "If a Pharmacist creates a PO, the Owner must approve it before it can be sent to the supplier. This is a safety check so large orders don't go out without owner knowledge." },
+          {
+            type: "badges", items: [
+              { label: "Not Required",      color: "bg-slate-100 text-slate-600",    desc: "PO created by Owner — no approval needed, can be sent immediately." },
+              { label: "Pending Approval",  color: "bg-orange-100 text-orange-700",  desc: "PO created by Pharmacist — Owner needs to approve before it can be sent." },
+              { label: "Approved",          color: "bg-emerald-100 text-emerald-700", desc: "Owner approved it — PO can now be sent to the supplier." },
+              { label: "Rejected",          color: "bg-red-100 text-red-700",        desc: "Owner rejected it — PO cannot be sent. Edit and resubmit if needed." },
+            ],
+          },
+          { type: "tip", content: "As an Owner, you will see 'Approve' and 'Reject' buttons on any PO created by your staff. Pending Approvals count is shown on the Purchase page summary bar." },
+        ],
+      },
+      {
+        id: "po-send", question: "How do I send a PO to my supplier?",
+        tags: ["send po", "share po", "whatsapp po", "pdf po", "download po", "po supplier", "send purchase order", "mark as sent"],
+        blocks: [
+          { type: "text", content: "When a Draft PO is ready, click the 'Send' button on the PO row. A panel slides in with three ways to share the order — no email service needed." },
+          {
+            type: "grid", items: [
+              { icon: FileText,    label: "Download PDF",      desc: "Opens a print-ready A4 document. Choose 'Save as PDF' and email it yourself.",              color: "bg-blue-100 text-blue-600"    },
+              { icon: Phone,       label: "Share on WhatsApp", desc: "Opens WhatsApp with the PO details pre-filled. Just hit Send.",                            color: "bg-emerald-100 text-emerald-600" },
+              { icon: CheckCircle2, label: "Mark as Sent",     desc: "If you already shared it another way, use this to move the PO to Pending without sharing.", color: "bg-slate-100 text-slate-600"   },
+            ],
+          },
+          {
+            type: "steps", steps: [
+              "Go to Purchase → Orders and find a Draft PO",
+              "Hover over the row — the 'Send' button appears in the Actions column",
+              "Click 'Send' — the share panel slides in and loads the PO details",
+              "Choose Download PDF → save as PDF → email it to your supplier yourself",
+              "Or choose Share on WhatsApp → the message is pre-filled, just tap Send",
+              "The PO status changes to Pending automatically when you take any action",
+            ],
+          },
+          { type: "tip", content: "The PDF includes your pharmacy letterhead, GSTIN, Drug License, supplier details, item-wise breakdown, GST amounts, and a signature block — ready to send or print." },
+          { type: "warning", content: "Once you click Send (any option), the PO moves to Pending and is locked for editing. Double-check quantities and prices before sharing." },
+        ],
+      },
+      {
+        id: "po-send-pdf", question: "How does the PDF / Print option work?",
+        tags: ["pdf", "print po", "save pdf", "download po", "po document", "letterhead"],
+        blocks: [
+          { type: "text", content: "Clicking 'Download PDF' opens a formatted purchase order in a new browser tab and auto-triggers the print dialog. From there you can save it as a PDF file." },
+          {
+            type: "steps", steps: [
+              "Click 'Send' on the Draft PO row",
+              "In the panel, click 'Download PDF'",
+              "A new tab opens with the formatted PO document",
+              "The browser print dialog opens automatically",
+              "Change the destination to 'Save as PDF'",
+              "Save the file and email it to your supplier from your Gmail or Outlook",
+            ],
+          },
+          { type: "tip", content: "The document is formatted for A4 paper and includes: pharmacy name, address, GSTIN, Drug License, supplier name, all ordered medicines with batch/expiry/MRP, subtotal, GST breakdown, grand total, and an authorised signatory block." },
+          { type: "warning", content: "If the print dialog does not open automatically, your browser may have blocked the pop-up. Click 'Allow' on the pop-up blocked notification in the address bar and try again." },
+        ],
+      },
+      {
+        id: "po-send-whatsapp", question: "How does the WhatsApp share option work?",
+        tags: ["whatsapp", "share", "wp", "wa", "whatsapp po", "message supplier"],
+        blocks: [
+          { type: "text", content: "Clicking 'Share on WhatsApp' opens WhatsApp Web (or your WhatsApp app) with a pre-written message already filled in. The supplier's phone number is picked automatically from their profile." },
+          {
+            type: "steps", steps: [
+              "Click 'Send' on the Draft PO row",
+              "In the panel, click 'Share on WhatsApp'",
+              "WhatsApp opens in a new tab with the supplier's number pre-filled",
+              "The message includes PO number, date, expected delivery, total amount, and a confirmation request",
+              "Just click 'Send' in WhatsApp — no typing needed",
+            ],
+          },
+          { type: "tip", content: "Make sure the supplier's phone number is saved in their profile (Purchase → Suppliers → Edit). The WhatsApp button is greyed out if there is no phone number on file." },
+          { type: "warning", content: "WhatsApp does not support sending files via URL links. The message is text-only. If you need to send the full PDF, use the Download PDF option and attach it manually to a WhatsApp chat." },
+        ],
+      },
+      {
         id: "grn", question: "What is a GRN (Goods Receipt Note)?",
         tags: ["grn", "goods receipt", "inward", "receive stock"],
         blocks: [
@@ -436,7 +587,53 @@ const CATEGORIES: HelpCategory[] = [
               { icon: Hash,        label: "PO Linked",      desc: "GRN auto-links to the original PO",     color: "bg-slate-100 text-slate-600"  },
             ],
           },
+          { type: "tip", content: "You can add medicines one by one, or import a full invoice from Excel/Google Sheets in seconds — press Ctrl+V anywhere on the GRN screen with cells copied." },
           { type: "warning", content: "Always verify the physical quantities against the supplier's invoice before confirming the GRN. Short deliveries or damaged items should be noted immediately." },
+        ],
+      },
+      {
+        id: "grn-bulk-import", question: "How do I import medicines into a GRN from Excel or CSV?",
+        tags: ["grn", "bulk import", "excel", "csv", "paste", "ctrl v", "import medicines", "spreadsheet", "column mapping", "distributor invoice", "copy paste"],
+        blocks: [
+          { type: "text", content: "Instead of entering medicines one by one, you can paste an entire supplier invoice from Excel or Google Sheets directly into the GRN screen. The system reads your columns automatically and maps them to the right fields." },
+          {
+            type: "steps", steps: [
+              "Open a new GRN (Purchase → Gate Inward → New GRN)",
+              "In Excel or Google Sheets, select all the rows of your invoice and press Ctrl+C",
+              "Switch to the GRN screen and press Ctrl+V anywhere (not inside a text box) — the import panel opens instantly with your data pre-loaded",
+              "Alternatively, click the 'Import from Excel, CSV or paste' button to open the panel and paste or drag a CSV file",
+              "The column mapper auto-detects Medicine Name, Batch, Expiry, Qty, Rate, MRP, GST and highlights any it couldn't recognise",
+              "Use the dropdowns in the mapper to assign any unrecognised columns manually",
+              "The preview table shows a sample of valid rows and lists any rows with errors (e.g. missing name, invalid rate)",
+              "Click 'Add X medicines to GRN' — all valid rows are added to the GRN table instantly",
+            ],
+          },
+          { type: "tip", content: "The importer recognises 50+ column name variants used by Indian distributors — PTR, P. Rate, P/Rate, Drug Name, Particulars, Batch No., Exp. Date, Exp(MM/YYYY), IGST, M.R.P., Disc%, Bonus Qty, and more. Most invoices work without any manual mapping." },
+          { type: "shortcut", keys: ["Ctrl", "V"], desc: "Paste copied Excel/Sheets cells anywhere on the GRN screen to open the bulk import panel" },
+          { type: "warning", content: "If any medicines are expiring within 90 days, a near-expiry warning banner appears before the GRN is saved. Click 'Accept & Save GRN' to confirm you are aware and want to proceed, or go back and remove those items." },
+        ],
+      },
+      {
+        id: "grn-near-expiry", question: "What happens when a GRN has near-expiry medicines?",
+        tags: ["grn", "near expiry", "expiry warning", "90 days", "accept", "override", "near expiry grn"],
+        blocks: [
+          { type: "text", content: "When you try to save a GRN that contains medicines expiring within 90 days, Checkup blocks the save and shows a near-expiry warning. This is a safety check to prevent accidentally receiving stock that will expire before it can be sold." },
+          {
+            type: "badges", items: [
+              { label: "< 90 days",  color: "bg-amber-100 text-amber-700", desc: "Near-expiry warning shown — you must explicitly accept before saving" },
+              { label: "≥ 90 days",  color: "bg-emerald-100 text-emerald-700", desc: "Normal save — no warning, GRN is created immediately" },
+            ],
+          },
+          {
+            type: "steps", steps: [
+              "Fill in the GRN and click 'Save GRN'",
+              "If any item expires within 90 days, a warning card appears listing the affected medicines and their expiry dates",
+              "Review the list — decide if you want to accept the stock or negotiate a return with the supplier",
+              "Click 'Accept & Save GRN' to acknowledge and save the GRN as-is",
+              "Or go back and delete the near-expiry rows from the table, then save normally",
+            ],
+          },
+          { type: "tip", content: "The near-expiry rows are highlighted in orange in the GRN table so you can spot them easily even before saving." },
         ],
       },
       {
@@ -470,6 +667,32 @@ const CATEGORIES: HelpCategory[] = [
             ],
           },
           { type: "tip", content: "The Purchase Report shows you supplier-wise payable balances so you can plan your cash flow." },
+        ],
+      },
+      {
+        id: "supplier-return", question: "How do I return stock to a supplier?",
+        tags: ["supplier return", "return to supplier", "debit note", "damaged stock", "near expiry return", "wrong product", "sr"],
+        blocks: [
+          { type: "text", content: "When medicines are damaged, near-expiry, expired, or incorrectly supplied, you can return them to the distributor. Checkup creates a Supplier Return (Debit Note) and reduces the amount you owe that supplier." },
+          {
+            type: "steps", steps: [
+              "Go to Purchase → Returns tab",
+              "Click 'New Return' and select the supplier",
+              "Optionally enter the supplier's Debit Note number",
+              "Add medicines to return — scan a barcode, pick from inventory batches, copy from last purchase, or import from CSV",
+              "For each item set the quantity and pick a reason (Damaged, Near Expiry, Expired, Wrong Product, etc.)",
+              "Save the return as Draft, then click Confirm to finalise",
+            ],
+          },
+          {
+            type: "badges", items: [
+              { label: "Draft",     color: "bg-slate-100 text-slate-700",    desc: "Saved but not confirmed. You can still edit or cancel." },
+              { label: "Confirmed", color: "bg-emerald-100 text-emerald-700", desc: "Finalised — stock deducted and supplier balance reduced." },
+              { label: "Cancelled", color: "bg-red-100 text-red-700",        desc: "Cancelled before confirming. No inventory or balance change." },
+            ],
+          },
+          { type: "tip", content: "Confirming a supplier return automatically reduces the outstanding balance you owe that supplier — you don't need to record a separate payment." },
+          { type: "warning", content: "There is no return window for supplier returns. However, confirm only after you have physically dispatched the goods — confirming immediately deducts the stock from inventory." },
         ],
       },
       {
@@ -601,20 +824,6 @@ const CATEGORIES: HelpCategory[] = [
           },
           { type: "tip", content: "Access Ginni from the 'More' menu or the Ginni icon in the nav. Type your question in natural language — Hindi or English." },
           { type: "warning", content: "Ginni provides general medical information only. Always use clinical judgement and refer to a licensed prescriber for patient-specific decisions." },
-        ],
-      },
-      {
-        id: "vitacoin", question: "What are VitalCoins?",
-        tags: ["vitacoin", "coins", "reward", "points"],
-        blocks: [
-          { type: "text", content: "VitalCoins are reward points earned for actively using Checkup features — billing, maintaining inventory, completing audits, referring other pharmacies, etc." },
-          {
-            type: "badges", items: [
-              { label: "Earn",   color: "bg-amber-100 text-amber-700",   desc: "By billing, auditing stock, referring pharmacies, and completing profile setup" },
-              { label: "Redeem", color: "bg-emerald-100 text-emerald-700", desc: "Against your subscription fee or to unlock premium features" },
-            ],
-          },
-          { type: "tip", content: "Check your VitalCoin balance from the profile dropdown → VitalCoins." },
         ],
       },
     ],

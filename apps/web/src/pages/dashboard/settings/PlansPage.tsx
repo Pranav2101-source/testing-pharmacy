@@ -13,6 +13,7 @@ import {
   CreditCard,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useToast } from "@/hooks/useToast";
 
 // ─── Types ────────────────────────────────────────────────────
 type BillingCycle = "monthly" | "yearly";
@@ -138,7 +139,7 @@ function PriceDisplay({ plan, cycle }: { plan: Plan; cycle: BillingCycle }) {
 }
 
 // ─── Plan card ────────────────────────────────────────────────
-function PlanCard({ plan, cycle }: { plan: Plan; cycle: BillingCycle }) {
+function PlanCard({ plan, cycle, onSelect }: { plan: Plan; cycle: BillingCycle; onSelect: (plan: Plan) => void }) {
   const Icon = plan.icon;
 
   return (
@@ -207,6 +208,7 @@ function PlanCard({ plan, cycle }: { plan: Plan; cycle: BillingCycle }) {
       {/* CTA */}
       <button
         disabled={plan.current}
+        onClick={() => onSelect(plan)}
         className={cn(
           "w-full flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-bold transition-all",
           plan.current
@@ -228,10 +230,22 @@ function PlanCard({ plan, cycle }: { plan: Plan; cycle: BillingCycle }) {
 // ─── Page ─────────────────────────────────────────────────────
 export default function PlansPage() {
   const [cycle, setCycle] = useState<BillingCycle>("monthly");
+  const toast = useToast();
 
   // Mock current billing info
   const nextBillingDate = "—";
   const currentPlan     = PLANS.find((p) => p.current)!;
+
+  // No self-serve checkout exists yet — route upgrade/sales enquiries to the
+  // real support-ticket flow instead of pretending a payment flow exists.
+  function handlePlanSelect(plan: Plan) {
+    window.dispatchEvent(new CustomEvent("checkup:open-help", { detail: { category: "support" } }));
+    toast.info(
+      plan.id === "enterprise"
+        ? "Raise a ticket and our sales team will reach out shortly."
+        : `Raise a ticket to upgrade to ${plan.name} — our team will activate it for you.`,
+    );
+  }
 
   return (
     <div className="h-full overflow-y-auto">
@@ -307,7 +321,7 @@ export default function PlansPage() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.07 }}
           >
-            <PlanCard plan={plan} cycle={cycle} />
+            <PlanCard plan={plan} cycle={cycle} onSelect={handlePlanSelect} />
           </motion.div>
         ))}
       </div>

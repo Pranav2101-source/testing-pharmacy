@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { getStoredUser } from "@/lib/auth";
 import {
   BarChart3, Receipt, AlertTriangle, Calendar,
@@ -1118,7 +1119,13 @@ export default function ReportsPage() {
   const isManagerUp = role === "OWNER" || role === "MANAGER";
   const visibleTabs = isManagerUp ? MAIN_TABS : MAIN_TABS.filter(t => t.id !== "purchases");
 
-  const [tab, setTab] = useState<ReportTab>("sales");
+  // Deep-link support — e.g. /dashboard/reports?tab=purchases from Purchase page Quick Actions
+  const [searchParams] = useSearchParams();
+  const initialTab = (() => {
+    const requested = searchParams.get("tab") as ReportTab | null;
+    return requested && visibleTabs.some(t => t.id === requested) ? requested : "sales";
+  })();
+  const [tab, setTab] = useState<ReportTab>(initialTab);
   const active = (visibleTabs.find(t => t.id === tab) ?? visibleTabs[0])!;
 
   // Shared period state — persists across tab switches

@@ -17,6 +17,7 @@ import { AlternativesDrawer } from "@/components/billing/AlternativesDrawer";
 import { useBillingStore } from "@/components/billing/useBillingStore";
 import { InvoiceBreakdownModal } from "@/components/billing/InvoiceBreakdownModal";
 import type { MedicineSearchResult } from "@pharmacy/types";
+import { useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
 import { getStoredUser } from "@/lib/auth";
 import { cn } from "@/lib/utils";
@@ -97,6 +98,7 @@ function NewBillInner() {
   const setMeta  = useBillingStore((s) => s.setMeta);
   const loadDraft= useBillingStore((s) => s.loadDraft);
   const { config: printConfig, pharmacy: printPharmacy } = useInvoicePrintConfig();
+  const queryClient  = useQueryClient();
   const [searchParams] = useSearchParams();
   const navigate     = useNavigate();
   const [submitting,           setSubmitting]           = useState(false);
@@ -311,6 +313,10 @@ function NewBillInner() {
         bc.postMessage({ type: "bill_saved" });
         bc.close();
       }
+
+      // Stock levels changed — drop the medicine-stock batch cache so the next
+      // medicine selection shows real remaining quantities, not the pre-sale count.
+      void queryClient.invalidateQueries({ queryKey: ["medicine-stock"] });
 
       clear();
 

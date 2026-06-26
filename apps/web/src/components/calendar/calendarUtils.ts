@@ -47,9 +47,9 @@ export const MANUAL_EVENT_TYPES: CalendarEventType[] = [
 
 // ── Route map for relatedType deep-links ──────────────────────────────────────
 export const RELATED_ROUTE: Record<string, (id: string) => string> = {
-  inventory:      (id) => `/dashboard/inventory`,
+  inventory:      (_id) => `/dashboard/inventory`,
   invoice:        (id) => `/dashboard/billing/${id}`,
-  purchase_order: (id) => `/dashboard/purchase`,
+  purchase_order: (_id) => `/dashboard/purchase`,
 };
 
 // ── Calendar grid helpers ─────────────────────────────────────────────────────

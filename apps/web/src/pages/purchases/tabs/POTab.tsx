@@ -1,8 +1,11 @@
-import { useState, useCallback, useEffect } from "react";
-import { Loader2, RefreshCw, Plus, FileText, Check, X, Send } from "lucide-react";
+import { useState } from "react";
+import { Loader2, RefreshCw, Plus, FileText, Check, X, Send, Building2 } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { useDebounce } from "@/hooks/useDebounce";
+import { queryKeys } from "@/lib/queryKeys";
 import type { PurchaseOrder, Supplier } from "../types";
 import { PO_STATUS, APPROVAL_STATUS } from "../types";
 import { fmtDate, currency } from "../utils";
@@ -12,12 +15,10 @@ import { EmptyState } from "../components/EmptyState";
 import { StatusBadge } from "../components/StatusBadge";
 import { ActionBtn } from "../modals/shared";
 import { CreatePOModal } from "../modals/CreatePOModal";
+import { POSharePanel } from "../panels/POSharePanel";
 
 export function POTab({ suppliers }: { suppliers: Supplier[] }) {
-  const [orders, setOrders]       = useState<PurchaseOrder[]>([]);
-  const [total, setTotal]         = useState(0);
   const [page, setPage]           = useState(1);
-  const [loading, setLoading]     = useState(true);
   const [search, setSearch]       = useState("");
   const [supplierId, setSupp]     = useState("");
   const [status, setStatus]       = useState("");
@@ -26,39 +27,45 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
   const [showCreate, setShow]     = useState(false);
   const [actionId, setAction]     = useState<string | null>(null);
   const [approveId, setApproveId] = useState<string | null>(null);
+  const [sharePoId, setSharePoId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
+  const dSearch = useDebounce(search, 350);
+
+  const { data, isPending, isFetching, refetch } = useQuery({
+    queryKey: queryKeys.purchases.orders({ page, search: dSearch, supplierId, status, dateFrom, dateTo }),
+    queryFn: async () => {
       const p: Record<string, any> = { page, limit: 20 };
-      if (search)     p.search     = search;
+      if (dSearch)    p.search     = dSearch;
       if (supplierId) p.supplierId = supplierId;
       if (status)     p.status     = status;
       if (dateFrom)   p.from       = new Date(dateFrom).toISOString();
       if (dateTo)     p.to         = new Date(dateTo + "T23:59:59").toISOString();
       const { data } = await api.get("/purchases/orders", { params: p });
-      setOrders(data.data.items); setTotal(data.data.total);
-    } catch {/* */} finally { setLoading(false); }
-  }, [page, search, supplierId, status, dateFrom, dateTo]);
+      return data.data as { items: PurchaseOrder[]; total: number };
+    },
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
+  });
 
-  useEffect(() => { const t = setTimeout(load, search ? 350 : 0); return () => clearTimeout(t); }, [load]);
+  const orders  = data?.items ?? [];
+  const total   = data?.total ?? 0;
+  const loading = isPending;
 
-  async function sendPO(id: string) {
-    setAction(id);
-    try { await api.patch(`/purchases/orders/${id}/send`); load(); }
-    catch (e: any) { alert(e?.response?.data?.error ?? "Cannot send"); } finally { setAction(null); }
+  function invalidate() {
+    queryClient.invalidateQueries({ queryKey: ["purchases", "orders"] });
   }
 
   async function cancelPO(id: string) {
     if (!window.confirm("Cancel this purchase order?")) return;
     setAction(id);
-    try { await api.delete(`/purchases/orders/${id}`); load(); }
+    try { await api.delete(`/purchases/orders/${id}`); invalidate(); }
     catch {/* */} finally { setAction(null); }
   }
 
   async function approvePO(id: string, approved: boolean) {
     setApproveId(id);
-    try { await api.patch(`/purchases/orders/${id}/approve`, { approved }); load(); }
+    try { await api.patch(`/purchases/orders/${id}/approve`, { approved }); invalidate(); }
     catch (e: any) { alert(e?.response?.data?.error ?? "Failed"); } finally { setApproveId(null); }
   }
 
@@ -71,11 +78,11 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
         statusOptions={Object.entries(PO_STATUS).map(([v, c]) => ({ value: v, label: c.label }))}
         rightSlot={
           <>
-            <button onClick={load} className="w-8 h-8 rounded-lg border border-slate-200 bg-white flex items-center justify-center text-slate-500 hover:bg-slate-100">
-              <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
+            <button onClick={() => refetch()} className="w-8 h-8 rounded-lg border border-slate-200 bg-white flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:border-slate-300 shadow-card transition-all">
+              <RefreshCw className={cn("w-3.5 h-3.5", isFetching && "animate-spin")} />
             </button>
             <button onClick={() => setShow(true)}
-              className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[12px] font-semibold h-8 px-3 rounded-lg transition-colors">
+              className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white text-[12px] font-semibold h-8 px-3 rounded-lg transition-all shadow-sm shadow-blue-200">
               <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />New PO
             </button>
           </>
@@ -84,10 +91,10 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
 
       <div className="flex-1 overflow-auto min-h-0">
         <table className="w-full border-collapse">
-          <thead className="sticky top-0 bg-white z-10 shadow-[0_1px_0_0_#e2e8f0]">
+          <thead className="sticky top-0 bg-slate-50/90 backdrop-blur-sm z-10 shadow-[0_1px_0_0_#e2e8f0]">
             <tr>
               {["Sr No.","PO Number","Distributor","Invoice No.","Status","Approval","Items","Total ₹","Expected","Date","Actions"].map((h) => (
-                <th key={h} className="px-4 py-3 text-left text-[12px] font-semibold text-slate-500 whitespace-nowrap">{h}</th>
+                <th key={h} className="px-4 py-3 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
               ))}
             </tr>
           </thead>
@@ -101,11 +108,20 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
                   action="Create First PO" onAction={() => setShow(true)} />
               </td></tr>
             ) : orders.map((po, i) => (
-              <tr key={po.id} className={cn("border-b border-slate-100 hover:bg-blue-50/20 transition-colors group",
-                po.approvalStatus === "PENDING_APPROVAL" && "bg-orange-50/30")}>
+              <tr key={po.id} className={cn(
+                "border-b border-slate-100 hover:bg-blue-50/30 hover:shadow-[inset_3px_0_0_0_#2563eb] transition-all group",
+                po.approvalStatus === "PENDING_APPROVAL" ? "bg-orange-50/40" : i % 2 === 1 ? "bg-slate-50/40" : "bg-white",
+              )}>
                 <td className="px-4 py-3 text-[12px] text-slate-400 tabular-nums">{(page - 1) * 20 + i + 1}</td>
-                <td className="px-4 py-3 text-[13px] font-bold text-blue-600">{po.orderNumber}</td>
-                <td className="px-4 py-3 text-[13px] font-semibold text-slate-800">{po.supplier.name}</td>
+                <td className="px-4 py-3 text-[13px] font-bold text-blue-600 tabular-nums">{po.orderNumber}</td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
+                      <Building2 className="w-3 h-3 text-slate-400" />
+                    </div>
+                    <span className="text-[13px] font-semibold text-slate-800 truncate">{po.supplier.name}</span>
+                  </div>
+                </td>
                 <td className="px-4 py-3 text-[12px] text-slate-500">{po.invoiceNo ?? "—"}</td>
                 <td className="px-4 py-3"><StatusBadge status={po.status} cfg={PO_STATUS} /></td>
                 <td className="px-4 py-3">
@@ -116,7 +132,7 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
                   )}
                 </td>
                 <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{po._count.items}</td>
-                <td className="px-4 py-3 text-[13px] font-semibold text-slate-800 tabular-nums">{currency(po.totalAmount)}</td>
+                <td className="px-4 py-3 text-[13px] font-bold text-slate-900 tabular-nums">{currency(po.totalAmount)}</td>
                 <td className="px-4 py-3 text-[12px] text-slate-400">{fmtDate(po.expectedDate)}</td>
                 <td className="px-4 py-3 text-[12px] text-slate-500">{fmtDate(po.orderedAt)}</td>
                 <td className="px-4 py-3">
@@ -130,8 +146,8 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
                       </>
                     )}
                     {po.status === "DRAFT" && po.approvalStatus !== "PENDING_APPROVAL" && po.approvalStatus !== "REJECTED" && (
-                      <ActionBtn onClick={() => sendPO(po.id)} disabled={actionId === po.id}
-                        icon={actionId === po.id ? Loader2 : Send} label="Send"
+                      <ActionBtn onClick={() => setSharePoId(po.id)} disabled={false}
+                        icon={Send} label="Send"
                         cls="text-amber-600 border-amber-200 hover:bg-amber-50" />
                     )}
                     {!["RECEIVED", "CANCELLED"].includes(po.status) && (
@@ -149,7 +165,17 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
       <Pagination page={page} totalPages={Math.ceil(total / 20) || 1} total={total} limit={20} onChange={setPage} />
 
       <AnimatePresence>
-        {showCreate && <CreatePOModal suppliers={suppliers} onClose={() => setShow(false)} onDone={() => { setShow(false); load(); }} />}
+        {showCreate && <CreatePOModal suppliers={suppliers} onClose={() => setShow(false)} onDone={() => { setShow(false); invalidate(); }} />}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {sharePoId && (
+          <POSharePanel
+            poId={sharePoId}
+            onClose={() => setSharePoId(null)}
+            onSent={() => { setSharePoId(null); invalidate(); }}
+          />
+        )}
       </AnimatePresence>
     </div>
   );

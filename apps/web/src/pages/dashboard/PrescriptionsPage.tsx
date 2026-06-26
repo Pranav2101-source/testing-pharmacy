@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { format } from "date-fns";
 import { Link } from "react-router-dom";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
 
@@ -241,7 +241,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
       });
       toast.success("Prescription image uploaded");
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Upload failed");
+      toast.error(getErrorMessage(err, "Upload failed"));
     } finally {
       setUploading(false);
       // reset so the same file can be re-selected after removal
@@ -307,7 +307,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
       qc.invalidateQueries({ queryKey: ["prescriptions"] });
       onClose();
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Failed to create prescription");
+      toast.error(getErrorMessage(err, "Failed to create prescription"));
     } finally {
       setSaving(false);
     }
@@ -667,7 +667,7 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
       qc.invalidateQueries({ queryKey: ["prescriptions"] });
       onCancelled();
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Failed to cancel prescription");
+      toast.error(getErrorMessage(err, "Failed to cancel prescription"));
     } finally {
       setCancelling(false);
     }

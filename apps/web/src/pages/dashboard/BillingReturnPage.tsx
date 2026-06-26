@@ -1,7 +1,7 @@
 
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Link, useParams, useNavigate } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft, Loader2, AlertCircle, CheckCircle2, RefreshCcw,
@@ -49,19 +49,10 @@ function fmt(n: number) {
   return "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-// Returns already-returned quantity per invoiceItemId across all prior returns
-function buildReturnedMap(invoice: Invoice): Record<string, number> {
-  // We don't have item-level return data here, so we compute by proportion
-  // A better approach is to fetch full return items from the API — for now
-  // we trust the server to validate and show a UI constraint of totalAmount - returnedAmount
-  return {};
-}
-
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function CreateReturnPage() {
   const { id }  = useParams<{ id: string }>();
-  const navigate = useNavigate();
 
   const [invoice,    setInvoice]    = useState<Invoice | null>(null);
   const [loading,    setLoading]    = useState(true);
@@ -230,7 +221,7 @@ export default function CreateReturnPage() {
             </p>
           </div>
           <div className="flex gap-3 mt-2">
-            <Link to="/dashboard/billing/returns"
+            <Link to="/dashboard/billing?tab=returns"
               className="px-5 py-2 border border-slate-200 rounded-lg text-[13px] text-slate-600 hover:bg-slate-50 transition-colors">
               View All Returns
             </Link>

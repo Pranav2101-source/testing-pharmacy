@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   X, ChevronDown, Loader2, Monitor, Square, Upload, Trash2,
   CheckCircle2, AlertTriangle, File as FileIcon, Clock, ArrowRight, Image as ImageIcon
+  CheckCircle2,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";

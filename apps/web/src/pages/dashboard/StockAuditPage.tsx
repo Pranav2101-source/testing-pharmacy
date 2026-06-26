@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import {
-  ClipboardList, Plus, X, Loader2, FileX, CheckCircle2,
+  ClipboardList, Plus, X, Loader2, CheckCircle2,
   Clock, AlertCircle, Ban, PlayCircle, ChevronRight, ArrowRight,
 } from "lucide-react";
 import { api } from "@/lib/api-client";

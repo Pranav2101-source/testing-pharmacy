@@ -1,6 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
+import { Pill, Search, ScanBarcode, Sparkles } from "lucide-react";
 
 export function EmptyBillState() {
   return (
@@ -8,38 +9,60 @@ export function EmptyBillState() {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.35, ease: "easeOut" }}
-      className="flex flex-col items-center justify-center flex-1 py-8 select-none"
+      className="flex flex-col items-center justify-center flex-1 py-10 select-none"
     >
-      <motion.img
-        src="https://plus.unsplash.com/premium_photo-1781424082427-0500e9e8d84c?q=80&w=480&auto=format&fit=crop"
-        alt="Medicine basket"
-        draggable={false}
-        initial={{ opacity: 0, scale: 0.94 }}
+      {/* Illustration — on-brand icon composition, no external network image */}
+      <motion.div
+        initial={{ opacity: 0, scale: 0.9 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.4, ease: "easeOut" }}
-        className="w-56 h-56 object-contain mb-4 drop-shadow-md"
-      />
+        className="relative w-28 h-28 mb-5"
+      >
+        <div className="absolute inset-0 rounded-3xl bg-gradient-to-br from-blue-100 via-indigo-50 to-violet-100" />
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 shadow-lg shadow-blue-200 flex items-center justify-center -rotate-6">
+            <Pill className="w-8 h-8 text-white" strokeWidth={2} />
+          </div>
+        </div>
+        <div className="absolute -top-1.5 -right-1.5 w-8 h-8 rounded-full bg-emerald-500 shadow-md flex items-center justify-center ring-4 ring-white">
+          <ScanBarcode className="w-4 h-4 text-white" />
+        </div>
+        <div className="absolute -bottom-1 -left-2 w-7 h-7 rounded-full bg-amber-400 shadow-md flex items-center justify-center ring-4 ring-white">
+          <Sparkles className="w-3.5 h-3.5 text-white" />
+        </div>
+      </motion.div>
 
       <motion.p
         initial={{ opacity: 0, y: 6 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.15, duration: 0.3 }}
-        className="text-[17px] font-semibold text-slate-600 text-center"
+        className="text-[17px] font-bold text-slate-700 text-center"
       >
         Search medicine to add items to bill
       </motion.p>
-      <motion.p
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.25, duration: 0.3 }}
-        className="text-[14px] text-slate-400 mt-2 text-center"
+
+      <motion.div
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.28, duration: 0.3 }}
+        className="flex items-center gap-2 mt-4 flex-wrap justify-center max-w-md"
       >
-        Type name, barcode, or generic name · Press{" "}
-        <kbd className="text-[12px] bg-slate-100 text-slate-500 rounded px-2 py-0.5 font-mono">
-          Enter
-        </kbd>{" "}
-        to add first result
-      </motion.p>
+        <span className="flex items-center gap-1.5 text-[12px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-full px-3 py-1.5">
+          <Search className="w-3 h-3 text-slate-400" />
+          Name or generic name
+        </span>
+        <span className="flex items-center gap-1.5 text-[12px] font-medium text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1.5">
+          <ScanBarcode className="w-3 h-3 text-emerald-500" />
+          Scan a barcode
+        </span>
+        <span className="flex items-center gap-1.5 text-[12px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-full px-3 py-1.5">
+          Press{" "}
+          <kbd className="text-[10px] bg-white border border-slate-200 rounded px-1.5 py-0.5 font-mono text-slate-600">
+            Enter
+          </kbd>{" "}
+          to add first result
+        </span>
+      </motion.div>
     </motion.div>
   );
 }

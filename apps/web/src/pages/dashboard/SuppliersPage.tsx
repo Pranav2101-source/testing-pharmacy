@@ -2,10 +2,10 @@ import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Building2, Plus, Search, Phone, Mail, MapPin, CreditCard,
-  Loader2, FileX, AlertCircle, X, Check, ChevronRight,
-  ShoppingCart, History, Clock,
+  Loader2, FileX, AlertCircle, X, Check,
+  History,
 } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -242,7 +242,7 @@ function SupplierModal({ supplier, onClose, onSaved }: {
         : await api.post("/suppliers", body);
       onSaved(data.data);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to save supplier");
+      setError(getErrorMessage(err, "Failed to save supplier"));
     } finally { setSaving(false); }
   }
 

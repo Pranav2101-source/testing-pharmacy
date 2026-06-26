@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Banknote, Plus, Loader2, CheckCircle2, AlertTriangle,
+  Banknote, Plus, Loader2, AlertTriangle,
   ChevronLeft, ChevronRight, X, Lock, AlertCircle,
 } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
 
@@ -54,7 +54,7 @@ function InitModal({ onClose }: { onClose: () => void }) {
       qc.invalidateQueries({ queryKey: ["cash-closure"] });
       onClose();
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Failed to create closure");
+      toast.error(getErrorMessage(err, "Failed to create closure"));
     } finally { setSaving(false); }
   }
 
@@ -123,7 +123,7 @@ function CloseModal({ closure, onClose }: { closure: CashClosure; onClose: () =>
       qc.invalidateQueries({ queryKey: ["cash-closure"] });
       onClose();
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Failed to close");
+      toast.error(getErrorMessage(err, "Failed to close"));
     } finally { setSaving(false); }
   }
 
@@ -215,7 +215,7 @@ export default function CashClosurePage() {
       toast.success("Marked as disputed");
       qc.invalidateQueries({ queryKey: ["cash-closure"] });
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Failed");
+      toast.error(getErrorMessage(err, "Failed"));
     }
   }
 

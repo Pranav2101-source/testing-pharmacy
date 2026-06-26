@@ -60,7 +60,7 @@ export const SaveDropdown = memo(function SaveDropdown({
         disabled={submitting || !hasItems}
         title={`${primaryDef.label}${primaryDef.shortcut ? ` (${primaryDef.shortcut})` : ""}`}
         className={cn(
-          "flex items-center gap-1.5 text-[13px] font-bold px-4 py-1.5 rounded-l-lg transition-colors active:scale-[0.98]",
+          "flex items-center gap-1.5 text-[13px] font-bold px-4 py-2 rounded-l-lg transition-colors active:scale-[0.98]",
           hasItems ? "bg-blue-600 hover:bg-blue-700 text-white" : "bg-blue-300 text-white cursor-not-allowed",
         )}
       >
@@ -222,24 +222,24 @@ export const BillingSubNav = memo(function BillingSubNav({
     >
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5">
-        <Link to="/dashboard/billing" className="text-[12px] text-slate-400 font-medium hover:text-blue-600 transition-colors">
+        <Link to="/dashboard/billing" className="text-[13px] text-slate-400 font-medium hover:text-blue-600 transition-colors">
           Sales
         </Link>
-        <ChevronRight className="w-3 h-3 text-slate-300" />
-        <span className="text-[13px] text-slate-800 font-semibold">New Bill</span>
+        <ChevronRight className="w-3.5 h-3.5 text-slate-300" />
+        <span className="text-[14px] text-slate-800 font-bold">New Bill</span>
       </div>
 
       {/* Controls */}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-2">
         {/* LIFA / LILA — batch selection strategy */}
-        <div className="flex items-center gap-1 group/lifa">
+        <div className="flex items-center gap-1.5 group/lifa">
           <button
             onClick={onLifaToggle}
             title={lifa
               ? "LIFA — Last In, First Available. Newest batches dispensed first."
               : "LILA — Last In, Last Available. Oldest batches dispensed first (FEFO)."}
             className={cn(
-              "text-[11px] font-bold px-2 py-1 rounded-md border transition-colors",
+              "text-[12px] font-bold px-2.5 py-1.5 rounded-lg border transition-colors",
               lifa
                 ? "border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100"
                 : "border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100",
@@ -252,7 +252,7 @@ export const BillingSubNav = memo(function BillingSubNav({
           </span>
         </div>
 
-        <div className="h-4 w-px bg-slate-200 mx-0.5" />
+        <div className="h-5 w-px bg-slate-200 mx-0.5" />
 
         {/* Payment mode — segmented control */}
         <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5">
@@ -265,13 +265,13 @@ export const BillingSubNav = memo(function BillingSubNav({
                 onClick={() => onPaymentMode(m)}
                 title={`${PAY_LABELS[m]} (Alt+${PAY_SHORTCUTS[m]})`}
                 className={cn(
-                  "flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold transition-all duration-100",
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-bold transition-all duration-100",
                   active
-                    ? "bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80"
+                    ? "bg-white text-blue-700 shadow-sm ring-1 ring-blue-200/80"
                     : "text-slate-500 hover:text-slate-700 hover:bg-white/60",
                 )}
               >
-                <Icon className="w-3 h-3" strokeWidth={active ? 2.3 : 1.8} />
+                <Icon className="w-3.5 h-3.5" strokeWidth={active ? 2.3 : 1.8} />
                 {PAY_LABELS[m]}
               </button>
             );
@@ -285,7 +285,7 @@ export const BillingSubNav = memo(function BillingSubNav({
             ? "Interstate — IGST applies. Click to switch to intra-state (CGST+SGST)"
             : "Intra-state — CGST+SGST. Click to switch to interstate (IGST)"}
           className={cn(
-            "text-[11px] font-bold border rounded-md px-2.5 py-1 transition-colors",
+            "text-[12px] font-bold border rounded-lg px-3 py-1.5 transition-colors",
             isInterstate
               ? "bg-violet-600 text-white border-violet-600 hover:bg-violet-700"
               : "text-slate-600 border-slate-200 bg-slate-100 hover:bg-slate-200",
@@ -294,7 +294,7 @@ export const BillingSubNav = memo(function BillingSubNav({
           {isInterstate ? "IGST" : "CGST+SGST"}
         </button>
 
-        <div className="h-4 w-px bg-slate-200 mx-0.5" />
+        <div className="h-5 w-px bg-slate-200 mx-0.5" />
 
         <SaveDropdown onAction={onAction} submitting={submitting} hasItems={hasItems} />
       </div>

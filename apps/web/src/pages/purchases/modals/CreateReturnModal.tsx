@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { Plus, Loader2, RotateCcw, Trash2, FileSpreadsheet, RefreshCw, Package } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { AnimatePresence } from "framer-motion";
 import { BarcodeInput } from "@/components/BarcodeInput";
 import { cn } from "@/lib/utils";
@@ -60,8 +60,12 @@ export function CreateReturnModal({ suppliers: initialSuppliers, onClose, onDone
   }
 
   function handleCSVImport(raw: string) {
+    setError(null);
     const { items: parsed, errors } = csvToReturnItems(raw);
-    if (errors.length > 0) { setError(errors.slice(0, 2).join(" · ")); return; }
+    if (parsed.length === 0) {
+      setError(errors.length > 0 ? errors.slice(0, 3).join(" · ") : "No valid rows found.");
+      return;
+    }
     const toAdd: SRLineItem[] = parsed.map((p) => ({
       inventoryId:  "",
       medicineId:   "",
@@ -76,6 +80,7 @@ export function CreateReturnModal({ suppliers: initialSuppliers, onClose, onDone
       !prev.some((x) => x.medicineName.toLowerCase() === i.medicineName.toLowerCase())
     )]);
     setShowImport(false);
+    if (errors.length > 0) setError(`${toAdd.length} items added. ${errors.length} row(s) skipped.`);
   }
 
   function upd(idx: number, key: string, val: string | number) {
@@ -84,10 +89,25 @@ export function CreateReturnModal({ suppliers: initialSuppliers, onClose, onDone
 
   const total = items.reduce((s, i) => s + i.purchaseRate * i.quantity, 0);
 
+  // expiryDate is required by the API for every return item. Items added via barcode/batch
+  // picker always carry a real one, but CSV-imported or manually-added rows might not —
+  // validate before submit instead of letting toISOString() throw mid-request-build.
+  function validate(): string[] {
+    const errs: string[] = [];
+    if (!supplierId) errs.push("Select a supplier");
+    if (items.length === 0) errs.push("Add at least one item");
+    for (let idx = 0; idx < items.length; idx++) {
+      const i = items[idx]!;
+      if (!i.expiryDate)                                errs.push(`Row ${idx + 1} (${i.medicineName}): expiry date is required`);
+      else if (isNaN(new Date(i.expiryDate).getTime()))  errs.push(`Row ${idx + 1} (${i.medicineName}): expiry date is invalid`);
+    }
+    return errs;
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!supplierId) { setError("Select a supplier"); return; }
-    if (items.length === 0) { setError("Add at least one item"); return; }
+    const errs = validate();
+    if (errs.length > 0) { setError(errs.join("  ·  ")); return; }
     setSaving(true); setError(null);
     try {
       await api.post("/supplier-returns", {
@@ -96,7 +116,7 @@ export function CreateReturnModal({ suppliers: initialSuppliers, onClose, onDone
       });
       onDone(lastAddedSupplier.current);
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to create return");
+      setError(getErrorMessage(err, "Failed to create return"));
     } finally { setSaving(false); }
   }
 

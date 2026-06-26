@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { Link, useLocation, Outlet } from "react-router-dom";
 import { motion } from "framer-motion";
 import { Building2, FileText, CreditCard, KeyRound, ArrowLeft, Users, Receipt, FileOutput, User } from "lucide-react";
@@ -69,7 +70,13 @@ export default function SettingsLayout() {
       </aside>
 
       <main className="flex-1 overflow-hidden bg-surface-secondary">
-        <Outlet />
+        <Suspense fallback={
+          <div className="flex items-center justify-center h-full">
+            <div className="w-8 h-8 rounded-full border-2 border-brand-200 border-t-brand-600 animate-spin" />
+          </div>
+        }>
+          <Outlet />
+        </Suspense>
       </main>
     </div>
   );

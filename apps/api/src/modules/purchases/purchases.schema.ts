@@ -4,18 +4,17 @@ const GST_RATES = [0, 5, 12, 18] as const;
 
 // ── Purchase Order ──────────────────────────────────────────────────────────
 
+// PO items are draft — batch/expiry/rates are filled in when goods arrive (GRN).
+// Only medicine name and quantity are required at PO creation time.
 export const poItemSchema = z.object({
   medicineId:   z.string(),
   medicineName: z.string().min(1),
-  batchNumber:  z.string().min(1).max(50),
-  expiryDate:   z.string().datetime(),
+  batchNumber:  z.string().max(50).optional(),
+  expiryDate:   z.string().datetime().optional(),
   quantity:     z.number().int().positive(),
-  purchaseRate: z.number().positive(),
-  mrp:          z.number().positive(),
-  gstRate:      z.number().refine((v) => (GST_RATES as readonly number[]).includes(v), "GST must be 0, 5, 12, or 18"),
-}).refine((d) => d.mrp >= d.purchaseRate, {
-  message: "MRP must be greater than or equal to purchase rate",
-  path:    ["mrp"],
+  purchaseRate: z.number().nonnegative().default(0),
+  mrp:          z.number().nonnegative().default(0),
+  gstRate:      z.number().refine((v) => (GST_RATES as readonly number[]).includes(v), "GST must be 0, 5, 12, or 18").default(12),
 });
 
 export const createPOSchema = z.object({

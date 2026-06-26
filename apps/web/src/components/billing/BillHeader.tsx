@@ -11,7 +11,7 @@ import { useBillingStore } from "./useBillingStore";
 import { CustomerSearchCombobox } from "./CustomerSearchCombobox";
 import { DoctorQuickAddModal } from "@/components/doctors/DoctorQuickAddModal";
 import type { DoctorRecord } from "@/components/doctors/DoctorQuickAddModal";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";
 
 // Computed once per session — bill date never changes mid-session
@@ -310,7 +310,7 @@ function QuickPrescriptionModal({
       setUploadId(data.data.id);
       setUploadMeta({ fileName: data.data.fileName, signedUrl: data.data.signedUrl ?? "", mimeType: data.data.mimeType });
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Upload failed");
+      toast.error(getErrorMessage(err, "Upload failed"));
     } finally {
       setUploading(false);
       if (fileRef.current) fileRef.current.value = "";
@@ -358,7 +358,7 @@ function QuickPrescriptionModal({
       qc.invalidateQueries({ queryKey: ["prescriptions"] });
       onCreated(data.data.prescriptionNumber, data.data.id);
     } catch (err: any) {
-      toast.error(err?.response?.data?.error ?? "Failed to create prescription");
+      toast.error(getErrorMessage(err, "Failed to create prescription"));
     } finally {
       setSaving(false);
     }
@@ -991,12 +991,9 @@ export function BillHeader() {
           <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest leading-none mb-1">
             Bill Date
           </p>
-          <button className="flex items-center gap-1 group">
-            <span className="text-[14px] font-bold text-slate-800 tabnum leading-none">
-              {TODAY_LABEL}
-            </span>
-            <ChevronDown className="w-3 h-3 text-slate-300 group-hover:text-slate-600 transition-colors" />
-          </button>
+          <span className="text-[14px] font-bold text-slate-800 tabnum leading-none">
+            {TODAY_LABEL}
+          </span>
         </div>
       </div>
 

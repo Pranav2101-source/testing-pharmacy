@@ -96,8 +96,8 @@ export class ReportsService {
       })),
       topItems: topItems.map((i) => ({
         medicineName: i.medicineName,
-        totalQty:     (i._sum.receivedQty ?? 0) + (i._sum.freeQty ?? 0),
-        totalSpend:   Number(i._sum.amount ?? 0),
+        totalQty:     Number(i.totalReceivedQty) + Number(i.totalFreeQty),
+        totalSpend:   Number(i.totalAmount),
       })),
     };
   }

@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  ArrowLeft, Search, Calendar, ChevronDown, Loader2,
+  ArrowLeft, Search, Calendar, Loader2,
   ArrowUpDown, ArrowUp, ArrowDown, FileX, AlertCircle, RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api-client";

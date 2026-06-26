@@ -100,6 +100,13 @@ const fadeUp = (delay: number) => ({
   transition: { duration: 0.25, delay },
 });
 
+function getTimeGreeting() {
+  const h = new Date().getHours();
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  return "Good evening";
+}
+
 // Payment mode visual config
 const PAYMENT_MODE_CFG: Record<string, { label: string; bar: string; bg: string; text: string; icon: React.ElementType }> = {
   CASH:   { label: "Cash",   bar: "bg-emerald-500", bg: "bg-emerald-50",  text: "text-emerald-700", icon: Banknote    },
@@ -113,31 +120,56 @@ function getPaymentCfg(mode: string | null) {
 }
 
 // ─── Stat Card ────────────────────────────────────────────────────
+const CARD_BG_MAP: Record<string, string> = {
+  "bg-emerald-50": "from-emerald-50/60 to-white border-emerald-100/80",
+  "bg-blue-50":    "from-blue-50/60 to-white border-blue-100/80",
+  "bg-indigo-50":  "from-indigo-50/60 to-white border-indigo-100/80",
+  "bg-amber-50":   "from-amber-50/60 to-white border-amber-100/80",
+  "bg-violet-50":  "from-violet-50/60 to-white border-violet-100/80",
+  "bg-red-50":     "from-red-50/60 to-white border-red-100/80",
+  "bg-orange-50":  "from-orange-50/60 to-white border-orange-100/80",
+  "bg-slate-50":   "from-slate-50/60 to-white border-slate-200/80",
+};
+
 function StatCard({
-  label, value, sub, icon: Icon, iconBg, iconColor, accentColor, loading, href,
+  label, value, sub, icon: Icon, iconBg, iconColor, loading, href,
 }: {
   label: string; value: string; sub?: string | null;
   icon: React.ElementType; iconBg: string; iconColor: string; accentColor: string;
   loading: boolean; href?: string;
 }) {
+  const cardGradient = CARD_BG_MAP[iconBg] ?? "from-slate-50/60 to-white border-slate-200/80";
+
   const inner = (
-    <div className={cn("stat-card relative overflow-hidden cursor-pointer group", href && "hover:border-blue-200")}>
-      <div className={cn("absolute top-0 left-0 w-0.5 h-full rounded-r", accentColor)} />
-      <div className="flex items-start justify-between">
-        <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0", iconBg)}>
-          <Icon className={cn("w-4 h-4", iconColor)} strokeWidth={1.9} />
-        </div>
-        {href && <ArrowRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-blue-400 transition-colors" />}
+    <div className={cn(
+      "relative overflow-hidden rounded-xl border p-4 flex flex-col gap-0 cursor-pointer group",
+      "bg-gradient-to-br transition-all duration-200",
+      "hover:shadow-[0_4px_20px_-4px_rgba(0,0,0,0.10)] hover:-translate-y-px",
+      cardGradient
+    )}>
+      {/* Ghost icon watermark */}
+      <div className="absolute -right-2 -bottom-2 opacity-[0.07] pointer-events-none select-none" aria-hidden>
+        <Icon className="w-16 h-16" strokeWidth={1.2} />
       </div>
-      <div className="mt-2">
+
+      <div className="flex items-start justify-between">
+        <div className={cn("w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm ring-1 ring-black/[0.04]", iconBg)}>
+          <Icon className={cn("w-[18px] h-[18px]", iconColor)} strokeWidth={2} aria-hidden />
+        </div>
+        {href && (
+          <ArrowRight className="w-3.5 h-3.5 text-slate-300 group-hover:translate-x-0.5 group-hover:text-blue-400 transition-all duration-150 flex-shrink-0 mt-0.5" aria-hidden />
+        )}
+      </div>
+
+      <div className="mt-3">
         {loading ? (
-          <div className="h-6 w-20 skeleton rounded mb-1" />
+          <div className="h-7 w-20 skeleton rounded mb-1" />
         ) : (
           <p className="text-[22px] font-black text-slate-800 tabnum leading-tight">{value}</p>
         )}
-        <p className="text-[11px] font-semibold text-slate-500 mt-0.5 uppercase tracking-wide">{label}</p>
+        <p className="text-[11px] font-semibold text-slate-500 mt-1 uppercase tracking-wide leading-none">{label}</p>
         {sub && !loading && (
-          <p className="text-[10px] text-slate-400 mt-0.5">{sub}</p>
+          <p className="text-[10px] text-slate-400 mt-1 leading-tight">{sub}</p>
         )}
       </div>
     </div>
@@ -208,7 +240,12 @@ function EodSummaryCard({
 
           {/* ── Column 1: Revenue ── */}
           <div className="p-4">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Revenue</p>
+            <div className="flex items-center gap-1.5 mb-3">
+              <span className="w-5 h-5 rounded-md bg-emerald-100 flex items-center justify-center flex-shrink-0">
+                <IndianRupee className="w-3 h-3 text-emerald-600" strokeWidth={2} />
+              </span>
+              <p className="text-[11px] font-black text-slate-700 uppercase tracking-wide">Revenue</p>
+            </div>
 
             {/* Net Revenue — big hero number */}
             <div className="mb-3">
@@ -257,7 +294,12 @@ function EodSummaryCard({
 
           {/* ── Column 2: Payment Split ── */}
           <div className="p-4">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Payment Methods</p>
+            <div className="flex items-center gap-1.5 mb-3">
+              <span className="w-5 h-5 rounded-md bg-blue-100 flex items-center justify-center flex-shrink-0">
+                <CreditCard className="w-3 h-3 text-blue-600" strokeWidth={2} />
+              </span>
+              <p className="text-[11px] font-black text-slate-700 uppercase tracking-wide">Payment Methods</p>
+            </div>
 
             {breakdown.length === 0 ? (
               <p className="text-[12px] text-slate-400 italic">No payment data</p>
@@ -305,7 +347,12 @@ function EodSummaryCard({
 
           {/* ── Column 3: Alerts ── */}
           <div className="p-4">
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">Action Items</p>
+            <div className="flex items-center gap-1.5 mb-3">
+              <span className="w-5 h-5 rounded-md bg-amber-100 flex items-center justify-center flex-shrink-0">
+                <AlertTriangle className="w-3 h-3 text-amber-600" strokeWidth={2} />
+              </span>
+              <p className="text-[11px] font-black text-slate-700 uppercase tracking-wide">Action Items</p>
+            </div>
 
             <div className="space-y-2">
               {/* Low Stock */}
@@ -401,7 +448,7 @@ function TopMedicinesCard({ eodData, loading }: { eodData: EodData | null; loadi
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mt-4">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-gradient-to-r from-slate-50/80 to-white">
         <div className="flex items-center gap-2">
           <div className="w-6 h-6 rounded-md bg-orange-50 flex items-center justify-center">
             <Flame className="w-3.5 h-3.5 text-orange-500" strokeWidth={1.9} />
@@ -467,7 +514,7 @@ function NearExpiryCard({ items, loading, totalCount }: {
 }) {
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mt-4">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-gradient-to-r from-slate-50/80 to-white">
         <div className="flex items-center gap-2">
           <div className={cn("w-6 h-6 rounded-md flex items-center justify-center",
             totalCount > 0 ? "bg-orange-50" : "bg-slate-50"
@@ -554,9 +601,7 @@ function NearExpiryCard({ items, loading, totalCount }: {
 
 // ─── Page ─────────────────────────────────────────────────────────
 export default function DashboardHomePage() {
-  // Support staff have no pharmacy home — redirect them to their workspace
-  if (isSupportStaff()) return <Navigate to="/dashboard/support" replace />;
-
+  const isSupport = isSupportStaff();
   const navigate = useNavigate();
   const today = new Date().toLocaleDateString("en-IN", {
     weekday: "long", day: "numeric", month: "long", year: "numeric",
@@ -575,14 +620,16 @@ export default function DashboardHomePage() {
   const [refreshKey,       setRefreshKey]       = useState(0);
 
   useEffect(() => {
+    if (isSupport) return;
     setStatsLoading(true);
     api.get("/billing/dashboard/stats")
       .then(({ data }) => setStats(data.data))
       .catch((err: unknown) => console.error("[Dashboard] stats fetch failed", err))
       .finally(() => setStatsLoading(false));
-  }, [refreshKey]);
+  }, [refreshKey, isSupport]);
 
   useEffect(() => {
+    if (isSupport) return;
     setBillsLoading(true);
     const s = new Date(); s.setHours(0, 0, 0, 0);
     const e = new Date(); e.setHours(23, 59, 59, 999);
@@ -590,31 +637,37 @@ export default function DashboardHomePage() {
       .then(({ data }) => setRecentBills(data.data.items ?? []))
       .catch((err: unknown) => { console.error("[Dashboard] recent bills fetch failed", err); setRecentBills([]); })
       .finally(() => setBillsLoading(false));
-  }, [refreshKey]);
+  }, [refreshKey, isSupport]);
 
   useEffect(() => {
+    if (isSupport) return;
     setStockLoading(true);
     api.get("/inventory", { params: { lowStock: true, limit: 6 } })
       .then(({ data }) => setLowStock(data.data.items ?? []))
       .catch((err: unknown) => { console.error("[Dashboard] low-stock fetch failed", err); setLowStock([]); })
       .finally(() => setStockLoading(false));
-  }, [refreshKey]);
+  }, [refreshKey, isSupport]);
 
   useEffect(() => {
+    if (isSupport) return;
     setEodLoading(true);
     api.get("/reports/eod/summary")
       .then(({ data }) => setEodData(data.data))
       .catch((err: unknown) => { console.error("[Dashboard] EOD summary fetch failed", err); setEodData(null); })
       .finally(() => setEodLoading(false));
-  }, [refreshKey]);
+  }, [refreshKey, isSupport]);
 
   useEffect(() => {
+    if (isSupport) return;
     setNearExpiryLoading(true);
     api.get("/inventory", { params: { nearExpiry: true, inStock: true, limit: 6 } })
       .then(({ data }) => setNearExpiry(data.data.items ?? []))
       .catch(() => setNearExpiry([]))
       .finally(() => setNearExpiryLoading(false));
-  }, [refreshKey]);
+  }, [refreshKey, isSupport]);
+
+  // Guard: support staff have no pharmacy home — redirect after all hooks are initialised
+  if (isSupport) return <Navigate to="/dashboard/support" replace />;
 
   const STAT_CARDS = [
     {
@@ -665,7 +718,7 @@ export default function DashboardHomePage() {
       iconBg:      "bg-violet-50",
       iconColor:   "text-violet-600",
       accentColor: "bg-violet-500",
-      href:        "/dashboard/billing/returns",
+      href:        "/dashboard/billing?tab=returns",
     },
     {
       label:       "Low Stock",
@@ -704,28 +757,44 @@ export default function DashboardHomePage() {
     <div className="h-full overflow-y-auto bg-slate-50/50">
       <div className="max-w-[1440px] mx-auto px-5 py-5 space-y-5">
 
-        {/* ── Header ──────────────────────────────────────── */}
-        <motion.div {...fadeUp(0)} className="flex items-center justify-between">
-          <div>
-            <h1 className="text-[18px] font-black text-slate-800 leading-tight">Dashboard</h1>
-            <p className="text-[12px] text-slate-400 mt-0.5 font-medium">{today}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => navigate("/dashboard/billing/new")}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[13px] font-bold transition-colors shadow-sm"
-            >
-              <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
-              New Bill
-              <kbd className="text-[9px] bg-white/20 text-white/70 rounded px-1 py-0.5 font-mono leading-none">F2</kbd>
-            </button>
-            <button
-              onClick={() => setRefreshKey(k => k + 1)}
-              className="flex items-center gap-1.5 text-[12px] text-slate-500 hover:text-blue-600 font-semibold transition-colors border border-slate-200 rounded-lg px-3 py-2 bg-white hover:border-blue-300"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-              Refresh
-            </button>
+        {/* ── Hero Header ──────────────────────────────────── */}
+        <motion.div {...fadeUp(0)}>
+          <div
+            className="relative overflow-hidden rounded-2xl px-5 py-4 flex items-center justify-between"
+            style={{
+              background: "linear-gradient(135deg, #0a1a52 0%, #101e60 45%, #162870 100%)",
+              boxShadow: "0 4px 24px -4px rgba(10,26,82,0.35), 0 1px 0 0 rgba(255,255,255,0.04) inset",
+            }}
+          >
+            {/* Decorative glow blobs */}
+            <div className="absolute inset-0 pointer-events-none overflow-hidden" aria-hidden>
+              <div className="absolute -top-16 -right-16 w-64 h-64 rounded-full" style={{ background: "radial-gradient(ellipse, rgba(96,165,250,0.14) 0%, transparent 60%)" }} />
+              <div className="absolute -bottom-8 right-28 w-36 h-36 rounded-full" style={{ background: "radial-gradient(ellipse, rgba(167,139,250,0.10) 0%, transparent 65%)" }} />
+            </div>
+            <div className="relative">
+              <p className="text-white/50 text-[11px] font-semibold tracking-wide">{getTimeGreeting()}</p>
+              <h1 className="text-[20px] font-black text-white leading-tight mt-0.5">Dashboard</h1>
+              <p className="text-white/35 text-[11px] mt-0.5">{today}</p>
+            </div>
+            <div className="relative flex items-center gap-2">
+              <button
+                onClick={() => setRefreshKey(k => k + 1)}
+                className="w-8 h-8 rounded-lg bg-white/10 hover:bg-white/18 flex items-center justify-center transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                aria-label="Refresh dashboard"
+              >
+                <RefreshCw className="w-3.5 h-3.5 text-white/60" strokeWidth={1.8} />
+              </button>
+              <button
+                onClick={() => navigate("/dashboard/billing/new")}
+                className="flex items-center gap-1.5 px-4 py-2 bg-white hover:bg-blue-50 rounded-xl text-[13px] font-black transition-all shadow-md hover:shadow-lg hover:scale-[1.02] active:scale-[0.98] outline-none focus-visible:ring-2 focus-visible:ring-white/50"
+                style={{ color: "#0a1a52" }}
+                aria-label="New Bill (F2)"
+              >
+                <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
+                New Bill
+                <kbd className="text-[9px] rounded px-1 py-0.5 font-mono leading-none ml-0.5" style={{ background: "rgba(10,26,82,0.08)", color: "rgba(10,26,82,0.5)" }}>F2</kbd>
+              </button>
+            </div>
           </div>
         </motion.div>
 
@@ -737,16 +806,22 @@ export default function DashboardHomePage() {
                 key={href}
                 to={href}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-bold transition-all shadow-sm",
+                  "flex items-center gap-2 px-3 py-1.5 rounded-xl text-[12px] font-bold transition-all duration-150",
+                  "hover:-translate-y-px active:translate-y-0",
                   primary
-                    ? "bg-blue-600 hover:bg-blue-700 text-white"
-                    : "bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 hover:border-blue-200"
+                    ? "bg-blue-600 hover:bg-blue-500 text-white shadow-sm hover:shadow-md"
+                    : "bg-white text-slate-700 border border-slate-200 hover:border-blue-200/80 hover:bg-blue-50/40 shadow-sm hover:shadow"
                 )}
               >
-                <Icon className="w-3.5 h-3.5" strokeWidth={1.9} />
+                <span className={cn(
+                  "w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0",
+                  primary ? "bg-white/20" : "bg-slate-100"
+                )}>
+                  <Icon className={cn("w-3 h-3", primary ? "text-white" : "text-slate-600")} strokeWidth={2} />
+                </span>
                 {label}
                 {kbd && (
-                  <kbd className={cn("text-[9px] rounded px-1 py-0.5 font-mono leading-none",
+                  <kbd className={cn("text-[9px] rounded px-1 py-0.5 font-mono leading-none ml-0.5",
                     primary ? "bg-white/20 text-white/70" : "bg-slate-100 text-slate-400"
                   )}>{kbd}</kbd>
                 )}
@@ -780,7 +855,7 @@ export default function DashboardHomePage() {
           <motion.div {...fadeUp(0.26)} className="xl:col-span-2">
             <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
 
-              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-gradient-to-r from-slate-50/80 to-white">
                 <div className="flex items-center gap-2">
                   <div className="w-6 h-6 rounded-md bg-blue-50 flex items-center justify-center">
                     <FileText className="w-3.5 h-3.5 text-blue-600" strokeWidth={1.9} />
@@ -856,7 +931,7 @@ export default function DashboardHomePage() {
 
             {/* Low Stock */}
             <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-white">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100 bg-gradient-to-r from-slate-50/80 to-white">
                 <div className="flex items-center gap-2">
                   <div className="w-6 h-6 rounded-md bg-amber-50 flex items-center justify-center">
                     <AlertTriangle className="w-3.5 h-3.5 text-amber-600" strokeWidth={1.9} />

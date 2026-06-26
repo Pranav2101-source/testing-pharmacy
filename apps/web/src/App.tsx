@@ -26,10 +26,8 @@ const ForgotPasswordPage = lazy(() => import("./pages/auth/ForgotPasswordPage"))
 
 // ─── Dashboard ────────────────────────────────────────────────
 const DashboardHomePage   = lazy(() => import("./pages/dashboard/HomePage"));
-const BillingPage         = lazy(() => import("./pages/dashboard/BillingPage"));
+const SalesPage           = lazy(() => import("./pages/dashboard/SalesPage"));
 const BillingNewPage      = lazy(() => import("./pages/dashboard/BillingNewPage"));
-const BillingDraftsPage   = lazy(() => import("./pages/dashboard/BillingDraftsPage"));
-const BillingReturnsPage  = lazy(() => import("./pages/dashboard/BillingReturnsPage"));
 const BillingDetailPage   = lazy(() => import("./pages/dashboard/BillingDetailPage"));
 const BillingReturnPage   = lazy(() => import("./pages/dashboard/BillingReturnPage"));
 const InventoryPage       = lazy(() => import("./pages/dashboard/InventoryPage"));
@@ -57,7 +55,6 @@ const TicketDetailPage     = lazy(() => import("./pages/dashboard/support/Ticket
 const AgentsPage           = lazy(() => import("./pages/dashboard/support/AgentsPage"));
 
 // ─── Settings ─────────────────────────────────────────────────
-const SettingsPage           = lazy(() => import("./pages/dashboard/settings/SettingsPage"));
 const PharmacyProfilePage    = lazy(() => import("./pages/dashboard/settings/PharmacyProfilePage"));
 const DocumentsPage          = lazy(() => import("./pages/dashboard/settings/DocumentsPage"));
 const StaffSettingsPage      = lazy(() => import("./pages/dashboard/settings/StaffSettingsPage"));
@@ -98,12 +95,13 @@ export function App() {
                 any dashboard page shows a recovery UI instead of a blank screen. */}
             <Route element={<ErrorBoundary><DashboardLayout /></ErrorBoundary>}>
               <Route path="/dashboard"                       element={<DashboardHomePage />} />
-              <Route path="/dashboard/billing"               element={<BillingPage />} />
-              <Route path="/dashboard/billing/new"           element={<BillingNewPage />} />
-              <Route path="/dashboard/billing/drafts"        element={<BillingDraftsPage />} />
-              <Route path="/dashboard/billing/returns"       element={<BillingReturnsPage />} />
-              <Route path="/dashboard/billing/:id"           element={<BillingDetailPage />} />
-              <Route path="/dashboard/billing/:id/return"    element={<BillingReturnPage />} />
+              <Route path="/dashboard/billing"                element={<SalesPage />} />
+              <Route path="/dashboard/billing/new"            element={<BillingNewPage />} />
+              {/* Old direct routes redirect to the unified Sales page with the correct tab */}
+              <Route path="/dashboard/billing/drafts"         element={<Navigate to="/dashboard/billing?tab=drafts"  replace />} />
+              <Route path="/dashboard/billing/returns"        element={<Navigate to="/dashboard/billing?tab=returns" replace />} />
+              <Route path="/dashboard/billing/:id"            element={<BillingDetailPage />} />
+              <Route path="/dashboard/billing/:id/return"     element={<BillingReturnPage />} />
               <Route path="/dashboard/inventory"             element={<InventoryPage />} />
               <Route path="/dashboard/medicines"             element={<MedicinesPage />} />
               <Route path="/dashboard/purchase"              element={<PurchasePage />} />

@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { FileSpreadsheet, Download, X, Check } from "lucide-react";
+import { FileSpreadsheet, Download, X, Check, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { GRN_CSV_TEMPLATE, PO_CSV_TEMPLATE, RETURN_CSV_TEMPLATE, downloadTemplate } from "../utils";
 
@@ -8,18 +8,58 @@ export function ImportPanel({ type, onImport, onClose }: {
   onImport:  (raw: string) => void;
   onClose:   () => void;
 }) {
-  const [text,    setText]    = useState("");
-  const [dragging,setDrag]    = useState(false);
-  const fileRef               = useRef<HTMLInputElement>(null);
+  const [text,      setText]      = useState("");
+  const [dragging,  setDrag]      = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const fileRef                   = useRef<HTMLInputElement>(null);
 
-  function readFile(file: File) {
-    const reader = new FileReader();
-    reader.onload = (e) => setText((e.target?.result as string) ?? "");
-    reader.readAsText(file);
+  function loadText(raw: string) {
+    // Guard: binary content (ZIP / Excel) starts with "PK" magic bytes
+    // eslint-disable-next-line no-control-regex
+    if (raw.startsWith("PK") || /[\x00-\x08\x0E-\x1F]/.test(raw.slice(0, 200))) {
+      setFileError("This looks like a binary Excel file. Use the file picker above to upload it — or copy cells inside Excel first, then paste.");
+      return;
+    }
+    setFileError(null);
+    setText(raw);
   }
 
-  function handleDrop(e: React.DragEvent) {
-    e.preventDefault(); setDrag(false);
+  function readFile(file: File) {
+    setFileError(null);
+    const isExcel =
+      /\.(xlsx|xls|ods)$/i.test(file.name) ||
+      file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+      file.type === "application/vnd.ms-excel";
+
+    const reader = new FileReader();
+    if (isExcel) {
+      // SheetJS is loaded on demand — keeps it out of the main Purchase bundle
+      // since most visits never touch the Excel-import flow.
+      reader.onload = async (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const XLSX = await import("@e965/xlsx");
+          const wb   = XLSX.read(data, { type: "array", cellDates: true });
+          const ws   = wb.Sheets[wb.SheetNames[0]!];
+          const tsv  = XLSX.utils.sheet_to_csv(ws!, { FS: "\t" });
+          setFileError(null);
+          setText(tsv);
+        } catch {
+          setFileError("Could not read the Excel file. Make sure it is a valid .xlsx/.xls file and try again.");
+        }
+      };
+      reader.onerror = () => setFileError("Failed to read the file.");
+      reader.readAsArrayBuffer(file);
+    } else {
+      reader.onload = (e) => loadText((e.target?.result as string) ?? "");
+      reader.onerror = () => setFileError("Failed to read the file.");
+      reader.readAsText(file);
+    }
+  }
+
+  function handleFileDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDrag(false);
     const file = e.dataTransfer.files[0];
     if (file) readFile(file);
   }
@@ -50,17 +90,17 @@ export function ImportPanel({ type, onImport, onClose }: {
       <div
         onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
         onDragLeave={() => setDrag(false)}
-        onDrop={handleDrop}
+        onDrop={handleFileDrop}
         onClick={() => fileRef.current?.click()}
         className={cn(
           "border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors",
           dragging ? "border-blue-400 bg-blue-100/50" : "border-slate-300 hover:border-blue-400 hover:bg-blue-50/30",
         )}>
-        <input ref={fileRef} type="file" accept=".csv,.tsv,.txt" className="hidden"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f); }} />
+        <input ref={fileRef} type="file" accept=".xlsx,.xls,.ods,.csv,.tsv,.txt" className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f); e.target.value = ""; }} />
         <FileSpreadsheet className="w-6 h-6 text-slate-400 mx-auto mb-1" />
-        <p className="text-[12px] font-semibold text-slate-600">Drop .csv file here or click to browse</p>
-        <p className="text-[11px] text-slate-400 mt-0.5">For Excel / Google Sheets: File → Download as CSV, then import here</p>
+        <p className="text-[12px] font-semibold text-slate-600">Drop Excel or CSV file here, or click to browse</p>
+        <p className="text-[11px] text-slate-400 mt-0.5">Supports .xlsx, .xls, .ods, .csv</p>
       </div>
 
       {/* Paste area */}
@@ -70,7 +110,9 @@ export function ImportPanel({ type, onImport, onClose }: {
         </p>
         <textarea
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => loadText(e.target.value)}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={handleFileDrop}
           placeholder={
             type === "return"
               ? "medicineName\tbatchNumber\texpiryDate\treturnQty\tpurchaseRate\nParacetamol 500mg\tBATCH001\t2025-12-31\t10\t4.50"
@@ -83,7 +125,14 @@ export function ImportPanel({ type, onImport, onClose }: {
         />
       </div>
 
-      {hasData && (
+      {fileError && (
+        <div className="flex items-start gap-2.5 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5">
+          <AlertTriangle className="w-3.5 h-3.5 text-red-500 flex-shrink-0 mt-0.5" />
+          <p className="text-[12px] text-red-700">{fileError}</p>
+        </div>
+      )}
+
+      {hasData && !fileError && (
         <button type="button" onClick={() => onImport(text)}
           className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold py-2.5 rounded-lg transition-colors">
           <Check className="w-4 h-4" />Import {rowCount} row{rowCount !== 1 ? "s" : ""} into form

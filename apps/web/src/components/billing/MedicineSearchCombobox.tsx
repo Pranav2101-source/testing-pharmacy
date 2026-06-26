@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, memo } from "react";
+import { useState, useRef, useEffect, memo } from "react";
 import {
   Search, Loader2, Pill, ChevronRight, ScanBarcode,
-  X, AlertTriangle, Clock,
+  X, AlertTriangle, Clock, Shuffle, Layers,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/queryKeys";
 import { api } from "@/lib/api-client";
 import { useBillingStore } from "./useBillingStore";
 import { cn } from "@/lib/utils";
@@ -94,13 +95,14 @@ const BatchPickerDialog = memo(function BatchPickerDialog({
         className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden"
       >
         {/* Header */}
-        <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center flex-shrink-0">
-            <Pill className="w-4 h-4 text-blue-500" />
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-3 bg-gradient-to-br from-blue-50/80 to-white">
+          <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center flex-shrink-0 shadow-sm shadow-blue-200">
+            <Layers className="w-5 h-5 text-white" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="font-bold text-slate-900 text-[14px] truncate">{med.name}</p>
-            <p className="text-[11px] text-slate-400">{batches.length} batch{batches.length !== 1 ? "es" : ""} available — select one</p>
+            <p className="text-[10px] font-bold text-blue-500 uppercase tracking-wider mb-0.5">Select a Batch</p>
+            <p className="font-bold text-slate-900 text-[15px] truncate">{med.name}</p>
+            <p className="text-[11px] text-slate-400">{batches.length} batch{batches.length !== 1 ? "es" : ""} available — oldest expiry shown first</p>
           </div>
           <button
             onClick={onClose}
@@ -210,6 +212,7 @@ export function MedicineSearchCombobox({
   const [stockError,       setStockError]       = useState<string | null>(null);
 
   const addItem      = useBillingStore((s) => s.addItem);
+  const queryClient  = useQueryClient();
   const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef     = useRef<HTMLInputElement>(null);
@@ -323,6 +326,32 @@ export function MedicineSearchCombobox({
     inputRef.current?.focus();
   }
 
+  // ── Fetch batches for a medicine (cached 30 s so repeat clicks are instant) ──
+
+  function fetchBatches(name: string) {
+    return queryClient.fetchQuery({
+      queryKey: queryKeys.medicineStock.byName(name),
+      queryFn:  () =>
+        api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
+          params: { search: name, inStock: true, limit: 20 },
+        }).then((r) => r.data.data.items),
+      staleTime: 30_000,
+    });
+  }
+
+  // Prefetch batches when the pharmacist hovers a result — by the time they
+  // click, the data is already in cache and the batch picker appears instantly.
+  function prefetchBatches(name: string) {
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.medicineStock.byName(name),
+      queryFn:  () =>
+        api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
+          params: { search: name, inStock: true, limit: 20 },
+        }).then((r) => r.data.data.items),
+      staleTime: 30_000,
+    });
+  }
+
   // ── Select medicine from dropdown → fetch batches ─────────────────────────
 
   async function selectMedicine(med: MedicineSearchResult) {
@@ -335,12 +364,9 @@ export function MedicineSearchCombobox({
     setAddingId(med.id);
 
     try {
-      const { data } = await api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
-        params: { search: med.name, inStock: true, limit: 20 },
-      });
+      const allBatches = await fetchBatches(med.name);
 
       const now         = new Date();
-      const allBatches  = data.data.items;
       // Sort FIFO (earliest expiry first) — already ordered by API, but be explicit
       const liveBatches = allBatches
         .filter((b) => new Date(b.expiryDate) > now)
@@ -532,7 +558,7 @@ export function MedicineSearchCombobox({
                 : results.map((med, i) => (
                     <li
                       key={med.id}
-                      onMouseEnter={() => setCursor(i)}
+                      onMouseEnter={() => { setCursor(i); prefetchBatches(med.name); }}
                       onMouseDown={() => selectMedicine(med)}
                       style={{ animationDelay: `${i * 20}ms`, animationFillMode: "both" }}
                       className={cn(
@@ -568,7 +594,7 @@ export function MedicineSearchCombobox({
                           <span className="pill bg-emerald-100 text-emerald-600 uppercase tracking-wide">↵</span>
                         )}
 
-                        {/* A badge — shown when alternatives confirmed, or medicine has a genericName */}
+                        {/* Alternatives — shown when alternatives confirmed, or medicine has a genericName */}
                         {(med.hasAlternatives || med.genericName) && (
                           <button
                             onMouseDown={(e) => {
@@ -580,13 +606,14 @@ export function MedicineSearchCombobox({
                             }}
                             title={med.hasAlternatives ? "View Alternatives (→)" : "Find Alternatives (→)"}
                             className={cn(
-                              "w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-extrabold transition-colors flex-shrink-0",
+                              "flex items-center gap-1 h-6 px-2 rounded-full text-[10px] font-bold transition-colors flex-shrink-0",
                               med.hasAlternatives
                                 ? "bg-violet-100 hover:bg-violet-200 text-violet-700"
                                 : "bg-slate-100 hover:bg-slate-200 text-slate-500"
                             )}
                           >
-                            A
+                            <Shuffle className="w-3 h-3" />
+                            Alt
                           </button>
                         )}
 

@@ -4,7 +4,7 @@ import {
   LayoutGrid, Plus, X, Pencil, Loader2, FileX,
   Building2, Layers, Package, Search, ToggleLeft, ToggleRight,
 } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ function RackModal({ rack, onClose, onDone }: { rack?: Rack; onClose: () => void
       }
       onDone();
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to save rack");
+      setError(getErrorMessage(err, "Failed to save rack"));
     } finally { setSaving(false); }
   }
 
@@ -120,7 +120,7 @@ function ShelfModal({ shelf, racks, defaultRackId, onClose, onDone }: {
       }
       onDone();
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? "Failed to save shelf");
+      setError(getErrorMessage(err, "Failed to save shelf"));
     } finally { setSaving(false); }
   }
 

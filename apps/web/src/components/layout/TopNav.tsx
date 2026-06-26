@@ -1,12 +1,14 @@
-import { useState, useRef, useEffect, memo } from "react";
+import { useState, useRef, useEffect, memo, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { queryKeys } from "@/lib/queryKeys";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import {
   Home, FileText, ShoppingCart, Package2, FlaskConical, Zap, Link2,
-  Search, Phone, Truck, Calendar, ChevronDown, LogOut, Settings, Menu, X,
-  Dot, QrCode, Coins, Send, Monitor, IndianRupee, Info, MapPin, Building2,
-  Receipt, FilePlus, RotateCcw, BookmarkCheck, ClipboardList, Plus, Users,
+  Search, Phone, Calendar, ChevronDown, LogOut, Settings, Menu, X,
+  Dot, Monitor, Info, MapPin, Pill,
+  Receipt, ClipboardList, Plus, Users,
   MoreHorizontal, TicketCheck, Stethoscope, Banknote, BarChart2, ArrowUpCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -46,49 +48,10 @@ const INVENTORY_ITEMS: StyledItem[] = [
   { href: "/dashboard/stock-audit", label: "Stock Audit", description: "Audit & reconcile stock", icon: ClipboardList,iconBg: "bg-orange-500",  iconColor: "text-white", hoverBg: "hover:bg-orange-50", activeBg: "bg-orange-50", activeText: "text-orange-700", accent: "bg-orange-500", requiredRoles: undefined },
 ];
 
-type SalesItem = {
-  href:        string;
-  label:       string;
-  description: string;
-  icon:        React.ElementType;
-  kbd?:        string;
-  iconBg:      string;
-  iconColor:   string;
-  hoverBg:     string;
-  activeBg:    string;
-  activeText:  string;
-  accent:      string;
-};
-const SALES_ITEMS: SalesItem[] = [
-  {
-    href: "/dashboard/billing/new", label: "New Bill", description: "Create a new invoice",
-    icon: FilePlus, kbd: "F2",
-    iconBg: "bg-blue-600", iconColor: "text-white",
-    hoverBg: "hover:bg-blue-50", activeBg: "bg-blue-50", activeText: "text-blue-700", accent: "bg-blue-500",
-  },
-  {
-    href: "/dashboard/billing", label: "All Bills", description: "View and search invoices",
-    icon: FileText,
-    iconBg: "bg-slate-600", iconColor: "text-white",
-    hoverBg: "hover:bg-slate-50", activeBg: "bg-slate-50", activeText: "text-slate-800", accent: "bg-slate-500",
-  },
-  {
-    href: "/dashboard/billing/drafts", label: "Draft Bills", description: "Resume saved drafts",
-    icon: BookmarkCheck,
-    iconBg: "bg-amber-500", iconColor: "text-white",
-    hoverBg: "hover:bg-amber-50", activeBg: "bg-amber-50", activeText: "text-amber-800", accent: "bg-amber-500",
-  },
-  {
-    href: "/dashboard/billing/returns", label: "Returns", description: "Process sales returns",
-    icon: RotateCcw,
-    iconBg: "bg-violet-500", iconColor: "text-white",
-    hoverBg: "hover:bg-violet-50", activeBg: "bg-violet-50", activeText: "text-violet-700", accent: "bg-violet-500",
-  },
-];
 
 type MenuItem = {
   id: string; icon: React.ElementType; label: string;
-  extra?: string; extraType?: "blue" | "badge-new" | "coin"; href?: string; requiredRoles?: string[];
+  extra?: string; extraType?: "badge-new"; href?: string; requiredRoles?: string[];
 };
 
 // Operational items — used daily for running the pharmacy
@@ -96,16 +59,8 @@ const OPERATIONAL_MENU_ITEMS: MenuItem[] = [
   { id: "settings",    icon: Settings,         label: "Account & Settings", href: "/dashboard/settings/pharmacy-profile" },
   { id: "integration", icon: Link2,           label: "Integrations",       href: "/dashboard/integration",  requiredRoles: ["OWNER", "MANAGER"] },
   { id: "migration",   icon: ArrowUpCircle,   label: "Data Migration",      href: "/dashboard/migration",   requiredRoles: ["OWNER"] },
-  { id: "qr",          icon: QrCode,   label: "Show QR",            extraType: "blue"     },
   { id: "support",     icon: Monitor,  label: "Support Tickets",    extra: "New", extraType: "badge-new", href: "/dashboard/support" },
   { id: "shortcuts",   icon: Info,     label: "Shortcuts / Help"                           },
-];
-
-// Marketing/rewards items — secondary, shown below a divider
-const MARKETING_MENU_ITEMS: MenuItem[] = [
-  { id: "coins", icon: Coins,       label: "VitalCoins", extraType: "coin" },
-  { id: "refer", icon: Send,        label: "Refer & Earn"                  },
-  { id: "zero",  icon: IndianRupee, label: "ZERO"                          },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────
@@ -140,13 +95,27 @@ function useDropdown() {
 // ─── NavItem ──────────────────────────────────────────────────────
 // memo: pathname changes on every navigation, but most tabs aren't affected
 const NavItem = memo(function NavItem({ tab, pathname }: { tab: NavTab; pathname: string }) {
-  const active = isActive(pathname, tab.href);
-  const Icon = tab.icon;
+  const active       = isActive(pathname, tab.href);
+  const Icon         = tab.icon;
+  const queryClient  = useQueryClient();
+
+  const handleMouseEnter = useCallback(() => {
+    if (tab.href === "/dashboard/purchase") {
+      // Warm the suppliers list so the Purchase page renders instantly
+      void queryClient.prefetchQuery({
+        queryKey: queryKeys.suppliers.all(),
+        queryFn:  () => api.get("/suppliers/all").then((r) => r.data.data ?? []),
+        staleTime: 5 * 60_000,
+      });
+    }
+  }, [queryClient, tab.href]);
+
   return (
     <Link
       to={tab.href}
       role="tab"
       aria-selected={active}
+      onMouseEnter={handleMouseEnter}
       className={cn(
         "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
         "text-[13px] font-semibold transition-all duration-150 outline-none",
@@ -257,9 +226,10 @@ const GlobalSearchBar = memo(function GlobalSearchBar() {
 });
 
 // ─── Icon Btn ─────────────────────────────────────────────────────
-const IconBtn = memo(function IconBtn({ icon: Icon, label, badge }: { icon: React.ElementType; label: string; badge?: number }) {
+const IconBtn = memo(function IconBtn({ icon: Icon, label, badge, onClick }: { icon: React.ElementType; label: string; badge?: number; onClick?: () => void }) {
   return (
     <button
+      onClick={onClick}
       aria-label={label}
       className="relative w-8 h-8 rounded-lg bg-white/8 hover:bg-white/16 flex items-center justify-center transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/40"
     >
@@ -301,7 +271,6 @@ function ProfileDropdown() {
   const visibleOperational = isSupport
     ? OPERATIONAL_MENU_ITEMS.filter((item) => item.id === "settings")
     : OPERATIONAL_MENU_ITEMS.filter((item) => !item.requiredRoles || item.requiredRoles.includes(user.rawRole));
-  const visibleMarketing = isSupport ? [] : MARKETING_MENU_ITEMS;
 
   return (
     <div ref={ref} className="relative">
@@ -339,6 +308,9 @@ function ProfileDropdown() {
             >
               <span className="absolute -top-5 -right-5 w-20 h-20 rounded-full bg-white/5 pointer-events-none" />
               <span className="absolute -bottom-4 -left-4 w-16 h-16 rounded-full bg-white/5 pointer-events-none" />
+              {/* Brand watermark — fills the gap between the pharmacy name and
+                  the user footer so the panel doesn't read as empty */}
+              <Pill className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-16 h-16 text-white/[0.07] pointer-events-none rotate-45" strokeWidth={1.3} aria-hidden />
               <div>
                 <div className="w-10 h-10 rounded-xl bg-white/15 ring-1 ring-white/25 flex items-center justify-center mb-2.5 shadow-inner select-none">
                   <span className="text-white font-black text-[13px] leading-none">{user.pharmacyInitials}</span>
@@ -372,12 +344,10 @@ function ProfileDropdown() {
                 >
                   <span className={cn(
                     "w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0 transition-colors",
-                    id === "qr"          ? "bg-blue-50    group-hover:bg-blue-100"   :
                     id === "integration" ? "bg-violet-50  group-hover:bg-violet-100" :
                                           "bg-slate-100  group-hover:bg-slate-200"
                   )}>
                     <Icon className={cn("w-3 h-3",
-                      id === "qr"          ? "text-blue-600"   :
                       id === "integration" ? "text-violet-600" : "text-slate-500"
                     )} strokeWidth={1.8} />
                   </span>
@@ -387,35 +357,6 @@ function ProfileDropdown() {
                   )}
                 </button>
               ))}
-
-              {/* ── Marketing / rewards divider ── */}
-              {visibleMarketing.length > 0 && (
-                <>
-                  <div className="mx-3 mt-1 mb-0.5 border-t border-slate-100" />
-                  <p className="px-3.5 pt-1 pb-0.5 text-[9px] font-bold text-slate-300 uppercase tracking-widest">Rewards & More</p>
-                  {visibleMarketing.map(({ id, icon: Icon, label }) => (
-                    <button
-                      key={id}
-                      role="menuitem"
-                      onClick={() => setOpen(false)}
-                      className="w-full flex items-center gap-2.5 px-3.5 py-1.5 text-[12px] text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition-colors outline-none group"
-                    >
-                      <span className={cn(
-                        "w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 transition-colors",
-                        id === "coins" ? "bg-amber-50 group-hover:bg-amber-100" :
-                        id === "refer" ? "bg-sky-50   group-hover:bg-sky-100"   :
-                                         "bg-green-50 group-hover:bg-green-100"
-                      )}>
-                        <Icon className={cn("w-2.5 h-2.5",
-                          id === "coins" ? "text-amber-500" :
-                          id === "refer" ? "text-sky-500"   : "text-green-600"
-                        )} strokeWidth={1.8} />
-                      </span>
-                      <span className="font-medium flex-1 text-left">{label}</span>
-                    </button>
-                  ))}
-                </>
-              )}
 
               <div className="mx-3 my-1 border-t border-slate-100" />
               <div className="flex items-center gap-2.5 px-3.5 py-2">
@@ -453,134 +394,6 @@ function ProfileDropdown() {
     </div>
   );
 }
-
-// ─── Sales Nav Dropdown ────────────────────────────────────────────
-const SalesNavDropdown = memo(function SalesNavDropdown({ pathname }: { pathname: string }) {
-  const { open, setOpen, ref } = useDropdown();
-  const salesActive = pathname.startsWith("/dashboard/billing");
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(v => !v)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className={cn(
-          "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg",
-          "text-[13px] font-semibold transition-all duration-150 outline-none",
-          "focus-visible:ring-2 focus-visible:ring-white/50",
-          salesActive
-            ? "bg-white text-brand-700 shadow-sm"
-            : "text-white/70 hover:text-white hover:bg-white/10"
-        )}
-      >
-        <Receipt className={cn("w-3 h-3 flex-shrink-0", salesActive ? "text-brand-600" : "text-white/55")} strokeWidth={salesActive ? 2.3 : 1.9} />
-        <span>Sales</span>
-        <ChevronDown className={cn("w-2.5 h-2.5 transition-transform duration-200", open && "rotate-180", salesActive ? "text-brand-400" : "text-white/35")} />
-      </button>
-
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            role="menu"
-            initial={{ opacity: 0, y: -8, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0,  scale: 1    }}
-            exit={{   opacity: 0, y: -6, scale: 0.97 }}
-            transition={{ duration: 0.15, ease: [0.25, 0.1, 0.25, 1] }}
-            className="absolute left-0 top-full mt-1.5 w-52 rounded-xl bg-white overflow-hidden z-50"
-            style={{ boxShadow: "0 20px 48px -8px rgba(0,0,0,0.22), 0 4px 16px -4px rgba(0,0,0,0.10)", border: "1px solid rgba(226,232,240,0.8)" }}
-          >
-            {/* Header */}
-            <div
-              className="px-3 py-2 flex items-center justify-between"
-              style={{ background: "linear-gradient(135deg,#0a1a52 0%,#162870 100%)" }}
-            >
-              <div className="flex items-center gap-2">
-                <Receipt className="w-3.5 h-3.5 text-white/70" strokeWidth={1.8} />
-                <span className="text-[12px] font-bold text-white tracking-wide">Sales</span>
-              </div>
-              <span className="text-[9px] font-semibold text-white/40 bg-white/10 px-1.5 py-0.5 rounded-md uppercase tracking-wider">Module</span>
-            </div>
-
-            {/* Items */}
-            <div className="p-1.5 space-y-0.5">
-              {SALES_ITEMS.map((item) => {
-                const { href, label, description, icon: Icon, kbd,
-                        iconBg, iconColor, hoverBg, activeBg, activeText, accent } = item;
-                const active = href === "/dashboard/billing"
-                  ? pathname === href
-                  : pathname.startsWith(href);
-
-                return (
-                  <Link
-                    key={href}
-                    to={href}
-                    role="menuitem"
-                    onClick={() => setOpen(false)}
-                    className={cn(
-                      "relative flex items-center gap-2.5 px-2.5 py-2 rounded-lg transition-all duration-100 group overflow-hidden",
-                      active ? cn(activeBg, activeText) : cn("text-slate-700", hoverBg)
-                    )}
-                  >
-                    {/* CSS accent bar */}
-                    <span className={cn(
-                      "absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full transition-opacity duration-150",
-                      accent,
-                      active ? "opacity-100" : "opacity-0"
-                    )} />
-
-                    {/* Icon tile */}
-                    <span className={cn(
-                      "w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 shadow-sm transition-transform duration-100 group-hover:scale-105",
-                      active ? iconBg : cn(iconBg, "opacity-80 group-hover:opacity-100")
-                    )}>
-                      <Icon className={cn("w-3.5 h-3.5", iconColor)} strokeWidth={2} />
-                    </span>
-
-                    {/* Text */}
-                    <div className="flex-1 min-w-0">
-                      <p className={cn(
-                        "text-[12px] font-bold leading-tight",
-                        active ? activeText : "text-slate-800"
-                      )}>
-                        {label}
-                      </p>
-                      <p className={cn(
-                        "text-[10px] mt-0.5 leading-tight",
-                        active ? "opacity-70" : "text-slate-400"
-                      )}>
-                        {description}
-                      </p>
-                    </div>
-
-                    {/* Keyboard shortcut */}
-                    {kbd && (
-                      <kbd className="kbd-hint-dark flex-shrink-0 opacity-60 group-hover:opacity-100 transition-opacity">
-                        {kbd}
-                      </kbd>
-                    )}
-                  </Link>
-                );
-              })}
-            </div>
-
-            {/* Footer */}
-            <div className="mx-2 mb-1.5 px-2.5 py-1.5 bg-slate-50 rounded-lg flex items-center justify-between">
-              <span className="text-[10px] text-slate-400 font-medium">Quick access</span>
-              <Link
-                to="/dashboard/billing"
-                onClick={() => setOpen(false)}
-                className="text-[10px] font-bold text-blue-600 hover:text-blue-700 transition-colors"
-              >
-                View all →
-              </Link>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </div>
-  );
-});
 
 // ─── More Nav Dropdown ────────────────────────────────────────────
 const MoreNavDropdown = memo(function MoreNavDropdown({ pathname }: { pathname: string }) {
@@ -666,6 +479,7 @@ const MoreNavDropdown = memo(function MoreNavDropdown({ pathname }: { pathname: 
 // ─── Inventory Nav Dropdown ───────────────────────────────────────
 const InventoryNavDropdown = memo(function InventoryNavDropdown({ pathname, rawRole }: { pathname: string; rawRole: string }) {
   const { open, setOpen, ref } = useDropdown();
+  const queryClient = useQueryClient();
   const visibleInventoryItems = INVENTORY_ITEMS.filter(
     (item) => !item.requiredRoles || item.requiredRoles.includes(rawRole),
   );
@@ -674,10 +488,22 @@ const InventoryNavDropdown = memo(function InventoryNavDropdown({ pathname, rawR
     pathname.startsWith("/dashboard/locations") ||
     pathname.startsWith("/dashboard/stock-audit");
 
+  const handleMouseEnter = useCallback(() => {
+    // Warm the default inventory list so the Inventory page renders instantly
+    const defaultParams = { page: 1, search: "", status: "", inStock: false, lowStock: false, nearExpiry: false };
+    void queryClient.prefetchQuery({
+      queryKey: queryKeys.inventory.list(defaultParams),
+      queryFn:  () =>
+        api.get("/inventory", { params: { page: 1, limit: 20 } }).then((r) => r.data.data),
+      staleTime: 30_000,
+    });
+  }, [queryClient]);
+
   return (
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(v => !v)}
+        onMouseEnter={handleMouseEnter}
         aria-haspopup="menu"
         aria-expanded={open}
         className={cn(
@@ -757,7 +583,6 @@ function MobileMenu({ pathname, rawRole }: { pathname: string; rawRole: string }
   const visibleInventoryItems = INVENTORY_ITEMS.filter(
     (item) => !item.requiredRoles || item.requiredRoles.includes(rawRole),
   );
-  const [salesExpanded,     setSalesExpanded]     = useState(() => pathname.startsWith("/dashboard/billing"));
   const [inventoryExpanded, setInventoryExpanded] = useState(() =>
     pathname.startsWith("/dashboard/inventory") ||
     pathname.startsWith("/dashboard/locations") ||
@@ -776,7 +601,6 @@ function MobileMenu({ pathname, rawRole }: { pathname: string; rawRole: string }
 
   useEffect(() => {
     setOpen(false);
-    if (pathname.startsWith("/dashboard/billing")) setSalesExpanded(true);
     if (isInventoryActive) setInventoryExpanded(true);
     if (isMoreActive) setMoreExpanded(true);
   }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -855,38 +679,14 @@ function MobileMenu({ pathname, rawRole }: { pathname: string; rawRole: string }
                   );
                 })()}
 
-                <div>
-                  <button
-                    onClick={() => setSalesExpanded(v => !v)}
-                    className={cn("w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all",
-                      isSalesActive ? "bg-white/10 text-white" : "text-white/65 hover:text-white hover:bg-white/10")}
-                  >
-                    <Receipt className={cn("w-3.5 h-3.5", isSalesActive ? "text-white/80" : "text-white/50")} strokeWidth={1.8} />
-                    Sales
-                    <ChevronDown className={cn("w-3 h-3 ml-auto transition-transform duration-200", salesExpanded && "rotate-180")} />
-                  </button>
-                  <AnimatePresence initial={false}>
-                    {salesExpanded && (
-                      <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.16 }} className="overflow-hidden">
-                        <div className="ml-4 mt-0.5 mb-0.5 space-y-0.5 border-l border-white/10 pl-2.5">
-                          {SALES_ITEMS.map(({ href, label, icon: Icon }) => {
-                            const active = href === "/dashboard/billing" ? pathname === href : pathname.startsWith(href);
-                            return (
-                              <Link key={href} to={href} onClick={() => setOpen(false)}
-                                className={cn("flex items-center gap-2 px-2.5 py-2 rounded-lg text-[12px] font-semibold transition-all",
-                                  active ? "bg-white text-brand-700" : "text-white/60 hover:text-white hover:bg-white/10")}
-                              >
-                                <Icon className={cn("w-3 h-3", active ? "text-brand-600" : "text-white/40")} strokeWidth={1.8} />
-                                {label}
-                                {active && <Dot className="ml-auto w-3.5 h-3.5 text-brand-500" />}
-                              </Link>
-                            );
-                          })}
-                        </div>
-                      </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
+                <Link to="/dashboard/billing" onClick={() => setOpen(false)}
+                  className={cn("flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-semibold transition-all",
+                    isSalesActive ? "bg-white text-brand-700" : "text-white/65 hover:text-white hover:bg-white/10")}
+                >
+                  <Receipt className={cn("w-3.5 h-3.5", isSalesActive ? "text-brand-600" : "text-white/50")} strokeWidth={1.8} />
+                  Sales
+                  {isSalesActive && <Dot className="ml-auto w-3.5 h-3.5 text-brand-500" />}
+                </Link>
 
                 {/* Inventory — expandable section */}
                 <div>
@@ -1112,7 +912,7 @@ export function TopNav() {
       {/* Nav tabs — desktop */}
       <nav role="tablist" aria-label="Main navigation" className="hidden xl:flex items-center gap-0.5">
         {NAV_TABS[0] && <NavItem tab={NAV_TABS[0]} pathname={pathname} />}
-        <SalesNavDropdown pathname={pathname} />
+        <NavItem tab={{ href: "/dashboard/billing", label: "Sales", icon: Receipt }} pathname={pathname} />
         {NAV_TABS[1] && <NavItem tab={NAV_TABS[1]} pathname={pathname} />}
         <InventoryNavDropdown pathname={pathname} rawRole={rawRole} />
         <MoreNavDropdown pathname={pathname} />
@@ -1136,9 +936,12 @@ export function TopNav() {
 
         <div className="h-5 w-px bg-white/15 mx-1" />
 
-        <IconBtn icon={Truck}  label="Delivery status" />
         <NotificationBell />
-        <IconBtn icon={Phone}  label="Support"         />
+        <IconBtn
+          icon={Phone}
+          label="Support"
+          onClick={() => window.dispatchEvent(new CustomEvent("checkup:open-help", { detail: { category: "support" } }))}
+        />
 
         <div className="h-5 w-px bg-white/15 mx-1" />
 
