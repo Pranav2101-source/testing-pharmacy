@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Loader2, RefreshCw, Plus, FileText, Check, X, Send, Building2, Paperclip } from "lucide-react";
+import { RefreshCw, Plus, FileText, Check, X, Send, Building2, Paperclip } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/hooks/useDebounce";
 import { queryKeys } from "@/lib/queryKeys";
+import { TableSkeletonRows } from "@/components/Skeleton";
 import type { PurchaseOrder, Supplier } from "../types";
 import { PO_STATUS, APPROVAL_STATUS } from "../types";
 import { fmtDate, currency, viewSourceUpload } from "../utils";
@@ -100,7 +101,7 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={11} className="py-24 text-center"><Loader2 className="w-8 h-8 animate-spin text-blue-400 mx-auto" /></td></tr>
+              <TableSkeletonRows columns={11} widths={["w-6","w-20","w-28","w-16","w-14","w-14","w-8","w-16","w-16","w-16","w-24"]} />
             ) : orders.length === 0 ? (
               <tr><td colSpan={11}>
                 <EmptyState icon={FileText} title="No purchase orders found"

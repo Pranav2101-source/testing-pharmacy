@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api-client";
+import { GridSkeletonRows } from "@/components/Skeleton";
 
 // ─── Types ────────────────────────────────────────────────────────
 type QStatus = "DRAFT" | "SENT" | "RECEIVED" | "EXPIRED" | "CONVERTED";
@@ -792,7 +793,7 @@ export default function QuotationsPage() {
           </div>
 
           {loading ? (
-            <div className="flex items-center justify-center py-16"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+            <GridSkeletonRows gridClass="grid-cols-[40px_1fr_1fr_0.6fr_0.8fr_1fr_120px]" columns={7} rows={6} />
           ) : loadError ? (
             <div className="flex flex-col items-center justify-center py-16 text-slate-400">
               <AlertTriangle className="w-8 h-8 text-red-300 mb-3" />

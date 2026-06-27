@@ -1,29 +1,36 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { Loader2, ShieldCheck, Check, X } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
+import { queryKeys } from "@/lib/queryKeys";
+import { CardSkeletonRows } from "@/components/Skeleton";
 import { currency, fmtDate } from "../utils";
 import { SlidePanel } from "./AutoSuggestPanel";
 
+const PENDING_PARAMS = { approvalStatus: "PENDING_APPROVAL", limit: 50 };
+
 export function PendingApprovalsPanel({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
-  const [items,    setItems]    = useState<any[]>([]);
-  const [loading,  setLoading]  = useState(true);
   const [actionId, setActionId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
-  const load = useCallback(() => {
-    setLoading(true);
-    api.get("/purchases/orders", { params: { approvalStatus: "PENDING_APPROVAL", limit: 50 } })
-      .then(({ data }) => setItems(data.data.items))
-      .catch(() => setItems([]))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => { load(); }, [load]);
+  const queryKey = queryKeys.purchases.orders(PENDING_PARAMS);
+  const { data, isPending } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      const { data } = await api.get("/purchases/orders", { params: PENDING_PARAMS });
+      return data.data as { items: any[]; total: number };
+    },
+    staleTime: 30_000,
+  });
+  const items   = data?.items ?? [];
+  const loading = isPending;
 
   async function decide(id: string, approved: boolean) {
     setActionId(id);
     try {
       await api.patch(`/purchases/orders/${id}/approve`, { approved });
-      setItems((p) => p.filter((i) => i.id !== id));
+      queryClient.setQueryData<{ items: any[]; total: number }>(queryKey, (old) =>
+        old ? { ...old, items: old.items.filter((i) => i.id !== id), total: old.total - 1 } : old);
       onDone();
     } catch {/* */} finally { setActionId(null); }
   }
@@ -32,7 +39,7 @@ export function PendingApprovalsPanel({ onClose, onDone }: { onClose: () => void
     <SlidePanel title="Pending Approvals" subtitle="Purchase orders waiting for owner sign-off" onClose={onClose}>
       <div className="px-5 py-4 space-y-3">
         {loading ? (
-          <div className="flex items-center justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-blue-400" /></div>
+          <CardSkeletonRows rows={3} />
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center py-12 text-center">
             <ShieldCheck className="w-10 h-10 text-green-300 mb-3" />

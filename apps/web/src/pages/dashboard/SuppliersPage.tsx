@@ -1,12 +1,16 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Building2, Plus, Search, Phone, Mail, MapPin, CreditCard,
-  Loader2, FileX, AlertCircle, X, Check,
+  Loader2, FileX, AlertCircle, X, Check, RefreshCw,
   History,
 } from "lucide-react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { useDebounce } from "@/hooks/useDebounce";
+import { queryKeys } from "@/lib/queryKeys";
+import { TableSkeletonRows } from "@/components/Skeleton";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -322,41 +326,37 @@ function SupplierModal({ supplier, onClose, onSaved }: {
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function SuppliersPage() {
-  const [suppliers,  setSuppliers]  = useState<Supplier[]>([]);
-  const [total,      setTotal]      = useState(0);
   const [page,       setPage]       = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [loading,    setLoading]    = useState(true);
-  const [error,      setError]      = useState<string | null>(null);
   const [search,     setSearch]     = useState("");
   const [modal,      setModal]      = useState<"add" | "edit" | null>(null);
   const [editing,    setEditing]    = useState<Supplier | null>(null);
   const [history,    setHistory]    = useState<Supplier | null>(null);
+  const queryClient = useQueryClient();
 
-  const load = useCallback(async () => {
-    setLoading(true); setError(null);
-    try {
+  const dSearch = useDebounce(search, 350);
+
+  // Same query key shape as the Purchases module's Distributors tab — both
+  // tables read the exact same /suppliers list, so they now share one cache
+  // entry instead of each re-fetching on every visit.
+  const { data, isPending, isFetching, isError, refetch } = useQuery({
+    queryKey: queryKeys.suppliers.list({ page, search: dSearch }),
+    queryFn: async () => {
       const params: Record<string, string | number> = { page, limit: 20 };
-      if (search.trim()) params.search = search.trim();
+      if (dSearch.trim()) params.search = dSearch.trim();
       const { data } = await api.get("/suppliers", { params });
-      setSuppliers(data.data.items);
-      setTotal(data.data.total);
-      setTotalPages(Math.ceil(data.data.total / 20));
-    } catch { setError("Failed to load suppliers"); }
-    finally  { setLoading(false); }
-  }, [page, search]);
+      return data.data as { items: Supplier[]; total: number };
+    },
+    staleTime: 30_000,
+    placeholderData: keepPreviousData,
+  });
 
-  useEffect(() => {
-    const t = setTimeout(load, search ? 350 : 0);
-    return () => clearTimeout(t);
-  }, [load]);
+  const suppliers  = data?.items ?? [];
+  const total       = data?.total ?? 0;
+  const totalPages  = Math.ceil(total / 20) || 1;
+  const loading     = isPending;
 
-  function handleSaved(saved: Supplier) {
-    setSuppliers((prev) => {
-      const idx = prev.findIndex((s) => s.id === saved.id);
-      if (idx >= 0) { const next = [...prev]; next[idx] = saved; return next; }
-      return [saved, ...prev];
-    });
+  function handleSaved() {
+    queryClient.invalidateQueries({ queryKey: ["suppliers", "list"] });
     setModal(null); setEditing(null);
   }
 
@@ -382,6 +382,9 @@ export default function SuppliersPage() {
             className="px-3 bg-transparent text-slate-700 placeholder-slate-400 focus:outline-none w-full h-full text-[13px]" />
           <span className="px-2.5 text-slate-400"><Search className="w-3.5 h-3.5" /></span>
         </div>
+        <button onClick={() => refetch()} className="w-[30px] h-[30px] rounded-md border border-slate-200 bg-white flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:border-slate-300 shadow-sm transition-all">
+          <RefreshCw className={cn("w-3.5 h-3.5", isFetching && "animate-spin")} />
+        </button>
       </div>
 
       {/* Table */}
@@ -396,9 +399,9 @@ export default function SuppliersPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={9} className="py-24 text-center"><Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" /></td></tr>
-            ) : error ? (
-              <tr><td colSpan={9} className="py-16 text-center"><AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-2" /><p className="text-red-500 text-[13px]">{error}</p></td></tr>
+              <TableSkeletonRows columns={9} widths={["w-28","w-20","w-20","w-16","w-12","w-16","w-10","w-8","w-6"]} />
+            ) : isError ? (
+              <tr><td colSpan={9} className="py-16 text-center"><AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-2" /><p className="text-red-500 text-[13px]">Failed to load suppliers</p></td></tr>
             ) : suppliers.length === 0 ? (
               <tr><td colSpan={9} className="py-24 text-center"><FileX className="w-10 h-10 text-slate-200 mx-auto mb-3" /><p className="text-slate-500 text-[14px] font-medium">No suppliers yet</p></td></tr>
             ) : suppliers.map((s) => (
