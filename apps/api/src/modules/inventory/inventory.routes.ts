@@ -82,6 +82,10 @@ const inventoryRoutes: FastifyPluginAsync = async (app) => {
   app.get("/ledger", { preHandler: auth }, async (req, reply) => {
     const query  = listLedgerQuerySchema.parse(req.query);
     const result = await service.getLedger(req.pharmacyId, query);
+    // Movement history changes on every stock action — 30-second cache matches
+    // the list endpoint's TTL to avoid redundant hits on rapid tab switching.
+    reply.header("Cache-Control", "private, max-age=30, must-revalidate");
+    reply.header("Vary", "Authorization");
     return reply.send({ success: true, data: result });
   });
 

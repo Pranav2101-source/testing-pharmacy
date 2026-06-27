@@ -347,86 +347,101 @@ const CATEGORIES: HelpCategory[] = [
         id: "batch", question: "What is a Batch Number?",
         tags: ["batch", "lot", "batch number", "manufacture"],
         blocks: [
-          { type: "text", content: "A batch number (or lot number) is a unique code assigned by the manufacturer to a specific production run of a medicine. It lets you trace which batch was sold to which customer." },
-          {
-            type: "grid", items: [
-              { icon: Tag,          label: "Traceability",  desc: "Know exactly which batch was dispensed",    color: "bg-blue-100 text-blue-600"   },
-              { icon: AlertTriangle, label: "Drug Recall",  desc: "Quickly identify & quarantine bad batches",  color: "bg-red-100 text-red-600"    },
-              { icon: Calendar,     label: "Expiry",        desc: "Each batch has its own expiry date",        color: "bg-amber-100 text-amber-600" },
-              { icon: DollarSign,   label: "Cost Tracking", desc: "Purchase price recorded per batch",        color: "bg-emerald-100 text-emerald-600" },
-            ],
-          },
-          { type: "tip", content: "Always enter the batch number when receiving stock through a GRN. It is printed on the medicine strip, box, or label." },
+          { type: "text", content: "A unique code from the manufacturer for one production run of a medicine. It tracks expiry, cost, and recalls per batch." },
+          { type: "tip", content: "Enter it when confirming a GRN — it's printed on the strip, box, or label." },
         ],
       },
       {
-        id: "fefo", question: "What is FEFO and why does it matter?",
+        id: "fefo", question: "What is FEFO?",
         tags: ["fefo", "first expiry", "batch selection", "expiry"],
         blocks: [
-          { type: "text", content: "FEFO stands for First-Expiry-First-Out. When a medicine appears in multiple batches, Checkup automatically suggests the batch that expires soonest — ensuring older stock is sold first and waste is minimised." },
-          { type: "tip", content: "Checkup applies FEFO automatically during billing. You can override the batch selection manually if needed." },
+          { type: "text", content: "First-Expiry-First-Out. If a medicine has multiple batches, Checkup auto-picks the one expiring soonest during billing — so older stock sells first and less goes to waste." },
+          { type: "tip", content: "You can manually override the batch at billing if needed." },
         ],
       },
       {
         id: "expiry", question: "How do expiry alerts work?",
         tags: ["expiry", "expire", "alert", "near expiry"],
         blocks: [
-          { type: "text", content: "Checkup monitors expiry dates for every batch and proactively alerts you so you can act before medicines expire." },
+          { type: "text", content: "Checkup tracks every batch's expiry date and flags it before it's too late to act." },
           {
             type: "badges", items: [
-              { label: "Critical — < 30 days",  color: "bg-red-100 text-red-700",    desc: "Return to distributor or apply urgent discount / quarantine" },
-              { label: "Warning — 30–60 days",  color: "bg-amber-100 text-amber-700", desc: "Plan for return to supplier or run a promotion" },
-              { label: "Upcoming — 60–90 days", color: "bg-blue-100 text-blue-700",   desc: "Keep an eye on; prioritise in billing" },
+              { label: "Critical — < 30 days",  color: "bg-red-100 text-red-700",    desc: "Return or quarantine now" },
+              { label: "Warning — 30–60 days",  color: "bg-amber-100 text-amber-700", desc: "Plan a return or promo" },
+              { label: "Upcoming — 60–90 days", color: "bg-blue-100 text-blue-700",   desc: "Keep an eye on it" },
             ],
           },
-          { type: "tip", content: "The Home dashboard shows expiry alerts. You can also filter the Inventory page by expiry date to see all affected batches at once." },
+          { type: "tip", content: "See all of these on the Home dashboard or by filtering Inventory by expiry." },
         ],
       },
       {
         id: "low-stock", question: "What is a Low Stock Alert?",
         tags: ["low stock", "reorder", "minimum", "alert"],
         blocks: [
-          { type: "text", content: "When a medicine's stock quantity falls below the configured minimum (reorder level), it is flagged as low stock and appears on the Home dashboard and Inventory page." },
+          { type: "text", content: "When stock drops below a medicine's minimum level, it's flagged on Home and in Inventory." },
           {
             type: "steps", steps: [
-              "Set the minimum stock level when adding a medicine to inventory",
-              "Checkup monitors stock in real-time as bills are created",
-              "Low stock items appear with a red badge in Inventory",
-              "Click 'Reorder' on any low stock item to create a Purchase Order instantly",
+              "Set a minimum stock level for each medicine",
+              "Checkup watches stock live as bills are made",
+              "Low items get a red badge in Inventory",
+              "Click 'Reorder' to create a PO for it instantly",
             ],
           },
+          { type: "tip", content: "Use Smart Stock Levels (Inventory → Batches) to auto-set minimums from your last 90 days of sales instead of guessing." },
         ],
       },
       {
         id: "stock-audit", question: "What is a Stock Audit?",
         tags: ["stock audit", "audit", "physical count", "discrepancy"],
         blocks: [
-          { type: "text", content: "A Stock Audit is a physical count of your shelves compared against the system's records. It finds discrepancies caused by breakage, pilferage, or data entry errors." },
+          { type: "text", content: "A physical shelf count checked against system records — catches breakage, theft, or entry errors." },
           {
             type: "steps", steps: [
-              "Go to Inventory → Stock Audit → Start New Audit",
-              "Scan or search for each medicine and enter the physically counted quantity",
-              "The system highlights items where physical count ≠ system count",
-              "Review and adjust each discrepancy with a reason",
-              "Finalise the audit to lock the record and update stock",
+              "Inventory → Stock Audit → Start New Audit",
+              "Count and enter each medicine's actual quantity",
+              "Checkup highlights mismatches",
+              "Add a reason for each, then finalise to update stock",
             ],
           },
-          { type: "warning", content: "Run audits during off-peak hours. Once finalised, an audit cannot be edited. Adjustments affect your stock valuation." },
+          { type: "warning", content: "Once finalised, an audit can't be edited — it directly adjusts your stock." },
         ],
       },
       {
         id: "locations", question: "What are Locations, Racks, and Shelves?",
         tags: ["location", "rack", "shelf", "where", "storage"],
         blocks: [
-          { type: "text", content: "Checkup lets you map your physical pharmacy layout — defining storage locations (racks, shelves, refrigerators) for each medicine. This speeds up dispensing by telling staff exactly where to find a medicine." },
+          { type: "text", content: "Map your shelves and racks so every medicine has a known spot — staff find it faster during billing." },
           {
             type: "steps", steps: [
-              "Go to Inventory → Locations to set up racks and shelves",
-              "Assign a location to each medicine in inventory",
-              "During billing, the location appears next to the medicine so staff know where to fetch it from",
+              "Inventory → Locations to set up racks and shelves",
+              "Assign each medicine to a location",
+              "It shows up next to the medicine during billing",
             ],
           },
-          { type: "tip", content: "Use meaningful names like 'Rack A – Shelf 2' or 'Fridge – Cold Storage' for easy identification." },
+          { type: "tip", content: "Use clear names like 'Rack A – Shelf 2' or 'Fridge – Cold Storage'." },
+        ],
+      },
+      {
+        id: "batch-status", question: "What does changing a batch's Status do?",
+        tags: ["batch status", "quarantine", "damaged", "expired", "active"],
+        blocks: [
+          { type: "text", content: "Each batch is Active, Quarantine, Expired, or Damaged. Anything other than Active is excluded from billing and FEFO — it stays in records but can't be sold." },
+          { type: "tip", content: "In Inventory → Batches, click 'Status' on a row and give a reason — useful while a batch is under QC review or pulled for damage." },
+        ],
+      },
+      {
+        id: "stock-adjustment", question: "How do I manually adjust stock?",
+        tags: ["adjust stock", "stock count", "correction", "damage", "manual"],
+        blocks: [
+          { type: "text", content: "Use this to correct stock after a physical count, damage, theft, or any mismatch outside of a sale or purchase." },
+          {
+            type: "steps", steps: [
+              "Inventory → Batches, click 'Adjust' on the batch",
+              "Choose Add or Remove and the quantity",
+              "Pick a reason code and add a short note",
+              "Confirm — the stock ledger records it instantly",
+            ],
+          },
         ],
       },
     ],

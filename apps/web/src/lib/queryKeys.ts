@@ -18,6 +18,8 @@ export const queryKeys = {
       lowStock:   boolean;
       nearExpiry: boolean;
     }) => ["inventory", "list", params] as const,
+    ledger: (params: Record<string, unknown>) => ["inventory", "ledger", params] as const,
+    alerts: () => ["inventory", "alerts"] as const,
   },
   medicineStock: {
     byName: (name: string) => ["medicine-stock", name] as const,
