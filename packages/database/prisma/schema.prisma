@@ -9,12 +9,24 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+// ─── Tenant Status (Platform Admin lifecycle) ────────────────────────────────
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+  PENDING
+  TRIAL
+  EXPIRED
+}
+
 // ─── Pharmacy (one per registered pharmacy) ──────────────────────────────────
 
 model Pharmacy {
-  id            String  @id @default(cuid())
+  id            String       @id @default(cuid())
+  tenantCode    String?      @unique        // e.g. TEN-000001 — generated on create
   name          String
-  slug          String  @unique
+  slug          String       @unique
   gstin         String?
   drugLicense   String?
   phone         String?
@@ -23,7 +35,8 @@ model Pharmacy {
   city          String?
   state         String?
   pincode       String?
-  isActive      Boolean @default(true)
+  isActive      Boolean      @default(true)
+  tenantStatus  TenantStatus @default(ACTIVE)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -56,6 +69,8 @@ model Pharmacy {
   medicineOverrides   PharmacyMedicineOverride[]
   doctors             Doctor[]
   cashClosures        CashClosure[]
+  subscription        Subscription?
+  tenantSettings      TenantSettings?
   // Child-table back-relations (added for RLS + tenant isolation on item rows)
   invoiceItems        InvoiceItem[]
   grnItems            GRNItem[]
@@ -74,6 +89,55 @@ model Pharmacy {
   medicineMappings        MedicineMapping[]
 
   @@map("pharmacies")
+}
+
+// ─── Subscription (one per pharmacy, platform-managed) ────────────────────────
+
+model Subscription {
+  id         String             @id @default(cuid())
+  pharmacyId String             @unique
+  planName   String             @default("Free") // Free | Standard | Professional
+  status     SubscriptionStatus @default(ACTIVE)
+  validUntil DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+// ─── Tenant Settings (feature flags & limits per pharmacy) ────────────────────
+
+model TenantSettings {
+  id                  String  @id @default(cuid())
+  pharmacyId          String  @unique
+  doctorLimit         Int     @default(5)
+  staffLimit          Int     @default(5)
+  patientLimit        Int     @default(500)
+  storageLimit        Int     @default(1024) // in MB
+  enableBilling       Boolean @default(true)
+  enableInventory     Boolean @default(true)
+  enableEmr           Boolean @default(false)
+  enableCrm           Boolean @default(false)
+  enableWhatsapp      Boolean @default(false)
+  enableSms           Boolean @default(false)
+  enableApiAccess     Boolean @default(false)
+  enableOnlineBooking Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_settings")
 }
 
 // ─── Document Sequence ────────────────────────────────────────────────────────

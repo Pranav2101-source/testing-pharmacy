@@ -40,9 +40,11 @@ export default function LoginPage() {
       storeTokens(tokens.accessToken);
       storeUser(user);
       setSuccess(true);
-      const dest = (user.role === "SUPPORT_AGENT" || user.role === "PLATFORM_ADMIN")
-        ? "/dashboard/support"
-        : "/dashboard";
+      const dest = user.role === "PLATFORM_ADMIN"
+        ? "/dashboard/platform"
+        : user.role === "SUPPORT_AGENT"
+          ? "/dashboard/support"
+          : "/dashboard";
       setTimeout(() => navigate(dest), 600);
     } catch (err) {
       // axios normalises the backend error message onto err.message via the

@@ -10,6 +10,7 @@ import {
   Dot, Monitor, Info, MapPin, Pill,
   Receipt, ClipboardList, Plus, Users,
   MoreHorizontal, TicketCheck, Stethoscope, Banknote, BarChart2, ArrowUpCircle,
+  Building2, CreditCard, ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCalendarTodayCount } from "@/components/calendar/useCalendarEvents";
@@ -260,6 +261,8 @@ const NewBillBtn = memo(function NewBillBtn() {
     </button>
   );
 });
+
+
 
 // ─── Profile Dropdown ─────────────────────────────────────────────
 function ProfileDropdown() {
@@ -804,8 +807,19 @@ function SupportNav() {
 
   const SUPPORT_TABS: NavTab[] = [
     { href: "/dashboard/support",        label: "Tickets", icon: TicketCheck },
-    ...(isAdmin ? [{ href: "/dashboard/support/agents", label: "Agents", icon: Users }] : []),
   ];
+
+  const ADMIN_TABS: NavTab[] = [
+    { href: "/dashboard/platform",       label: "Dashboard",     icon: Home },
+    { href: "/dashboard/tenants",        label: "Tenants",       icon: Building2 },
+    { href: "/dashboard/subscriptions",  label: "Subscriptions", icon: CreditCard },
+    { href: "/dashboard/support",        label: "Support",       icon: TicketCheck },
+    { href: "/dashboard/analytics",      label: "Analytics",     icon: BarChart2 },
+    { href: "/dashboard/audit",          label: "Audit",         icon: ShieldAlert },
+    { href: "/dashboard/settings",       label: "Settings",      icon: Settings },
+  ];
+
+  const tabs = isAdmin ? ADMIN_TABS : SUPPORT_TABS;
 
   return (
     <header
@@ -836,7 +850,7 @@ function SupportNav() {
       <div className="h-5 w-px bg-white/15 flex-shrink-0 mx-0.5" />
 
       <nav role="tablist" aria-label="Support navigation" className="hidden xl:flex items-center gap-0.5">
-        {SUPPORT_TABS.map((tab) => <NavItem key={tab.href} tab={tab} pathname={pathname} />)}
+        {tabs.map((tab) => <NavItem key={tab.href} tab={tab} pathname={pathname} />)}
       </nav>
 
       <div className="flex-1" />

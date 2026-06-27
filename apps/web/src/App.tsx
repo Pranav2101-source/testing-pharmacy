@@ -49,6 +49,10 @@ const CashClosurePage      = lazy(() => import("./pages/dashboard/CashClosurePag
 const PrescriptionsPage    = lazy(() => import("./pages/dashboard/PrescriptionsPage"));
 const MigrationPage        = lazy(() => import("./pages/dashboard/MigrationPage"));
 
+// ─── Platform Admin ─────────────────────────────────────────────
+const PlatformAdminDashboard = lazy(() => import("./pages/dashboard/platform/PlatformAdminDashboard"));
+const TenantsPage            = lazy(() => import("./pages/dashboard/platform/TenantsPage"));
+
 // ─── Support ──────────────────────────────────────────────────
 const SupportTicketsPage   = lazy(() => import("./pages/dashboard/support/SupportTicketsPage"));
 const TicketDetailPage     = lazy(() => import("./pages/dashboard/support/TicketDetailPage"));
@@ -138,6 +142,12 @@ export function App() {
               {/* Migration: OWNER only — touches global catalog + financial opening balances */}
               <Route element={<RoleGuard allow={["OWNER"]} redirectTo="/dashboard" />}>
                 <Route path="/dashboard/migration"          element={<MigrationPage />} />
+              </Route>
+
+              {/* Platform Admin */}
+              <Route element={<RoleGuard allow={["PLATFORM_ADMIN"]} redirectTo="/dashboard" />}>
+                <Route path="/dashboard/platform"           element={<PlatformAdminDashboard />} />
+                <Route path="/dashboard/tenants"            element={<TenantsPage />} />
               </Route>
 
               {/* Support — static routes must come before the dynamic :id segment */}
