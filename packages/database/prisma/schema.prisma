@@ -12,18 +12,18 @@ datasource db {
 // ─── Pharmacy (one per registered pharmacy) ──────────────────────────────────
 
 model Pharmacy {
-  id            String  @id @default(cuid())
-  name          String
-  slug          String  @unique
-  gstin         String?
-  drugLicense   String?
-  phone         String?
-  email         String?
-  address       String?
-  city          String?
-  state         String?
-  pincode       String?
-  isActive      Boolean @default(true)
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  gstin       String?
+  drugLicense String?
+  phone       String?
+  email       String?
+  address     String?
+  city        String?
+  state       String?
+  pincode     String?
+  isActive    Boolean @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -69,9 +69,9 @@ model Pharmacy {
   prescriptions       Prescription[]
   prescriptionItems   PrescriptionItem[]
   batchRecalls        BatchRecall[]
-  migrationSessions       MigrationSession[]
-  migrationImportJobs     MigrationImportJob[]
-  medicineMappings        MedicineMapping[]
+  migrationSessions   MigrationSession[]
+  migrationImportJobs MigrationImportJob[]
+  medicineMappings    MedicineMapping[]
 
   @@map("pharmacies")
 }
@@ -124,24 +124,24 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy            Pharmacy             @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  invoices            Invoice[]
-  auditLogs           AuditLog[]
-  invoicePayments     InvoicePayment[]
-  salesReturns        SalesReturn[]
-  inventoryMovements  InventoryMovement[]
-  supplierPayments    SupplierPayment[]
-  supplierCreditNotes SupplierCreditNote[]
-  quotations          Quotation[]
-  calendarEvents      CalendarEvent[]      @relation("CalendarEventCreator")
-  ticketsRaised       SupportTicket[]      @relation("TicketRaisedBy")
-  ticketMessages      TicketMessage[]      @relation("TicketMessageSender")
+  pharmacy              Pharmacy             @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  invoices              Invoice[]
+  auditLogs             AuditLog[]
+  invoicePayments       InvoicePayment[]
+  salesReturns          SalesReturn[]
+  inventoryMovements    InventoryMovement[]
+  supplierPayments      SupplierPayment[]
+  supplierCreditNotes   SupplierCreditNote[]
+  quotations            Quotation[]
+  calendarEvents        CalendarEvent[]      @relation("CalendarEventCreator")
+  ticketsRaised         SupportTicket[]      @relation("TicketRaisedBy")
+  ticketMessages        TicketMessage[]      @relation("TicketMessageSender")
   supportAgent          SupportAgent?
   cashClosures          CashClosure[]
-  approvedAuditSessions StockAuditSession[] @relation("StockAuditApprover")
-  createdAuditSessions  StockAuditSession[] @relation("StockAuditCreator")
-  approvedPOs           PurchaseOrder[]     @relation("POApprover")
-  batchRecalls          BatchRecall[]       @relation("BatchRecallUser")
+  approvedAuditSessions StockAuditSession[]  @relation("StockAuditApprover")
+  createdAuditSessions  StockAuditSession[]  @relation("StockAuditCreator")
+  approvedPOs           PurchaseOrder[]      @relation("POApprover")
+  batchRecalls          BatchRecall[]        @relation("BatchRecallUser")
   migrationSessions     MigrationSession[]
 
   @@unique([pharmacyId, email])
@@ -183,12 +183,12 @@ model Medicine {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  brandId    String?
-  brand      Brand?           @relation(fields: [brandId], references: [id])
+  brandId         String?
+  brand           Brand?           @relation(fields: [brandId], references: [id])
   productCategory ProductCategory? @relation(fields: [categoryId], references: [id])
-  barcode    String?
-  boxSize    Int?        // strips per box; used with packSize for unit conversion
-  catalogMrp Decimal?    @db.Decimal(12, 2) // reference price — pre-fills GRN form only, never used for billing
+  barcode         String?
+  boxSize         Int? // strips per box; used with packSize for unit conversion
+  catalogMrp      Decimal?         @db.Decimal(12, 2) // reference price — pre-fills GRN form only, never used for billing
 
   inventory           Inventory[]
   grnItems            GRNItem[]
@@ -240,11 +240,11 @@ model PharmacyMedicineOverride {
 // ─── Brand (global — shared across all pharmacies) ───────────────────────────
 
 model Brand {
-  id           String     @id @default(cuid())
-  name         String     @unique
+  id           String  @id @default(cuid())
+  name         String  @unique
   manufacturer String?
   country      String?
-  isActive     Boolean    @default(true)
+  isActive     Boolean @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -297,9 +297,9 @@ model Inventory {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy            Pharmacy            @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  medicine            Medicine            @relation(fields: [medicineId], references: [id])
-  shelf               Shelf?              @relation(fields: [shelfId], references: [id])
+  pharmacy            Pharmacy             @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  medicine            Medicine             @relation(fields: [medicineId], references: [id])
+  shelf               Shelf?               @relation(fields: [shelfId], references: [id])
   invoiceItems        InvoiceItem[]
   salesReturnItems    SalesReturnItem[]
   inventoryMovements  InventoryMovement[]
@@ -331,7 +331,7 @@ model StockReservation {
   id          String   @id @default(cuid())
   pharmacyId  String
   inventoryId String
-  sessionId   String   // idempotency key of the billing session
+  sessionId   String // idempotency key of the billing session
   quantity    Int
   expiresAt   DateTime
   createdAt   DateTime @default(now())
@@ -354,25 +354,25 @@ model Customer {
   phone           String?
   email           String?
   address         String?
-  state           String?      // Indian state code (e.g. "MH", "KA") — used for IGST determination
+  state           String? // Indian state code (e.g. "MH", "KA") — used for IGST determination
   dateOfBirth     DateTime?
   gender          String?
-  abhaNumber      String?      // ABHA / Health ID / IPD / OPD number
-  cardNumber      String?      // Pharmacy loyalty card (unique per pharmacy; NULLs are distinct)
+  abhaNumber      String? // ABHA / Health ID / IPD / OPD number
+  cardNumber      String? // Pharmacy loyalty card (unique per pharmacy; NULLs are distinct)
   customerType    CustomerType @default(WALK_IN)
   defaultDiscount Decimal      @default(0) @db.Decimal(12, 2) // auto-applied discount % shown at billing
   creditLimit     Decimal      @default(0) @db.Decimal(12, 2)
   creditUsed      Decimal      @default(0) @db.Decimal(12, 2)
   notes           String?
-  deletedAt       DateTime?    // soft delete — null = active
-  createdById     String?      // ID of staff who created (stored as plain ID; preserved on user delete)
+  deletedAt       DateTime? // soft delete — null = active
+  createdById     String? // ID of staff who created (stored as plain ID; preserved on user delete)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy    Pharmacy      @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  invoices    Invoice[]
-  returns     SalesReturn[]
+  pharmacy Pharmacy      @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  invoices Invoice[]
+  returns  SalesReturn[]
 
   @@unique([pharmacyId, cardNumber])
   @@index([pharmacyId, phone])
@@ -394,16 +394,16 @@ enum CustomerType {
 // ─── Supplier ────────────────────────────────────────────────────────────────
 
 model Supplier {
-  id           String  @id @default(cuid())
-  pharmacyId   String
-  name         String
-  gstin        String?
-  dlNumber     String?
-  phone        String?
-  email        String?
-  address      String?
-  city         String?
-  state        String?
+  id            String  @id @default(cuid())
+  pharmacyId    String
+  name          String
+  gstin         String?
+  dlNumber      String?
+  phone         String?
+  email         String?
+  address       String?
+  city          String?
+  state         String?
   creditLimit   Decimal @default(0) @db.Decimal(12, 2)
   creditDays    Int     @default(30)
   paymentTerms  String?
@@ -449,15 +449,18 @@ model PurchaseOrder {
   expectedDate    DateTime?
   orderedAt       DateTime       @default(now())
   receivedAt      DateTime?
+  // Source PDF this PO was drafted from (e.g. supplier quote), if any — see Upload model.
+  sourceUploadId  String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy Pharmacy            @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  supplier Supplier            @relation(fields: [supplierId], references: [id])
-  approver User?               @relation("POApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
-  items    PurchaseOrderItem[]
-  grns     GoodsReceiptNote[]
+  pharmacy     Pharmacy            @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  supplier     Supplier            @relation(fields: [supplierId], references: [id])
+  approver     User?               @relation("POApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+  sourceUpload Upload?             @relation(fields: [sourceUploadId], references: [id], onDelete: SetNull)
+  items        PurchaseOrderItem[]
+  grns         GoodsReceiptNote[]
 
   @@unique([pharmacyId, orderNumber])
   @@index([pharmacyId, status])
@@ -518,39 +521,39 @@ model PurchaseOrderItem {
 // ─── Invoice ─────────────────────────────────────────────────────────────────
 
 model Invoice {
-  id              String        @id @default(cuid())
-  pharmacyId      String
-  invoiceNumber   String
-  customerId      String?
+  id             String        @id @default(cuid())
+  pharmacyId     String
+  invoiceNumber  String
+  customerId     String?
   // Snapshot of customer name/phone at billing time — avoids JOIN in search queries
   // and preserves the name even if the customer record is later updated.
-  customerName    String?
-  customerPhone   String?
-  userId          String
-  doctorId        String?
-  doctorName      String?
+  customerName   String?
+  customerPhone  String?
+  userId         String
+  doctorId       String?
+  doctorName     String?
   // Snapshot doctor registration number at billing time so the audit trail
   // is self-contained even if the doctor record is later edited or deleted.
-  doctorRegNo     String?
-  prescriptionId  String?
-  paymentMode     PaymentMode   @default(CASH)
-  paymentStatus   PaymentStatus @default(PAID)
-  status          InvoiceStatus @default(COMPLETED)
-  subtotal        Decimal       @db.Decimal(12, 2)
-  discountAmount  Decimal       @default(0) @db.Decimal(12, 2)
-  taxableAmount   Decimal       @db.Decimal(12, 2)
-  cgst            Decimal       @db.Decimal(12, 2)
-  sgst            Decimal       @db.Decimal(12, 2)
-  igst            Decimal       @default(0) @db.Decimal(12, 2)
-  totalGst        Decimal       @db.Decimal(12, 2)
-  totalAmount     Decimal       @db.Decimal(12, 2)
-  returnedAmount  Decimal       @default(0) @db.Decimal(12, 2)
-  isInterstate    Boolean       @default(false)
-  notes           String?
-  isCancelled     Boolean       @default(false)
-  cancelledAt     DateTime?
-  cancelReason    String?
-  idempotencyKey  String?
+  doctorRegNo    String?
+  prescriptionId String?
+  paymentMode    PaymentMode   @default(CASH)
+  paymentStatus  PaymentStatus @default(PAID)
+  status         InvoiceStatus @default(COMPLETED)
+  subtotal       Decimal       @db.Decimal(12, 2)
+  discountAmount Decimal       @default(0) @db.Decimal(12, 2)
+  taxableAmount  Decimal       @db.Decimal(12, 2)
+  cgst           Decimal       @db.Decimal(12, 2)
+  sgst           Decimal       @db.Decimal(12, 2)
+  igst           Decimal       @default(0) @db.Decimal(12, 2)
+  totalGst       Decimal       @db.Decimal(12, 2)
+  totalAmount    Decimal       @db.Decimal(12, 2)
+  returnedAmount Decimal       @default(0) @db.Decimal(12, 2)
+  isInterstate   Boolean       @default(false)
+  notes          String?
+  isCancelled    Boolean       @default(false)
+  cancelledAt    DateTime?
+  cancelReason   String?
+  idempotencyKey String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -591,13 +594,13 @@ model Prescription {
   prescriptionNumber String
   doctorId           String?
   doctorName         String
-  doctorRegNo        String?            // MCI / state council registration number
+  doctorRegNo        String? // MCI / state council registration number
   doctorPhone        String?
   patientName        String
   patientAge         Int?
   patientPhone       String?
   patientGender      String?
-  uploadId           String?            // scanned prescription image
+  uploadId           String? // scanned prescription image
   prescribedDate     DateTime?
   validUntil         DateTime?
   status             PrescriptionStatus @default(ACTIVE)
@@ -606,9 +609,9 @@ model Prescription {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  doctor   Doctor?           @relation(fields: [doctorId], references: [id])
-  upload   Upload?           @relation(fields: [uploadId], references: [id])
+  pharmacy Pharmacy           @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  doctor   Doctor?            @relation(fields: [doctorId], references: [id])
+  upload   Upload?            @relation(fields: [uploadId], references: [id])
   invoices Invoice[]
   items    PrescriptionItem[]
 
@@ -694,9 +697,9 @@ model InvoiceItem {
   taxableAmount Decimal  @db.Decimal(12, 2)
   amount        Decimal  @db.Decimal(12, 2)
 
-  pharmacy         Pharmacy        @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  invoice          Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  inventory        Inventory       @relation(fields: [inventoryId], references: [id])
+  pharmacy         Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  invoice          Invoice           @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  inventory        Inventory         @relation(fields: [inventoryId], references: [id])
   salesReturnItems SalesReturnItem[]
 
   @@index([pharmacyId])
@@ -730,21 +733,21 @@ model InvoicePayment {
 // ─── Sales Return ─────────────────────────────────────────────────────────────
 
 model SalesReturn {
-  id             String   @id @default(cuid())
+  id             String  @id @default(cuid())
   pharmacyId     String
   invoiceId      String
   returnNumber   String
   reason         String?
   userId         String
   customerId     String?
-  subtotal       Decimal  @db.Decimal(12, 2)
-  discountAmount Decimal  @default(0) @db.Decimal(12, 2)
-  taxableAmount  Decimal  @db.Decimal(12, 2)
-  cgst           Decimal  @db.Decimal(12, 2)
-  sgst           Decimal  @db.Decimal(12, 2)
-  igst           Decimal  @default(0) @db.Decimal(12, 2)
-  totalGst       Decimal  @db.Decimal(12, 2)
-  totalAmount    Decimal  @db.Decimal(12, 2)
+  subtotal       Decimal @db.Decimal(12, 2)
+  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  taxableAmount  Decimal @db.Decimal(12, 2)
+  cgst           Decimal @db.Decimal(12, 2)
+  sgst           Decimal @db.Decimal(12, 2)
+  igst           Decimal @default(0) @db.Decimal(12, 2)
+  totalGst       Decimal @db.Decimal(12, 2)
+  totalAmount    Decimal @db.Decimal(12, 2)
   idempotencyKey String?
 
   createdAt DateTime @default(now())
@@ -806,21 +809,21 @@ model SalesReturnItem {
 // Append-only. Every stock change writes one record here for full reconciliation.
 
 model InventoryMovement {
-  id              String             @id @default(cuid())
-  pharmacyId      String
-  inventoryId     String
-  userId          String
-  type            MovementType
-  direction       MovementDirection
-  quantity        Int
-  quantityBefore  Int
-  quantityAfter   Int
+  id             String            @id @default(cuid())
+  pharmacyId     String
+  inventoryId    String
+  userId         String
+  type           MovementType
+  direction      MovementDirection
+  quantity       Int
+  quantityBefore Int
+  quantityAfter  Int
   // Valid values (enforced by DB CHECK): GRN | INVOICE | INVOICE_CANCEL | SALES_RETURN |
   // SUPPLIER_RETURN | BATCH_RECALL | STATUS_CHANGE | STOCK_AUDIT |
   // CORRECTION | DAMAGE | EXPIRY_WRITEOFF | OPENING_BALANCE | TRANSFER | THEFT | BREAKAGE | STOCK_COUNT | OTHER
-  referenceType   String?
-  referenceId     String?
-  notes           String?
+  referenceType  String?
+  referenceId    String?
+  notes          String?
 
   createdAt DateTime @default(now())
 
@@ -908,8 +911,10 @@ model Upload {
 
   createdAt DateTime @default(now())
 
-  pharmacy      Pharmacy       @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  prescriptions Prescription[]
+  pharmacy       Pharmacy           @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  prescriptions  Prescription[]
+  purchaseOrders PurchaseOrder[]
+  grns           GoodsReceiptNote[]
 
   @@index([pharmacyId, type])
   @@map("uploads")
@@ -919,6 +924,7 @@ enum UploadType {
   PRESCRIPTION
   INVOICE_PDF
   PURCHASE_ORDER_PDF
+  GRN_PDF
   LOGO
   REPORT
 }
@@ -982,6 +988,8 @@ model GoodsReceiptNote {
   totalAmount         Decimal   @default(0) @db.Decimal(12, 2)
   confirmedAt         DateTime?
   paymentDueDate      DateTime?
+  // Source PDF this GRN was drafted from (e.g. supplier invoice), if any — see Upload model.
+  sourceUploadId      String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -989,6 +997,7 @@ model GoodsReceiptNote {
   pharmacy      Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   supplier      Supplier          @relation(fields: [supplierId], references: [id])
   purchaseOrder PurchaseOrder?    @relation(fields: [purchaseOrderId], references: [id])
+  sourceUpload  Upload?           @relation(fields: [sourceUploadId], references: [id], onDelete: SetNull)
   items         GRNItem[]
   payments      SupplierPayment[]
 
@@ -1093,26 +1102,26 @@ model SupplierReturnItem {
 }
 
 model GRNItem {
-  id           String    @id @default(cuid())
-  pharmacyId   String
-  grnId        String
-  medicineId   String
-  medicineName String
-  batchNumber  String
-  expiryDate   DateTime
-  orderedQty        Int?
-  receivedQty       Int
-  freeQty           Int       @default(0)
-  purchaseUnit      String    @default("UNIT") // BOX | STRIP | UNIT
-  conversionFactor  Int       @default(1)      // base units per purchase unit
-  purchaseRate      Decimal   @db.Decimal(12, 2)
-  mrp               Decimal   @db.Decimal(12, 2)
-  discount          Decimal   @default(0) @db.Decimal(12, 2)
-  gstRate           Decimal   @db.Decimal(12, 2)
-  cgst              Decimal   @db.Decimal(12, 2)
-  sgst              Decimal   @db.Decimal(12, 2)
-  amount            Decimal   @db.Decimal(12, 2)
-  inventoryId       String?
+  id               String   @id @default(cuid())
+  pharmacyId       String
+  grnId            String
+  medicineId       String
+  medicineName     String
+  batchNumber      String
+  expiryDate       DateTime
+  orderedQty       Int?
+  receivedQty      Int
+  freeQty          Int      @default(0)
+  purchaseUnit     String   @default("UNIT") // BOX | STRIP | UNIT
+  conversionFactor Int      @default(1) // base units per purchase unit
+  purchaseRate     Decimal  @db.Decimal(12, 2)
+  mrp              Decimal  @db.Decimal(12, 2)
+  discount         Decimal  @default(0) @db.Decimal(12, 2)
+  gstRate          Decimal  @db.Decimal(12, 2)
+  cgst             Decimal  @db.Decimal(12, 2)
+  sgst             Decimal  @db.Decimal(12, 2)
+  amount           Decimal  @db.Decimal(12, 2)
+  inventoryId      String?
 
   createdAt DateTime @default(now())
 
@@ -1241,7 +1250,7 @@ enum QuotationStatus {
 }
 
 model QuotationItem {
-  id           String  @id @default(cuid())
+  id           String   @id @default(cuid())
   pharmacyId   String
   quotationId  String
   medicineId   String
@@ -1265,12 +1274,12 @@ model QuotationItem {
 // ─── Rack & Shelf Location Management ────────────────────────────────────────
 
 model Rack {
-  id         String   @id @default(cuid())
+  id         String  @id @default(cuid())
   pharmacyId String
-  code       String   // e.g. R1, R2 — unique per pharmacy
-  name       String   // e.g. "Cold Storage", "Antibiotics Aisle"
+  code       String // e.g. R1, R2 — unique per pharmacy
+  name       String // e.g. "Cold Storage", "Antibiotics Aisle"
   aisle      String?
-  isActive   Boolean  @default(true)
+  isActive   Boolean @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1287,8 +1296,8 @@ model Shelf {
   id          String  @id @default(cuid())
   pharmacyId  String
   rackId      String
-  code        String  // e.g. A1, A2, B3 — unique per pharmacy
-  level       Int     // 1 = bottom shelf, ascending = higher
+  code        String // e.g. A1, A2, B3 — unique per pharmacy
+  level       Int // 1 = bottom shelf, ascending = higher
   description String?
   isActive    Boolean @default(true)
 
@@ -1311,7 +1320,7 @@ model Shelf {
 model StockAuditSession {
   id            String             @id @default(cuid())
   pharmacyId    String
-  sessionNumber String             // e.g. AUDIT-20250603-001
+  sessionNumber String // e.g. AUDIT-20250603-001
   status        AuditSessionStatus @default(DRAFT)
   notes         String?
   startedAt     DateTime?
@@ -1325,7 +1334,7 @@ model StockAuditSession {
 
   pharmacy Pharmacy         @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   approver User?            @relation("StockAuditApprover", fields: [approvedBy], references: [id])
-  creator  User             @relation("StockAuditCreator",  fields: [createdBy],  references: [id])
+  creator  User             @relation("StockAuditCreator", fields: [createdBy], references: [id])
   items    StockAuditItem[]
 
   @@unique([pharmacyId, sessionNumber])
@@ -1338,9 +1347,9 @@ model StockAuditItem {
   pharmacyId  String
   sessionId   String
   inventoryId String
-  expectedQty Int     // snapshot of inventory.quantity at session creation
-  countedQty  Int?    // staff enters this during count
-  varianceQty Int?    // computed: countedQty - expectedQty
+  expectedQty Int // snapshot of inventory.quantity at session creation
+  countedQty  Int? // staff enters this during count
+  varianceQty Int? // computed: countedQty - expectedQty
   notes       String?
 
   createdAt DateTime @default(now())
@@ -1383,7 +1392,7 @@ model BatchRecall {
   reason      String
   recalledBy  String
   recalledAt  DateTime @default(now())
-  affectedIds String[]  // snapshot of inventory IDs quarantined by this recall
+  affectedIds String[] // snapshot of inventory IDs quarantined by this recall
 
   pharmacy Pharmacy  @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   medicine Medicine? @relation(fields: [medicineId], references: [id])
@@ -1478,7 +1487,7 @@ model SupportTicket {
 }
 
 model TicketMessage {
-  id         String   @id @default(cuid())
+  id         String @id @default(cuid())
   pharmacyId String
   ticketId   String
   senderId   String
@@ -1590,22 +1599,22 @@ enum ClosureStatus {
 }
 
 model CashClosure {
-  id             String        @id @default(cuid())
-  pharmacyId     String
-  userId         String
-  closureDate    DateTime      @db.Date
-  openingCash    Decimal       @default(0) @db.Decimal(12, 2)
-  cashSales      Decimal       @default(0) @db.Decimal(12, 2)
-  upiSales       Decimal       @default(0) @db.Decimal(12, 2)
-  cardSales      Decimal       @default(0) @db.Decimal(12, 2)
-  creditSales    Decimal       @default(0) @db.Decimal(12, 2)
-  walletSales    Decimal       @default(0) @db.Decimal(12, 2)
-  expectedCash   Decimal       @default(0) @db.Decimal(12, 2)
-  actualCash     Decimal       @default(0) @db.Decimal(12, 2)
-  variance       Decimal       @default(0) @db.Decimal(12, 2)
-  notes          String?
-  status         ClosureStatus @default(DRAFT)
-  closedAt       DateTime?
+  id           String        @id @default(cuid())
+  pharmacyId   String
+  userId       String
+  closureDate  DateTime      @db.Date
+  openingCash  Decimal       @default(0) @db.Decimal(12, 2)
+  cashSales    Decimal       @default(0) @db.Decimal(12, 2)
+  upiSales     Decimal       @default(0) @db.Decimal(12, 2)
+  cardSales    Decimal       @default(0) @db.Decimal(12, 2)
+  creditSales  Decimal       @default(0) @db.Decimal(12, 2)
+  walletSales  Decimal       @default(0) @db.Decimal(12, 2)
+  expectedCash Decimal       @default(0) @db.Decimal(12, 2)
+  actualCash   Decimal       @default(0) @db.Decimal(12, 2)
+  variance     Decimal       @default(0) @db.Decimal(12, 2)
+  notes        String?
+  status       ClosureStatus @default(DRAFT)
+  closedAt     DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1664,10 +1673,10 @@ model MigrationSession {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy        Pharmacy                 @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  user            User                     @relation(fields: [createdBy], references: [id])
-  importJobs      MigrationImportJob[]
-  createdRecords  MigrationCreatedRecord[]
+  pharmacy       Pharmacy                 @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  user           User                     @relation(fields: [createdBy], references: [id])
+  importJobs     MigrationImportJob[]
+  createdRecords MigrationCreatedRecord[]
 
   @@index([pharmacyId, status])
   @@map("migration_sessions")

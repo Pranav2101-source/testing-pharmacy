@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Loader2, RefreshCw, Plus, FileText, Check, X, Send, Building2 } from "lucide-react";
+import { Loader2, RefreshCw, Plus, FileText, Check, X, Send, Building2, Paperclip } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
@@ -8,7 +8,7 @@ import { useDebounce } from "@/hooks/useDebounce";
 import { queryKeys } from "@/lib/queryKeys";
 import type { PurchaseOrder, Supplier } from "../types";
 import { PO_STATUS, APPROVAL_STATUS } from "../types";
-import { fmtDate, currency } from "../utils";
+import { fmtDate, currency, viewSourceUpload } from "../utils";
 import { FilterBar } from "../components/FilterBar";
 import { Pagination } from "../components/Pagination";
 import { EmptyState } from "../components/EmptyState";
@@ -137,6 +137,10 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
                 <td className="px-4 py-3 text-[12px] text-slate-500">{fmtDate(po.orderedAt)}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {po.sourceUploadId && (
+                      <ActionBtn onClick={() => viewSourceUpload(po.sourceUploadId!)} disabled={false}
+                        icon={Paperclip} label="PDF" cls="text-blue-600 border-blue-200 hover:bg-blue-50" />
+                    )}
                     {po.approvalStatus === "PENDING_APPROVAL" && (
                       <>
                         <ActionBtn onClick={() => approvePO(po.id, true)} disabled={approveId === po.id}

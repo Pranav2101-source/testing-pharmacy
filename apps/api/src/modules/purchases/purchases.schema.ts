@@ -18,11 +18,13 @@ export const poItemSchema = z.object({
 });
 
 export const createPOSchema = z.object({
-  supplierId:   z.string().min(1),
-  invoiceNo:    z.string().optional(),
-  notes:        z.string().max(1000).optional(),
-  expectedDate: z.string().datetime().optional(),
-  items:        z.array(poItemSchema).min(1),
+  supplierId:     z.string().min(1),
+  invoiceNo:      z.string().optional(),
+  notes:          z.string().max(1000).optional(),
+  expectedDate:   z.string().datetime().optional(),
+  items:          z.array(poItemSchema).min(1),
+  // Set when this PO was drafted from an uploaded supplier PDF (see /uploads/po-pdf).
+  sourceUploadId: z.string().optional(),
 });
 
 export const updatePOSchema = z.object({
@@ -85,6 +87,8 @@ export const createGRNSchema = z.object({
   // (e.g. bought at a discount).  Without this flag the API rejects any
   // item expiring within NEAR_EXPIRY_DAYS to prevent accidental purchases.
   allowNearExpiry:     z.boolean().default(false),
+  // Set when this GRN was drafted from an uploaded supplier PDF (see /uploads/grn-pdf).
+  sourceUploadId:      z.string().optional(),
 });
 
 export const updateGRNSchema = z.object({

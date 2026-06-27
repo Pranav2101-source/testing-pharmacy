@@ -1,6 +1,19 @@
+import { api } from "@/lib/api-client";
 import type { GRNLineItem, POLineItem, SRLineItem } from "./types";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Fetches a fresh signed URL for an uploaded PO/GRN source PDF and opens it
+ * in a new tab. Fails silently (signed URLs expire; the file may also have
+ * been deleted) — there's nothing actionable for the user to do about it. */
+export async function viewSourceUpload(uploadId: string) {
+  try {
+    const { data } = await api.get<{ data: { signedUrl: string | null } }>(`/uploads/${uploadId}/signed-url`);
+    if (data.data.signedUrl) window.open(data.data.signedUrl, "_blank", "noopener,noreferrer");
+  } catch {
+    // ignore — nothing useful to surface here
+  }
+}
 
 export function fmtDate(d: string | null | undefined) {
   if (!d) return "—";

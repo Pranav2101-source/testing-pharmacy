@@ -9,12 +9,13 @@ export class PurchasesRepo {
   // ── Purchase Orders ──────────────────────────────────────────────────────
 
   async createPO(pharmacyId: string, userId: string, data: {
-    orderNumber:   string;
-    supplierId:    string;
-    invoiceNo?:    string;
-    notes?:        string;
-    expectedDate?: Date;
+    orderNumber:    string;
+    supplierId:     string;
+    invoiceNo?:     string;
+    notes?:         string;
+    expectedDate?:  Date;
     approvalStatus: string;
+    sourceUploadId?: string;
     items: {
       medicineId:   string;
       medicineName: string;
@@ -43,6 +44,7 @@ export class PurchasesRepo {
           expectedDate:   data.expectedDate,
           status:         "DRAFT",
           approvalStatus: data.approvalStatus as any,
+          sourceUploadId: data.sourceUploadId,
           subtotal:       data.subtotal,
           totalGst:       data.totalGst,
           totalAmount:    data.totalAmount,
@@ -314,6 +316,7 @@ export class PurchasesRepo {
     supplierInvoiceNo?:   string;
     supplierInvoiceDate?: Date;
     notes?:               string;
+    sourceUploadId?:      string;
     items: {
       medicineId:   string;
       medicineName: string;
@@ -364,6 +367,7 @@ export class PurchasesRepo {
           supplierInvoiceNo:   data.supplierInvoiceNo,
           supplierInvoiceDate: data.supplierInvoiceDate,
           notes:               data.notes,
+          sourceUploadId:      data.sourceUploadId,
           status:              "DRAFT",
           subtotal:            data.subtotal,
           totalGst:            data.totalGst,

@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { Plus, Loader2, FileText, Trash2 } from "lucide-react";
+import { Plus, Loader2, FileText, Trash2, FileSpreadsheet } from "lucide-react";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { AnimatePresence } from "framer-motion";
 import type { Supplier, Medicine, POLineItem, FullSupplier } from "../types";
@@ -30,6 +30,9 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
   const [showSuggest,  setShowSuggest]  = useState(false);
   const [copyLoading,  setCopyLoading]  = useState(false);
   const [importError,  setImportError]  = useState<string | null>(null);
+  const [sourceUploadId, setSourceUploadId] = useState<string | undefined>(undefined);
+  const [pdfFileName,    setPdfFileName]    = useState<string | null>(null);
+  const [pdfUploading,   setPdfUploading]   = useState(false);
   const lastAddedSupplier               = useRef<FullSupplier | undefined>(undefined);
 
   function addMedicine(m: Medicine) {
@@ -69,6 +72,23 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
       });
     } catch { setError("Failed to load previous order"); }
     finally { setCopyLoading(false); }
+  }
+
+  // Always uploads the PDF and attaches it to the PO, regardless of whether
+  // text extraction below finds a usable item table.
+  async function handlePdfSelected(file: File) {
+    setPdfUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const { data } = await api.post<{ data: { id: string } }>("/uploads/po-pdf", fd);
+      setSourceUploadId(data.data.id);
+      setPdfFileName(file.name);
+    } catch {
+      // Non-fatal — PO creation still works without the attachment.
+    } finally {
+      setPdfUploading(false);
+    }
   }
 
   function handleCSVImport(raw: string) {
@@ -114,6 +134,7 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
       await api.post("/purchases/orders", {
         supplierId, invoiceNo: invoiceNo || undefined, notes: notes || undefined,
         expectedDate: expectedDate ? new Date(expectedDate).toISOString() : undefined,
+        sourceUploadId,
         // Send batch/expiry only when they have real values; API fills in placeholders otherwise.
         // expiryDate may come from pasted/CSV-imported text that isn't a parseable date —
         // guard against that instead of letting toISOString() throw and silently abort the
@@ -169,7 +190,17 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
               loadingCopy={copyLoading}
             />
             {showImport && (
-              <ImportPanel type="po" onImport={handleCSVImport} onClose={() => setShowImport(false)} />
+              <ImportPanel type="po" onImport={handleCSVImport} onClose={() => setShowImport(false)}
+                allowPdf onPdfSelected={handlePdfSelected} />
+            )}
+            {(pdfUploading || pdfFileName) && (
+              <div className="flex items-center gap-2 text-[11px] text-slate-500 mt-2">
+                {pdfUploading ? (
+                  <><Loader2 className="w-3 h-3 animate-spin" />Attaching {pdfFileName ?? "PDF"}…</>
+                ) : (
+                  <><FileSpreadsheet className="w-3 h-3 text-blue-400" />Attached: {pdfFileName} — will be saved with this PO</>
+                )}
+              </div>
             )}
             {showSuggest && (
               <SmartReorderPanel

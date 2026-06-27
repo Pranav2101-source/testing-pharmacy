@@ -1,16 +1,25 @@
 import { useState, useRef } from "react";
-import { FileSpreadsheet, Download, X, Check, AlertTriangle } from "lucide-react";
+import { FileSpreadsheet, Download, X, Check, AlertTriangle, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { GRN_CSV_TEMPLATE, PO_CSV_TEMPLATE, RETURN_CSV_TEMPLATE, downloadTemplate } from "../utils";
+import { extractPdfTableText, isPdfFile } from "../utils/pdfExtract";
 
-export function ImportPanel({ type, onImport, onClose }: {
+export function ImportPanel({ type, onImport, onClose, onPdfSelected, allowPdf }: {
   type:      "grn" | "po" | "return";
   onImport:  (raw: string) => void;
   onClose:   () => void;
+  /** Called whenever a PDF is dropped/picked, so the parent can upload it and
+   * attach it as a reference document — independent of whether text extraction
+   * below finds a usable item table. Only relevant when `allowPdf` is set. */
+  onPdfSelected?: (file: File) => void;
+  /** Enables PDF drop/upload support. Off by default (e.g. Return import). */
+  allowPdf?: boolean;
 }) {
   const [text,      setText]      = useState("");
   const [dragging,  setDrag]      = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [pdfNotice, setPdfNotice] = useState<string | null>(null);
+  const [pdfBusy,   setPdfBusy]   = useState(false);
   const fileRef                   = useRef<HTMLInputElement>(null);
 
   function loadText(raw: string) {
@@ -26,6 +35,26 @@ export function ImportPanel({ type, onImport, onClose }: {
 
   function readFile(file: File) {
     setFileError(null);
+    setPdfNotice(null);
+
+    if (allowPdf && isPdfFile(file)) {
+      onPdfSelected?.(file);
+      setPdfBusy(true);
+      extractPdfTableText(file)
+        .then((tsv) => {
+          if (tsv) {
+            loadText(tsv);
+          } else {
+            setPdfNotice("Couldn't find a readable item table in this PDF — it may be a scanned image. We've attached it for reference; please enter items manually below.");
+          }
+        })
+        .catch(() => {
+          setPdfNotice("Couldn't find a readable item table in this PDF — it may be a scanned image. We've attached it for reference; please enter items manually below.");
+        })
+        .finally(() => setPdfBusy(false));
+      return;
+    }
+
     const isExcel =
       /\.(xlsx|xls|ods)$/i.test(file.name) ||
       file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
@@ -96,11 +125,17 @@ export function ImportPanel({ type, onImport, onClose }: {
           "border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors",
           dragging ? "border-blue-400 bg-blue-100/50" : "border-slate-300 hover:border-blue-400 hover:bg-blue-50/30",
         )}>
-        <input ref={fileRef} type="file" accept=".xlsx,.xls,.ods,.csv,.tsv,.txt" className="hidden"
+        <input ref={fileRef} type="file" accept={allowPdf ? ".xlsx,.xls,.ods,.csv,.tsv,.txt,.pdf" : ".xlsx,.xls,.ods,.csv,.tsv,.txt"} className="hidden"
           onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f); e.target.value = ""; }} />
-        <FileSpreadsheet className="w-6 h-6 text-slate-400 mx-auto mb-1" />
-        <p className="text-[12px] font-semibold text-slate-600">Drop Excel or CSV file here, or click to browse</p>
-        <p className="text-[11px] text-slate-400 mt-0.5">Supports .xlsx, .xls, .ods, .csv</p>
+        {pdfBusy ? (
+          <Loader2 className="w-6 h-6 text-blue-400 mx-auto mb-1 animate-spin" />
+        ) : (
+          <FileSpreadsheet className="w-6 h-6 text-slate-400 mx-auto mb-1" />
+        )}
+        <p className="text-[12px] font-semibold text-slate-600">
+          {pdfBusy ? "Reading PDF…" : allowPdf ? "Drop Excel, CSV, or PDF file here, or click to browse" : "Drop Excel or CSV file here, or click to browse"}
+        </p>
+        <p className="text-[11px] text-slate-400 mt-0.5">{allowPdf ? "Supports .xlsx, .xls, .ods, .csv, .pdf" : "Supports .xlsx, .xls, .ods, .csv"}</p>
       </div>
 
       {/* Paste area */}
@@ -129,6 +164,13 @@ export function ImportPanel({ type, onImport, onClose }: {
         <div className="flex items-start gap-2.5 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5">
           <AlertTriangle className="w-3.5 h-3.5 text-red-500 flex-shrink-0 mt-0.5" />
           <p className="text-[12px] text-red-700">{fileError}</p>
+        </div>
+      )}
+
+      {pdfNotice && (
+        <div className="flex items-start gap-2.5 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5">
+          <FileSpreadsheet className="w-3.5 h-3.5 text-blue-500 flex-shrink-0 mt-0.5" />
+          <p className="text-[12px] text-blue-700">{pdfNotice}</p>
         </div>
       )}
 

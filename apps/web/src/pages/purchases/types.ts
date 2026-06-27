@@ -15,6 +15,7 @@ export type PurchaseOrder = {
   status: POStatus; approvalStatus: ApprovalStatus;
   subtotal: number; totalGst: number; totalAmount: number;
   notes: string | null; orderedAt: string; expectedDate: string | null;
+  sourceUploadId: string | null;
   supplier: { id: string; name: string };
   _count: { items: number; grns: number };
 };
@@ -23,6 +24,7 @@ export type GRN = {
   id: string; grnNumber: string; supplierInvoiceNo: string | null;
   status: GRNStatus; subtotal: number; totalGst: number; totalAmount: number;
   createdAt: string; confirmedAt: string | null; paymentDueDate: string | null;
+  sourceUploadId: string | null;
   supplier: { id: string; name: string };
   purchaseOrder: { id: string; orderNumber: string } | null;
   _count: { items: number };
