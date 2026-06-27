@@ -1,12 +1,14 @@
 import { z } from "zod";
 
+const GST_RATES = [0, 5, 12, 18] as const;
+
 export const quotationItemSchema = z.object({
-  medicineId:   z.string().min(1),
+  medicineId:   z.string().min(1, "Medicine is required"),
   medicineName: z.string().min(1),
   quantity:     z.number().int().positive(),
   quotedRate:   z.number().positive().optional(),
   mrp:          z.number().positive().optional(),
-  gstRate:      z.number().default(12),
+  gstRate:      z.number().refine((v) => (GST_RATES as readonly number[]).includes(v), "GST must be 0, 5, 12, or 18").default(12),
   discount:     z.number().min(0).max(100).default(0),
   notes:        z.string().max(200).optional(),
 });

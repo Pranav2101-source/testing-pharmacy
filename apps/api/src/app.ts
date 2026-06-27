@@ -49,6 +49,23 @@ import { Prisma } from "@pharmacy/database";
 
 import { startWorkers, setupScheduledJobs, boss } from "@pharmacy/jobs";
 
+// Turns a Zod issue path like ["items", 2, "quantity"] into "Item 3 → quantity"
+// so validation errors on array fields (PO/GRN/return line items, etc.) point
+// at the exact row instead of a bare top-level field name.
+function formatZodPath(path: (string | number)[]): string {
+  const parts: string[] = [];
+  for (const seg of path) {
+    if (typeof seg === "number") {
+      const fieldName = parts.pop() ?? "Item";
+      const singular   = fieldName.endsWith("s") ? fieldName.slice(0, -1) : fieldName;
+      parts.push(`${singular.charAt(0).toUpperCase()}${singular.slice(1)} ${seg + 1}`);
+    } else {
+      parts.push(seg);
+    }
+  }
+  return parts.join(" → ");
+}
+
 export async function buildApp() {
   const app = Fastify({
     logger: {
@@ -175,10 +192,20 @@ export async function buildApp() {
   // a handler set AFTER register() is not visible to those child scopes.
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ZodError) {
+      // error.flatten() collapses a path like ["items", 2, "quantity"] down to
+      // just the top-level key "items" — the user sees "Number must be greater
+      // than 0" with no indication which of N line items is wrong. Walk the raw
+      // issues instead so array indices become "Item 3" and the exact field +
+      // reason survive into the response.
+      const issues = error.issues.map((issue) => ({
+        path:    formatZodPath(issue.path),
+        message: issue.message,
+      }));
+      const summary = issues.map((i) => (i.path ? `${i.path}: ${i.message}` : i.message)).join("; ");
       return reply.status(400).send({
         success: false,
-        error:   "Some information is missing or incorrect. Please check the form and try again.",
-        details: error.flatten().fieldErrors,
+        error:   summary || "Some information is missing or incorrect. Please check the form and try again.",
+        details: issues,
       });
     }
 

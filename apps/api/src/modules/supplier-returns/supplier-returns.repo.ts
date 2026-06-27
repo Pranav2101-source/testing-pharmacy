@@ -73,7 +73,7 @@ export class SupplierReturnsRepo {
         if (sr.status !== "DRAFT") throw AppError.unprocessable("Only DRAFT supplier returns can be confirmed");
 
         const items = sr.items as unknown as Array<{
-          inventoryId: string; medicineId: string; medicineName: string; quantity: number; reason: string;
+          inventoryId: string; medicineId: string; medicineName: string; batchNumber: string; quantity: number; reason: string;
         }>;
 
         // Batch read every distinct inventory row once (replaces N sequential
@@ -91,7 +91,11 @@ export class SupplierReturnsRepo {
         const movements: { inventoryId: string; quantity: number; quantityBefore: number; quantityAfter: number; reason: string }[] = [];
         for (const item of items) {
           const quantityBefore = runningQty.get(item.inventoryId);
-          if (quantityBefore === undefined) throw AppError.notFound(`Inventory ${item.inventoryId} not found`);
+          if (quantityBefore === undefined) {
+            throw AppError.notFound(
+              `Cannot return "${item.medicineName}" (batch ${item.batchNumber}): this stock entry no longer exists, it may have been removed since the return was created.`,
+            );
+          }
           if (quantityBefore < item.quantity) {
             throw AppError.unprocessable(
               `Cannot return ${item.quantity} of "${item.medicineName}": only ${quantityBefore} in stock`,

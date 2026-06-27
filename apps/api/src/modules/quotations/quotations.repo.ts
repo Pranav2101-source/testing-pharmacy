@@ -75,7 +75,9 @@ export class QuotationsRepo {
       const existing = await tx.quotation.findFirst({ where: { id, pharmacyId }, select: { status: true } });
       if (!existing) throw AppError.notFound("Quotation not found");
       if (!["DRAFT", "SENT"].includes(existing.status)) {
-        throw AppError.unprocessable("Only DRAFT or SENT quotations can be updated");
+        throw AppError.unprocessable(
+          `Only DRAFT or SENT quotations can be updated (current status: ${existing.status})`,
+        );
       }
 
       if (data.items) {

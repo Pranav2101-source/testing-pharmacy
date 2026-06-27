@@ -7,6 +7,8 @@ const GST_RATES = [0, 5, 12, 18] as const;
 // PO items are draft — batch/expiry/rates are filled in when goods arrive (GRN).
 // Only medicine name and quantity are required at PO creation time.
 export const poItemSchema = z.object({
+  // medicineId may be "" for CSV/PDF-imported rows — resolved server-side by
+  // medicineName before the PO is saved (see purchases.service.ts createPO).
   medicineId:   z.string(),
   medicineName: z.string().min(1),
   batchNumber:  z.string().max(50).optional(),
@@ -58,6 +60,8 @@ export const sharePOSchema = z.object({
 // ── GRN ────────────────────────────────────────────────────────────────────
 
 export const grnItemSchema = z.object({
+  // medicineId may be "" for CSV/PDF-imported rows — resolved server-side by
+  // medicineName, same as poItemSchema above.
   medicineId:       z.string(),
   medicineName:     z.string().min(1),
   batchNumber:      z.string().min(1).max(50),
