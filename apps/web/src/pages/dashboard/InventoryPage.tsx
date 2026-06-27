@@ -394,8 +394,8 @@ function AssignLocationModal({ item, onClose, onDone, onToast }: {
   const [error,    setError]    = useState<string | null>(null);
 
   useEffect(() => {
-    api.get("/locations/shelves", { params: { limit: 500 } })
-      .then((r) => setShelves(r.data.data.items ?? []))
+    api.get("/locations/shelves", { params: { dropdown: true } })
+      .then((r) => setShelves(r.data.data ?? []))
       .catch(() => setShelfErr(true));
   }, []);
 

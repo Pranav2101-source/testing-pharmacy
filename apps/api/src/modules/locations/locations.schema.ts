@@ -24,7 +24,7 @@ export const updateShelfSchema = createShelfSchema
 
 export const listRacksQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().positive().max(100).default(50),
+  limit: z.coerce.number().int().positive().max(500).default(50),
   search: z.string().trim().optional(),
   includeInactive: z.coerce.boolean().default(false),
 })
