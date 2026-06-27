@@ -50,29 +50,11 @@ export class SupplierReturnsRepo {
           igst:          data.igst,
           totalGst:      data.totalGst,
           totalAmount:   data.totalAmount,
-          items: {
-            create: data.items.map((item) => ({
-              pharmacy:      { connect: { id: pharmacyId } },
-              inventory:     { connect: { id: item.inventoryId } },
-              medicine:      { connect: { id: item.medicineId } },
-              medicineName:  item.medicineName,
-              batchNumber:   item.batchNumber,
-              expiryDate:    item.expiryDate,
-              quantity:      item.quantity,
-              purchaseRate:  item.purchaseRate,
-              taxableAmount: item.taxableAmount,
-              gstRate:       item.gstRate,
-              cgst:          item.cgst,
-              sgst:          item.sgst,
-              igst:          item.igst,
-              amount:        item.amount,
-              reason:        item.reason as any,
-            })),
-          },
+          items:         data.items as unknown as Prisma.InputJsonValue,
+          itemCount:     data.items.length,
         },
         include: {
           supplier: { select: { id: true, name: true } },
-          items:    { include: { medicine: { select: { name: true } } } },
         },
       });
 
@@ -86,67 +68,93 @@ export class SupplierReturnsRepo {
 
   async confirm(id: string, pharmacyId: string, userId: string) {
     return withTenant(this.db, pharmacyId, async (tx) => {
-        const sr = await tx.supplierReturn.findFirst({
-          where:   { id, pharmacyId },
-          include: { items: true },
-        });
+        const sr = await tx.supplierReturn.findFirst({ where: { id, pharmacyId } });
         if (!sr) throw AppError.notFound("Supplier return not found");
         if (sr.status !== "DRAFT") throw AppError.unprocessable("Only DRAFT supplier returns can be confirmed");
 
-        for (const item of sr.items) {
-          const inv = await tx.inventory.findFirst({
-            where:  { id: item.inventoryId, pharmacyId },
-            select: { quantity: true },
-          });
-          if (!inv) throw AppError.notFound(`Inventory ${item.inventoryId} not found`);
-          if (inv.quantity < item.quantity) {
+        const items = sr.items as unknown as Array<{
+          inventoryId: string; medicineId: string; medicineName: string; quantity: number; reason: string;
+        }>;
+
+        // Batch read every distinct inventory row once (replaces N sequential
+        // findFirst calls). Validation + per-item running balances are then
+        // computed locally, mirroring the original sequential read-check-
+        // decrement loop's semantics (including duplicate inventoryIds across
+        // line items) without the N round-trips.
+        const inventoryIds = [...new Set(items.map((i) => i.inventoryId))];
+        const inventoryRows = await tx.inventory.findMany({
+          where:  { id: { in: inventoryIds }, pharmacyId },
+          select: { id: true, quantity: true },
+        });
+        const runningQty = new Map(inventoryRows.map((inv) => [inv.id, inv.quantity]));
+
+        const movements: { inventoryId: string; quantity: number; quantityBefore: number; quantityAfter: number; reason: string }[] = [];
+        for (const item of items) {
+          const quantityBefore = runningQty.get(item.inventoryId);
+          if (quantityBefore === undefined) throw AppError.notFound(`Inventory ${item.inventoryId} not found`);
+          if (quantityBefore < item.quantity) {
             throw AppError.unprocessable(
-              `Cannot return ${item.quantity} of "${item.medicineName}": only ${inv.quantity} in stock`,
+              `Cannot return ${item.quantity} of "${item.medicineName}": only ${quantityBefore} in stock`,
             );
           }
-
-          const quantityBefore = inv.quantity;
-          const quantityAfter  = quantityBefore - item.quantity;
-
-          await tx.inventory.update({
-            where: { id: item.inventoryId },
-            data:  { quantity: { decrement: item.quantity } },
-          });
-
-          await tx.inventoryMovement.create({
-            data: {
-              pharmacyId, userId,
-              inventoryId:    item.inventoryId,
-              type:           "ADJUSTMENT",
-              direction:      "OUT",
-              quantity:       item.quantity,
-              quantityBefore,
-              quantityAfter,
-              referenceType:  "SUPPLIER_RETURN",
-              referenceId:    sr.id,
-              notes:          `Supplier return ${sr.returnNumber} — ${item.reason}`,
-            },
-          });
+          const quantityAfter = quantityBefore - item.quantity;
+          runningQty.set(item.inventoryId, quantityAfter);
+          movements.push({ inventoryId: item.inventoryId, quantity: item.quantity, quantityBefore, quantityAfter, reason: item.reason });
         }
+
+        // Bulk decrement via a single raw UPDATE (replaces N sequential
+        // updates). Aggregated by inventoryId first so a batch repeated
+        // across line items decrements once for its total.
+        const totalByInventoryId = new Map<string, number>();
+        for (const item of items) {
+          totalByInventoryId.set(item.inventoryId, (totalByInventoryId.get(item.inventoryId) ?? 0) + item.quantity);
+        }
+        const decIds  = [...totalByInventoryId.keys()];
+        const decQtys = [...totalByInventoryId.values()];
+        await tx.$executeRaw`
+          UPDATE inventory inv
+          SET    quantity = inv.quantity - b.qty
+          FROM   (
+                   SELECT unnest(${decIds}::text[]) AS id,
+                          unnest(${decQtys}::int[]) AS qty
+                 ) AS b
+          WHERE  inv.id           = b.id
+            AND  inv."pharmacyId" = ${pharmacyId}::text
+        `;
+
+        // Bulk insert movements (replaces N sequential creates)
+        await tx.inventoryMovement.createMany({
+          data: movements.map((m) => ({
+            pharmacyId, userId,
+            inventoryId:    m.inventoryId,
+            type:           "ADJUSTMENT" as const,
+            direction:      "OUT" as const,
+            quantity:       m.quantity,
+            quantityBefore: m.quantityBefore,
+            quantityAfter:  m.quantityAfter,
+            referenceType:  "SUPPLIER_RETURN" as const,
+            referenceId:    sr.id,
+            notes:          `Supplier return ${sr.returnNumber} — ${m.reason}`,
+          })),
+        });
 
         const confirmed = await tx.supplierReturn.update({
           where:   { id },
           data:    { status: "CONFIRMED" },
-          include: {
-            supplier: { select: { id: true, name: true } },
-            items:    { include: { medicine: { select: { name: true } } } },
-          },
+          include: { supplier: { select: { id: true, name: true } } },
         });
 
-        // Supplier return reduces what the pharmacy owes — decrement ledger balance.
-        await tx.supplier.update({
-          where: { id: sr.supplierId, pharmacyId },
-          data:  { ledgerBalance: { decrement: sr.totalAmount } },
-        });
-
-        await tx.auditLog.create({
-          data: { pharmacyId, userId, action: "CONFIRM", entity: "SupplierReturn", entityId: id, newData: { status: "CONFIRMED", returnNumber: sr.returnNumber } as Prisma.InputJsonValue },
-        });
+        // Ledger-balance decrement and audit log are independent writes —
+        // neither depends on the other's result, so run them together.
+        await Promise.all([
+          tx.supplier.update({
+            where: { id: sr.supplierId, pharmacyId },
+            data:  { ledgerBalance: { decrement: sr.totalAmount } },
+          }),
+          tx.auditLog.create({
+            data: { pharmacyId, userId, action: "CONFIRM", entity: "SupplierReturn", entityId: id, newData: { status: "CONFIRMED", returnNumber: sr.returnNumber } as Prisma.InputJsonValue },
+          }),
+        ]);
 
         return confirmed;
     }, { isolationLevel: "Serializable", timeout: 15_000 });
@@ -177,7 +185,6 @@ export class SupplierReturnsRepo {
       where:   { id, pharmacyId },
       include: {
         supplier: { select: { id: true, name: true, phone: true, gstin: true } },
-        items:    { include: { medicine: { select: { name: true, genericName: true, hsnCode: true } } } },
       },
     });
   }
@@ -199,7 +206,7 @@ export class SupplierReturnsRepo {
         : {}),
     };
 
-    const [items, total] = await Promise.all([
+    const [rawItems, total] = await Promise.all([
       this.db.supplierReturn.findMany({
         where,
         orderBy: { createdAt: "desc" },
@@ -207,11 +214,14 @@ export class SupplierReturnsRepo {
         take:    params.limit,
         include: {
           supplier: { select: { id: true, name: true } },
-          _count:   { select: { items: true } },
         },
       }),
       this.db.supplierReturn.count({ where }),
     ]);
+
+    // itemCount is a plain denormalized column now (items moved off a child
+    // table) — reshape back into the `_count.items` form callers expect.
+    const items = rawItems.map((sr) => ({ ...sr, _count: { items: sr.itemCount } }));
 
     return { items, total, page: params.page, limit: params.limit };
   }

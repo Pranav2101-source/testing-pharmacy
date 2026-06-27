@@ -11,9 +11,11 @@ export interface PurchaseSummary {
 }
 
 // Single shared query for the Purchase page header badges + SummaryBar cards.
-// Both consumers used to fire their own independent api.get() calls (one of
-// which — approvalStatus=PENDING_APPROVAL — was an exact duplicate); this
-// hook lets React Query dedupe/cache the lot behind one query key.
+// /reports/purchases/summary now returns pendingApprovals/pendingGRNs counts
+// directly (added alongside the existing overduePayments count), so this is
+// one HTTP call instead of four — the other three used to exist only to read
+// a list endpoint's `.total`, and one of them (overdue GRNs) duplicated the
+// exact same count the summary endpoint already computed as overduePayments.
 export function usePurchaseSummary() {
   return useQuery({
     queryKey: queryKeys.purchases.summary(),
@@ -21,18 +23,14 @@ export function usePurchaseSummary() {
       const now  = new Date();
       const from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
       const to   = now.toISOString();
-      const [grnDraftRes, grnOverdueRes, poRes, summaryRes] = await Promise.all([
-        api.get("/purchases/grn",    { params: { status: "DRAFT", limit: 1 } }),
-        api.get("/purchases/grn",    { params: { overdue: true, status: "CONFIRMED", limit: 1 } }),
-        api.get("/purchases/orders", { params: { approvalStatus: "PENDING_APPROVAL", limit: 1 } }),
-        api.get("/reports/purchases/summary", { params: { from, to } }),
-      ]);
+      const { data } = await api.get("/reports/purchases/summary", { params: { from, to } });
+      const s = data.data;
       return {
-        pendingGRNs:      grnDraftRes.data.data.total   ?? 0,
-        overdueGRNs:       grnOverdueRes.data.data.total ?? 0,
-        overduePayments:  summaryRes.data.data.overduePayments ?? 0,
-        pendingApprovals: poRes.data.data.total ?? 0,
-        monthSpend:       summaryRes.data.data.totalSpend ?? 0,
+        pendingGRNs:      s.pendingGRNs      ?? 0,
+        overdueGRNs:       s.overduePayments  ?? 0, // same underlying count as overduePayments
+        overduePayments:  s.overduePayments  ?? 0,
+        pendingApprovals: s.pendingApprovals ?? 0,
+        monthSpend:       s.totalSpend       ?? 0,
       };
     },
     staleTime: 30_000,

@@ -62,22 +62,27 @@ export class SuppliersService {
   }
 
   async getPurchaseHistory(id: string, pharmacyId: string, page: number, limit: number) {
-    const supplier = await this.repo.getById(id, pharmacyId);
+    // Existence check + history fetch are independent queries — run in
+    // parallel instead of sequentially (still distinguishes "supplier
+    // doesn't exist" 404 from "supplier exists but has no orders").
+    const [supplier, history] = await Promise.all([
+      this.repo.getById(id, pharmacyId),
+      this.repo.getPurchaseHistory(id, pharmacyId, page, limit),
+    ]);
     if (!supplier) throw AppError.notFound("Supplier not found");
-    return this.repo.getPurchaseHistory(id, pharmacyId, page, limit);
+    return history;
   }
 
   // Vendor performance metrics (#23)
   async getPerformance(id: string, pharmacyId: string, from?: string, to?: string) {
-    const supplier = await this.repo.getById(id, pharmacyId);
-    if (!supplier) throw AppError.notFound("Supplier not found");
-
     const db          = (this as any).repo["db"] as import("@pharmacy/database").Db;
     const dateFilter  = from && to
       ? { gte: new Date(from), lte: new Date(to) }
       : undefined;
 
-    const [poAgg, grnAgg, returnAgg, paymentAgg] = await Promise.all([
+    // Existence check runs alongside the aggregates instead of blocking them.
+    const [supplier, poAgg, grnAgg, returnAgg, paymentAgg] = await Promise.all([
+      this.repo.getById(id, pharmacyId),
       db.purchaseOrder.aggregate({
         where: { pharmacyId, supplierId: id, ...(dateFilter ? { orderedAt: dateFilter } : {}) },
         _count: true,
@@ -92,11 +97,12 @@ export class SuppliersService {
         _count: true,
         _sum:   { totalAmount: true },
       }),
-      db.supplierPayment.aggregate({
-        where: { pharmacyId, supplierId: id },
+      db.supplierLedgerEntry.aggregate({
+        where: { pharmacyId, supplierId: id, type: "PAYMENT" },
         _sum:  { amount: true },
       }),
     ]);
+    if (!supplier) throw AppError.notFound("Supplier not found");
 
     const totalGRNs    = grnAgg.length;
     const totalSpend   = grnAgg.reduce((s, g) => s + g.totalAmount, 0);

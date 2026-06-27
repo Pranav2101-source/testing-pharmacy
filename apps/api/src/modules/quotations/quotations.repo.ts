@@ -241,29 +241,32 @@ export class QuotationsRepo {
           subtotal,
           totalGst,
           totalAmount,
-          items:          { create: poItems },
+          items:          poItems as unknown as Prisma.InputJsonValue,
+          itemCount:      poItems.length,
         },
         include: {
           supplier: { select: { id: true, name: true } },
-          items:    true,
         },
       });
 
-      await tx.quotation.update({ where: { id }, data: { status: "CONVERTED" } });
-
-      await tx.auditLog.create({
-        data: {
-          pharmacyId, userId,
-          action:   "CONVERT",
-          entity:   "Quotation",
-          entityId: id,
-          newData: {
-            status:          "CONVERTED",
-            purchaseOrderId: po.id,
-            orderNumber:     po.orderNumber,
-          } as Prisma.InputJsonValue,
-        },
-      });
+      // Quotation status update and audit log are independent writes —
+      // neither depends on the other's result, so run them together.
+      await Promise.all([
+        tx.quotation.update({ where: { id }, data: { status: "CONVERTED" } }),
+        tx.auditLog.create({
+          data: {
+            pharmacyId, userId,
+            action:   "CONVERT",
+            entity:   "Quotation",
+            entityId: id,
+            newData: {
+              status:          "CONVERTED",
+              purchaseOrderId: po.id,
+              orderNumber:     po.orderNumber,
+            } as Prisma.InputJsonValue,
+          },
+        }),
+      ]);
 
       return {
         quotation: { id: quotation.id, quotationNumber: quotation.quotationNumber, status: "CONVERTED" as const },

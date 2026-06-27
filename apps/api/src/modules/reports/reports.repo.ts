@@ -114,6 +114,21 @@ export class ReportsRepo {
     });
   }
 
+  // Current-state counts (not date-ranged like the spend aggregates above) —
+  // power the Purchase page header badges without a separate findMany+count
+  // round-trip per badge.
+  pendingApprovalCount(pharmacyId: string) {
+    return this.db.purchaseOrder.count({
+      where: { pharmacyId, approvalStatus: "PENDING_APPROVAL" },
+    });
+  }
+
+  draftGrnCount(pharmacyId: string) {
+    return this.db.goodsReceiptNote.count({
+      where: { pharmacyId, status: "DRAFT" },
+    });
+  }
+
   supplierNames(ids: string[]) {
     return this.db.supplier.findMany({
       where:  { id: { in: ids } },

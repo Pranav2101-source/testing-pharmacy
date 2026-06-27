@@ -44,8 +44,7 @@ model Pharmacy {
   stockReservations   StockReservation[]
   grns                GoodsReceiptNote[]
   supplierReturns     SupplierReturn[]
-  supplierPayments    SupplierPayment[]
-  supplierCreditNotes SupplierCreditNote[]
+  supplierLedgerEntries SupplierLedgerEntry[]
   quotations          Quotation[]
   racks               Rack[]
   shelves             Shelf[]
@@ -59,9 +58,7 @@ model Pharmacy {
   // Child-table back-relations (added for RLS + tenant isolation on item rows)
   invoiceItems        InvoiceItem[]
   grnItems            GRNItem[]
-  purchaseOrderItems  PurchaseOrderItem[]
   salesReturnItems    SalesReturnItem[]
-  supplierReturnItems SupplierReturnItem[]
   quotationItems      QuotationItem[]
   stockAuditItems     StockAuditItem[]
   ticketMessages      TicketMessage[]
@@ -92,7 +89,7 @@ model Pharmacy {
 
 model DocumentSequence {
   pharmacyId String
-  kind       String // INVOICE | SALES_RETURN | PURCHASE_ORDER | GRN | SUPPLIER_RETURN | QUOTATION | STOCK_AUDIT
+  kind       String // INVOICE | SALES_RETURN | PURCHASE_ORDER | GRN | SUPPLIER_RETURN | QUOTATION | STOCK_AUDIT | SUPPLIER_PAYMENT | SUPPLIER_CREDIT_NOTE
   period     String // "2025-2026" (financial year) or "20250612" (IST day, audits)
   value      Int      @default(0)
   updatedAt  DateTime @updatedAt
@@ -130,8 +127,7 @@ model User {
   invoicePayments       InvoicePayment[]
   salesReturns          SalesReturn[]
   inventoryMovements    InventoryMovement[]
-  supplierPayments      SupplierPayment[]
-  supplierCreditNotes   SupplierCreditNote[]
+  supplierLedgerEntries SupplierLedgerEntry[]
   quotations            Quotation[]
   calendarEvents        CalendarEvent[]      @relation("CalendarEventCreator")
   ticketsRaised         SupportTicket[]      @relation("TicketRaisedBy")
@@ -192,9 +188,7 @@ model Medicine {
 
   inventory           Inventory[]
   grnItems            GRNItem[]
-  supplierReturnItems SupplierReturnItem[]
   quotationItems      QuotationItem[]
-  purchaseOrderItems  PurchaseOrderItem[]
   pharmacyOverrides   PharmacyMedicineOverride[]
   prescriptionItems   PrescriptionItem[]
   batchRecalls        BatchRecall[]
@@ -305,7 +299,6 @@ model Inventory {
   inventoryMovements  InventoryMovement[]
   stockReservations   StockReservation[]
   grnItems            GRNItem[]
-  supplierReturnItems SupplierReturnItem[]
   stockAuditItems     StockAuditItem[]
 
   @@unique([pharmacyId, medicineId, batchNumber])
@@ -420,8 +413,7 @@ model Supplier {
   purchaseOrders  PurchaseOrder[]
   grns            GoodsReceiptNote[]
   supplierReturns SupplierReturn[]
-  payments        SupplierPayment[]
-  creditNotes     SupplierCreditNote[]
+  ledgerEntries   SupplierLedgerEntry[]
   quotations      Quotation[]
 
   @@index([pharmacyId])
@@ -451,15 +443,21 @@ model PurchaseOrder {
   receivedAt      DateTime?
   // Source PDF this PO was drafted from (e.g. supplier quote), if any — see Upload model.
   sourceUploadId  String?
+  // Line items, denormalized as JSON — no cross-row aggregation/reporting ever
+  // queries into this at the SQL level (verified before this migration), so a
+  // child table bought nothing but an extra join. itemCount is maintained
+  // alongside it so list views don't need to read/parse the JSON just to show
+  // a count (mirrors Supplier.ledgerBalance's running-value pattern below).
+  items     Json
+  itemCount Int  @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy     Pharmacy            @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  supplier     Supplier            @relation(fields: [supplierId], references: [id])
-  approver     User?               @relation("POApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
-  sourceUpload Upload?             @relation(fields: [sourceUploadId], references: [id], onDelete: SetNull)
-  items        PurchaseOrderItem[]
+  pharmacy     Pharmacy           @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  supplier     Supplier           @relation(fields: [supplierId], references: [id])
+  approver     User?              @relation("POApprover", fields: [approvedBy], references: [id], onDelete: SetNull)
+  sourceUpload Upload?            @relation(fields: [sourceUploadId], references: [id], onDelete: SetNull)
   grns         GoodsReceiptNote[]
 
   @@unique([pharmacyId, orderNumber])
@@ -490,33 +488,9 @@ enum GRNStatus {
   CANCELLED
 }
 
-model PurchaseOrderItem {
-  id              String   @id @default(cuid())
-  pharmacyId      String
-  purchaseOrderId String
-  medicineId      String
-  medicineName    String
-  batchNumber     String
-  expiryDate      DateTime
-  quantity        Int
-  purchaseRate    Decimal  @db.Decimal(12, 2)
-  mrp             Decimal  @db.Decimal(12, 2)
-  gstRate         Decimal  @db.Decimal(12, 2)
-  cgst            Decimal  @db.Decimal(12, 2)
-  sgst            Decimal  @db.Decimal(12, 2)
-  amount          Decimal  @db.Decimal(12, 2)
-
-  pharmacy      Pharmacy      @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  medicine      Medicine      @relation(fields: [medicineId], references: [id])
-
-  @@index([pharmacyId])
-  @@index([purchaseOrderId])
-  @@index([medicineId])
-  // Medicine-wise purchase history (how much did we pay for X over last N months)
-  @@index([pharmacyId, medicineId])
-  @@map("purchase_order_items")
-}
+// PurchaseOrderItem removed — folded into PurchaseOrder.items (JSON) above.
+// Verified before removal: the only direct table-level query against it was
+// a deleteMany during PO edit; no report or cross-row aggregate ever read it.
 
 // ─── Invoice ─────────────────────────────────────────────────────────────────
 
@@ -999,7 +973,7 @@ model GoodsReceiptNote {
   purchaseOrder PurchaseOrder?    @relation(fields: [purchaseOrderId], references: [id])
   sourceUpload  Upload?           @relation(fields: [sourceUploadId], references: [id], onDelete: SetNull)
   items         GRNItem[]
-  payments      SupplierPayment[]
+  payments      SupplierLedgerEntry[]
 
   @@unique([pharmacyId, grnNumber])
   @@index([pharmacyId, status])
@@ -1055,14 +1029,19 @@ model SupplierReturn {
   igst          Decimal              @default(0) @db.Decimal(12, 2)
   totalGst      Decimal              @default(0) @db.Decimal(12, 2)
   totalAmount   Decimal              @default(0) @db.Decimal(12, 2)
+  // Line items, denormalized as JSON — same rationale as PurchaseOrder.items
+  // above. The confirm() flow's per-item inventory-decrement loop reads this
+  // as a plain parsed array; inventoryId per item is re-validated against
+  // Inventory at confirm time regardless (it always was, on top of the FK).
+  items     Json
+  itemCount Int  @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy    Pharmacy             @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  supplier    Supplier             @relation(fields: [supplierId], references: [id])
-  items       SupplierReturnItem[]
-  creditNotes SupplierCreditNote[]
+  pharmacy    Pharmacy              @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  supplier    Supplier              @relation(fields: [supplierId], references: [id])
+  creditNotes SupplierLedgerEntry[]
 
   @@unique([pharmacyId, returnNumber])
   @@index([pharmacyId, status])
@@ -1070,36 +1049,9 @@ model SupplierReturn {
   @@map("supplier_returns")
 }
 
-model SupplierReturnItem {
-  id            String               @id @default(cuid())
-  pharmacyId    String
-  returnId      String
-  inventoryId   String
-  medicineId    String
-  medicineName  String
-  batchNumber   String
-  expiryDate    DateTime
-  quantity      Int
-  purchaseRate  Decimal              @db.Decimal(12, 2)
-  taxableAmount Decimal              @default(0) @db.Decimal(12, 2)
-  gstRate       Decimal              @default(12) @db.Decimal(12, 2)
-  cgst          Decimal              @default(0) @db.Decimal(12, 2)
-  sgst          Decimal              @default(0) @db.Decimal(12, 2)
-  igst          Decimal              @default(0) @db.Decimal(12, 2)
-  amount        Decimal              @db.Decimal(12, 2)
-  reason        SupplierReturnReason @default(DAMAGED)
-
-  createdAt DateTime @default(now())
-
-  pharmacy       Pharmacy       @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  supplierReturn SupplierReturn @relation(fields: [returnId], references: [id], onDelete: Cascade)
-  inventory      Inventory      @relation(fields: [inventoryId], references: [id])
-  medicine       Medicine       @relation(fields: [medicineId], references: [id])
-
-  @@index([pharmacyId])
-  @@index([returnId])
-  @@map("supplier_return_items")
-}
+// SupplierReturnItem removed — folded into SupplierReturn.items (JSON) above.
+// Verified before removal: zero direct table-level queries outside relational
+// includes; confirm()'s per-item loop already re-validates inventoryId.
 
 model GRNItem {
   id               String   @id @default(cuid())
@@ -1146,51 +1098,38 @@ enum ApprovalStatus {
   REJECTED
 }
 
-// ─── Supplier Payment ─────────────────────────────────────────────────────────
-// Records payments made to suppliers against GRNs (purchase invoices).
-// Outstanding balance = sum(GRN totalAmounts) - sum(SupplierPayments) per supplier.
+// ─── Supplier Ledger Entry ────────────────────────────────────────────────────
+// Merges what used to be two tables (SupplierPayment, SupplierCreditNote) into
+// one, discriminated by `type` — mirrors the Upload model's UploadType
+// discriminator pattern already used elsewhere in this schema. Verified
+// before merging: the two were never queried together (no combined ledger
+// view exists), so this is a pure internal storage change.
+// PAYMENT:     money paid to a supplier, optionally against a specific GRN.
+//              Outstanding balance = sum(GRN totalAmounts) - sum(PAYMENT entries).
+// CREDIT_NOTE: credit issued by a supplier, usually against a SupplierReturn.
 
-model SupplierPayment {
-  id            String      @id @default(cuid())
-  pharmacyId    String
-  supplierId    String
-  grnId         String?
-  paymentNumber String
-  amount        Decimal     @db.Decimal(12, 2)
-  paymentMode   PaymentMode
-  reference     String?
-  notes         String?
-  paidAt        DateTime    @default(now())
-  createdBy     String
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  pharmacy Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  supplier Supplier          @relation(fields: [supplierId], references: [id])
-  grn      GoodsReceiptNote? @relation(fields: [grnId], references: [id])
-  user     User              @relation(fields: [createdBy], references: [id])
-
-  @@unique([pharmacyId, paymentNumber])
-  @@index([pharmacyId, supplierId])
-  @@index([pharmacyId, paidAt])
-  @@index([grnId])
-  @@map("supplier_payments")
+enum SupplierLedgerEntryType {
+  PAYMENT
+  CREDIT_NOTE
 }
 
-// ─── Supplier Credit Note ─────────────────────────────────────────────────────
-// Issued when pharmacy returns goods; tracks supplier credit balance.
-
-model SupplierCreditNote {
-  id               String           @id @default(cuid())
+model SupplierLedgerEntry {
+  id               String                  @id @default(cuid())
   pharmacyId       String
   supplierId       String
+  type             SupplierLedgerEntryType
+  entryNumber      String // old paymentNumber / creditNoteNumber, namespaced by type below
+  amount           Decimal                 @db.Decimal(12, 2)
+  // PAYMENT-only fields
+  grnId            String?
+  paymentMode      PaymentMode?
+  paidAt           DateTime?
+  // CREDIT_NOTE-only fields
   supplierReturnId String?
-  creditNoteNumber String
-  amount           Decimal          @db.Decimal(12, 2)
-  status           CreditNoteStatus @default(PENDING)
+  status           CreditNoteStatus?
+  issuedAt         DateTime?
+  reference        String?
   notes            String?
-  issuedAt         DateTime         @default(now())
   createdBy        String
 
   createdAt DateTime @default(now())
@@ -1198,13 +1137,18 @@ model SupplierCreditNote {
 
   pharmacy       Pharmacy        @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   supplier       Supplier        @relation(fields: [supplierId], references: [id])
+  grn            GoodsReceiptNote? @relation(fields: [grnId], references: [id])
   supplierReturn SupplierReturn? @relation(fields: [supplierReturnId], references: [id])
   user           User            @relation(fields: [createdBy], references: [id])
 
-  @@unique([pharmacyId, creditNoteNumber])
-  @@index([pharmacyId, supplierId])
-  @@index([pharmacyId, status])
-  @@map("supplier_credit_notes")
+  @@unique([pharmacyId, type, entryNumber])
+  @@index([pharmacyId, type, supplierId])
+  @@index([pharmacyId, type, status])
+  @@index([pharmacyId, type, paidAt])
+  @@index([pharmacyId, type, issuedAt])
+  @@index([grnId])
+  @@index([supplierReturnId])
+  @@map("supplier_ledger_entries")
 }
 
 enum CreditNoteStatus {

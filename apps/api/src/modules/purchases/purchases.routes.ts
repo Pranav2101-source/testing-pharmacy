@@ -19,6 +19,8 @@ const purchasesRoutes: FastifyPluginAsync = async (app) => {
   app.get("/orders", { preHandler: auth }, async (req, reply) => {
     const query  = listPOQuerySchema.parse(req.query);
     const result = await service.listPOs(req.pharmacyId, query);
+    reply.header("Cache-Control", "private, max-age=30, must-revalidate");
+    reply.header("Vary", "Authorization");
     return reply.send({ success: true, data: result });
   });
 
@@ -84,6 +86,8 @@ const purchasesRoutes: FastifyPluginAsync = async (app) => {
   app.get("/grn", { preHandler: auth }, async (req, reply) => {
     const query  = listGRNQuerySchema.parse(req.query);
     const result = await service.listGRNs(req.pharmacyId, query);
+    reply.header("Cache-Control", "private, max-age=30, must-revalidate");
+    reply.header("Vary", "Authorization");
     return reply.send({ success: true, data: result });
   });
 

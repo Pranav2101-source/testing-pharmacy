@@ -12,6 +12,8 @@ const supplierPaymentsRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", { preHandler: auth }, async (req, reply) => {
     const query  = listPaymentQuerySchema.parse(req.query);
     const result = await service.list(req.pharmacyId, query);
+    reply.header("Cache-Control", "private, max-age=30, must-revalidate");
+    reply.header("Vary", "Authorization");
     return reply.send({ success: true, data: result });
   });
 
