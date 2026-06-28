@@ -1,5 +1,7 @@
 "use client";
 
+import { ListSkeleton } from "@/components/Skeleton";
+
 import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -247,9 +249,7 @@ export default function CustomersPage() {
       {/* ── Table ── */}
       <div className="flex-1 overflow-auto">
         {isLoading ? (
-          <div className="flex items-center justify-center h-64">
-            <Loader2 className="w-6 h-6 text-blue-500 animate-spin" />
-          </div>
+          <ListSkeleton />
         ) : fetchError ? (
           <div className="flex flex-col items-center justify-center h-64 gap-3 text-slate-500">
             <AlertTriangle className="w-8 h-8 text-red-400" />

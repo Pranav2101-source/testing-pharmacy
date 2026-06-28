@@ -9,6 +9,7 @@ import {
   ArrowUpDown, ArrowUp, ArrowDown, FileX, AlertCircle, RefreshCw,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { TableSkeletonRows } from "@/components/Skeleton";
 import { cn } from "@/lib/utils";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -264,12 +265,7 @@ export default function ReturnsPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr>
-                <td colSpan={9} className="py-24 text-center">
-                  <Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" />
-                  <p className="text-slate-400 text-[13px] mt-3">Loading returns…</p>
-                </td>
-              </tr>
+              <TableSkeletonRows columns={9} />
             ) : error ? (
               <tr>
                 <td colSpan={9} className="py-24 text-center">

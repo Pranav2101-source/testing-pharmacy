@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/useToast";
 import { getStoredUser } from "@/lib/auth";
 import { StatusBadge } from "../components/shared";
 import { fmt, daysUntil } from "../utils";
+import { TableSkeletonRows, ListSkeleton } from "@/components/Skeleton";
 import { BATCH_STATUS_CFG } from "../types";
 import type { BatchStatus, InventoryItem, AlertCounts } from "../types";
 import { AdjustStockModal } from "../modals/AdjustStockModal";
@@ -148,7 +149,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
           </thead>
           <tbody>
             {loading && items.length === 0 ? (
-              <tr><td colSpan={10} className="py-24 text-center"><Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" /></td></tr>
+              <TableSkeletonRows columns={10} />
             ) : error ? (
               <tr><td colSpan={10} className="py-16 text-center"><AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-2" /><p className="text-red-500 text-[13px]">{error}</p><button onClick={() => void load()} className="mt-2 text-blue-600 text-[12px] hover:underline">Retry</button></td></tr>
             ) : items.length === 0 ? (
@@ -220,7 +221,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
         {/* Phone cards */}
         <div className="md:hidden">
           {loading && items.length === 0 ? (
-            <div className="py-24 text-center"><Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" /></div>
+            <ListSkeleton rows={6} />
           ) : error ? (
             <div className="py-16 text-center px-4">
               <AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-2" />

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
+import { ListSkeleton } from "@/components/Skeleton";
 import {
   ClipboardList, Plus, X, Loader2, CheckCircle2,
   Clock, AlertCircle, Ban, PlayCircle, ChevronRight, ArrowRight,
@@ -316,9 +317,7 @@ export function StockAuditContent() {
       {/* ── Table ────────────────────────────────────────────────────────────── */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         {loading ? (
-          <div className="flex items-center justify-center h-52">
-            <Loader2 className="w-6 h-6 text-slate-300 animate-spin" />
-          </div>
+          <ListSkeleton />
         ) : sessions.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-52 gap-3 text-slate-400">
             <ClipboardList className="w-10 h-10 text-slate-200" />

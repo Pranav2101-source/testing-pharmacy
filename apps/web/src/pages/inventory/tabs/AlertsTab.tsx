@@ -4,6 +4,7 @@ import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { Loader2, AlertCircle, Clock, TrendingDown, Check, ShoppingCart } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { ListSkeleton } from "@/components/Skeleton";
 import { queryKeys } from "@/lib/queryKeys";
 import { fmt } from "../utils";
 import { WASTE_RISK_CFG, EXPIRY_TIER_CFG, STOCK_TIER_CFG } from "../types";
@@ -33,7 +34,7 @@ export function AlertsTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts)
     if (data) onCountsLoaded({ expiry: data.expiry.length, lowStock: data.lowStock.length });
   }, [data, onCountsLoaded]);
 
-  if (loading && !data) return <div className="flex items-center justify-center py-24"><Loader2 className="w-7 h-7 animate-spin text-blue-400" /></div>;
+  if (loading && !data) return <ListSkeleton rows={10} />;
 
   if (loadError && !data) return (
     <div className="flex flex-col items-center justify-center py-24 gap-3">

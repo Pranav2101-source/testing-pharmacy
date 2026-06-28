@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { ListSkeleton } from "@/components/Skeleton";
 import {
   LayoutGrid, Plus, X, Pencil, Loader2, FileX,
   Building2, Layers, Package, Search, ToggleLeft, ToggleRight,
@@ -323,9 +324,7 @@ export default function LocationsPage() {
           </div>
 
           {loading ? (
-            <div className="flex items-center justify-center h-40">
-              <Loader2 className="w-5 h-5 text-slate-300 animate-spin" />
-            </div>
+            <ListSkeleton />
           ) : filteredRacks.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-40 text-slate-400 gap-2">
               <FileX className="w-8 h-8" />

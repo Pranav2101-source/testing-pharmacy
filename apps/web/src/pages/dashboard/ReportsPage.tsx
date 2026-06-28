@@ -10,6 +10,7 @@ import {
   BadgePercent, BookOpen, ArrowUpDown, Banknote,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ListSkeleton } from "@/components/Skeleton";
 import { api } from "@/lib/api-client";
 
 // ─── Types ────────────────────────────────────────────────────────
@@ -326,7 +327,7 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
           />
         </div>
         {fastLoading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+          <ListSkeleton rows={5} />
         ) : topMedicines.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-slate-400">
             <Flame className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -436,7 +437,7 @@ function InventoryTab() {
         ) : undefined}
       >
         {expiryLoading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+          <ListSkeleton rows={5} />
         ) : expiryItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-slate-400">
             <CheckCircle2 className="w-8 h-8 text-emerald-200 mb-2" strokeWidth={1.4} />
@@ -513,7 +514,7 @@ function InventoryTab() {
         }
       >
         {deadLoading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+          <ListSkeleton rows={5} />
         ) : deadItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-slate-400">
             <CheckCircle2 className="w-8 h-8 text-emerald-200 mb-2" strokeWidth={1.4} />
@@ -549,7 +550,7 @@ function InventoryTab() {
       {/* Stock Valuation */}
       <Section title="Stock Valuation" icon={Banknote} iconBg="bg-emerald-50" iconColor="text-emerald-600">
         {valLoading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+          <ListSkeleton rows={5} />
         ) : (
           <div>
             {/* Summary bar */}
@@ -661,7 +662,7 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
           <PeriodSelector period={period} onChange={setPeriod} customFrom={customFrom} customTo={customTo} onCustomChange={(f,t) => { setCustomFrom(f); setCustomTo(t); }} />
         </div>
         {loading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+          <ListSkeleton rows={5} />
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-slate-400">
             <ShoppingCart className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -815,7 +816,7 @@ function GstReportSection() {
       }
     >
       {loading ? (
-        <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+        <ListSkeleton rows={5} />
       ) : !data ? (
         <div className="flex flex-col items-center justify-center py-12 text-slate-400">
           <Receipt className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -920,7 +921,7 @@ function HsnSummarySection() {
       }
     >
       {loading ? (
-        <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+        <ListSkeleton rows={5} />
       ) : !rows ? (
         <div className="flex flex-col items-center justify-center py-12 text-slate-400">
           <BadgePercent className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -1051,7 +1052,7 @@ function ScheduleHSection() {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+        <ListSkeleton rows={5} />
       ) : items.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-slate-400">
           <BookOpen className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />

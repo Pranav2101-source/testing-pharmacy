@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Stethoscope, Plus, Search, Pencil, Power, X, Loader2, Phone, Mail, Hash } from "lucide-react";
+import { TableSkeletonRows } from "@/components/Skeleton";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
@@ -214,18 +215,7 @@ export default function DoctorsPage() {
 
       {/* Table */}
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-        {isLoading ? (
-          <div className="flex items-center justify-center py-16">
-            <Loader2 className="w-6 h-6 animate-spin text-blue-300" />
-          </div>
-        ) : doctors.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-slate-400">
-            <Stethoscope className="w-10 h-10 text-slate-200 mb-3" strokeWidth={1.4} />
-            <p className="text-[13px] font-medium">{search ? "No doctors match your search" : "No doctors yet"}</p>
-            {!search && <button onClick={() => setModal("new")} className="mt-3 text-[12px] text-blue-600 font-semibold hover:underline">Add your first doctor</button>}
-          </div>
-        ) : (
-          <table className="w-full text-[13px]">
+        <table className="w-full text-[13px]">
             <thead>
               <tr className="bg-slate-50 text-slate-500 text-[11px] font-semibold">
                 <th className="px-4 py-3 text-left">Name</th>
@@ -237,7 +227,17 @@ export default function DoctorsPage() {
               </tr>
             </thead>
             <tbody>
-              {doctors.map(d => (
+              {isLoading ? (
+                <TableSkeletonRows columns={6} widths={["w-32","w-24","w-20","w-28","w-12","w-16"]} />
+              ) : doctors.length === 0 ? (
+                <tr><td colSpan={6}>
+                  <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+                    <Stethoscope className="w-10 h-10 text-slate-200 mb-3" strokeWidth={1.4} />
+                    <p className="text-[13px] font-medium">{search ? "No doctors match your search" : "No doctors yet"}</p>
+                    {!search && <button onClick={() => setModal("new")} className="mt-3 text-[12px] text-blue-600 font-semibold hover:underline">Add your first doctor</button>}
+                  </div>
+                </td></tr>
+              ) : doctors.map(d => (
                 <tr key={d.id} className="border-t border-slate-50 hover:bg-slate-50/60 transition-colors">
                   <td className="px-4 py-3 font-semibold text-slate-800">{d.name}</td>
                   <td className="px-4 py-3">
@@ -275,7 +275,6 @@ export default function DoctorsPage() {
               ))}
             </tbody>
           </table>
-        )}
       </div>
 
       {/* Pagination */}

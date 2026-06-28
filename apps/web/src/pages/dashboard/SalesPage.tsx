@@ -12,6 +12,7 @@ import {
   Package, RefreshCw, Trash2, Play, Clock, IndianRupee,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { TableSkeletonRows } from "@/components/Skeleton";
 import { cn } from "@/lib/utils";
 import { listDrafts, deleteDraft, clearAllDrafts } from "@/lib/draftStorage";
 import { useBillingStore } from "@/components/billing/useBillingStore";
@@ -479,10 +480,7 @@ function BillsPanel({ onCount }: { onCount: (n: number) => void }) {
           </thead>
           <tbody>
             {isPending ? (
-              <tr><td colSpan={9} className="py-24 text-center">
-                <Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" />
-                <p className="text-slate-400 text-[13px] mt-3">Loading bills…</p>
-              </td></tr>
+              <TableSkeletonRows columns={9} />
             ) : isError ? (
               <tr><td colSpan={9} className="py-24 text-center">
                 <AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-3" />

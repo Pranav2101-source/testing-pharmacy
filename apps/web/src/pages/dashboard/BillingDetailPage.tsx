@@ -8,6 +8,7 @@ import {
   User, Phone, Stethoscope, CreditCard, Calendar, RefreshCcw,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { ListSkeleton } from "@/components/Skeleton";
 import { cn } from "@/lib/utils";
 import { useInvoicePrintConfig } from "@/lib/useInvoicePrintConfig";
 import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
@@ -139,12 +140,7 @@ export default function BillDetailPage() {
 
   // ── Loading ────────────────────────────────────────────────
   if (loading) {
-    return (
-      <div className="flex flex-col h-full items-center justify-center bg-white">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
-        <p className="text-slate-400 text-[13px] mt-3">Loading invoice…</p>
-      </div>
-    );
+    return <ListSkeleton rows={8} />;
   }
 
   // ── Error ──────────────────────────────────────────────────

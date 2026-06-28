@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ListSkeleton } from "@/components/Skeleton";
 import {
   Plus, Search, X, Loader2, ChevronLeft, ChevronRight,
   Stethoscope, User, Phone, Calendar, Pill, ClipboardList, Trash2,
@@ -966,9 +967,7 @@ export default function PrescriptionsPage() {
       {/* Table */}
       <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
         {isLoading ? (
-          <div className="flex items-center justify-center py-20">
-            <Loader2 className="w-6 h-6 animate-spin text-violet-500" />
-          </div>
+          <ListSkeleton />
         ) : prescriptions.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 gap-3 text-slate-400">
             <AlertCircle className="w-8 h-8" />

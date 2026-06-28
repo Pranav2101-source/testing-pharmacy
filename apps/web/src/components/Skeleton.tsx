@@ -34,6 +34,20 @@ export function TableSkeletonRows({
   );
 }
 
+// Generic content-area skeleton: a stack of full-width bars. Drop-in replacement
+// for a centered spinner on any list/detail page while the first load is in
+// flight, regardless of whether the underlying layout is a table, cards, or a
+// detail view. Use TableSkeletonRows instead when you can render inside a <table>.
+export function ListSkeleton({ rows = 8, className }: { rows?: number; className?: string }) {
+  return (
+    <div className={cn("p-4 space-y-2.5", className)} aria-hidden>
+      {Array.from({ length: rows }).map((_, i) => (
+        <Skeleton key={i} className="h-11 rounded-lg" />
+      ))}
+    </div>
+  );
+}
+
 // Skeleton placeholders for card-list panels (slide-in panels showing a list
 // of small cards rather than a table) — e.g. OverdueBillsPanel,
 // PendingApprovalsPanel.

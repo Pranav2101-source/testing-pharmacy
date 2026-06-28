@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api-client";
+import { ListSkeleton } from "@/components/Skeleton";
 import { useToast } from "@/hooks/useToast";
 import { getStoredUser } from "@/lib/auth";
 
@@ -559,10 +560,7 @@ function MembersTab({ staff, loading, currentUserId, isOwner, onEdit, onToggle }
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center py-32 gap-3">
-        <Loader2 className="w-8 h-8 text-brand-400 animate-spin" />
-        <p className="text-sm text-slate-400">Loading staff…</p>
-      </div>
+      <ListSkeleton rows={8} />
     );
   }
 
