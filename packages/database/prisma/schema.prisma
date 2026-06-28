@@ -24,6 +24,10 @@ model Pharmacy {
   state       String?
   pincode     String?
   isActive    Boolean @default(true)
+  // Per-pharmacy invoice/GST/numbering config (1:1, was the InvoiceSettings table).
+  // Inlined as a column — it was a strict 1:1 holding a single JSON blob, only ever
+  // read by pharmacyId and written via upsert, so a separate table bought nothing.
+  invoiceSettings Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -34,7 +38,6 @@ model Pharmacy {
   inventory           Inventory[]
   purchaseOrders      PurchaseOrder[]
   invoices            Invoice[]
-  invoiceSettings     InvoiceSettings?
   auditLogs           AuditLog[]
   uploads             Upload[]
   notifications       NotificationLog[]
@@ -833,20 +836,9 @@ enum MovementDirection {
   OUT
 }
 
-// ─── Invoice Settings (per pharmacy) ─────────────────────────────────────────
-
-model InvoiceSettings {
-  id         String @id @default(cuid())
-  pharmacyId String @unique
-  settings   Json
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-
-  @@map("invoice_settings")
-}
+// InvoiceSettings table removed — inlined into Pharmacy.invoiceSettings (Json).
+// Was a strict 1:1 (pharmacyId @unique) holding one JSON blob, read only by
+// pharmacyId and written via upsert; a separate table added a join for nothing.
 
 // ─── Audit Log ───────────────────────────────────────────────────────────────
 

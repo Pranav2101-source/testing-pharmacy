@@ -54,7 +54,14 @@ export class BillingRepo {
   // ── Invoice settings ─────────────────────────────────────────────────────
 
   async getSettings(pharmacyId: string) {
-    return this.db.invoiceSettings.findUnique({ where: { pharmacyId } });
+    // invoiceSettings is now a column on Pharmacy (was its own 1:1 table). Wrapped
+    // in `{ settings }` to preserve the shape callers already destructure.
+    const pharmacy = await this.db.pharmacy.findUnique({
+      where:  { id: pharmacyId },
+      select: { invoiceSettings: true },
+    });
+    if (!pharmacy) return null;
+    return { settings: pharmacy.invoiceSettings };
   }
 
   // ── Create invoice (atomic) ───────────────────────────────────────────────

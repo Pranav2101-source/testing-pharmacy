@@ -507,12 +507,13 @@ export class BillingService {
   ) {
     // Prisma's Json type requires an explicit cast — the caller guarantees the
     // shape is valid because it was parsed through invoiceSettingsConfigSchema.
-    const json = config as Parameters<typeof this.app.prisma.invoiceSettings.upsert>[0]["create"]["settings"];
+    const json = config as Parameters<typeof this.app.prisma.pharmacy.update>[0]["data"]["invoiceSettings"];
 
-    const result = await this.app.prisma.invoiceSettings.upsert({
-      where:  { pharmacyId },
-      update: { settings: json },
-      create: { pharmacyId, settings: json },
+    // invoiceSettings is now a column on Pharmacy (was its own 1:1 table).
+    const result = await this.app.prisma.pharmacy.update({
+      where:  { id: pharmacyId },
+      data:   { invoiceSettings: json },
+      select: { invoiceSettings: true },
     });
 
     await this.app.prisma.auditLog.create({
