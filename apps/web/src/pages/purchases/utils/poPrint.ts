@@ -26,6 +26,7 @@ export type PrintPOItem = {
 export type PrintPO = {
   orderNumber: string;
   orderedAt: string;
+  status?: string | null;
   expectedDate?: string | null;
   invoiceNo?: string | null;
   notes?: string | null;
@@ -189,7 +190,7 @@ function generatePOHTML(po: PrintPO, pharmacy: PrintPharmacy): string {
       <div class="po-badge">
         <div class="po-label">Purchase Order</div>
         <div class="po-num">${po.orderNumber}</div>
-        <div class="po-chip">DRAFT</div>
+        <div class="po-chip">${(po.status ?? "DRAFT").toUpperCase()}</div>
       </div>
     </div>
 

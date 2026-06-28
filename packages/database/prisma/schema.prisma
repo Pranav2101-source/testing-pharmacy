@@ -467,6 +467,9 @@ model PurchaseOrder {
   @@index([pharmacyId, status])
   @@index([pharmacyId, supplierId])
   @@index([pharmacyId, approvalStatus])
+  // Default PO list view: WHERE pharmacyId=? ORDER BY orderedAt DESC (no other filter).
+  // Without this the list does a sort on every page load (mirrors the invoices list index).
+  @@index([pharmacyId, orderedAt(sort: Desc)])
   @@map("purchase_orders")
 }
 
