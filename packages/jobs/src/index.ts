@@ -33,16 +33,25 @@ export async function startWorkers(): Promise<void> {
 
   // Fan-out jobs: one worker handles all pharmacies in-process.
   // localConcurrency = max concurrent jobs fetched per poll; concurrency within each team.
+  //
+  // pollingIntervalSeconds tunes how often each worker SELECTs the queue for new
+  // jobs. pg-boss defaults to 2s per worker — with 10 workers that's ~5 polls/sec
+  // (millions of trivial queries/day) for no benefit, since the cron-dispatched
+  // jobs below run at most hourly. They poll at 60s (pickup lag is invisible vs a
+  // daily/hourly schedule). Only the event-driven, user-facing queues stay fast:
+  // post-invoice (post-sale processing) at 5s, migration-import (onboarding shows
+  // live progress) at the 2s default.
+  const CRON_POLL = 60; // seconds — for boss.schedule()-dispatched workers
   await Promise.all([
-    boss.work("expiry-alerts",       { localConcurrency: 5 }, expiryAlertHandler),
-    boss.work("low-stock-alerts",    { localConcurrency: 5 }, lowStockAlertHandler),
-    boss.work("grn-overdue",         { localConcurrency: 5 }, grnOverdueHandler),
-    boss.work("eod-summary",         { localConcurrency: 5 }, eodSummaryHandler),
-    boss.work("quotation-expiry",    { localConcurrency: 5 }, quotationExpiryHandler),
-    boss.work("pending-credit",      { localConcurrency: 5 }, pendingCreditHandler),
-    boss.work("calendar-digest",     { localConcurrency: 5 }, calendarDigestHandler),
-    boss.work("post-invoice",        { localConcurrency: 10 }, postInvoiceHandler),
-    boss.work("reservation-cleanup", { localConcurrency: 1  }, reservationCleanupHandler),
+    boss.work("expiry-alerts",       { localConcurrency: 5, pollingIntervalSeconds: CRON_POLL }, expiryAlertHandler),
+    boss.work("low-stock-alerts",    { localConcurrency: 5, pollingIntervalSeconds: CRON_POLL }, lowStockAlertHandler),
+    boss.work("grn-overdue",         { localConcurrency: 5, pollingIntervalSeconds: CRON_POLL }, grnOverdueHandler),
+    boss.work("eod-summary",         { localConcurrency: 5, pollingIntervalSeconds: CRON_POLL }, eodSummaryHandler),
+    boss.work("quotation-expiry",    { localConcurrency: 5, pollingIntervalSeconds: CRON_POLL }, quotationExpiryHandler),
+    boss.work("pending-credit",      { localConcurrency: 5, pollingIntervalSeconds: CRON_POLL }, pendingCreditHandler),
+    boss.work("calendar-digest",     { localConcurrency: 5, pollingIntervalSeconds: CRON_POLL }, calendarDigestHandler),
+    boss.work("reservation-cleanup", { localConcurrency: 1, pollingIntervalSeconds: CRON_POLL }, reservationCleanupHandler),
+    boss.work("post-invoice",        { localConcurrency: 10, pollingIntervalSeconds: 5 }, postInvoiceHandler),
     boss.work("migration-import",    { localConcurrency: 2  }, migrationImportHandler),
   ]);
 
