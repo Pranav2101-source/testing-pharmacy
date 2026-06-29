@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
@@ -58,6 +59,7 @@ const STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> 
 };
 
 export function TenantDrawer({ tenantId, onClose }: TenantDrawerProps) {
+  const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<string>("overview");
   const toast = useToast();
   const qc = useQueryClient();
@@ -247,7 +249,7 @@ export function TenantDrawer({ tenantId, onClose }: TenantDrawerProps) {
                 {/* Content */}
                 <div className="flex-1 overflow-y-auto p-6 space-y-8 bg-white">
                   {activeTab === "overview" && <OverviewTab tenant={tenant} />}
-                  {activeTab === "subscription" && <SubscriptionTab tenant={tenant} />}
+                  {activeTab === "subscription" && <SubscriptionTab tenant={tenant} navigate={navigate} />}
                   {activeTab === "health" && <HealthTab health={health} />}
                   {activeTab === "features" && <FeaturesTab settings={tenant.tenantSettings} />}
                   {activeTab === "activity" && <ActivityTab activity={activity} />}
@@ -314,7 +316,7 @@ function OverviewTab({ tenant }: { tenant: any }) {
   );
 }
 
-function SubscriptionTab({ tenant }: { tenant: any }) {
+function SubscriptionTab({ tenant, navigate }: { tenant: any; navigate: any }) {
   const sub = tenant.subscription;
   return (
     <section className="space-y-6">
@@ -338,10 +340,32 @@ function SubscriptionTab({ tenant }: { tenant: any }) {
             <span className="font-medium text-slate-900">{sub?.validUntil ? new Date(sub.validUntil).toLocaleDateString() : "--"}</span>
           </div>
           <div className="flex justify-between text-sm">
+            <span className="text-slate-500">Billing Cycle</span>
+            <span className="font-medium text-slate-900 capitalize">{sub?.billingCycle?.toLowerCase() || "--"}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-slate-500">Price</span>
+            <span className="font-medium text-slate-900">{sub?.amount != null ? new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(sub.amount) : "--"}</span>
+          </div>
+          <div className="flex justify-between text-sm">
+            <span className="text-slate-500">Auto Renew</span>
+            <span className="font-medium text-slate-900">{sub?.autoRenew ? "Enabled" : "Disabled"}</span>
+          </div>
+          <div className="flex justify-between text-sm">
             <span className="text-slate-500">Created</span>
             <span className="font-medium text-slate-900">{sub?.createdAt ? new Date(sub.createdAt).toLocaleDateString() : "--"}</span>
           </div>
         </div>
+        {sub?.id && (
+          <div className="mt-4 pt-4 border-t border-slate-100 flex justify-end">
+            <button
+              onClick={() => navigate(`/dashboard/subscriptions?id=${sub.id}`)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg text-xs font-semibold transition-colors"
+            >
+              <CreditCard className="w-3.5 h-3.5" /> Manage Subscription
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Storage */}

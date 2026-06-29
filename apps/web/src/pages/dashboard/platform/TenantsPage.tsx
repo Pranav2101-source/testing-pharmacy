@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";
@@ -57,13 +58,24 @@ const PLAN_BADGE: Record<string, string> = {
 };
 
 export default function TenantsPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("ALL");
   const [plan, setPlan] = useState("");
   const [stateFilter, setStateFilter] = useState("");
-  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Modals & Drawers
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(searchParams.get("id"));
+
+  useEffect(() => {
+    if (selectedTenantId) {
+      setSearchParams({ id: selectedTenantId });
+    } else {
+      setSearchParams(new URLSearchParams());
+    }
+  }, [selectedTenantId, setSearchParams]);
 
   // Modal states
   const [showNewPharmacy, setShowNewPharmacy] = useState(false);

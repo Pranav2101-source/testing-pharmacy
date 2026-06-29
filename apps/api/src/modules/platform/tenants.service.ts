@@ -76,9 +76,12 @@ export class TenantsService {
         tenantStatus: "ACTIVE",
         subscription: {
           create: {
-            planName: input.planName,
+            planName: input.planName || "Free",
             status: "ACTIVE",
             validUntil,
+            billingCycle: "MONTHLY",
+            amount: 0,
+            autoRenew: true,
           },
         },
         tenantSettings: {

@@ -94,24 +94,89 @@ model Pharmacy {
 // ─── Subscription (one per pharmacy, platform-managed) ────────────────────────
 
 model Subscription {
-  id         String             @id @default(cuid())
-  pharmacyId String             @unique
-  planName   String             @default("Free") // Free | Standard | Professional
-  status     SubscriptionStatus @default(ACTIVE)
-  validUntil DateTime
+  id            String             @id @default(cuid())
+  pharmacyId    String             @unique
+  planName      String             @default("Free") // Free | Standard | Professional | Enterprise
+  status        SubscriptionStatus @default(ACTIVE)
+  billingCycle  String             @default("MONTHLY") // MONTHLY | YEARLY | QUARTERLY
+  amount        Float?             // price for current plan cycle
+  autoRenew     Boolean            @default(true)
+  validUntil    DateTime
+  trialEndsAt   DateTime?
+  pausedAt      DateTime?
+  cancelledAt   DateTime?
+  discount      Float              @default(0) // percentage
+  couponCode    String?
+  creditBalance Float              @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  pharmacy  Pharmacy              @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  invoices  SubscriptionInvoice[]
+  auditLogs SubscriptionAuditLog[]
 
   @@map("subscriptions")
 }
 
 enum SubscriptionStatus {
   ACTIVE
+  TRIAL
+  PAUSED
   EXPIRED
   CANCELLED
+}
+
+// ─── Subscription Invoice ─────────────────────────────────────────────────────
+
+model SubscriptionInvoice {
+  id              String               @id @default(cuid())
+  subscriptionId  String
+  pharmacyId      String
+  invoiceNumber   String               @unique
+  amount          Float
+  tax             Float                @default(0)
+  discount        Float                @default(0)
+  total           Float
+  couponCode      String?
+  status          InvoicePaymentStatus @default(PENDING)
+  dueDate         DateTime
+  paidAt          DateTime?
+  gstinPharmacy   String?
+  gstinPlatform   String?
+
+  createdAt DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([pharmacyId])
+  @@map("subscription_invoices")
+}
+
+enum InvoicePaymentStatus {
+  PAID
+  PENDING
+  OVERDUE
+  CANCELLED
+  REFUNDED
+}
+
+// ─── Subscription Audit Log ───────────────────────────────────────────────────
+
+model SubscriptionAuditLog {
+  id             String  @id @default(cuid())
+  subscriptionId String
+  action         String  // PLAN_CHANGED, RENEWED, PAUSED, RESUMED, CANCELLED, INVOICE_GENERATED, REMINDER_SENT
+  oldValue       String? // JSON
+  newValue       String? // JSON
+  performedBy    String  // user id
+
+  createdAt DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@map("subscription_audit_logs")
 }
 
 // ─── Tenant Settings (feature flags & limits per pharmacy) ────────────────────

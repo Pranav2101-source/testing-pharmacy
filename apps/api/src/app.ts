@@ -44,6 +44,8 @@ import prescriptionsRoutes  from "./modules/prescriptions/prescriptions.routes.j
 import migrationRoutes      from "./modules/migration/migration.routes.js";
 import platformRoutes       from "./modules/platform/dashboard.routes.js";
 import tenantsRoutes        from "./modules/platform/tenants.routes.js";
+import subscriptionsRoutes  from "./modules/platform/subscriptions.routes.js";
+import analyticsRoutes      from "./modules/platform/analytics/analytics.routes.js";
 
 import { env, allowedOrigins, trustProxyHops } from "./config/env.js";
 import { AppError } from "./lib/AppError.js";
@@ -309,6 +311,8 @@ export async function buildApp() {
   await app.register(migrationRoutes,           { prefix: "/api/v1/migration" });
   await app.register(platformRoutes,            { prefix: "/api/v1/platform" });
   await app.register(tenantsRoutes,             { prefix: "/api/v1/platform/tenants" });
+  await app.register(subscriptionsRoutes,       { prefix: "/api/v1/platform/subscriptions" });
+  await app.register(analyticsRoutes,           { prefix: "/api/v1/platform/analytics" });
 
   // ── Health ────────────────────────────────────────────────────────────────
   app.get("/health", async () => ({ status: "ok", ts: new Date().toISOString() }));
