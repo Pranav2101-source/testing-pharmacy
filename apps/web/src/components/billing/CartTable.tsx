@@ -136,11 +136,22 @@ const CartRow = memo(function CartRow({
         {item.packSize ?? "—"}
       </span>
 
-      {/* Batch + Loc combined */}
+      {/* Batch + Loc + stock count */}
       <div className="px-2.5 py-2 min-w-0 text-right">
         <p className="text-[12px] text-slate-600 font-mono truncate">{item.batchNumber}</p>
         {item.location && (
           <p className="text-[10px] text-blue-500 font-semibold truncate mt-0.5">{item.location}</p>
+        )}
+        {item.availableStock != null && (
+          <p className={cn(
+            "text-[10px] font-semibold mt-0.5",
+            item.availableStock === 0                ? "text-red-500"   :
+            item.availableStock <= 5                 ? "text-red-500"   :
+            item.availableStock <= 20                ? "text-amber-500" :
+            "text-emerald-600"
+          )}>
+            {item.availableStock} in stock
+          </p>
         )}
       </div>
 
