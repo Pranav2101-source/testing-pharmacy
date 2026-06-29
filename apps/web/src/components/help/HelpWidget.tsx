@@ -396,6 +396,39 @@ const CATEGORIES: HelpCategory[] = [
         ],
       },
       {
+        id: "smart-stock", question: "What is Smart Stock Levels and why should I use it?",
+        tags: ["smart stock", "smart stock levels", "minimum stock", "calibrate", "auto set", "reorder level", "low stock alert"],
+        blocks: [
+          { type: "text", content: "Smart Stock Levels automatically sets the correct minimum stock for every medicine based on your real sales — so you stop guessing and your low-stock alerts actually mean something." },
+          {
+            type: "badges", items: [
+              { label: "Problem it solves", color: "bg-red-100 text-red-700",     desc: "Most pharmacies never set minimums, or set wrong numbers — so alerts fire too early, too late, or not at all" },
+              { label: "What it does",      color: "bg-blue-100 text-blue-700",   desc: "Reads your last 90 days of sales and sets the minimum to exactly what you need to survive until the next delivery" },
+              { label: "Safety buffer",     color: "bg-amber-100 text-amber-700", desc: "Adds a 50% cushion on top — so you never cut it too close" },
+            ],
+          },
+          { type: "text", content: "Formula used: Average daily sales × 7 days (supplier lead time) × 1.5 safety buffer. Example — if you sell 4 strips of Paracetamol per day, minimum is set to 42." },
+          {
+            type: "steps", steps: [
+              "Go to Inventory → Batches",
+              "Click the 'Smart Stock Levels' button (Owner only)",
+              "Review the preview — it shows old vs new minimum for every medicine",
+              "Confirm to apply — done in seconds",
+            ],
+          },
+          {
+            type: "grid", items: [
+              { icon: TrendingUp,    label: "No more guessing",   desc: "Minimums are based on actual sales, not estimates",         color: "bg-blue-100 text-blue-600"    },
+              { icon: AlertTriangle, label: "Alerts that matter",  desc: "Low-stock bell fires at the right time — not too early or late", color: "bg-amber-100 text-amber-600" },
+              { icon: Package2,      label: "Reduce overstock",    desc: "Slow movers get a low minimum — frees up cash",             color: "bg-emerald-100 text-emerald-600" },
+              { icon: ShoppingCart,  label: "Never run out",       desc: "Fast movers get a high minimum — prevents mid-day stockouts", color: "bg-purple-100 text-purple-600" },
+            ],
+          },
+          { type: "tip", content: "Run it once when setting up, then re-run every 2–3 months as your sales patterns change. Medicines with no sales in 90 days are skipped — set those manually." },
+          { type: "warning", content: "Only Owners can run Smart Stock Levels. It shows a preview before making any changes — nothing is saved until you confirm." },
+        ],
+      },
+      {
         id: "stock-audit", question: "What is a Stock Audit?",
         tags: ["stock audit", "audit", "physical count", "discrepancy"],
         blocks: [
