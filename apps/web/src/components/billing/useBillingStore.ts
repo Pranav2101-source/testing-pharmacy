@@ -51,6 +51,7 @@ type BillingStore = {
   meta: BillingMeta;
   addItem: (base: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "igst" | "amount">) => void;
   removeItem: (inventoryId: string) => void;
+  replaceItem: (oldInventoryId: string, base: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "igst" | "amount">) => void;
   updateQty: (inventoryId: string, qty: number) => void;
   updateDiscount: (inventoryId: string, discount: number) => void;
   setMeta: (patch: Partial<BillingMeta>) => void;
@@ -134,6 +135,14 @@ export const useBillingStore = create<BillingStore>((set, get) => ({
 
   removeItem(inventoryId) {
     set((s) => ({ items: s.items.filter((i) => i.inventoryId !== inventoryId) }));
+  },
+
+  replaceItem(oldInventoryId, base) {
+    set((s) => ({
+      items: s.items.map((i) =>
+        i.inventoryId === oldInventoryId ? recompute(base) : i
+      ),
+    }));
   },
 
   updateQty(inventoryId, qty) {
