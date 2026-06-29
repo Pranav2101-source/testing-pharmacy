@@ -39,12 +39,12 @@ interface NotifLog {
 function getNotifLink(subject: string | null, type: NotifType): string | null {
   if (type !== "IN_APP") return null;
   const s = (subject ?? "").toLowerCase();
+  if (s.includes("quotation"))                                      return "/dashboard/quotations";
   if (s.includes("expir"))                                          return "/dashboard/inventory?tab=alerts";
   if (s.includes("stock") || s.includes("restock"))                return "/dashboard/inventory?tab=alerts";
   if (s.includes("recall"))                                         return "/dashboard/inventory";
   if (s.includes("eod") || s.includes("summary") || s.includes("sales")) return "/dashboard/reports";
   if (s.includes("overdue") || s.includes("grn"))                  return "/dashboard/purchases";
-  if (s.includes("quotation"))                                      return "/dashboard/quotations";
   if (s.includes("calendar") || s.startsWith("📅"))                return "/dashboard/calendar";
   if (s.includes("pending credit") || s.includes("credit"))        return "/dashboard/billing";
   return null;
@@ -63,6 +63,8 @@ function getNotifMeta(subject: string | null): {
     return { Icon: CalendarDays,  color: "text-blue-600",   bg: "bg-blue-50"    };
   if (s.includes("recall") || s.includes("urgent"))
     return { Icon: AlertOctagon, color: "text-red-600",    bg: "bg-red-50"     };
+  if (s.includes("quotation"))
+    return { Icon: FileQuestion, color: "text-indigo-600", bg: "bg-indigo-50"  };
   if (s.includes("expir") || s.includes("expired"))
     return { Icon: Clock,        color: "text-orange-600", bg: "bg-orange-50"  };
   if (s.includes("overdue") || s.includes("payment"))
@@ -81,8 +83,6 @@ function getNotifMeta(subject: string | null): {
     return { Icon: User,         color: "text-slate-600",  bg: "bg-slate-100"  };
   if (s.includes("password") || s.includes("reset"))
     return { Icon: Lock,         color: "text-slate-600",  bg: "bg-slate-100"  };
-  if (s.includes("quotation"))
-    return { Icon: FileQuestion, color: "text-indigo-600", bg: "bg-indigo-50"  };
 
   return { Icon: Bell, color: "text-slate-500", bg: "bg-slate-100" };
 }

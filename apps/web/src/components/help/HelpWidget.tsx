@@ -191,16 +191,21 @@ const CATEGORIES: HelpCategory[] = [
       },
       {
         id: "notifications", question: "How do notifications work?",
-        tags: ["notification", "bell", "alert", "notify"],
+        tags: ["notification", "bell", "alert", "notify", "expiry alert", "stock alert", "overdue", "quotation", "eod", "pending credit", "reminder"],
         blocks: [
-          { type: "text", content: "The notification bell (🔔) in the top bar shows real-time in-app alerts. Notifications are sent when important events happen — like a staff login, a new support ticket update, or a system alert." },
+          { type: "text", content: "The notification bell (🔔) in the top bar shows in-app alerts. Tap one to jump straight to the page it's about. Checkup checks your data automatically and sends these alerts:" },
           {
             type: "grid", items: [
-              { icon: Users,        label: "Staff Login",   desc: "When a staff member logs in",           color: "bg-blue-100 text-blue-600"    },
-              { icon: TicketCheck,  label: "Ticket Update", desc: "Agent replied to your support ticket",  color: "bg-indigo-100 text-indigo-600" },
-              { icon: AlertTriangle,label: "Low Stock",     desc: "Medicine stock below reorder level",    color: "bg-amber-100 text-amber-600"  },
+              { icon: AlertTriangle, label: "Expiry Alert",     desc: "Batches expired or nearing expiry — daily",          color: "bg-orange-100 text-orange-600" },
+              { icon: Package2,      label: "Stock Alert",      desc: "Items out of stock or below minimum — daily",        color: "bg-amber-100 text-amber-600"   },
+              { icon: CreditCard,    label: "Payment Overdue",  desc: "Supplier bills past their due date — daily",         color: "bg-red-100 text-red-600"       },
+              { icon: FileText,      label: "Quotation Expiry", desc: "Quotations expiring within 2 days — daily",          color: "bg-indigo-100 text-indigo-600" },
+              { icon: Calendar,      label: "Today's Events",   desc: "Calendar tasks & reminders due today — daily",       color: "bg-blue-100 text-blue-600"     },
+              { icon: BarChart3,     label: "EOD Summary",      desc: "Day's sales, returns & collections — every evening", color: "bg-rose-100 text-rose-600"     },
+              { icon: DollarSign,    label: "Pending Credit",   desc: "Unpaid customer invoices — weekly (Monday)",         color: "bg-purple-100 text-purple-600" },
             ],
           },
+          { type: "tip", content: "Most alerts arrive each morning; the day's sales summary comes every evening and the pending-credit digest every Monday. A red dot on the bell means you have unread alerts." },
         ],
       },
     ],
