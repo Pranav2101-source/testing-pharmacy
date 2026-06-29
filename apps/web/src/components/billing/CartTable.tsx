@@ -1,17 +1,16 @@
 "use client";
 
-import { useCallback, memo, useState } from "react";
+import { useCallback, memo, useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
-import { X, AlertTriangle, Layers } from "lucide-react";
+import { X, AlertTriangle, Loader2 } from "lucide-react";
 import { useBillingStore, type CartItem } from "./useBillingStore";
 import { EmptyBillState } from "./EmptyBillState";
-import { BatchPickerDialog, type InventoryBatch, expiryStatus } from "./BatchPickerDialog";
+import { type InventoryBatch, expiryStatus } from "./BatchPickerDialog";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 // Column grid — 11 cols: ItemName | Pack | Batch+Loc | Expiry | MRP | Qty | D% | Rate | GST% | Amount | Del
-// Loc folded into Batch cell as a sub-line — saves 58px on tight screens
 const COL = "grid-cols-[minmax(200px,1fr)_80px_104px_72px_80px_72px_64px_90px_64px_104px_38px]";
 
 const CONTROLLED_BADGE: Record<string, string> = {
@@ -58,18 +57,120 @@ function SkeletonRow({ idx }: { idx: number }) {
   );
 }
 
+// ─── Batch popover (self-contained inside each row) ────────────────
+function BatchPopover({
+  item,
+  onSelect,
+  onClose,
+}: {
+  item:     CartItem;
+  onSelect: (batch: InventoryBatch) => void;
+  onClose:  () => void;
+}) {
+  const [batches, setBatches] = useState<InventoryBatch[]>([]);
+  const [loading, setLoading] = useState(true);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
+      params: { search: item.medicineName, inStock: false, limit: 30 },
+    }).then((res) => {
+      const sorted = (res.data?.data?.items ?? [])
+        .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+      setBatches(sorted);
+    }).catch(() => onClose()).finally(() => setLoading(false));
+  }, [item.medicineName, onClose]);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [onClose]);
+
+  return (
+    <motion.div
+      ref={ref}
+      initial={{ opacity: 0, y: -4, scale: 0.97 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -4, scale: 0.97 }}
+      transition={{ duration: 0.12 }}
+      className="absolute top-full right-0 z-50 mt-1 w-64 bg-white rounded-xl shadow-xl border border-slate-200 overflow-hidden"
+    >
+      {loading ? (
+        <div className="flex items-center justify-center py-6 text-slate-400">
+          <Loader2 className="w-4 h-4 animate-spin" />
+        </div>
+      ) : batches.length === 0 ? (
+        <p className="text-[12px] text-slate-400 text-center py-4">No other batches found</p>
+      ) : (
+        <ul className="max-h-56 overflow-y-auto py-1">
+          {batches.map((batch) => {
+            const s          = expiryStatus(batch.expiryDate);
+            const avail      = batch.quantity - (batch.reservedQuantity ?? 0);
+            const isCurrent  = batch.id === item.inventoryId;
+            const isDisabled = s.color === "red" || !batch.medicine.isActive;
+
+            return (
+              <li key={batch.id}>
+                <button
+                  disabled={isDisabled}
+                  onClick={() => !isDisabled && onSelect(batch)}
+                  className={cn(
+                    "w-full flex items-center gap-2.5 px-3 py-2 text-left transition-colors",
+                    isCurrent  ? "bg-blue-50"                                         :
+                    isDisabled ? "opacity-40 cursor-not-allowed"                       :
+                    "hover:bg-slate-50 cursor-pointer"
+                  )}
+                >
+                  {/* expiry dot */}
+                  <span className={cn(
+                    "w-2 h-2 rounded-full flex-shrink-0 mt-0.5",
+                    s.color === "red"   ? "bg-red-400"   :
+                    s.color === "amber" ? "bg-amber-400" : "bg-emerald-400"
+                  )} />
+
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[12px] font-semibold text-slate-800 font-mono truncate">
+                      {batch.batchNumber}
+                      {isCurrent && <span className="ml-1.5 text-[9px] font-bold text-blue-500 normal-case tracking-normal font-sans">current</span>}
+                    </p>
+                    <p className="text-[10px] text-slate-400">
+                      Exp {format(new Date(batch.expiryDate), "MMM yy")}
+                      {s.label !== "OK" && <span className={cn("ml-1", s.color === "red" ? "text-red-500" : "text-amber-500")}>{s.days}d</span>}
+                      {" · "}
+                      <span className={avail <= 5 ? "text-red-500 font-semibold" : avail <= 20 ? "text-amber-500 font-semibold" : "text-slate-400"}>
+                        {avail} avail
+                      </span>
+                    </p>
+                  </div>
+
+                  <span className="text-[12px] font-bold text-slate-600 flex-shrink-0">₹{batch.mrp.toFixed(0)}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </motion.div>
+  );
+}
+
 // ─── Cart Row ─────────────────────────────────────────────────────
 const CartRow = memo(function CartRow({
-  item, idx, hasConflict, onKeyNav, onRemove, onQtyChange, onDiscountChange, onSwapBatch,
+  item, idx, hasConflict, onKeyNav, onRemove, onQtyChange, onDiscountChange,
 }: {
   item: CartItem; idx: number; hasConflict: boolean;
   onKeyNav:         (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => void;
   onRemove:         (id: string) => void;
   onQtyChange:      (id: string, qty: number) => void;
   onDiscountChange: (id: string, discount: number) => void;
-  onSwapBatch:      (item: CartItem) => void;
 }) {
-  const now = Date.now();
+  const replaceItem = useBillingStore((s) => s.replaceItem);
+  const [popoverOpen, setPopoverOpen] = useState(false);
+
+  const now  = Date.now();
   const expiry = new Date(item.expiryDate).getTime();
   const isExpired      = expiry < now;
   const isExpiringSoon = !isExpired && expiry < now + 90 * 86400_000;
@@ -80,6 +181,25 @@ const CartRow = memo(function CartRow({
     if (item.quantity >= item.availableStock * 0.8) return "low";
     return "ok";
   })();
+
+  const handleBatchSelect = useCallback((batch: InventoryBatch) => {
+    replaceItem(item.inventoryId, {
+      inventoryId:    batch.id,
+      medicineName:   batch.medicine.name,
+      hsnCode:        batch.medicine.hsnCode,
+      schedule:       item.schedule,
+      packSize:       item.packSize,
+      location:       batch.location,
+      batchNumber:    batch.batchNumber,
+      expiryDate:     batch.expiryDate,
+      mrp:            batch.mrp,
+      quantity:       item.quantity,
+      discount:       item.discount,
+      gstRate:        batch.medicine.gstRate,
+      availableStock: batch.quantity - (batch.reservedQuantity ?? 0),
+    });
+    setPopoverOpen(false);
+  }, [item, replaceItem]);
 
   return (
     <motion.div
@@ -134,19 +254,21 @@ const CartRow = memo(function CartRow({
         </div>
       </div>
 
-      {/* Unit/Pack */}
+      {/* Pack */}
       <span className={cn("px-2.5 py-2 text-[13px] text-left truncate", item.packSize ? "text-slate-600 font-medium" : "text-slate-300")}>
         {item.packSize ?? "—"}
       </span>
 
-      {/* Batch + Loc + stock count — click to swap batch */}
-      <div className="px-2.5 py-2 min-w-0 text-right">
+      {/* Batch + Loc + stock — click opens popover */}
+      <div className="px-2.5 py-2 min-w-0 text-right relative">
         <button
-          onClick={() => onSwapBatch(item)}
+          onClick={() => setPopoverOpen((o) => !o)}
           title="Change batch"
-          className="inline-flex items-center gap-1 font-mono text-[12px] text-blue-600 hover:text-blue-800 hover:underline underline-offset-2 transition-colors"
+          className={cn(
+            "text-[12px] font-mono font-semibold transition-colors",
+            popoverOpen ? "text-blue-700" : "text-slate-700 hover:text-blue-600"
+          )}
         >
-          <Layers className="w-3 h-3 flex-shrink-0 opacity-60" />
           {item.batchNumber}
         </button>
         {item.location && (
@@ -163,6 +285,16 @@ const CartRow = memo(function CartRow({
             {item.availableStock} in stock
           </p>
         )}
+
+        <AnimatePresence>
+          {popoverOpen && (
+            <BatchPopover
+              item={item}
+              onSelect={handleBatchSelect}
+              onClose={() => setPopoverOpen(false)}
+            />
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Expiry */}
@@ -224,7 +356,7 @@ const CartRow = memo(function CartRow({
         />
       </div>
 
-      {/* D.Price */}
+      {/* Rate */}
       <span className="px-2.5 py-2 text-[13px] text-slate-600 text-right tabnum">
         {item.rate.toFixed(2)}
       </span>
@@ -234,7 +366,7 @@ const CartRow = memo(function CartRow({
         {item.gstRate}%
       </span>
 
-      {/* Amount — CSS pop replaces motion.span key remount */}
+      {/* Amount */}
       <span
         key={item.amount}
         className="px-2.5 py-2 text-[15px] font-black text-slate-900 text-right tabnum block animate-amount-pop"
@@ -242,7 +374,7 @@ const CartRow = memo(function CartRow({
         {item.amount.toFixed(2)}
       </span>
 
-      {/* Delete — CSS scale replaces motion.button whileHover/whileTap */}
+      {/* Delete */}
       <div className="flex justify-center">
         <button
           onClick={() => onRemove(item.inventoryId)}
@@ -268,54 +400,6 @@ export function CartTableRows({
   const removeItem     = useBillingStore((s) => s.removeItem);
   const updateQty      = useBillingStore((s) => s.updateQty);
   const updateDiscount = useBillingStore((s) => s.updateDiscount);
-  const replaceItem    = useBillingStore((s) => s.replaceItem);
-
-  // ── Batch-swap state ────────────────────────────────────────────
-  const [swapTarget,   setSwapTarget]   = useState<CartItem | null>(null);
-  const [swapBatches,  setSwapBatches]  = useState<InventoryBatch[]>([]);
-  const [swapLoading,  setSwapLoading]  = useState(false);
-
-  const handleSwapBatch = useCallback(async (item: CartItem) => {
-    setSwapLoading(true);
-    setSwapTarget(item);
-    try {
-      const res = await api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
-        params: { search: item.medicineName, inStock: false, limit: 30 },
-      });
-      const batches = (res.data?.data?.items ?? [])
-        .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
-      setSwapBatches(batches);
-    } catch {
-      setSwapTarget(null);
-    } finally {
-      setSwapLoading(false);
-    }
-  }, []);
-
-  const handleBatchSelect = useCallback((batch: InventoryBatch) => {
-    if (!swapTarget) return;
-    const status = expiryStatus(batch.expiryDate);
-    replaceItem(swapTarget.inventoryId, {
-      inventoryId:    batch.id,
-      medicineName:   batch.medicine.name,
-      hsnCode:        batch.medicine.hsnCode,
-      schedule:       swapTarget.schedule,
-      packSize:       swapTarget.packSize,
-      location:       batch.location,
-      batchNumber:    batch.batchNumber,
-      expiryDate:     batch.expiryDate,
-      mrp:            batch.mrp,
-      quantity:       swapTarget.quantity,
-      discount:       swapTarget.discount,
-      gstRate:        batch.medicine.gstRate,
-      availableStock: batch.quantity - (batch.reservedQuantity ?? 0),
-    });
-    if (status.color === "red") {
-      // expired batch selected — still allow (user intent) but don't close silently
-    }
-    setSwapTarget(null);
-    setSwapBatches([]);
-  }, [swapTarget, replaceItem]);
 
   const handleKeyNav = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => {
@@ -355,38 +439,23 @@ export function CartTableRows({
   if (items.length === 0) return <EmptyBillState />;
 
   return (
-    <>
-      <div className="overflow-y-auto overflow-x-auto flex-1">
-        <div className="min-w-max">
-          <AnimatePresence initial={false}>
-            {items.map((item, idx) => (
-              <CartRow
-                key={item.inventoryId}
-                item={item}
-                idx={idx}
-                hasConflict={conflictInventoryIds.has(item.inventoryId)}
-                onKeyNav={handleKeyNav}
-                onRemove={removeItem}
-                onQtyChange={updateQty}
-                onDiscountChange={updateDiscount}
-                onSwapBatch={handleSwapBatch}
-              />
-            ))}
-          </AnimatePresence>
-        </div>
+    <div className="overflow-y-auto overflow-x-auto flex-1">
+      <div className="min-w-max">
+        <AnimatePresence initial={false}>
+          {items.map((item, idx) => (
+            <CartRow
+              key={item.inventoryId}
+              item={item}
+              idx={idx}
+              hasConflict={conflictInventoryIds.has(item.inventoryId)}
+              onKeyNav={handleKeyNav}
+              onRemove={removeItem}
+              onQtyChange={updateQty}
+              onDiscountChange={updateDiscount}
+            />
+          ))}
+        </AnimatePresence>
       </div>
-
-      {/* Batch swap dialog */}
-      <AnimatePresence>
-        {swapTarget && !swapLoading && swapBatches.length > 0 && (
-          <BatchPickerDialog
-            medicineName={swapTarget.medicineName}
-            batches={swapBatches}
-            onSelect={handleBatchSelect}
-            onClose={() => { setSwapTarget(null); setSwapBatches([]); }}
-          />
-        )}
-      </AnimatePresence>
-    </>
+    </div>
   );
 }
