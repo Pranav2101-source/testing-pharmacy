@@ -60,7 +60,8 @@ const StaffSettingsPage      = lazy(() => import("./pages/dashboard/settings/Sta
 const PlansPage              = lazy(() => import("./pages/dashboard/settings/PlansPage"));
 const ChangePasswordPage     = lazy(() => import("./pages/dashboard/settings/ChangePasswordPage"));
 const InvoiceSettingsPage    = lazy(() => import("./pages/dashboard/settings/InvoiceSettingsPage"));
-const BillingPreferencesPage = lazy(() => import("./pages/dashboard/settings/BillingPreferencesPage"));
+const BillingPreferencesPage  = lazy(() => import("./pages/dashboard/settings/BillingPreferencesPage"));
+const LocationsSettingsPage   = lazy(() => import("./pages/dashboard/settings/LocationsSettingsPage"));
 const MyProfilePage          = lazy(() => import("./pages/dashboard/settings/MyProfilePage"));
 
 function PageLoader() {
@@ -157,6 +158,7 @@ export function App() {
                   <Route path="/dashboard/settings/staff"     element={<StaffSettingsPage />} />
                   <Route path="/dashboard/settings/plans"     element={<PlansPage />} />
                   <Route path="/dashboard/settings/invoice"   element={<InvoiceSettingsPage />} />
+                  <Route path="/dashboard/settings/locations" element={<LocationsSettingsPage />} />
                   <Route path="/dashboard/settings/billing"   element={<BillingPreferencesPage />} />
                 </Route>
               </Route>
