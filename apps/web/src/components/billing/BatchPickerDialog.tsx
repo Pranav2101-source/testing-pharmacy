@@ -24,7 +24,7 @@ export type InventoryBatch = {
 
 /** Returns a display-ready location string from either structured shelf or free-text. */
 export function getLocationLabel(
-  batch: Pick<InventoryBatch, "shelf" | "location">,
+  batch: { shelf?: { code: string; rack: { code: string; name?: string } } | null; location?: string | null },
 ): string | null {
   if (batch.shelf) return `${batch.shelf.rack.code}/${batch.shelf.code}`;
   if (batch.location) return batch.location;

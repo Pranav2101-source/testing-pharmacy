@@ -1303,6 +1303,8 @@ model StockAuditItem {
   @@index([pharmacyId])
   @@index([sessionId])
   @@index([inventoryId])
+  @@index([sessionId, countedQty])   // completeSession uncounted check + listSessions enrichment
+  @@index([sessionId, varianceQty])  // listSessions variance count
   @@map("stock_audit_items")
 }
 

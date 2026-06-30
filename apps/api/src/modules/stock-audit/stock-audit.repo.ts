@@ -3,6 +3,7 @@ import { withTenant } from "@pharmacy/database"
 import { AppError } from "../../lib/AppError.js"
 import type {
   ApproveSessionInput,
+  BatchUpdateItemsInput,
   CompleteSessionInput,
   CreateSessionInput,
   ListSessionsQuery,
@@ -102,13 +103,14 @@ export class StockAuditRepo {
   // ── Update item ─────────────────────────────────────────────────────────────
 
   async updateItem(sessionId: string, itemId: string, pharmacyId: string, data: UpdateItemInput) {
-    const session = await this.db.stockAuditSession.findFirst({ where: { id: sessionId, pharmacyId } })
-    if (!session) throw AppError.notFound("Audit session not found")
-    if (session.status !== "IN_PROGRESS")
-      throw AppError.conflict("Can only update items when session is IN_PROGRESS")
-
-    const item = await this.db.stockAuditItem.findFirst({ where: { id: itemId, sessionId } })
+    // One query: fetch item + session status together to avoid two roundtrips.
+    const item = await this.db.stockAuditItem.findFirst({
+      where:  { id: itemId, sessionId, session: { pharmacyId } },
+      select: { id: true, expectedQty: true, session: { select: { status: true } } },
+    })
     if (!item) throw AppError.notFound("Audit item not found")
+    if (item.session.status !== "IN_PROGRESS")
+      throw AppError.conflict("Can only update items when session is IN_PROGRESS")
 
     return this.db.stockAuditItem.update({
       where: { id: itemId },
@@ -118,6 +120,160 @@ export class StockAuditRepo {
           : {}),
         ...(data.notes !== undefined ? { notes: data.notes } : {}),
       },
+      include: ITEM_INCLUDE,
+    })
+  }
+
+  // ── Reopen COMPLETED → IN_PROGRESS ──────────────────────────────────────────
+  // Lets owner/manager correct a count before it is approved.  Clears completedAt
+  // so the session re-enters the counting state cleanly.
+
+  async reopenSession(id: string, pharmacyId: string) {
+    const result = await this.db.stockAuditSession.updateMany({
+      where: { id, pharmacyId, status: "COMPLETED" },
+      data:  { status: "IN_PROGRESS", completedAt: null },
+    })
+    if (result.count === 0) {
+      const session = await this.db.stockAuditSession.findFirst({ where: { id, pharmacyId } })
+      if (!session) throw AppError.notFound("Audit session not found")
+      throw AppError.conflict(`Cannot reopen a session in ${session.status} status`)
+    }
+    return this.db.stockAuditSession.findFirst({
+      where:   { id, pharmacyId },
+      include: { items: { include: ITEM_INCLUDE, orderBy: { createdAt: "asc" } }, _count: { select: { items: true } } },
+    })
+  }
+
+  // ── Dashboard overview ───────────────────────────────────────────────────────
+  // Three fast indexed lookups — no large joins.
+
+  async getOverview(pharmacyId: string) {
+    const [active, needsApproval, lastApproved] = await Promise.all([
+      this.db.stockAuditSession.findFirst({
+        where:   { pharmacyId, status: { in: ["DRAFT", "IN_PROGRESS"] } },
+        select:  { id: true, sessionNumber: true, status: true, startedAt: true, _count: { select: { items: true } } },
+        orderBy: { createdAt: "desc" },
+      }),
+      this.db.stockAuditSession.findFirst({
+        where:   { pharmacyId, status: "COMPLETED" },
+        select:  { id: true, sessionNumber: true },
+        orderBy: { completedAt: "desc" },
+      }),
+      this.db.stockAuditSession.findFirst({
+        where:   { pharmacyId, status: "APPROVED" },
+        select:  { id: true, sessionNumber: true, approvedAt: true },
+        orderBy: { approvedAt: "desc" },
+      }),
+    ])
+
+    const countedItems = active
+      ? await this.db.stockAuditItem.count({ where: { sessionId: active.id, countedQty: { not: null } } })
+      : 0
+
+    return {
+      active:         active ? { ...active, totalItems: active._count.items, countedItems } : null,
+      needsApproval,
+      lastApproved,
+      daysSinceLastAudit: lastApproved?.approvedAt
+        ? Math.floor((Date.now() - new Date(lastApproved.approvedAt).getTime()) / 86_400_000)
+        : null,
+    }
+  }
+
+  // ── Audit report — approved sessions with P&L ────────────────────────────────
+  // Single raw SQL aggregation instead of loading every item into Node memory.
+
+  async getReport(pharmacyId: string) {
+    type Row = {
+      id: string; sessionNumber: string; approvedAt: Date;
+      totalItems: bigint; itemsWithVariance: bigint;
+      gainValue: string | null; lossValue: string | null;
+    }
+    const rows = await this.db.$queryRaw<Row[]>`
+      SELECT
+        s.id,
+        s."sessionNumber",
+        s."approvedAt",
+        COUNT(i.id)                                                               AS "totalItems",
+        COUNT(CASE WHEN i."varianceQty" != 0 AND i."varianceQty" IS NOT NULL THEN 1 END)
+                                                                                  AS "itemsWithVariance",
+        COALESCE(SUM(CASE WHEN i."varianceQty" > 0 THEN i."varianceQty" * inv.mrp ELSE 0 END), 0)
+                                                                                  AS "gainValue",
+        COALESCE(SUM(CASE WHEN i."varianceQty" < 0 THEN ABS(i."varianceQty") * inv.mrp ELSE 0 END), 0)
+                                                                                  AS "lossValue"
+      FROM  stock_audit_sessions s
+      LEFT  JOIN stock_audit_items i   ON i."sessionId"   = s.id
+      LEFT  JOIN inventory         inv ON inv.id           = i."inventoryId"
+      WHERE s."pharmacyId" = ${pharmacyId} AND s.status = 'APPROVED'
+      GROUP BY s.id, s."sessionNumber", s."approvedAt"
+      ORDER BY s."approvedAt" DESC
+      LIMIT 36
+    `
+
+    const sessions = rows.map((r) => ({
+      id:                r.id,
+      sessionNumber:     r.sessionNumber,
+      approvedAt:        r.approvedAt,
+      totalItems:        Number(r.totalItems),
+      itemsWithVariance: Number(r.itemsWithVariance),
+      gainValue:         parseFloat(r.gainValue ?? "0"),
+      lossValue:         parseFloat(r.lossValue ?? "0"),
+      netValue:          parseFloat(r.gainValue ?? "0") - parseFloat(r.lossValue ?? "0"),
+    }))
+
+    const totals = sessions.reduce(
+      (acc, s) => ({ gainValue: acc.gainValue + s.gainValue, lossValue: acc.lossValue + s.lossValue }),
+      { gainValue: 0, lossValue: 0 },
+    )
+
+    return { sessions, totals: { ...totals, netValue: totals.gainValue - totals.lossValue } }
+  }
+
+  // ── Batch update items ───────────────────────────────────────────────────────
+  // Used by zero-shelf, match-shelf, and mark-all-complete. One transaction
+  // instead of N parallel PATCH requests — avoids connection pool exhaustion
+  // on large shelves and guarantees all-or-nothing consistency.
+
+  async batchUpdateItems(sessionId: string, pharmacyId: string, data: BatchUpdateItemsInput) {
+    // Auth guard: verify session belongs to pharmacy and is IN_PROGRESS
+    const session = await this.db.stockAuditSession.findFirst({
+      where:  { id: sessionId, pharmacyId, status: "IN_PROGRESS" },
+      select: { id: true },
+    })
+    if (!session) {
+      const exists = await this.db.stockAuditSession.findFirst({ where: { id: sessionId, pharmacyId } })
+      if (!exists) throw AppError.notFound("Audit session not found")
+      throw AppError.conflict("Can only update items when session is IN_PROGRESS")
+    }
+
+    // Fetch expected quantities for variance computation.
+    const itemIds = data.items.map((i) => i.itemId)
+    const existing = await this.db.stockAuditItem.findMany({
+      where:  { id: { in: itemIds }, sessionId },
+      select: { id: true, expectedQty: true },
+    })
+    const existingMap = new Map(existing.map((i) => [i.id, i.expectedQty]))
+
+    // Reject if any itemId doesn't belong to this session.
+    const missing = itemIds.filter((id) => !existingMap.has(id))
+    if (missing.length > 0) throw AppError.notFound(`Audit items not found: ${missing.join(", ")}`)
+
+    // Batch update in a single transaction.
+    await this.db.$transaction(
+      data.items.map((item) =>
+        this.db.stockAuditItem.update({
+          where: { id: item.itemId },
+          data:  {
+            countedQty:  item.countedQty,
+            varianceQty: item.countedQty - (existingMap.get(item.itemId) ?? 0),
+          },
+        }),
+      ),
+    )
+
+    // Return updated items with full includes for the frontend.
+    return this.db.stockAuditItem.findMany({
+      where:   { id: { in: itemIds } },
       include: ITEM_INCLUDE,
     })
   }
@@ -397,17 +553,31 @@ export class StockAuditRepo {
       this.db.stockAuditSession.count({ where }),
     ])
 
-    const enriched = await Promise.all(
-      items.map(async (session) => {
-        const [counted, withVariance] = await Promise.all([
-          this.db.stockAuditItem.count({ where: { sessionId: session.id, countedQty: { not: null } } }),
-          this.db.stockAuditItem.count({
-            where: { sessionId: session.id, varianceQty: { not: 0 }, NOT: { varianceQty: null } },
-          }),
-        ])
-        return { ...session, countedItems: counted, itemsWithVariance: withVariance }
+    if (items.length === 0) return { items: [], total, page: params.page, limit: params.limit }
+
+    // Two aggregation queries instead of N×2 COUNT queries (was N+1).
+    const sessionIds = items.map((s) => s.id)
+    const [countedAgg, varianceAgg] = await Promise.all([
+      this.db.stockAuditItem.groupBy({
+        by:     ["sessionId"],
+        where:  { sessionId: { in: sessionIds }, countedQty: { not: null } },
+        _count: { id: true },
       }),
-    )
+      this.db.stockAuditItem.groupBy({
+        by:     ["sessionId"],
+        where:  { sessionId: { in: sessionIds }, varianceQty: { not: 0 }, NOT: { varianceQty: null } },
+        _count: { id: true },
+      }),
+    ])
+
+    const countedMap  = new Map(countedAgg.map((r) => [r.sessionId, r._count.id]))
+    const varianceMap = new Map(varianceAgg.map((r) => [r.sessionId, r._count.id]))
+
+    const enriched = items.map((session) => ({
+      ...session,
+      countedItems:      countedMap.get(session.id)  ?? 0,
+      itemsWithVariance: varianceMap.get(session.id) ?? 0,
+    }))
 
     return { items: enriched, total, page: params.page, limit: params.limit }
   }

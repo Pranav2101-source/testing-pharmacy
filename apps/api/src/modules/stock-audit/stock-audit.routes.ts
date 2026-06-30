@@ -4,6 +4,7 @@ import { resolvePharmacy } from "../../middleware/tenant.js"
 import { StockAuditService } from "./stock-audit.service.js"
 import {
   approveSessionSchema,
+  batchUpdateItemsSchema,
   completeSessionSchema,
   createSessionSchema,
   listSessionsQuerySchema,
@@ -27,6 +28,20 @@ const stockAuditRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: result })
   })
 
+  // Static routes must come before /:id so Fastify doesn't treat them as session IDs.
+
+  // Dashboard status card: active session, needs-approval, last audit date.
+  app.get("/overview", { preHandler: auth }, async (req, reply) => {
+    const result = await svc.getOverview(req.pharmacyId)
+    return reply.send({ success: true, data: result })
+  })
+
+  // Reports tab: approved sessions with gain/loss P&L computed server-side.
+  app.get("/report", { preHandler: [authenticate, requireOwner, resolvePharmacy] }, async (req, reply) => {
+    const result = await svc.getReport(req.pharmacyId)
+    return reply.send({ success: true, data: result })
+  })
+
   app.get("/:id", { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const session = await svc.getSession(id, req.pharmacyId)
@@ -46,11 +61,26 @@ const stockAuditRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: item })
   })
 
+  // Batch update: zero-shelf, match-shelf, and mark-all-complete in one transaction.
+  app.patch("/:id/items", { preHandler: auth }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const body = batchUpdateItemsSchema.parse(req.body ?? {})
+    const items = await svc.batchUpdateItems(id, req.pharmacyId, body)
+    return reply.send({ success: true, data: items })
+  })
+
   // GET /:id/variance-summary — dry-run preview of adjustments that approve would apply
   app.get("/:id/variance-summary", { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as { id: string }
     const result = await svc.getVarianceSummary(id, req.pharmacyId)
     return reply.send({ success: true, data: result })
+  })
+
+  // Reopen a COMPLETED session back to IN_PROGRESS for corrections before approval.
+  app.patch("/:id/reopen", { preHandler: ownerOnly }, async (req, reply) => {
+    const { id } = req.params as { id: string }
+    const session = await svc.reopenSession(id, req.pharmacyId)
+    return reply.send({ success: true, data: session })
   })
 
   app.post("/:id/complete", { preHandler: auth }, async (req, reply) => {

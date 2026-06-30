@@ -63,6 +63,13 @@ type EodData = {
   overdueGrnCount: number;
 };
 
+type AuditOverview = {
+  active:             { id: string; sessionNumber: string; status: string; totalItems: number; countedItems: number } | null;
+  needsApproval:      { id: string; sessionNumber: string } | null;
+  lastApproved:       { id: string; sessionNumber: string; approvedAt: string } | null;
+  daysSinceLastAudit: number | null;
+};
+
 // ─── Helpers ──────────────────────────────────────────────────────
 function fmt(n: number) {
   if (n >= 100000) return "₹" + (n / 100000).toFixed(1) + "L";
@@ -618,6 +625,7 @@ export default function DashboardHomePage() {
   const [nearExpiry,       setNearExpiry]       = useState<NearExpiryItem[]>([]);
   const [nearExpiryLoading,setNearExpiryLoading]= useState(true);
   const [refreshKey,       setRefreshKey]       = useState(0);
+  const [auditOverview,    setAuditOverview]    = useState<AuditOverview | null>(null);
 
   useEffect(() => {
     if (isSupport) return;
@@ -665,6 +673,16 @@ export default function DashboardHomePage() {
       .catch(() => setNearExpiry([]))
       .finally(() => setNearExpiryLoading(false));
   }, [refreshKey, isSupport]);
+
+  // Audit overview — only for owner/manager (others have no actionable info)
+  const _dashRole = getStoredUser()?.role ?? "";
+  const _isOwnerOrMgr = _dashRole === "OWNER" || _dashRole === "MANAGER";
+  useEffect(() => {
+    if (isSupport || !_isOwnerOrMgr) return;
+    api.get("/stock-audit/overview")
+      .then(({ data }) => setAuditOverview(data.data))
+      .catch(() => {}); // non-critical, silently ignore
+  }, [refreshKey, isSupport, _isOwnerOrMgr]);
 
   // Guard: support staff have no pharmacy home — redirect after all hooks are initialised
   if (isSupport) return <Navigate to="/dashboard/support" replace />;
@@ -847,6 +865,60 @@ export default function DashboardHomePage() {
             loading={statsLoading || eodLoading}
           />
         </motion.div>
+
+        {/* ── Audit status banner (owner/manager only, shown when actionable) ─── */}
+        {_isOwnerOrMgr && auditOverview && (auditOverview.active || auditOverview.needsApproval || (auditOverview.daysSinceLastAudit !== null && auditOverview.daysSinceLastAudit > 30) || auditOverview.lastApproved === null) && (
+          <motion.div {...fadeUp(0.23)}>
+            {auditOverview.needsApproval ? (
+              <Link to={`/dashboard/stock-audit/${auditOverview.needsApproval.id}`}
+                className="flex items-center gap-4 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl hover:bg-amber-100 transition-colors">
+                <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center flex-shrink-0">
+                  <ClipboardList className="w-4 h-4 text-white" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-bold text-amber-900">Audit awaiting approval</p>
+                  <p className="text-[11px] text-amber-700">{auditOverview.needsApproval.sessionNumber} — review variances and approve to update stock</p>
+                </div>
+                <ArrowRight className="w-4 h-4 text-amber-600 flex-shrink-0" />
+              </Link>
+            ) : auditOverview.active ? (
+              <Link to={`/dashboard/stock-audit/${auditOverview.active.id}`}
+                className="flex items-center gap-4 px-4 py-3 bg-blue-50 border border-blue-200 rounded-xl hover:bg-blue-100 transition-colors">
+                <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center flex-shrink-0">
+                  <ClipboardList className="w-4 h-4 text-white" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-bold text-blue-900">
+                    Stock audit {auditOverview.active.status === "IN_PROGRESS" ? "in progress" : "draft"}
+                    <span className="ml-2 text-[10px] font-bold text-blue-600 bg-blue-100 px-1.5 py-0.5 rounded-full animate-pulse">LIVE</span>
+                  </p>
+                  <p className="text-[11px] text-blue-700">
+                    {auditOverview.active.sessionNumber} · {auditOverview.active.countedItems} of {auditOverview.active.totalItems} items counted
+                  </p>
+                </div>
+                <ArrowRight className="w-4 h-4 text-blue-600 flex-shrink-0" />
+              </Link>
+            ) : (
+              <Link to="/dashboard/inventory?tab=audit"
+                className="flex items-center gap-4 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl hover:bg-slate-100 transition-colors">
+                <div className="w-8 h-8 rounded-lg bg-slate-300 flex items-center justify-center flex-shrink-0">
+                  <ClipboardList className="w-4 h-4 text-white" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-bold text-slate-700">
+                    {auditOverview.lastApproved === null ? "No stock audit done yet" : `Last audit ${auditOverview.daysSinceLastAudit} days ago`}
+                  </p>
+                  <p className="text-[11px] text-slate-500">
+                    {auditOverview.lastApproved === null
+                      ? "Running a stock audit helps detect missing stock and billing errors"
+                      : "Consider running a new audit to keep your stock accurate"}
+                  </p>
+                </div>
+                <span className="text-[12px] font-semibold text-blue-600 whitespace-nowrap">Start audit →</span>
+              </Link>
+            )}
+          </motion.div>
+        )}
 
         {/* ── Two-column section ───────────────────────────── */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">

@@ -319,17 +319,40 @@ export function StockAuditContent() {
         {loading ? (
           <ListSkeleton />
         ) : sessions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-52 gap-3 text-slate-400">
-            <ClipboardList className="w-10 h-10 text-slate-200" />
-            <div className="text-center">
-              <p className="text-[14px] font-semibold text-slate-500">No audit sessions found</p>
-              <p className="text-[12px] text-slate-400 mt-0.5">
-                {filter ? `No sessions with status "${STATUS_CFG[filter as AuditStatus].label}"` : "Create your first audit to get started"}
-              </p>
-            </div>
-            {!filter && (
-              <button onClick={() => setShowCreate(true)}
-                className="text-[13px] font-semibold text-blue-600 hover:underline">Start New Audit</button>
+          <div className="p-8">
+            {filter ? (
+              <div className="flex flex-col items-center justify-center py-8 gap-2 text-slate-400">
+                <ClipboardList className="w-8 h-8 text-slate-200" />
+                <p className="text-[13px] font-semibold text-slate-500">No sessions with status "{STATUS_CFG[filter as AuditStatus].label}"</p>
+                <button onClick={() => setFilter("")} className="text-[12px] text-blue-600 font-semibold hover:underline">Show all sessions</button>
+              </div>
+            ) : (
+              <div className="max-w-md mx-auto text-center py-6 space-y-5">
+                <div className="w-14 h-14 rounded-2xl bg-orange-100 flex items-center justify-center mx-auto">
+                  <ClipboardList className="w-7 h-7 text-orange-500" />
+                </div>
+                <div>
+                  <p className="text-[16px] font-bold text-slate-800">No audits yet</p>
+                  <p className="text-[13px] text-slate-400 mt-1">Stock audits help you find missing stock, expired batches, and billing errors by physically counting your pharmacy shelf by shelf.</p>
+                </div>
+                <div className="grid grid-cols-3 gap-3 text-left">
+                  {[
+                    { emoji: "📷", title: "Snapshot", desc: "All active batches captured instantly" },
+                    { emoji: "🔢", title: "Count",    desc: "Walk the shelves, type what you see" },
+                    { emoji: "✅", title: "Approve",  desc: "Stock corrected, losses documented" },
+                  ].map((s) => (
+                    <div key={s.title} className="bg-slate-50 rounded-xl p-3 space-y-1">
+                      <div className="text-[18px]">{s.emoji}</div>
+                      <div className="text-[12px] font-bold text-slate-700">{s.title}</div>
+                      <div className="text-[11px] text-slate-400">{s.desc}</div>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={() => setShowCreate(true)}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-orange-500 text-white text-[14px] font-bold rounded-xl hover:bg-orange-600 transition-colors shadow-sm mx-auto">
+                  <Plus className="w-4 h-4" /> Start Your First Audit
+                </button>
+              </div>
             )}
           </div>
         ) : (
