@@ -637,6 +637,7 @@ export default function StockAuditDetailPage() {
     : null;
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-6xl mx-auto space-y-5">
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
@@ -1178,6 +1179,7 @@ export default function StockAuditDetailPage() {
           />
         )}
       </AnimatePresence>
+    </div>
     </div>
   );
 }
