@@ -17,6 +17,7 @@ export type InvoiceLineItem = {
   sgst:          number;
   igst:          number;
   amount:        number;
+  location:      string | null;
 };
 
 // ─── Invoice totals summary ───────────────────────────────────────────────────

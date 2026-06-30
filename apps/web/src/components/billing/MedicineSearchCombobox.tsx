@@ -12,7 +12,7 @@ import { api } from "@/lib/api-client";
 import { useBillingStore } from "./useBillingStore";
 import { cn } from "@/lib/utils";
 import type { MedicineSearchResult } from "@pharmacy/types";
-import { BatchPickerDialog, type InventoryBatch, expiryStatus, fmtExpiry } from "./BatchPickerDialog";
+import { BatchPickerDialog, type InventoryBatch, expiryStatus, fmtExpiry, getLocationLabel } from "./BatchPickerDialog";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -151,7 +151,7 @@ export function MedicineSearchCombobox({
       hsnCode:        batch.medicine.hsnCode,
       schedule:       med.schedule,
       packSize:       med.packSize ?? undefined,
-      location:       batch.location,
+      location:       getLocationLabel(batch) ?? undefined,
       batchNumber:    batch.batchNumber,
       expiryDate:     batch.expiryDate,
       mrp:            batch.mrp,

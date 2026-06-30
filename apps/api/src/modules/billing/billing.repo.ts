@@ -39,7 +39,10 @@ export class BillingRepo {
   async getInventoryBatches(ids: string[], pharmacyId: string) {
     return this.db.inventory.findMany({
       where:   { id: { in: ids }, pharmacyId },
-      include: { medicine: true },
+      include: {
+        medicine: true,
+        shelf:    { select: { code: true, rack: { select: { code: true } } } },
+      },
     });
   }
 

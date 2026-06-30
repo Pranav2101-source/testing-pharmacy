@@ -178,6 +178,9 @@ export class BillingService {
 
       const gstRate = overrideGstRate.get(batch.medicine.id) ?? batch.medicine.gstRate;
       const gst = calcGstFromMrp(batch.mrp, item.quantity, item.discount, gstRate, isInterstate);
+      const location = batch.shelf
+        ? `${batch.shelf.rack.code}/${batch.shelf.code}`
+        : (batch.location ?? null);
 
       lineItems.push({
         inventoryId:   item.inventoryId,
@@ -196,6 +199,7 @@ export class BillingService {
         sgst:          gst.sgst,
         igst:          gst.igst,
         amount:        gst.totalAmount,
+        location,
       });
     }
 
@@ -295,6 +299,7 @@ export class BillingService {
             igst:          li.igst,
             taxableAmount: li.taxableAmount,
             amount:        li.amount,
+            location:      li.location,
           })),
         },
       },

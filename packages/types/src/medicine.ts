@@ -38,6 +38,7 @@ export type AlternativeBatch = {
   mrp: number;
   purchaseRate: number;
   location: string | null;
+  shelf?: { code: string; rack: { code: string } } | null;
 };
 
 export type AlternativeResult = {

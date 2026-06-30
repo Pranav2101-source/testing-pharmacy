@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { useBillingStore } from "./useBillingStore";
+import { getLocationLabel } from "./BatchPickerDialog";
 import { cn } from "@/lib/utils";
 import type { MedicineSearchResult, AlternativeResult, AlternativeBatch } from "@pharmacy/types";
 
@@ -282,7 +283,7 @@ export function AlternativesDrawer({
       hsnCode:        alt.hsnCode,
       schedule:       alt.schedule,
       packSize:       alt.packSize ?? undefined,
-      location:       batch.location ?? undefined,
+      location:       getLocationLabel(batch) ?? undefined,
       batchNumber:    batch.batchNumber,
       expiryDate:     batch.expiryDate,
       mrp:            batch.mrp,

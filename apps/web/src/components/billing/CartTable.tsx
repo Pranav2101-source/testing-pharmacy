@@ -3,10 +3,10 @@
 import { useCallback, memo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
-import { X, AlertTriangle } from "lucide-react";
+import { X, AlertTriangle, MapPin } from "lucide-react";
 import { useBillingStore, type CartItem } from "./useBillingStore";
 import { EmptyBillState } from "./EmptyBillState";
-import { BatchPickerDialog, type InventoryBatch, expiryStatus } from "./BatchPickerDialog";
+import { BatchPickerDialog, type InventoryBatch, expiryStatus, getLocationLabel } from "./BatchPickerDialog";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
@@ -147,8 +147,15 @@ const CartRow = memo(function CartRow({
         >
           {item.batchNumber}
         </button>
-        {item.location && (
-          <p className="text-[10px] text-blue-500 font-semibold truncate mt-0.5">{item.location}</p>
+        {item.location ? (
+          <div className="flex items-center justify-end gap-0.5 mt-0.5">
+            <MapPin className="w-2.5 h-2.5 text-blue-400 flex-shrink-0" />
+            <p className="text-[10px] text-blue-500 font-semibold truncate">{item.location}</p>
+          </div>
+        ) : (
+          <p className="text-[9px] text-slate-300 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            No location
+          </p>
         )}
         {item.availableStock != null && (
           <p className={cn(
@@ -293,7 +300,7 @@ export function CartTableRows({
       hsnCode:        batch.medicine.hsnCode,
       schedule:       swapTarget.schedule,
       packSize:       swapTarget.packSize,
-      location:       batch.location,
+      location:       getLocationLabel(batch) ?? undefined,
       batchNumber:    batch.batchNumber,
       expiryDate:     batch.expiryDate,
       mrp:            batch.mrp,
