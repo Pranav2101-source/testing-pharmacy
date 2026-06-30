@@ -24,6 +24,8 @@ model Pharmacy {
   state       String?
   pincode     String?
   isActive    Boolean @default(true)
+  logoUrl     String?  // Supabase storage path; signed on read
+  documents   Json?    // StoredDoc[] — compliance doc metadata (number, expiry, file path)
   // Per-pharmacy invoice/GST/numbering config (1:1, was the InvoiceSettings table).
   // Inlined as a column — it was a strict 1:1 holding a single JSON blob, only ever
   // read by pharmacyId and written via upsert, so a separate table bought nothing.
@@ -897,6 +899,7 @@ enum UploadType {
   GRN_PDF
   LOGO
   REPORT
+  PHARMACY_DOCUMENT
 }
 
 // ─── Notification Log ────────────────────────────────────────────────────────

@@ -54,7 +54,7 @@ const TicketDetailPage     = lazy(() => import("./pages/dashboard/support/Ticket
 const AgentsPage           = lazy(() => import("./pages/dashboard/support/AgentsPage"));
 
 // ─── Settings ─────────────────────────────────────────────────
-const PharmacyProfilePage    = lazy(() => import("./pages/dashboard/settings/PharmacyProfilePage"));
+const ProfilePage            = lazy(() => import("./pages/dashboard/settings/ProfilePage"));
 const DocumentsPage          = lazy(() => import("./pages/dashboard/settings/DocumentsPage"));
 const StaffSettingsPage      = lazy(() => import("./pages/dashboard/settings/StaffSettingsPage"));
 const PlansPage              = lazy(() => import("./pages/dashboard/settings/PlansPage"));
@@ -62,7 +62,6 @@ const ChangePasswordPage     = lazy(() => import("./pages/dashboard/settings/Cha
 const InvoiceSettingsPage    = lazy(() => import("./pages/dashboard/settings/InvoiceSettingsPage"));
 const BillingPreferencesPage  = lazy(() => import("./pages/dashboard/settings/BillingPreferencesPage"));
 const LocationsSettingsPage   = lazy(() => import("./pages/dashboard/settings/LocationsSettingsPage"));
-const MyProfilePage          = lazy(() => import("./pages/dashboard/settings/MyProfilePage"));
 
 function PageLoader() {
   return (
@@ -148,12 +147,14 @@ export function App() {
               {/* Settings nested layout — pharmacy-profile and change-password open to all;
                   everything else is owner/manager only */}
               <Route element={<SettingsLayout />}>
-                <Route path="/dashboard/settings" element={<Navigate to="/dashboard/settings/my-profile" replace />} />
-                <Route path="/dashboard/settings/my-profile"       element={<MyProfilePage />} />
-                <Route path="/dashboard/settings/pharmacy-profile" element={<PharmacyProfilePage />} />
+                <Route path="/dashboard/settings" element={<Navigate to="/dashboard/settings/profile" replace />} />
+                {/* Redirects for any bookmarked old URLs */}
+                <Route path="/dashboard/settings/my-profile"       element={<Navigate to="/dashboard/settings/profile" replace />} />
+                <Route path="/dashboard/settings/pharmacy-profile" element={<Navigate to="/dashboard/settings/profile" replace />} />
+                <Route path="/dashboard/settings/profile"          element={<ProfilePage />} />
                 <Route path="/dashboard/settings/change-password"  element={<ChangePasswordPage />} />
 
-                <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} redirectTo="/dashboard/settings/pharmacy-profile" />}>
+                <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} redirectTo="/dashboard/settings/profile" />}>
                   <Route path="/dashboard/settings/documents" element={<DocumentsPage />} />
                   <Route path="/dashboard/settings/staff"     element={<StaffSettingsPage />} />
                   <Route path="/dashboard/settings/plans"     element={<PlansPage />} />

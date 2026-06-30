@@ -116,6 +116,27 @@ const uploadsRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
+  // POST /api/v1/uploads/pharmacy-logo
+  // Pharmacy logo — images only, 2 MB max.
+  app.post("/pharmacy-logo", { preHandler }, async (req, reply) => {
+    const data = await req.file();
+    return storeUpload(app, req, reply, {
+      data, folder: "pharmacy-logos", type: "LOGO",
+      allowedMimes: new Set(["image/jpeg", "image/png", "image/webp"]),
+      maxBytes: 2 * 1024 * 1024,
+    });
+  });
+
+  // POST /api/v1/uploads/pharmacy-document
+  // Compliance document scans (Drug License, GST cert, etc.) — PDF or image, 5 MB.
+  app.post("/pharmacy-document", { preHandler }, async (req, reply) => {
+    const data = await req.file();
+    return storeUpload(app, req, reply, {
+      data, folder: "pharmacy-documents", type: "PHARMACY_DOCUMENT",
+      allowedMimes: ALLOWED_MIME_TYPES, maxBytes: MAX_DOCUMENT_PDF_BYTES,
+    });
+  });
+
   // POST /api/v1/uploads/grn-pdf
   // Attaches a supplier invoice PDF to a GRN that's being drafted from it.
   // PDF-only — the bulk-import flow only attempts text extraction on PDFs.
