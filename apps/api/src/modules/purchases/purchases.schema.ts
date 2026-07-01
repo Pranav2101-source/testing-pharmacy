@@ -36,10 +36,19 @@ export const updatePOSchema = z.object({
   items:        z.array(poItemSchema).min(1).optional(),
 });
 
+const poStatusEnum = z.enum(["DRAFT", "PENDING", "PARTIAL", "RECEIVED", "CANCELLED"]);
+
 export const listPOQuerySchema = z.object({
   page:           z.coerce.number().int().positive().default(1),
   limit:          z.coerce.number().int().positive().max(100).default(20),
-  status:         z.enum(["DRAFT", "PENDING", "PARTIAL", "RECEIVED", "CANCELLED"]).optional(),
+  // Accepts a single status ("PENDING") or a comma-separated list ("PENDING,PARTIAL")
+  // so callers needing more than one status (e.g. the GRN "link to PO" picker,
+  // which must include PARTIAL once a PO has received its first delivery) don't
+  // need a second round-trip.
+  status: z.preprocess(
+    (v) => (typeof v === "string" ? v.split(",") : v),
+    z.array(poStatusEnum).min(1).optional(),
+  ),
   approvalStatus: z.enum(["NOT_REQUIRED", "PENDING_APPROVAL", "APPROVED", "REJECTED"]).optional(),
   supplierId:     z.string().optional(),
   from:           z.string().datetime({ offset: true }).optional(),

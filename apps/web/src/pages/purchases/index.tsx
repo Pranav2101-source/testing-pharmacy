@@ -193,7 +193,10 @@ export default function PurchasePage() {
       {/* Slide-in Panels */}
       <AnimatePresence>
         {activePanel === "auto-suggest"       && <AutoSuggestPanel       onClose={() => setPanel(null)} />}
-        {activePanel === "overdue-bills"      && <OverdueBillsPanel      suppliers={suppliers} onClose={() => setPanel(null)} />}
+        {activePanel === "overdue-bills"      && <OverdueBillsPanel      suppliers={suppliers} onClose={() => setPanel(null)} onDone={() => {
+          queryClient.setQueryData(queryKeys.purchases.summary(), (old: typeof summary) =>
+            old ? { ...old, overduePayments: Math.max(0, old.overduePayments - 1), overdueGRNs: Math.max(0, old.overdueGRNs - 1) } : old);
+        }} />}
         {activePanel === "pending-approvals"  && <PendingApprovalsPanel  onClose={() => setPanel(null)} onDone={() => {
           queryClient.setQueryData(queryKeys.purchases.summary(), (old: typeof summary) =>
             old ? { ...old, pendingApprovals: Math.max(0, old.pendingApprovals - 1) } : old);

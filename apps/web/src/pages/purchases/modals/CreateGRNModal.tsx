@@ -34,7 +34,15 @@ function buildPayload(
     notes:               notes   || undefined,
     allowNearExpiry,
     sourceUploadId,
-    items: items.map((i) => ({ ...i, expiryDate: new Date(i.expiryDate).toISOString() })),
+    // validate() (called before every current submit path) already blocks missing/invalid
+    // expiryDate with a clear per-row message. This guard just stops a future caller that
+    // skips validate() from hitting toISOString()'s throw, which would silently abort the
+    // whole submit before any request is sent — same landmine guarded against in
+    // CreatePOModal's item mapping above.
+    items: items.map((i) => {
+      const ms = new Date(i.expiryDate).getTime();
+      return { ...i, expiryDate: isNaN(ms) ? i.expiryDate : new Date(ms).toISOString() };
+    }),
   };
 }
 
@@ -93,7 +101,9 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
 
   function loadPOOptions(sid: string) {
     if (!sid) { setPoOptions([]); return; }
-    api.get("/purchases/orders", { params: { supplierId: sid, status: "PENDING", limit: 20 } })
+    // PARTIAL is included so a PO that already received one delivery stays
+    // linkable for the next GRN against it (it's no longer PENDING at that point).
+    api.get("/purchases/orders", { params: { supplierId: sid, status: "PENDING,PARTIAL", limit: 20 } })
       .then(({ data }) => setPoOptions((data.data.items ?? []).map((po: any) => ({
         id: po.id, orderNumber: po.orderNumber, itemCount: po._count?.items ?? 0,
       }))))
