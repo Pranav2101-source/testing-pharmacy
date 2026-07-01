@@ -118,6 +118,8 @@ model Subscription {
   invoices  SubscriptionInvoice[]
   auditLogs SubscriptionAuditLog[]
 
+  @@index([status])
+  @@index([validUntil])
   @@map("subscriptions")
 }
 
@@ -1619,6 +1621,7 @@ model SupportTicket {
   @@index([pharmacyId, createdAt(sort: Desc)])
   @@index([assignedAgentId, status])
   @@index([raisedById])
+  @@index([priority])
   @@map("support_tickets")
 }
 
