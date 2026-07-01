@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { analyticsApi } from "./analytics.api";
 import { AnalyticsHeader } from "./components/AnalyticsHeader";
@@ -25,9 +25,19 @@ export default function PlatformAnalyticsPage() {
   });
   const [autoRefresh, setAutoRefresh] = useState<number>(0);
 
+  // Set right before calling refetch() for a manual "bypass cache" refresh —
+  // read (and cleared) inside queryFn so that single refetch actually carries
+  // refresh=true through to the server, instead of firing a second discarded
+  // request and letting refetch() re-fetch with refresh=false anyway.
+  const forceRefreshRef = useRef(false);
+
   const { data, isLoading, isRefetching, error, refetch } = useQuery({
     queryKey: ["platform-analytics", range.from.toISOString(), range.to.toISOString()],
-    queryFn: () => analyticsApi.getDashboard(range.from.toISOString(), range.to.toISOString(), false),
+    queryFn: () => {
+      const refresh = forceRefreshRef.current;
+      forceRefreshRef.current = false;
+      return analyticsApi.getDashboard(range.from.toISOString(), range.to.toISOString(), refresh);
+    },
     refetchInterval: autoRefresh || false,
     staleTime: 30_000,
   });
@@ -44,9 +54,9 @@ export default function PlatformAnalyticsPage() {
         autoRefresh={autoRefresh} 
         onAutoRefreshChange={setAutoRefresh}
         onRefresh={() => {
-          // manually passing refresh=true to bypass cache
-          analyticsApi.getDashboard(range.from.toISOString(), range.to.toISOString(), true).then(() => refetch());
-        }} 
+          forceRefreshRef.current = true;
+          refetch();
+        }}
         onExport={handleExport}
         isRefetching={isRefetching}
       />

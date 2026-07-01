@@ -1,7 +1,7 @@
 import { formatDistanceToNow } from "date-fns";
 import { Building2, ArrowUpCircle, XCircle, LifeBuoy, CheckCircle2, UserPlus, DollarSign, AlertCircle, Activity } from "lucide-react";
 import type { ActivityItem } from "../analytics.types";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { analyticsApi } from "../analytics.api";
 
 export function ActivityTimeline({ items: initialItems }: { items: ActivityItem[] }) {
@@ -9,6 +9,15 @@ export function ActivityTimeline({ items: initialItems }: { items: ActivityItem[
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+
+  // The dashboard's own refresh/auto-refresh/date-range changes hand down a
+  // fresh `items` prop, but that only seeded initial state above — resync
+  // (and reset pagination) whenever the parent actually gives us new data.
+  useEffect(() => {
+    setItems(initialItems);
+    setPage(1);
+    setHasMore(true);
+  }, [initialItems]);
 
   const loadMore = async () => {
     setLoading(true);

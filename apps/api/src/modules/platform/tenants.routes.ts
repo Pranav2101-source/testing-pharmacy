@@ -27,7 +27,7 @@ const tenantsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/", { preHandler: adminAuth }, async (req, reply) => {
     const input = createTenantSchema.parse(req.body);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.createTenant(input, adminUserId);
     return reply.status(201).send({ success: true, data: result });
   });
@@ -36,7 +36,7 @@ const tenantsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/import", { preHandler: adminAuth }, async (req, reply) => {
     const { rows } = importTenantsSchema.parse(req.body);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.importTenants(rows, adminUserId);
     return reply.send({ success: true, data: result });
   });
@@ -53,7 +53,7 @@ const tenantsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/bulk", { preHandler: adminAuth }, async (req, reply) => {
     const { ids, action } = bulkActionSchema.parse(req.body);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.bulkAction(ids, action, adminUserId);
     return reply.send({ success: true, data: result });
   });
@@ -72,7 +72,7 @@ const tenantsRoutes: FastifyPluginAsync = async (app) => {
   app.patch("/:id/status", { preHandler: adminAuth }, async (req, reply) => {
     const { id } = getTenantParamsSchema.parse(req.params);
     const { status } = updateTenantStatusSchema.parse(req.body);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.updateTenantStatus(id, status, adminUserId);
     return reply.send({ success: true, data: result });
   });
