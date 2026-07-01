@@ -5,6 +5,7 @@ import {
   registerSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  changePasswordSchema,
 } from "./auth.schema.js";
 import { authenticate } from "../../middleware/auth.js";
 import { env } from "../../config/env.js";
@@ -100,6 +101,15 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     const input = resetPasswordSchema.parse(req.body);
     await service.resetPassword(input);
     return reply.send({ success: true, data: { message: "Password updated — please log in with your new credentials" } });
+  });
+
+  // Rate-limited like other credential endpoints; authenticated so we know who is changing it.
+  app.patch("/change-password", { preHandler: authenticate, config: { rateLimit: AUTH_RATE_LIMIT } }, async (req, reply) => {
+    const input = changePasswordSchema.parse(req.body);
+    await service.changePassword(req.user.sub, input);
+    // Intentionally do NOT issue new tokens here — the client must re-authenticate.
+    clearRefreshCookie(reply);
+    return reply.send({ success: true, data: { message: "Password updated — please sign in again" } });
   });
 
   app.post("/logout", { preHandler: authenticate }, async (req, reply) => {

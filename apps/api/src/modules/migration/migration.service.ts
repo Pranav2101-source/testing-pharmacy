@@ -185,6 +185,7 @@ export class MigrationService {
           isFk
             ? `Medicine "${m.csvValue}" references a catalog entry that no longer exists — please re-select`
             : `Could not save mapping for "${m.csvValue}" — please retry`,
+          { cause: err },
         );
       }
     }

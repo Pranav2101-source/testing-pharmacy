@@ -137,6 +137,10 @@ export class InventoryService {
     return this.repo.getFEFOBatch(medicineId, pharmacyId, quantity);
   }
 
+  async getFrequent(pharmacyId: string) {
+    return this.repo.getFrequent(pharmacyId);
+  }
+
   async updateLocation(id: string, pharmacyId: string, data: { shelfId?: string | null; location?: string | null }) {
     const item = await this.repo.getById(id, pharmacyId);
     if (!item) throw AppError.notFound("This stock item could not be found. It may have already been removed.");

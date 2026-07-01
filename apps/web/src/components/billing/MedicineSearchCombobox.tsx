@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, memo } from "react";
+import { useState, useRef, useEffect, useMemo, memo } from "react";
 import {
   Search, Loader2, Pill, ChevronRight, ScanBarcode,
   X, AlertTriangle, Clock, Shuffle,
@@ -110,7 +110,10 @@ export function MedicineSearchCombobox({
   });
   // Never expose results when there is no active query — guards against
   // placeholder data leaking through when the input is empty.
-  const results = debouncedQuery.length > 0 ? (searchData ?? []) : [];
+  const results = useMemo(
+    () => (debouncedQuery.length > 0 ? (searchData ?? []) : []),
+    [debouncedQuery, searchData],
+  );
 
   // Open dropdown when results arrive; close when query is cleared
   useEffect(() => {

@@ -11,6 +11,8 @@ const MEDICINE_SELECT = {
   genericName: true,
   form:        true,
   strength:    true,
+  packSize:    true,
+  schedule:    true,
   hsnCode:     true,
   gstRate:     true,
   isActive:    true,
@@ -858,5 +860,37 @@ export class InventoryRepo {
     ]);
 
     return { items: recalls, total, page: params.page, limit: params.limit };
+  }
+
+  async getFrequent(pharmacyId: string, limit = 10) {
+    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const topNames = await this.db.$queryRaw<{ medicine_name: string; freq: bigint }[]>`
+      SELECT "medicineName" AS medicine_name, COUNT(*) AS freq
+      FROM invoice_items
+      WHERE "pharmacyId" = ${pharmacyId}
+        AND "createdAt" >= ${since}
+      GROUP BY "medicineName"
+      ORDER BY freq DESC
+      LIMIT ${Prisma.raw(String(limit))}
+    `;
+    if (topNames.length === 0) return [];
+    const results = await Promise.all(
+      topNames.map(async ({ medicine_name, freq }) => {
+        const batch = await this.db.inventory.findFirst({
+          where: {
+            pharmacyId,
+            quantity: { gt: 0 },
+            expiryDate: { gt: new Date() },
+            status: "ACTIVE",
+            medicine: { name: { equals: medicine_name, mode: "insensitive" } },
+          },
+          orderBy: { expiryDate: "asc" },
+          include: INVENTORY_INCLUDE,
+        });
+        if (!batch) return null;
+        return { ...batch, freq: Number(freq) };
+      }),
+    );
+    return results.filter((r): r is NonNullable<typeof r> => r !== null);
   }
 }

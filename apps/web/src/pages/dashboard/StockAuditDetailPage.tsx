@@ -428,7 +428,7 @@ export default function StockAuditDetailPage() {
       );
       if (firstId) { const el = inputRefs.current.get(firstId); el?.focus(); el?.select(); }
     }, 150);
-  }, [session?.status, allFlatItemIds]);
+  }, [session, allFlatItemIds]);
 
   // ── Summary stats with rupee values ─────────────────────────────────────────
 

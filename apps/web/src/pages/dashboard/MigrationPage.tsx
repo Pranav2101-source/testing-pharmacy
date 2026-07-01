@@ -337,11 +337,14 @@ export default function MigrationPage() {
 
   // ── Live session polling (for async large imports) ────────────────────────
 
-  // Issue 40: Restore sessionId on page refresh so background imports stay reconnected
+  // Issue 40: Restore sessionId on page refresh so background imports stay reconnected.
+  // Runs once on mount only — sessionId excluded so a loaded session
+  // doesn't clear itself when transitioning from null to a value.
   useEffect(() => {
     if (sessionId) return;
     const saved = sessionStorage.getItem("migration_session_id");
     if (saved) setSessionId(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -366,7 +369,7 @@ export default function MigrationPage() {
     if (sessionQueryFailed && sessionId) {
       toast.error("Lost connection to migration session — import status may be stale. Refresh to reconnect.");
     }
-  }, [sessionQueryFailed, sessionId]);
+  }, [sessionQueryFailed, sessionId, toast]);
 
   // Warn before leaving while an import is actively running
   useEffect(() => {

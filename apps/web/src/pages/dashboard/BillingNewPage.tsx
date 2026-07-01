@@ -146,7 +146,7 @@ function NewBillInner() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [setMeta]);
 
   // Idempotency key — prevents duplicate invoices on double-click or network retry
   const idempotencyKeyRef = useRef(crypto.randomUUID());
@@ -226,7 +226,7 @@ function NewBillInner() {
     setTimeout(() => setDraftToast(null), 3000);
   }, [items, meta, loadedDraftId, clear]);
 
-  const totals   = useMemo(() => getTotals(), [getTotals, items]);
+  const totals   = useMemo(() => getTotals(), [getTotals]);
   const totalQty = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
 
   // Net payable includes bill-level adjustments — kept consistent with InvoiceBreakdownModal

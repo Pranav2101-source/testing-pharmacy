@@ -6,6 +6,7 @@ import { format } from "date-fns";
 import { X, AlertTriangle, MapPin } from "lucide-react";
 import { useBillingStore, type CartItem } from "./useBillingStore";
 import { EmptyBillState } from "./EmptyBillState";
+import { RecentItemsCard } from "./RecentItemsCard";
 import { BatchPickerDialog, type InventoryBatch, expiryStatus, getLocationLabel } from "./BatchPickerDialog";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
@@ -348,7 +349,16 @@ export function CartTableRows({
     );
   }
 
-  if (items.length === 0) return <EmptyBillState />;
+  if (items.length === 0) {
+    return (
+      <div className="flex-1 overflow-y-auto flex flex-col">
+        <EmptyBillState />
+        <div className="px-4 pb-6 w-full max-w-sm mx-auto">
+          <RecentItemsCard />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>

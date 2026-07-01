@@ -2,7 +2,7 @@ import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { AuthRepo } from "./auth.repo.js";
-import type { LoginInput, RegisterInput, ForgotPasswordInput, ResetPasswordInput } from "./auth.schema.js";
+import type { LoginInput, RegisterInput, ForgotPasswordInput, ResetPasswordInput, ChangePasswordInput } from "./auth.schema.js";
 import type { JwtPayload, UserRole } from "../../middleware/auth.js";
 import { AppError } from "../../lib/AppError.js";
 import { env } from "../../config/env.js";
@@ -206,6 +206,23 @@ export class AuthService {
 
     // consumePasswordResetToken also increments tokenVersion, logging out all sessions.
     await this.repo.consumePasswordResetToken(user.id, newPasswordHash);
+  }
+
+  // ── Change password ───────────────────────────────────────────────────────
+
+  async changePassword(userId: string, input: ChangePasswordInput): Promise<void> {
+    const user = await this.repo.findUserById(userId);
+    if (!user || !user.isActive) throw AppError.unauthorized("User not found");
+
+    // Constant-time compare — same guard as login to prevent timing attacks
+    const valid = await bcrypt.compare(input.currentPassword, user.passwordHash ?? "");
+    if (!valid) throw AppError.badRequest("Current password is incorrect");
+
+    const newHash = await bcrypt.hash(input.newPassword, 12);
+
+    // Rotates tokenVersion — all existing access + refresh tokens are immediately invalid.
+    // The frontend must clear its in-memory token and redirect to /login.
+    await this.repo.updatePasswordAndRotate(userId, newHash);
   }
 
   // ── Logout ────────────────────────────────────────────────────────────────

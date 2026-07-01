@@ -33,7 +33,7 @@ export function BillSummaryCard() {
   const items = useBillingStore((s) => s.items);
   const getTotals = useBillingStore((s) => s.getTotals);
 
-  const totals = useMemo(() => getTotals(), [getTotals, items]);
+  const totals = useMemo(() => getTotals(), [getTotals]);
   const totalQty = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
   const rounded = Math.round(totals.totalAmount);
 

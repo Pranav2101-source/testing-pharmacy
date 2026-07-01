@@ -1,4 +1,4 @@
-// ─── Column alias dictionary ──────────────────────────────────────────────────
+// â"€â"€â"€ Column alias dictionary â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // Maps every known variant header from Marg / Busy / RetailGraph / GoFrugal /
 // RedBook / Tally exports to our canonical field name.
 // Match is case-insensitive and whitespace-normalised before lookup.
@@ -6,7 +6,7 @@
 import type { CanonicalField, ColumnDetection, ColumnMappings } from "./migration.types.js";
 
 const ALIASES: Record<CanonicalField, string[]> = {
-  // ── Inventory / medicine ────────────────────────────────────────────────────
+  // â"€â"€ Inventory / medicine â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
   medicineName: [
     "medicine name", "item name", "product name", "drug name", "item description",
     "description", "medicine", "product", "item", "name", "particulars",
@@ -55,7 +55,7 @@ const ALIASES: Record<CanonicalField, string[]> = {
     "min qty", "safety stock", "reorder point",
   ],
 
-  // ── Supplier ─────────────────────────────────────────────────────────────────
+  // â"€â"€ Supplier â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
   supplierName: [
     "supplier name", "vendor name", "supplier", "vendor",
     "distributor name", "distributor", "creditor name",
@@ -85,7 +85,7 @@ const ALIASES: Record<CanonicalField, string[]> = {
     "payable", "opening due", "op balance",
   ],
 
-  // ── Customer ─────────────────────────────────────────────────────────────────
+  // â"€â"€ Customer â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
   customerName: [
     "customer name", "patient name", "customer", "client name",
     "member name",
@@ -111,7 +111,7 @@ const ALIASES: Record<CanonicalField, string[]> = {
   ],
   notes: ["notes", "remarks", "comment", "note"],
 
-  // ── Doctor ───────────────────────────────────────────────────────────────────
+  // â"€â"€ Doctor â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
   doctorName: [
     "doctor name", "dr name", "physician name", "consultant name",
     "doctor", "dr",
@@ -130,13 +130,13 @@ const ALIASES: Record<CanonicalField, string[]> = {
   ],
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// â"€â"€ Helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 function normalise(s: string): string {
   return s
     .toLowerCase()
-    .replace(/[_\-]/g, " ")          // underscores and dashes → spaces
-    .replace(/[^a-z0-9\s]/g, " ")    // strip special chars (%, ₹, ., /)
+    .replace(/[_-]/g, " ")            // underscores and dashes â†’ spaces
+    .replace(/[^a-z0-9\s]/g, " ")    // strip special chars (%, â‚¹, ., /)
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -149,18 +149,18 @@ for (const [field, aliases] of Object.entries(ALIASES) as [CanonicalField, strin
   }
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// â"€â"€ Public API â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 export function detectColumns(headers: string[]): ColumnDetection[] {
   return headers.map((header) => {
     const norm = normalise(header);
 
-    // 1. Exact alias match → high confidence
+    // 1. Exact alias match â†’ high confidence
     const exact = REVERSE.get(norm);
     if (exact) return { csvHeader: header, suggestedField: exact, confidence: "high" };
 
-    // 2. Whole-word partial match → medium confidence
-    // Only consider meaningful words (≥ 3 chars) to avoid "id", "cp", "no" false positives.
+    // 2. Whole-word partial match â†’ medium confidence
+    // Only consider meaningful words (â‰¥ 3 chars) to avoid "id", "cp", "no" false positives.
     const normWords = norm.split(" ").filter((w) => w.length >= 3);
     if (normWords.length > 0) {
       for (const [alias, canonical] of REVERSE.entries()) {
@@ -179,7 +179,7 @@ export function detectColumns(headers: string[]): ColumnDetection[] {
   });
 }
 
-// ── CSV Parser ────────────────────────────────────────────────────────────────
+// â"€â"€ CSV Parser â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 
 export interface ParsedRow {
   rowNumber: number;
@@ -188,17 +188,16 @@ export interface ParsedRow {
 
 /**
  * Parses a CSV or TSV string (handles both delimiters, quoted fields, CRLF).
- * Returns raw { fieldName → value } objects using the column mappings to key the fields.
- * Rows that map to no recognised columns still appear in the output — the
+ * Returns raw { fieldName â†’ value } objects using the column mappings to key the fields.
+ * Rows that map to no recognised columns still appear in the output â€" the
  * validator decides which fields are required.
  */
 export function parseCsv(
   csvText:        string,
   columnMappings: ColumnMappings,
 ): { rows: ParsedRow[]; headers: string[] } {
-  // Strip UTF-8 BOM (﻿) — present in most Excel-exported CSVs.
-  // Without this the first column header never matches any mapping key.
-  const normalised = csvText.replace(/^﻿/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  // Strip UTF-8 BOM (U+FEFF) if present — most Excel-exported CSVs start with one.
+  const normalised = csvText.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
   const lines      = normalised.split("\n");
   if (lines.length < 2) return { rows: [], headers: [] };
 
@@ -257,7 +256,7 @@ function splitLine(line: string, delimiter: string): string[] {
   return result;
 }
 
-// ── Date normaliser ───────────────────────────────────────────────────────────
+// â"€â"€ Date normaliser â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
 // Handles: YYYY-MM-DD, DD/MM/YYYY, MM/YYYY (last day of month), MM-YY, MM/YY
 
 export function normaliseDate(raw: string): string | null {
@@ -273,22 +272,22 @@ export function normaliseDate(raw: string): string | null {
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
     const [dd, mm, yyyy] = s.split("/");
     const d = new Date(`${yyyy}-${mm}-${dd}`);
-    // Reject silently-overflowed dates (e.g. month 13 → Jan next year)
+    // Reject silently-overflowed dates (e.g. month 13 â†’ Jan next year)
     if (isNaN(d.getTime())) return null;
     if (d.getFullYear() !== +yyyy! || d.getMonth() + 1 !== +mm! || d.getDate() !== +dd!) return null;
     return d.toISOString();
   }
 
-  // MM/YYYY or MM-YYYY — treat as last day of that month
-  const mmYyyy = s.match(/^(\d{2})[\/\-](\d{4})$/);
+  // MM/YYYY or MM-YYYY â€" treat as last day of that month
+  const mmYyyy = s.match(/^(\d{2})[-/](\d{4})$/);
   if (mmYyyy) {
     const [, mm, yyyy] = mmYyyy;
     const d = new Date(Number(yyyy), Number(mm), 0); // day 0 = last day of prev month
     return isNaN(d.getTime()) ? null : d.toISOString();
   }
 
-  // MM/YY — assume 2000s
-  const mmYy = s.match(/^(\d{2})[\/\-](\d{2})$/);
+  // MM/YY â€" assume 2000s
+  const mmYy = s.match(/^(\d{2})[-/](\d{2})$/);
   if (mmYy) {
     const [, mm, yy] = mmYy;
     const yyyy = 2000 + Number(yy);
@@ -303,7 +302,7 @@ export function normaliseDate(raw: string): string | null {
 // Callers must use `.key` for database lookups (MedicineMapping.csvValue is stored lowercase)
 // and `.display` for search queries and user-facing UI.
 export function extractUniqueMedicineNames(rows: ParsedRow[]): { display: string; key: string }[] {
-  const seen = new Map<string, string>(); // lowercase key → first-seen original casing
+  const seen = new Map<string, string>(); // lowercase key â†’ first-seen original casing
   for (const row of rows) {
     const name = (row.fields["medicineName"] ?? "").trim();
     if (name) {

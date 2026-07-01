@@ -294,7 +294,7 @@ export default function ProfilePage() {
     setPharmacy((prev) => ({ ...prev, [k]: v }));
 
   const displayLogo  = logoPreview ?? pharmacy.logoSignedUrl;
-  const roleCfg      = ROLE_CFG[userRole] ?? ROLE_CFG.STAFF;
+  const roleCfg      = ROLE_CFG[userRole] ?? ROLE_CFG["STAFF"] ?? { label: "Staff", cls: "bg-slate-50 text-slate-600 border-slate-200", dot: "bg-slate-400" };
   const grad         = avatarGradient(userName);
 
   // ── Skeleton ──────────────────────────────────────────────────────────────

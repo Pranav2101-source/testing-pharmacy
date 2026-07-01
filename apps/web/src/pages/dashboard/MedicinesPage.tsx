@@ -802,7 +802,7 @@ export default function MedicinesPage() {
     const delay = search ? 350 : 0;
     const t = setTimeout(fetch, delay);
     return () => clearTimeout(t);
-  }, [fetch]);
+  }, [fetch, search]);
 
   useEffect(() => {
     api.get("/medicines/overrides")

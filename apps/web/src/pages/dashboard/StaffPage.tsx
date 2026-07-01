@@ -775,7 +775,7 @@ export default function StaffPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => { loadStaff(); }, [loadStaff]);
 

@@ -102,6 +102,17 @@ const inventoryRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data });
   });
 
+  // ── Frequent items (Quick Add panel on billing POS) ───────────────────────
+  // Top 10 medicines billed in the last 30 days, with current best batch.
+  // Cached 5 min — changes slowly enough that stale data is fine here.
+
+  app.get("/frequent", { preHandler: auth }, async (req, reply) => {
+    const items = await service.getFrequent(req.pharmacyId);
+    reply.header("Cache-Control", "private, max-age=300");
+    reply.header("Vary", "Authorization");
+    return reply.send({ success: true, data: items });
+  });
+
   // ── FEFO (used by billing POS) ─────────────────────────────────────────────
 
   app.get("/fefo/:medicineId", { preHandler: auth }, async (req, reply) => {

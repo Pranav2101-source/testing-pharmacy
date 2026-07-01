@@ -112,7 +112,7 @@ export default function ReturnsPage() {
     const delay = search ? 380 : 0;
     const t = setTimeout(fetchReturns, delay);
     return () => clearTimeout(t);
-  }, [fetchReturns]);
+  }, [fetchReturns, search]);
 
   const displayed = useMemo(() => {
     return [...rows].sort((a, b) => {
