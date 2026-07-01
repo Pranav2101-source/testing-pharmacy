@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { Prisma } from "@pharmacy/database";
 import type { CreateTenantInput } from "./tenants.schema.js";
+import { auditService } from "../audit/audit.service.js";
 
 export class TenantsService {
   constructor(private app: FastifyInstance) {}
@@ -118,17 +119,30 @@ export class TenantsService {
     });
 
     // Audit log
-    const owner = pharmacy.users[0];
-    if (owner) {
-      await this.app.prisma.auditLog.create({
-        data: {
-          pharmacyId: pharmacy.id,
-          userId: owner.id,
-          action: "CREATED",
-          entity: "PHARMACY",
-          entityId: pharmacy.id,
-          newData: { tenantCode, name: input.name, plan: input.planName },
-        },
+    void auditService.log(null, {
+      pharmacyId: pharmacy.id,
+      userId: adminUserId,
+      module: "TENANTS",
+      action: "TENANT_CREATED",
+      entity: "PHARMACY",
+      entityId: pharmacy.id,
+      resourceName: pharmacy.name,
+      severity: "INFO",
+      status: "SUCCESS",
+      newData: { tenantCode, name: input.name, plan: input.planName },
+    });
+
+    if (pharmacy.subscription) {
+      void auditService.log(null, {
+        pharmacyId: pharmacy.id,
+        userId: adminUserId,
+        module: "SUBSCRIPTIONS",
+        action: "SUBSCRIPTION_CREATED",
+        entity: "SUBSCRIPTION",
+        entityId: pharmacy.subscription.id,
+        severity: "INFO",
+        status: "SUCCESS",
+        newData: { plan: pharmacy.subscription.planName },
       });
     }
 
@@ -174,16 +188,17 @@ export class TenantsService {
     }
 
     // Audit log — use admin's own user record
-    await this.app.prisma.auditLog.create({
-      data: {
-        pharmacyId: id,
-        userId: adminUserId,
-        action: `STATUS_CHANGED_TO_${status}`,
-        entity: "PHARMACY",
-        entityId: id,
-        oldData: { status: pharmacy.tenantStatus },
-        newData: { status },
-      },
+    void auditService.log(null, {
+      pharmacyId: id,
+      userId: adminUserId,
+      module: "TENANTS",
+      action: `STATUS_CHANGED_TO_${status}`,
+      entity: "PHARMACY",
+      entityId: id,
+      severity: "INFO",
+      status: "SUCCESS",
+      oldData: { status: pharmacy.tenantStatus },
+      newData: { status },
     });
 
     return updated;
@@ -219,14 +234,15 @@ export class TenantsService {
 
     // Audit logs for each
     for (const pharmacyId of ids) {
-      await this.app.prisma.auditLog.create({
-        data: {
-          pharmacyId,
-          userId: adminUserId,
-          action: `BULK_${action}`,
-          entity: "PHARMACY",
-          entityId: pharmacyId,
-        },
+      void auditService.log(null, {
+        pharmacyId,
+        userId: adminUserId,
+        module: "TENANTS",
+        action: `BULK_${action}`,
+        entity: "PHARMACY",
+        entityId: pharmacyId,
+        severity: "INFO",
+        status: "SUCCESS",
       });
     }
 

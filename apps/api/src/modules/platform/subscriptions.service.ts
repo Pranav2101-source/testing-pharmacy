@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { Prisma } from "@pharmacy/database";
+import { auditService } from "../audit/audit.service.js";
 
 // Plan pricing config
 const PLAN_PRICING: Record<string, { monthly: number; yearly: number; quarterly: number }> = {
@@ -328,6 +329,19 @@ export class SubscriptionsService {
       },
     });
 
+    void auditService.log(null, {
+      pharmacyId: sub.pharmacyId,
+      userId: adminUserId,
+      module: "SUBSCRIPTIONS",
+      action: "PLAN_CHANGED",
+      entity: "SUBSCRIPTION",
+      entityId: id,
+      severity: "INFO",
+      status: "SUCCESS",
+      oldData: { plan: sub.planName, cycle: sub.billingCycle, amount: sub.amount },
+      newData: { plan, cycle, amount: computedAmount },
+    });
+
     return updated;
   }
 
@@ -376,6 +390,19 @@ export class SubscriptionsService {
       },
     });
 
+    void auditService.log(null, {
+      pharmacyId: sub.pharmacyId,
+      userId: adminUserId,
+      module: "SUBSCRIPTIONS",
+      action: "SUBSCRIPTION_RENEWED",
+      entity: "SUBSCRIPTION",
+      entityId: id,
+      severity: "INFO",
+      status: "SUCCESS",
+      oldData: { validUntil: sub.validUntil },
+      newData: { validUntil: newValidUntil, invoiceNumber },
+    });
+
     return updated;
   }
 
@@ -389,6 +416,17 @@ export class SubscriptionsService {
 
     await this.app.prisma.subscriptionAuditLog.create({
       data: { subscriptionId: id, action: "PAUSED", performedBy: adminUserId },
+    });
+
+    void auditService.log(null, {
+      pharmacyId: updated.pharmacyId,
+      userId: adminUserId,
+      module: "SUBSCRIPTIONS",
+      action: "SUBSCRIPTION_PAUSED",
+      entity: "SUBSCRIPTION",
+      entityId: id,
+      severity: "INFO",
+      status: "SUCCESS",
     });
 
     return updated;
@@ -406,6 +444,17 @@ export class SubscriptionsService {
       data: { subscriptionId: id, action: "RESUMED", performedBy: adminUserId },
     });
 
+    void auditService.log(null, {
+      pharmacyId: updated.pharmacyId,
+      userId: adminUserId,
+      module: "SUBSCRIPTIONS",
+      action: "SUBSCRIPTION_RESUMED",
+      entity: "SUBSCRIPTION",
+      entityId: id,
+      severity: "INFO",
+      status: "SUCCESS",
+    });
+
     return updated;
   }
 
@@ -419,6 +468,17 @@ export class SubscriptionsService {
 
     await this.app.prisma.subscriptionAuditLog.create({
       data: { subscriptionId: id, action: "CANCELLED", performedBy: adminUserId },
+    });
+
+    void auditService.log(null, {
+      pharmacyId: updated.pharmacyId,
+      userId: adminUserId,
+      module: "SUBSCRIPTIONS",
+      action: "SUBSCRIPTION_CANCELLED",
+      entity: "SUBSCRIPTION",
+      entityId: id,
+      severity: "WARNING",
+      status: "SUCCESS",
     });
 
     return updated;

@@ -9,6 +9,7 @@ import {
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from "recharts";
+import { Link } from "react-router-dom";
 
 type DashboardStats = {
   real: {
@@ -228,7 +229,7 @@ export default function PlatformAdminDashboard() {
               <QuickAction icon={<BellRing />} label="Broadcast Notice" />
               <QuickAction icon={<CreditCard />} label="Create Coupon" />
               <QuickAction icon={<TrendingUp />} label="Upgrade Subscription" />
-              <QuickAction icon={<Shield />} label="View Audit Logs" />
+              <QuickAction icon={<Shield />} label="View Audit Logs" to="/dashboard/audit" />
             </div>
           </div>
 
@@ -328,14 +329,26 @@ function HealthMetric({ icon, label, health }: any) {
   );
 }
 
-function QuickAction({ icon, label }: any) {
-  return (
-    <button className="flex items-center gap-3 w-full p-3 rounded-xl hover:bg-slate-50 text-left transition-colors group">
+function QuickAction({ icon, label, to }: any) {
+  const content = (
+    <>
       <div className="text-slate-400 group-hover:text-brand-600 transition-colors">
         {icon}
       </div>
-      <span className="text-sm font-semibold text-slate-700 group-hover:text-slate-900 flex-1">{label}</span>
+      <span className="text-sm font-semibold text-slate-700 group-hover:text-slate-900 flex-1 text-left">{label}</span>
       <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500" />
+    </>
+  );
+
+  const className = "flex items-center gap-3 w-full p-3 rounded-xl hover:bg-slate-50 transition-colors group";
+
+  if (to) {
+    return <Link to={to} className={className}>{content}</Link>;
+  }
+
+  return (
+    <button className={className}>
+      {content}
     </button>
   );
 }

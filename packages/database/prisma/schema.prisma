@@ -996,25 +996,61 @@ model InvoiceSettings {
 
 // ─── Audit Log ───────────────────────────────────────────────────────────────
 
+enum AuditModule {
+  AUTH
+  TENANTS
+  SUBSCRIPTIONS
+  SUPPORT
+  SETTINGS
+  SYSTEM
+  ANALYTICS
+  AUDIT
+  BILLING
+  INVENTORY
+}
+
+enum AuditSeverity {
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+}
+
+enum AuditStatus {
+  SUCCESS
+  FAILED
+  PENDING
+}
+
 model AuditLog {
-  id         String  @id @default(cuid())
-  pharmacyId String
-  userId     String
-  action     String
-  entity     String
-  entityId   String?
-  oldData    Json?
-  newData    Json?
-  ipAddress  String?
-  userAgent  String?
+  id           String         @id @default(cuid())
+  pharmacyId   String?
+  userId       String?
+  userEmail    String?
+  module       AuditModule    @default(SYSTEM)
+  action       String
+  entity       String
+  entityId     String?
+  resourceName String?
+  oldData      Json?
+  newData      Json?
+  ipAddress    String?
+  userAgent    String?
+  severity     AuditSeverity  @default(INFO)
+  status       AuditStatus    @default(SUCCESS)
+  requestId    String?
 
-  createdAt DateTime @default(now())
+  createdAt    DateTime       @default(now())
 
-  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  user     User     @relation(fields: [userId], references: [id])
+  pharmacy Pharmacy? @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  user     User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([pharmacyId, createdAt])
   @@index([pharmacyId, entity, entityId])
+  @@index([module, severity, createdAt])
+  @@index([status, createdAt])
+  @@index([requestId])
+  @@index([entity, entityId, createdAt])
   @@map("audit_logs")
 }
 
@@ -1042,6 +1078,7 @@ enum UploadType {
   PRESCRIPTION
   INVOICE_PDF
   PURCHASE_ORDER_PDF
+  GRN_PDF
   LOGO
   REPORT
 }
