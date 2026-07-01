@@ -92,6 +92,16 @@ const supportRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: categories });
   });
 
+  // ── GET /pharmacies ─────────────────────────────────────────────────────────
+
+  app.get("/pharmacies", { preHandler: adminAuth }, async (_req, reply) => {
+    const pharmacies = await app.prisma.pharmacy.findMany({
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    });
+    return reply.send({ success: true, data: pharmacies });
+  });
+
   // ── GET /stats ───────────────────────────────────────────────────────────────
 
   app.get("/stats", { preHandler: agentAuth }, async (_req, reply) => {
@@ -102,9 +112,26 @@ const supportRoutes: FastifyPluginAsync = async (app) => {
   // ── POST /tickets ─────────────────────────────────────────────────────────────
   // Only pharmacy users raise tickets.
 
-  app.post("/tickets", { preHandler: auth }, async (req, reply) => {
+  app.post("/tickets", { preHandler: [authenticate] }, async (req, reply) => {
     const input  = createTicketSchema.parse(req.body);
-    const ticket = await service.createTicket(req.pharmacyId, req.user.sub, input);
+    
+    let pharmacyId: string;
+    
+    if (req.user.role === "PLATFORM_ADMIN" || req.user.role === "SUPPORT_AGENT") {
+      if (!input.pharmacyId) {
+        throw AppError.badRequest("pharmacyId is required for support staff creating tickets");
+      }
+      pharmacyId = input.pharmacyId;
+    } else {
+      // Pharmacy user
+      if (!req.user.pharmacyId) {
+        throw AppError.unauthorized("Pharmacy context could not be resolved");
+      }
+      pharmacyId = req.user.pharmacyId;
+    }
+
+    const ticket = await service.createTicket(pharmacyId, req.user.sub, input);
+
     return reply.status(201).send({ success: true, data: ticket });
   });
 

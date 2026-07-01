@@ -48,6 +48,12 @@ const CashClosurePage      = lazy(() => import("./pages/dashboard/CashClosurePag
 const PrescriptionsPage    = lazy(() => import("./pages/dashboard/PrescriptionsPage"));
 const MigrationPage        = lazy(() => import("./pages/dashboard/MigrationPage"));
 
+const PlatformAdminDashboard = lazy(() => import("./pages/dashboard/platform/PlatformAdminDashboard"));
+const TenantsPage            = lazy(() => import("./pages/dashboard/platform/TenantsPage"));
+const SubscriptionsPage      = lazy(() => import("./pages/dashboard/platform/SubscriptionsPage"));
+const PlatformAnalyticsPage  = lazy(() => import("./pages/dashboard/platform/analytics/PlatformAnalyticsPage"));
+const PlatformAuditPage      = lazy(() => import("./pages/dashboard/platform/audit/PlatformAuditPage"));
+
 // ─── Support ──────────────────────────────────────────────────
 const SupportTicketsPage   = lazy(() => import("./pages/dashboard/support/SupportTicketsPage"));
 const TicketDetailPage     = lazy(() => import("./pages/dashboard/support/TicketDetailPage"));
@@ -137,6 +143,15 @@ export function App() {
               {/* Migration: OWNER only — touches global catalog + financial opening balances */}
               <Route element={<RoleGuard allow={["OWNER"]} redirectTo="/dashboard" />}>
                 <Route path="/dashboard/migration"          element={<MigrationPage />} />
+              </Route>
+
+              {/* Platform Admin */}
+              <Route element={<RoleGuard allow={["PLATFORM_ADMIN"]} redirectTo="/dashboard" />}>
+                <Route path="/dashboard/platform"           element={<PlatformAdminDashboard />} />
+                <Route path="/dashboard/tenants"            element={<TenantsPage />} />
+                <Route path="/dashboard/subscriptions"      element={<SubscriptionsPage />} />
+                <Route path="/dashboard/analytics"          element={<PlatformAnalyticsPage />} />
+                <Route path="/dashboard/audit"              element={<PlatformAuditPage />} />
               </Route>
 
               {/* Support — static routes must come before the dynamic :id segment */}

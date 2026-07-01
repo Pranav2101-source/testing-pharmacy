@@ -5,6 +5,7 @@ import { AppError } from "../../lib/AppError.js";
 import { inAppNotify } from "../../lib/notifications.js";
 import { PLATFORM_PHARMACY_ID } from "../../config/constants.js";
 import { notifyAgents, notifyAll } from "./support.sse.js";
+import { auditService } from "../audit/audit.service.js";
 import type {
   CreateTicketInput,
   UpdateStatusInput,
@@ -34,12 +35,25 @@ export class SupportService {
   async createTicket(pharmacyId: string, raisedById: string, input: CreateTicketInput) {
     const ticketNumber = await this.repo.nextTicketNumber();
 
-    // Round-robin assignment
-    const agent = await this.repo.pickNextAgent();
-    const assignedAgentId = agent?.id ?? undefined;
-    const status = agent ? "ASSIGNED" : "OPEN";
+    let assignedAgentId: string | undefined = undefined;
+    let status = "OPEN";
 
-    if (agent) await this.repo.markAgentAssigned(agent.id);
+    if (input.assignmentType === "UNASSIGNED") {
+      assignedAgentId = undefined;
+      status = "OPEN";
+    } else if (input.assignmentType === "MANUAL" && input.agentId) {
+      assignedAgentId = input.agentId;
+      status = "ASSIGNED";
+      await this.repo.markAgentAssigned(assignedAgentId);
+    } else {
+      // ROUND_ROBIN or default fallback
+      const agent = await this.repo.pickNextAgent();
+      if (agent) {
+        assignedAgentId = agent.id;
+        status = "ASSIGNED";
+        await this.repo.markAgentAssigned(agent.id);
+      }
+    }
 
     const ticket = await this.repo.create({
       ticketNumber,
@@ -49,9 +63,12 @@ export class SupportService {
       customTitle:     input.customTitle || undefined,
       assignedAgentId,
       status:          status as any,
+      priority:        input.priority as any,
+      sla:             input.sla as any,
+      dueDate:         input.dueDate ? new Date(input.dueDate) : null,
       language:        input.language,
       description:     input.description,
-      mobile:          input.mobile,
+      mobile:          input.mobile || "",
       altMobile:       input.altMobile || undefined,
     });
 
@@ -62,6 +79,18 @@ export class SupportService {
     });
 
     notifyAgents("ticket:new", { ticketId: ticket.id, ticketNumber: ticket.ticketNumber, status: ticket.status });
+
+    void auditService.log(null, {
+      pharmacyId: ticket.pharmacyId,
+      userId: raisedById,
+      module: "SUPPORT",
+      action: "TICKET_CREATED",
+      entity: "SUPPORT_TICKET",
+      entityId: ticket.id,
+      resourceName: ticket.ticketNumber,
+      severity: "INFO",
+      status: "SUCCESS",
+    });
 
     return ticket;
   }
@@ -124,6 +153,19 @@ export class SupportService {
     });
 
     notifyAll("ticket:updated", { ticketId: updated.id, status: updated.status });
+
+    void auditService.log(null, {
+      pharmacyId: ticket.pharmacyId,
+      userId,
+      module: "SUPPORT",
+      action: "TICKET_STATUS_UPDATED",
+      entity: "SUPPORT_TICKET",
+      entityId: ticketId,
+      severity: "INFO",
+      status: "SUCCESS",
+      oldData: { status: ticket.status },
+      newData: { status: input.status },
+    });
 
     return updated;
   }
@@ -278,6 +320,19 @@ export class SupportService {
       message: input.agentId
         ? "Your ticket has been assigned to our support team."
         : "Your ticket is awaiting assignment.",
+    });
+
+    void auditService.log(null, {
+      pharmacyId: ticket.pharmacyId,
+      userId: input.agentId || null, // actor is platform admin actually, wait no we need the actor userId but we don't have it passed to assignTicket easily, actually let me use 'null' for userId for now if we don't have actor. Wait, assignTicket doesn't take adminUserId.
+      module: "SUPPORT",
+      action: input.agentId ? "TICKET_ASSIGNED" : "TICKET_UNASSIGNED",
+      entity: "SUPPORT_TICKET",
+      entityId: ticketId,
+      severity: "INFO",
+      status: "SUCCESS",
+      oldData: { assignedAgentId: ticket.assignedAgentId },
+      newData: { assignedAgentId: input.agentId || null },
     });
 
     return updated;

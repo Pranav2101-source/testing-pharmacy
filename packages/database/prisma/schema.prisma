@@ -9,23 +9,36 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
+// ─── Tenant Status (Platform Admin lifecycle) ────────────────────────────────
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+  PENDING
+  TRIAL
+  EXPIRED
+}
+
 // ─── Pharmacy (one per registered pharmacy) ──────────────────────────────────
 
 model Pharmacy {
-  id          String  @id @default(cuid())
-  name        String
-  slug        String  @unique
-  gstin       String?
-  drugLicense String?
-  phone       String?
-  email       String?
-  address     String?
-  city        String?
-  state       String?
-  pincode     String?
-  isActive    Boolean @default(true)
-  logoUrl     String?  // Supabase storage path; signed on read
-  documents   Json?    // StoredDoc[] — compliance doc metadata (number, expiry, file path)
+  id              String       @id @default(cuid())
+  tenantCode      String?      @unique // e.g. TEN-000001 — generated on create
+  name            String
+  slug            String       @unique
+  gstin           String?
+  drugLicense     String?
+  phone           String?
+  email           String?
+  address         String?
+  city            String?
+  state           String?
+  pincode         String?
+  isActive        Boolean      @default(true)
+  tenantStatus    TenantStatus @default(ACTIVE)
+  logoUrl         String? // Supabase storage path; signed on read
+  documents       Json? // StoredDoc[] — compliance doc metadata (number, expiry, file path)
   // Per-pharmacy invoice/GST/numbering config (1:1, was the InvoiceSettings table).
   // Inlined as a column — it was a strict 1:1 holding a single JSON blob, only ever
   // read by pharmacyId and written via upsert, so a separate table bought nothing.
@@ -34,48 +47,164 @@ model Pharmacy {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users               User[]
-  customers           Customer[]
-  suppliers           Supplier[]
-  inventory           Inventory[]
-  purchaseOrders      PurchaseOrder[]
-  invoices            Invoice[]
-  auditLogs           AuditLog[]
-  uploads             Upload[]
-  notifications       NotificationLog[]
-  invoicePayments     InvoicePayment[]
-  salesReturns        SalesReturn[]
-  inventoryMovements  InventoryMovement[]
-  stockReservations   StockReservation[]
-  grns                GoodsReceiptNote[]
-  supplierReturns     SupplierReturn[]
+  users                 User[]
+  customers             Customer[]
+  suppliers             Supplier[]
+  inventory             Inventory[]
+  purchaseOrders        PurchaseOrder[]
+  invoices              Invoice[]
+  auditLogs             AuditLog[]
+  uploads               Upload[]
+  notifications         NotificationLog[]
+  invoicePayments       InvoicePayment[]
+  salesReturns          SalesReturn[]
+  inventoryMovements    InventoryMovement[]
+  stockReservations     StockReservation[]
+  grns                  GoodsReceiptNote[]
+  supplierReturns       SupplierReturn[]
   supplierLedgerEntries SupplierLedgerEntry[]
-  quotations          Quotation[]
-  racks               Rack[]
-  shelves             Shelf[]
-  stockAuditSessions  StockAuditSession[]
-  calendarEvents      CalendarEvent[]
-  supportTickets      SupportTicket[]
-  documentSequences   DocumentSequence[]
-  medicineOverrides   PharmacyMedicineOverride[]
-  doctors             Doctor[]
-  cashClosures        CashClosure[]
+  quotations            Quotation[]
+  racks                 Rack[]
+  shelves               Shelf[]
+  stockAuditSessions    StockAuditSession[]
+  calendarEvents        CalendarEvent[]
+  supportTickets        SupportTicket[]
+  documentSequences     DocumentSequence[]
+  medicineOverrides     PharmacyMedicineOverride[]
+  doctors               Doctor[]
+  cashClosures          CashClosure[]
+  subscription          Subscription?
+  tenantSettings        TenantSettings?
   // Child-table back-relations (added for RLS + tenant isolation on item rows)
-  invoiceItems        InvoiceItem[]
-  grnItems            GRNItem[]
-  salesReturnItems    SalesReturnItem[]
-  quotationItems      QuotationItem[]
-  stockAuditItems     StockAuditItem[]
-  ticketMessages      TicketMessage[]
-  ticketAttachments   TicketAttachment[]
-  prescriptions       Prescription[]
-  prescriptionItems   PrescriptionItem[]
-  batchRecalls        BatchRecall[]
-  migrationSessions   MigrationSession[]
-  migrationImportJobs MigrationImportJob[]
-  medicineMappings    MedicineMapping[]
+  invoiceItems          InvoiceItem[]
+  grnItems              GRNItem[]
+  salesReturnItems      SalesReturnItem[]
+  quotationItems        QuotationItem[]
+  stockAuditItems       StockAuditItem[]
+  ticketMessages        TicketMessage[]
+  ticketAttachments     TicketAttachment[]
+  prescriptions         Prescription[]
+  prescriptionItems     PrescriptionItem[]
+  batchRecalls          BatchRecall[]
+  migrationSessions     MigrationSession[]
+  migrationImportJobs   MigrationImportJob[]
+  medicineMappings      MedicineMapping[]
 
   @@map("pharmacies")
+}
+
+// ─── Subscription (one per pharmacy, platform-managed) ────────────────────────
+
+model Subscription {
+  id            String             @id @default(cuid())
+  pharmacyId    String             @unique
+  planName      String             @default("Free") // Free | Standard | Professional | Enterprise
+  status        SubscriptionStatus @default(ACTIVE)
+  billingCycle  String             @default("MONTHLY") // MONTHLY | YEARLY | QUARTERLY
+  amount        Float? // price for current plan cycle
+  autoRenew     Boolean            @default(true)
+  validUntil    DateTime
+  trialEndsAt   DateTime?
+  pausedAt      DateTime?
+  cancelledAt   DateTime?
+  discount      Float              @default(0) // percentage
+  couponCode    String?
+  creditBalance Float              @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy  Pharmacy               @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  invoices  SubscriptionInvoice[]
+  auditLogs SubscriptionAuditLog[]
+
+  @@map("subscriptions")
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIAL
+  PAUSED
+  EXPIRED
+  CANCELLED
+}
+
+// ─── Subscription Invoice ─────────────────────────────────────────────────────
+
+model SubscriptionInvoice {
+  id             String               @id @default(cuid())
+  subscriptionId String
+  pharmacyId     String
+  invoiceNumber  String               @unique
+  amount         Float
+  tax            Float                @default(0)
+  discount       Float                @default(0)
+  total          Float
+  couponCode     String?
+  status         InvoicePaymentStatus @default(PENDING)
+  dueDate        DateTime
+  paidAt         DateTime?
+  gstinPharmacy  String?
+  gstinPlatform  String?
+
+  createdAt DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([pharmacyId])
+  @@map("subscription_invoices")
+}
+
+enum InvoicePaymentStatus {
+  PAID
+  PENDING
+  OVERDUE
+  CANCELLED
+  REFUNDED
+}
+
+// ─── Subscription Audit Log ───────────────────────────────────────────────────
+
+model SubscriptionAuditLog {
+  id             String  @id @default(cuid())
+  subscriptionId String
+  action         String // PLAN_CHANGED, RENEWED, PAUSED, RESUMED, CANCELLED, INVOICE_GENERATED, REMINDER_SENT
+  oldValue       String? // JSON
+  newValue       String? // JSON
+  performedBy    String // user id
+
+  createdAt DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId])
+  @@map("subscription_audit_logs")
+}
+
+// ─── Tenant Settings (feature flags & limits per pharmacy) ────────────────────
+
+model TenantSettings {
+  id                  String  @id @default(cuid())
+  pharmacyId          String  @unique
+  doctorLimit         Int     @default(5)
+  staffLimit          Int     @default(5)
+  patientLimit        Int     @default(500)
+  storageLimit        Int     @default(1024) // in MB
+  enableBilling       Boolean @default(true)
+  enableInventory     Boolean @default(true)
+  enableEmr           Boolean @default(false)
+  enableCrm           Boolean @default(false)
+  enableWhatsapp      Boolean @default(false)
+  enableSms           Boolean @default(false)
+  enableApiAccess     Boolean @default(false)
+  enableOnlineBooking Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_settings")
 }
 
 // ─── Document Sequence ────────────────────────────────────────────────────────
@@ -126,7 +255,7 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy              Pharmacy             @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  pharmacy              Pharmacy              @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   invoices              Invoice[]
   auditLogs             AuditLog[]
   invoicePayments       InvoicePayment[]
@@ -134,15 +263,15 @@ model User {
   inventoryMovements    InventoryMovement[]
   supplierLedgerEntries SupplierLedgerEntry[]
   quotations            Quotation[]
-  calendarEvents        CalendarEvent[]      @relation("CalendarEventCreator")
-  ticketsRaised         SupportTicket[]      @relation("TicketRaisedBy")
-  ticketMessages        TicketMessage[]      @relation("TicketMessageSender")
+  calendarEvents        CalendarEvent[]       @relation("CalendarEventCreator")
+  ticketsRaised         SupportTicket[]       @relation("TicketRaisedBy")
+  ticketMessages        TicketMessage[]       @relation("TicketMessageSender")
   supportAgent          SupportAgent?
   cashClosures          CashClosure[]
-  approvedAuditSessions StockAuditSession[]  @relation("StockAuditApprover")
-  createdAuditSessions  StockAuditSession[]  @relation("StockAuditCreator")
-  approvedPOs           PurchaseOrder[]      @relation("POApprover")
-  batchRecalls          BatchRecall[]        @relation("BatchRecallUser")
+  approvedAuditSessions StockAuditSession[]   @relation("StockAuditApprover")
+  createdAuditSessions  StockAuditSession[]   @relation("StockAuditCreator")
+  approvedPOs           PurchaseOrder[]       @relation("POApprover")
+  batchRecalls          BatchRecall[]         @relation("BatchRecallUser")
   migrationSessions     MigrationSession[]
 
   @@unique([pharmacyId, email])
@@ -191,13 +320,13 @@ model Medicine {
   boxSize         Int? // strips per box; used with packSize for unit conversion
   catalogMrp      Decimal?         @db.Decimal(12, 2) // reference price — pre-fills GRN form only, never used for billing
 
-  inventory           Inventory[]
-  grnItems            GRNItem[]
-  quotationItems      QuotationItem[]
-  pharmacyOverrides   PharmacyMedicineOverride[]
-  prescriptionItems   PrescriptionItem[]
-  batchRecalls        BatchRecall[]
-  medicineMappings    MedicineMapping[]
+  inventory         Inventory[]
+  grnItems          GRNItem[]
+  quotationItems    QuotationItem[]
+  pharmacyOverrides PharmacyMedicineOverride[]
+  prescriptionItems PrescriptionItem[]
+  batchRecalls      BatchRecall[]
+  medicineMappings  MedicineMapping[]
 
   @@index([name])
   @@index([genericName])
@@ -296,15 +425,15 @@ model Inventory {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy            Pharmacy             @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  medicine            Medicine             @relation(fields: [medicineId], references: [id])
-  shelf               Shelf?               @relation(fields: [shelfId], references: [id])
-  invoiceItems        InvoiceItem[]
-  salesReturnItems    SalesReturnItem[]
-  inventoryMovements  InventoryMovement[]
-  stockReservations   StockReservation[]
-  grnItems            GRNItem[]
-  stockAuditItems     StockAuditItem[]
+  pharmacy           Pharmacy            @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  medicine           Medicine            @relation(fields: [medicineId], references: [id])
+  shelf              Shelf?              @relation(fields: [shelfId], references: [id])
+  invoiceItems       InvoiceItem[]
+  salesReturnItems   SalesReturnItem[]
+  inventoryMovements InventoryMovement[]
+  stockReservations  StockReservation[]
+  grnItems           GRNItem[]
+  stockAuditItems    StockAuditItem[]
 
   @@unique([pharmacyId, medicineId, batchNumber])
   @@index([pharmacyId, medicineId])
@@ -414,7 +543,7 @@ model Supplier {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy        Pharmacy             @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  pharmacy        Pharmacy              @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   purchaseOrders  PurchaseOrder[]
   grns            GoodsReceiptNote[]
   supplierReturns SupplierReturn[]
@@ -453,8 +582,8 @@ model PurchaseOrder {
   // child table bought nothing but an extra join. itemCount is maintained
   // alongside it so list views don't need to read/parse the JSON just to show
   // a count (mirrors Supplier.ledgerBalance's running-value pattern below).
-  items     Json
-  itemCount Int  @default(0)
+  items           Json
+  itemCount       Int            @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -848,25 +977,61 @@ enum MovementDirection {
 
 // ─── Audit Log ───────────────────────────────────────────────────────────────
 
+enum AuditModule {
+  AUTH
+  TENANTS
+  SUBSCRIPTIONS
+  SUPPORT
+  SETTINGS
+  SYSTEM
+  ANALYTICS
+  AUDIT
+  BILLING
+  INVENTORY
+}
+
+enum AuditSeverity {
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+}
+
+enum AuditStatus {
+  SUCCESS
+  FAILED
+  PENDING
+}
+
 model AuditLog {
-  id         String  @id @default(cuid())
-  pharmacyId String
-  userId     String
-  action     String
-  entity     String
-  entityId   String?
-  oldData    Json?
-  newData    Json?
-  ipAddress  String?
-  userAgent  String?
+  id           String        @id @default(cuid())
+  pharmacyId   String?
+  userId       String?
+  userEmail    String?
+  module       AuditModule   @default(SYSTEM)
+  action       String
+  entity       String
+  entityId     String?
+  resourceName String?
+  oldData      Json?
+  newData      Json?
+  ipAddress    String?
+  userAgent    String?
+  severity     AuditSeverity @default(INFO)
+  status       AuditStatus   @default(SUCCESS)
+  requestId    String?
 
   createdAt DateTime @default(now())
 
-  pharmacy Pharmacy @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  user     User     @relation(fields: [userId], references: [id])
+  pharmacy Pharmacy? @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  user     User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([pharmacyId, createdAt])
   @@index([pharmacyId, entity, entityId])
+  @@index([module, severity, createdAt])
+  @@index([status, createdAt])
+  @@index([requestId])
+  @@index([entity, entityId, createdAt])
   @@map("audit_logs")
 }
 
@@ -967,10 +1132,10 @@ model GoodsReceiptNote {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy      Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  supplier      Supplier          @relation(fields: [supplierId], references: [id])
-  purchaseOrder PurchaseOrder?    @relation(fields: [purchaseOrderId], references: [id])
-  sourceUpload  Upload?           @relation(fields: [sourceUploadId], references: [id], onDelete: SetNull)
+  pharmacy      Pharmacy              @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  supplier      Supplier              @relation(fields: [supplierId], references: [id])
+  purchaseOrder PurchaseOrder?        @relation(fields: [purchaseOrderId], references: [id])
+  sourceUpload  Upload?               @relation(fields: [sourceUploadId], references: [id], onDelete: SetNull)
   items         GRNItem[]
   payments      SupplierLedgerEntry[]
 
@@ -1032,8 +1197,8 @@ model SupplierReturn {
   // above. The confirm() flow's per-item inventory-decrement loop reads this
   // as a plain parsed array; inventoryId per item is re-validated against
   // Inventory at confirm time regardless (it always was, on top of the FK).
-  items     Json
-  itemCount Int  @default(0)
+  items         Json
+  itemCount     Int                  @default(0)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1134,11 +1299,11 @@ model SupplierLedgerEntry {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy       Pharmacy        @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  supplier       Supplier        @relation(fields: [supplierId], references: [id])
+  pharmacy       Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  supplier       Supplier          @relation(fields: [supplierId], references: [id])
   grn            GoodsReceiptNote? @relation(fields: [grnId], references: [id])
-  supplierReturn SupplierReturn? @relation(fields: [supplierReturnId], references: [id])
-  user           User            @relation(fields: [createdBy], references: [id])
+  supplierReturn SupplierReturn?   @relation(fields: [supplierReturnId], references: [id])
+  user           User              @relation(fields: [createdBy], references: [id])
 
   @@unique([pharmacyId, type, entryNumber])
   @@index([pharmacyId, type, supplierId])
@@ -1306,8 +1471,8 @@ model StockAuditItem {
   @@index([pharmacyId])
   @@index([sessionId])
   @@index([inventoryId])
-  @@index([sessionId, countedQty])   // completeSession uncounted check + listSessions enrichment
-  @@index([sessionId, varianceQty])  // listSessions variance count
+  @@index([sessionId, countedQty]) // completeSession uncounted check + listSessions enrichment
+  @@index([sessionId, varianceQty]) // listSessions variance count
   @@map("stock_audit_items")
 }
 
@@ -1351,6 +1516,13 @@ model BatchRecall {
 
 // ─── Support Module ───────────────────────────────────────────────────────────
 
+model TicketSequence {
+  id      String @id
+  current Int    @default(1)
+
+  @@map("ticket_sequences")
+}
+
 enum TicketStatus {
   OPEN
   ASSIGNED
@@ -1363,6 +1535,22 @@ enum TicketStatus {
 enum TicketLanguage {
   HINDI
   ENGLISH
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketSLA {
+  SLA_4H
+  SLA_8H
+  SLA_24H
+  SLA_48H
+  SLA_72H
+  SLA_3D
 }
 
 enum AttachmentFileType {
@@ -1408,7 +1596,10 @@ model SupportTicket {
   customTitle     String?
   assignedAgentId String?
   status          TicketStatus   @default(OPEN)
+  priority        TicketPriority @default(MEDIUM)
+  sla             TicketSLA?
   language        TicketLanguage @default(ENGLISH)
+  dueDate         DateTime?
   description     String
   mobile          String
   altMobile       String?

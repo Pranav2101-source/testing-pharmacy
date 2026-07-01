@@ -7,7 +7,7 @@ import {
   ArrowLeft, Loader2, AlertTriangle, Send, Paperclip, X,
   ChevronDown, CheckCircle2, Monitor, FileText, User, Users,
   Building2, Phone, Mail, MapPin, UserPlus, Hash, Globe,
-  Calendar, Clock, Tag, ShieldCheck, ExternalLink,
+  Calendar, Clock, Tag, ShieldCheck, ExternalLink, Activity
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { ListSkeleton } from "@/components/Skeleton";
@@ -16,6 +16,8 @@ import { isSupportStaff, isPlatformAdmin, getStoredUser } from "@/lib/auth";
 import { useToast } from "@/hooks/useToast";
 import { useSupportStream } from "@/hooks/useSupportStream";
 import { TicketStatusBadge, type TicketStatus } from "@/components/support/TicketStatusBadge";
+import { TicketActivityTimeline, type TicketActivity } from "@/components/support/TicketActivityTimeline";
+import { Combine, Link as LinkIcon, Split, AlertOctagon, Eye, Copy, Users as Followers } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -438,7 +440,7 @@ function SidebarSection({ title, icon: Icon, children }: {
   );
 }
 
-function InfoSidebar({ ticket }: { ticket: Ticket }) {
+function InfoSidebar({ ticket, isAdmin }: { ticket: Ticket; isAdmin: boolean }) {
   return (
     <aside className="hidden lg:flex flex-col w-[300px] flex-shrink-0 border-l border-slate-200 bg-white overflow-y-auto">
 
@@ -544,6 +546,35 @@ function InfoSidebar({ ticket }: { ticket: Ticket }) {
           </div>
         )}
       </SidebarSection>
+
+      {/* Enterprise Actions */}
+      {isAdmin && (
+        <SidebarSection title="Enterprise Actions" icon={AlertTriangle}>
+          <div className="py-3 flex flex-col gap-2">
+            <button disabled className="w-full flex items-center gap-2 px-3 py-2 text-[12px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-lg opacity-60 cursor-not-allowed transition-all" title="Coming Soon">
+              <Combine className="w-3.5 h-3.5" /> Merge Ticket
+            </button>
+            <button disabled className="w-full flex items-center gap-2 px-3 py-2 text-[12px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-lg opacity-60 cursor-not-allowed transition-all" title="Coming Soon">
+              <LinkIcon className="w-3.5 h-3.5" /> Link Related Ticket
+            </button>
+            <button disabled className="w-full flex items-center gap-2 px-3 py-2 text-[12px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-lg opacity-60 cursor-not-allowed transition-all" title="Coming Soon">
+              <Split className="w-3.5 h-3.5" /> Split Ticket
+            </button>
+            <button disabled className="w-full flex items-center gap-2 px-3 py-2 text-[12px] font-medium text-rose-500 bg-rose-50 border border-rose-200 rounded-lg opacity-60 cursor-not-allowed transition-all" title="Coming Soon">
+              <AlertOctagon className="w-3.5 h-3.5" /> Escalate Ticket
+            </button>
+            <div className="flex gap-2 mt-1">
+              <button disabled className="flex-1 flex justify-center items-center gap-1.5 px-2 py-1.5 text-[11px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-lg opacity-60 cursor-not-allowed" title="Coming Soon">
+                <Eye className="w-3 h-3" /> Watch
+              </button>
+              <button disabled className="flex-1 flex justify-center items-center gap-1.5 px-2 py-1.5 text-[11px] font-medium text-slate-500 bg-slate-50 border border-slate-200 rounded-lg opacity-60 cursor-not-allowed" title="Coming Soon">
+                <Followers className="w-3 h-3" /> Followers
+              </button>
+            </div>
+          </div>
+        </SidebarSection>
+      )}
+
     </aside>
   );
 }
@@ -643,6 +674,24 @@ export default function TicketDetailPage() {
   }
 
   const isClosed = ticket.status === "CLOSED" || ticket.status === "RESOLVED";
+
+  // Mock activity logic for now
+  const mockActivities: TicketActivity[] = [
+    {
+      id: "act_1",
+      type: "CREATED",
+      actor: ticket.raisedBy,
+      createdAt: ticket.createdAt,
+      details: "Ticket created",
+    },
+    ...(ticket.assignedAgent ? [{
+      id: "act_2",
+      type: "ASSIGNED" as const,
+      actor: { id: "system", name: "System", role: "SYSTEM" },
+      createdAt: ticket.createdAt,
+      details: `Assigned to ${ticket.assignedAgent.user.name}`,
+    }] : []),
+  ];
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-[#f5f7fa]">
@@ -747,6 +796,17 @@ export default function TicketDetailPage() {
             <div ref={bottomRef} />
           </div>
 
+          {/* Activity Timeline (visible to Admins only) */}
+          {isAdmin && (
+            <div className="flex-shrink-0 bg-slate-50 border-t border-slate-200 px-5 py-4 max-h-[30vh] overflow-y-auto">
+              <div className="flex items-center gap-2 mb-3">
+                <Activity className="w-4 h-4 text-slate-500" />
+                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Activity Timeline</span>
+              </div>
+              <TicketActivityTimeline activities={mockActivities} />
+            </div>
+          )}
+
           {/* Compose */}
           {!isClosed ? (
             <div className="flex-shrink-0 bg-white border-t border-slate-200 px-4 py-3">
@@ -816,8 +876,8 @@ export default function TicketDetailPage() {
           )}
         </div>
 
-        {/* ── Info sidebar — agents only ── */}
-        {isAgent && <InfoSidebar ticket={ticket} />}
+        {/* ── Sidebar ── */}
+        {isAgent && <InfoSidebar ticket={ticket} isAdmin={isAdmin} />}
       </div>
     </div>
   );

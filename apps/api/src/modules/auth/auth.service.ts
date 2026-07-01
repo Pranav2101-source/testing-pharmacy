@@ -7,6 +7,7 @@ import type { JwtPayload, UserRole } from "../../middleware/auth.js";
 import { AppError } from "../../lib/AppError.js";
 import { env } from "../../config/env.js";
 import { notifyOwners } from "../../lib/notifications.js";
+import { auditService } from "../audit/audit.service.js";
 
 /** Convert a TTL string like "1h" / "30m" to milliseconds. */
 function parseTtlMs(ttl: string): number {
@@ -73,19 +74,21 @@ export class AuthService {
       // Log when the account exists — gives a pharmacyId to write against and lets
       // the audit trail surface brute-force / credential-stuffing patterns.
       if (user) {
-        void this.app.prisma.auditLog.create({
-          data: {
-            pharmacyId: user.pharmacyId,
-            userId:     user.id,
-            action:     "LOGIN_FAILED",
-            entity:     "User",
-            entityId:   user.id,
-            newData: {
-              reason: !user.isActive ? "account_inactive" : "wrong_password",
-              email:  input.email,
-            },
+        void auditService.log(null, {
+          pharmacyId: user.pharmacyId,
+          userId:     user.id,
+          userEmail:  user.email,
+          module:     "AUTH",
+          action:     "LOGIN_FAILED",
+          entity:     "User",
+          entityId:   user.id,
+          severity:   "WARNING",
+          status:     "FAILED",
+          newData: {
+            reason: !user.isActive ? "account_inactive" : "wrong_password",
+            email:  input.email,
           },
-        }).catch(() => { /* audit write must not shadow the auth error */ });
+        });
       }
       throw AppError.unauthorized("Invalid credentials");
     }

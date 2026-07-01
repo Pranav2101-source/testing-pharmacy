@@ -1,4 +1,4 @@
-import type { Db, Prisma, TicketStatus } from "@pharmacy/database";
+import type { Db, Prisma, TicketStatus, TicketPriority, TicketSLA } from "@pharmacy/database";
 
 export class SupportRepo {
   constructor(private db: Db) {}
@@ -15,8 +15,17 @@ export class SupportRepo {
   // ── Ticket number ─────────────────────────────────────────────────────────
 
   async nextTicketNumber(): Promise<string> {
-    const count = await this.db.supportTicket.count();
-    return `TKT-${String(count + 1).padStart(5, "0")}`;
+    const prefix = process.env.TICKET_PREFIX || "SUP";
+    const year = new Date().getFullYear();
+    
+    // Concurrency-safe increment using Prisma's atomic operations
+    const seq = await this.db.ticketSequence.upsert({
+      where: { id: "TICKET_SEQ" },
+      update: { current: { increment: 1 } },
+      create: { id: "TICKET_SEQ", current: 1 },
+    });
+    
+    return `${prefix}-${year}-${String(seq.current).padStart(6, "0")}`;
   }
 
   // ── Round-robin agent selection ───────────────────────────────────────────
@@ -47,13 +56,19 @@ export class SupportRepo {
     customTitle?:    string;
     assignedAgentId?: string;
     status:          TicketStatus;
+    priority?:       TicketPriority;
+    sla?:            TicketSLA;
     language:        "HINDI" | "ENGLISH";
+    dueDate?:        Date | null;
     description:     string;
-    mobile:          string;
+    mobile?:         string;
     altMobile?:      string;
   }) {
     return this.db.supportTicket.create({
-      data,
+      data: {
+        ...data,
+        mobile: data.mobile || "", // Ensure required field handles optional
+      },
       include: ticketIncludes,
     });
   }

@@ -13,9 +13,29 @@ function buildConnectionString(): string {
     url.searchParams.delete("connection_limit");
     url.searchParams.delete("pool_timeout");
     url.searchParams.delete("pgbouncer");
+    // sslmode=require in the connection string causes the pg driver to force verify-full
+    // which overrides the ssl: { rejectUnauthorized: false } setting and causes SELF_SIGNED_CERT_IN_CHAIN.
+    url.searchParams.delete("sslmode");
     return url.toString();
   } catch {
     return raw;
+  }
+}
+
+function buildSslOptions(): any {
+  const raw = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+  if (!raw) return undefined;
+  try {
+    const url = new URL(raw);
+    // Localhost databases typically don't use SSL
+    if (url.hostname === "localhost" || url.hostname === "127.0.0.1") {
+      return undefined;
+    }
+    // Remote databases (like Supabase) require SSL, and rejectUnauthorized: false
+    // is needed to bypass the SELF_SIGNED_CERT_IN_CHAIN error in Node's pg driver.
+    return { rejectUnauthorized: false };
+  } catch {
+    return { rejectUnauthorized: false };
   }
 }
 
@@ -32,6 +52,9 @@ export const boss = new PgBoss({
 
   // Maintenance interval — checks for stalled/expired jobs.
   monitorIntervalSeconds: 60,
+
+  // SSL configuration required for Supabase
+  ssl: buildSslOptions(),
 });
 
 boss.on("error", (err: Error) => {

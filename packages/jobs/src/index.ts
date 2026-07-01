@@ -14,6 +14,7 @@ import { calendarDigestHandler } from "./processors/calendar-digest.js";
 import { postInvoiceHandler }      from "./processors/post-invoice.js";
 import { reservationCleanupHandler } from "./processors/reservation-cleanup.js";
 import { migrationImportHandler }  from "./processors/migration-import.js";
+import { auditWorkerHandler }      from "./processors/audit-worker.js";
 
 // Call once per process. Starts pg-boss (creates pgboss schema/tables on first
 // run), then registers all job workers. pg-boss uses LISTEN/NOTIFY for delivery —
@@ -29,7 +30,22 @@ export async function startWorkers(): Promise<void> {
     boss.createQueue("post-invoice"),
     boss.createQueue("reservation-cleanup"),
     boss.createQueue("migration-import"),
+    boss.createQueue("audit-log"),
   ]);
+  const queues = [
+    "expiry-alerts",
+    "low-stock-alerts",
+    "grn-overdue",
+    "quotation-expiry",
+    "eod-summary",
+    "pending-credit",
+    "calendar-digest",
+    "reservation-cleanup",
+    "post-invoice",
+    "audit-log",
+  ];
+
+  await Promise.all(queues.map((q) => boss.createQueue(q)));
 
   // Fan-out jobs: one worker handles all pharmacies in-process.
   // localConcurrency = max concurrent jobs fetched per poll; concurrency within each team.
@@ -53,6 +69,7 @@ export async function startWorkers(): Promise<void> {
     boss.work("reservation-cleanup", { localConcurrency: 1, pollingIntervalSeconds: CRON_POLL }, reservationCleanupHandler),
     boss.work("post-invoice",        { localConcurrency: 10, pollingIntervalSeconds: 5 }, postInvoiceHandler),
     boss.work("migration-import",    { localConcurrency: 2  }, migrationImportHandler),
+    boss.work("audit-log",           { localConcurrency: 10 }, auditWorkerHandler),
   ]);
 
   console.info("[pg-boss] all workers registered");

@@ -9,6 +9,7 @@ import {
 } from "./auth.schema.js";
 import { authenticate } from "../../middleware/auth.js";
 import { env } from "../../config/env.js";
+import { auditService } from "../audit/audit.service.js";
 
 // ── Refresh-token cookie helpers ──────────────────────────────────────────────
 // The refresh token never travels through JavaScript-readable storage. It lives
@@ -67,6 +68,19 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     const input  = loginSchema.parse(req.body);
     const result = await service.login(input);
     setRefreshCookie(reply, result.tokens.refreshToken);
+    
+    void auditService.log(req, {
+      pharmacyId: result.user.pharmacyId,
+      userId:     result.user.id,
+      userEmail:  result.user.email,
+      module:     "AUTH",
+      action:     "LOGIN_SUCCESS",
+      entity:     "User",
+      entityId:   result.user.id,
+      severity:   "INFO",
+      status:     "SUCCESS",
+    });
+
     return reply.send({
       success: true,
       data: {
@@ -115,6 +129,18 @@ const authRoutes: FastifyPluginAsync = async (app) => {
   app.post("/logout", { preHandler: authenticate }, async (req, reply) => {
     await service.logout(req.user.sub);
     clearRefreshCookie(reply);
+    
+    void auditService.log(req, {
+      pharmacyId: req.user.pharmacyId,
+      userId:     req.user.sub,
+      module:     "AUTH",
+      action:     "LOGOUT",
+      entity:     "User",
+      entityId:   req.user.sub,
+      severity:   "INFO",
+      status:     "SUCCESS",
+    });
+
     return reply.send({ success: true, data: { message: "Logged out" } });
   });
 
