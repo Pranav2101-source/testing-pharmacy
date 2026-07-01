@@ -1,35 +1,11 @@
-import { useState, useEffect } from "react";
 import { IndianRupee, Truck, AlertTriangle, ShieldAlert } from "lucide-react";
-import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { currency } from "../utils";
+import { usePurchaseSummary } from "../hooks/usePurchaseSummary";
+import { Skeleton } from "@/components/Skeleton";
 
 export function SummaryBar() {
-  const [stats, setStats] = useState<{
-    pendingGRNs: number; overduePayments: number; pendingApprovals: number; monthSpend: number;
-  } | null>(null);
-
-  useEffect(() => {
-    async function load() {
-      const now  = new Date();
-      const from = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-      const to   = now.toISOString();
-      try {
-        const [grnRes, poRes, summaryRes] = await Promise.all([
-          api.get("/purchases/grn", { params: { status: "DRAFT", limit: 1 } }),
-          api.get("/purchases/orders", { params: { approvalStatus: "PENDING_APPROVAL", limit: 1 } }),
-          api.get("/reports/purchases/summary", { params: { from, to } }),
-        ]);
-        setStats({
-          pendingGRNs:       grnRes.data.data.total,
-          overduePayments:   summaryRes.data.data.overduePayments,
-          pendingApprovals:  poRes.data.data.total,
-          monthSpend:        summaryRes.data.data.totalSpend,
-        });
-      } catch {/* */}
-    }
-    load();
-  }, []);
+  const { data: stats, isPending } = usePurchaseSummary();
 
   const cards = [
     {
@@ -79,9 +55,13 @@ export function SummaryBar() {
           <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 shadow-sm", c.iconBg)}>
             <c.icon className="w-5 h-5 text-white" strokeWidth={2} />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="text-[10.5px] font-semibold text-slate-400 uppercase tracking-wide leading-none mb-1 truncate">{c.label}</p>
-            <p className={cn("text-[16px] font-black leading-none tabular-nums", c.warn ? "text-red-700" : "text-slate-800")}>{c.value}</p>
+            {isPending ? (
+              <Skeleton className="h-4 w-20" />
+            ) : (
+              <p className={cn("text-[16px] font-black leading-none tabular-nums", c.warn ? "text-red-700" : "text-slate-800")}>{c.value}</p>
+            )}
           </div>
         </div>
       ))}

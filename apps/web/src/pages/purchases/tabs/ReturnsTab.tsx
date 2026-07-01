@@ -5,6 +5,7 @@ import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-quer
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
+import { TableSkeletonRows } from "@/components/Skeleton";
 import type { SupplierReturn, Supplier } from "../types";
 import { SR_STATUS } from "../types";
 import { fmtDate, currency } from "../utils";
@@ -246,7 +247,7 @@ export function ReturnsTab({ suppliers }: { suppliers: Supplier[] }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={9} className="py-24 text-center"><Loader2 className="w-8 h-8 animate-spin text-blue-400 mx-auto" /></td></tr>
+              <TableSkeletonRows columns={9} widths={["w-6","w-20","w-28","w-16","w-14","w-8","w-16","w-16","w-20"]} />
             ) : returns.length === 0 ? (
               <tr><td colSpan={9}>
                 <EmptyState icon={RotateCcw} title="No supplier returns yet"

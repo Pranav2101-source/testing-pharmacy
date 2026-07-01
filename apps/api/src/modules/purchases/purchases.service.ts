@@ -58,8 +58,16 @@ export class PurchasesService {
 
   async createPO(pharmacyId: string, userId: string, userRole: string, input: CreatePOInput) {
     const itemsNeedingId = input.items.filter((i) => !i.medicineId);
-    if (itemsNeedingId.length > 0) {
-      const nameToId = await this.resolveMedicineIds(input.items);
+
+    // Medicine-name resolution and order-number generation are independent —
+    // run them together instead of sequentially. (Number gaps from a later
+    // failure are already tolerated for PO/GRN/quotation sequences — see
+    // nextSequenceValue's docstring.)
+    const [nameToId, seq] = await Promise.all([
+      itemsNeedingId.length > 0 ? this.resolveMedicineIds(input.items) : Promise.resolve(null),
+      nextSequenceValue(this.app.prisma, pharmacyId, "PURCHASE_ORDER"),
+    ]);
+    if (nameToId) {
       input = {
         ...input,
         items: input.items.map((i) =>
@@ -67,6 +75,7 @@ export class PurchasesService {
         ),
       };
     }
+    const orderNumber = generatePONumber(seq);
 
     let subtotal = 0;
     let totalGst = 0;
@@ -96,18 +105,14 @@ export class PurchasesService {
     // PHARMACIST-created POs need OWNER approval; OWNER auto-approves
     const approvalStatus = userRole === "OWNER" ? "NOT_REQUIRED" : "PENDING_APPROVAL";
 
-    // Order number from the durable Postgres counter (financial-year scoped) —
-    // concurrent creates serialize on the counter row, so numbers never collide.
-    const seq         = await nextSequenceValue(this.app.prisma, pharmacyId, "PURCHASE_ORDER");
-    const orderNumber = generatePONumber(seq);
-
     return this.repo.createPO(pharmacyId, userId, {
       orderNumber,
-      supplierId:    input.supplierId,
-      invoiceNo:     input.invoiceNo,
-      notes:         input.notes,
-      expectedDate:  input.expectedDate ? new Date(input.expectedDate) : undefined,
+      supplierId:     input.supplierId,
+      invoiceNo:      input.invoiceNo,
+      notes:          input.notes,
+      expectedDate:   input.expectedDate ? new Date(input.expectedDate) : undefined,
       approvalStatus,
+      sourceUploadId: input.sourceUploadId,
       items,
       subtotal,
       totalGst,
@@ -331,6 +336,7 @@ export class PurchasesService {
       supplierInvoiceNo:   input.supplierInvoiceNo,
       supplierInvoiceDate: input.supplierInvoiceDate ? new Date(input.supplierInvoiceDate) : undefined,
       notes:               input.notes,
+      sourceUploadId:      input.sourceUploadId,
       items,
       subtotal,
       totalGst,

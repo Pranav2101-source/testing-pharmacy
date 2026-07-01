@@ -9,12 +9,13 @@ export class PurchasesRepo {
   // ── Purchase Orders ──────────────────────────────────────────────────────
 
   async createPO(pharmacyId: string, userId: string, data: {
-    orderNumber:   string;
-    supplierId:    string;
-    invoiceNo?:    string;
-    notes?:        string;
-    expectedDate?: Date;
+    orderNumber:    string;
+    supplierId:     string;
+    invoiceNo?:     string;
+    notes?:         string;
+    expectedDate?:  Date;
     approvalStatus: string;
+    sourceUploadId?: string;
     items: {
       medicineId:   string;
       medicineName: string;
@@ -43,29 +44,15 @@ export class PurchasesRepo {
           expectedDate:   data.expectedDate,
           status:         "DRAFT",
           approvalStatus: data.approvalStatus as any,
+          sourceUploadId: data.sourceUploadId,
           subtotal:       data.subtotal,
           totalGst:       data.totalGst,
           totalAmount:    data.totalAmount,
-          items: {
-            create: data.items.map((item) => ({
-              pharmacyId:   pharmacyId,
-              medicineId:   item.medicineId,
-              medicineName: item.medicineName,
-              batchNumber:  item.batchNumber,
-              expiryDate:   item.expiryDate,
-              quantity:     item.quantity,
-              purchaseRate: item.purchaseRate,
-              mrp:          item.mrp,
-              gstRate:      item.gstRate,
-              cgst:         item.cgst,
-              sgst:         item.sgst,
-              amount:       item.amount,
-            })),
-          },
+          items:          data.items as unknown as Prisma.InputJsonValue,
+          itemCount:      data.items.length,
         },
         include: {
           supplier: { select: { id: true, name: true } },
-          items:    true,
         },
       });
 
@@ -121,10 +108,6 @@ export class PurchasesRepo {
       if (!existing) throw AppError.notFound("Purchase order not found");
       if (existing.status !== "DRAFT") throw AppError.unprocessable("Only DRAFT purchase orders can be edited");
 
-      if (data.items) {
-        await tx.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: id } });
-      }
-
       const updated = await tx.purchaseOrder.update({
         where: { id },
         data: {
@@ -135,10 +118,11 @@ export class PurchasesRepo {
           totalGst:     data.totalGst,
           totalAmount:  data.totalAmount,
           ...(data.items ? {
-            items: { create: data.items.map((item) => ({ ...item, pharmacyId })) },
+            items:     data.items as unknown as Prisma.InputJsonValue,
+            itemCount: data.items.length,
           } : {}),
         },
-        include: { supplier: { select: { id: true, name: true } }, items: true },
+        include: { supplier: { select: { id: true, name: true } } },
       });
 
       await tx.auditLog.create({
@@ -168,7 +152,7 @@ export class PurchasesRepo {
           approvedAt:      new Date(),
           rejectionReason: !approved ? rejectionReason : null,
         },
-        include: { supplier: { select: { id: true, name: true } }, items: true },
+        include: { supplier: { select: { id: true, name: true } } },
       });
 
       await tx.auditLog.create({
@@ -203,7 +187,7 @@ export class PurchasesRepo {
       const updated = await tx.purchaseOrder.update({
         where: { id },
         data:  { status: "PENDING" },
-        include: { supplier: { select: { id: true, name: true } }, items: true },
+        include: { supplier: { select: { id: true, name: true } } },
       });
 
       await tx.auditLog.create({
@@ -237,7 +221,7 @@ export class PurchasesRepo {
       const updated = await tx.purchaseOrder.update({
         where: { id },
         data:  { status: "CANCELLED" },
-        include: { supplier: { select: { id: true, name: true } }, items: true },
+        include: { supplier: { select: { id: true, name: true } } },
       });
 
       await tx.auditLog.create({
@@ -253,7 +237,6 @@ export class PurchasesRepo {
       where:   { id, pharmacyId },
       include: {
         supplier: { select: { id: true, name: true, phone: true, email: true } },
-        items:    true,
         grns:     { select: { id: true, grnNumber: true, status: true, createdAt: true, totalAmount: true } },
       },
     });
@@ -288,7 +271,7 @@ export class PurchasesRepo {
         : {}),
     };
 
-    const [items, total] = await Promise.all([
+    const [rawItems, total] = await Promise.all([
       this.db.purchaseOrder.findMany({
         where,
         orderBy: { orderedAt: "desc" },
@@ -296,11 +279,19 @@ export class PurchasesRepo {
         take:    params.limit,
         include: {
           supplier: { select: { id: true, name: true } },
-          _count:   { select: { items: true, grns: true } },
+          _count:   { select: { grns: true } },
         },
       }),
       this.db.purchaseOrder.count({ where }),
     ]);
+
+    // itemCount is a plain denormalized column now (items moved off a child
+    // table), so the response shapes it back into the `_count.items` form
+    // the frontend already expects — no API contract change.
+    const items = rawItems.map((po) => ({
+      ...po,
+      _count: { items: po.itemCount, grns: po._count.grns },
+    }));
 
     return { items, total, page: params.page, limit: params.limit };
   }
@@ -314,6 +305,7 @@ export class PurchasesRepo {
     supplierInvoiceNo?:   string;
     supplierInvoiceDate?: Date;
     notes?:               string;
+    sourceUploadId?:      string;
     items: {
       medicineId:   string;
       medicineName: string;
@@ -364,6 +356,7 @@ export class PurchasesRepo {
           supplierInvoiceNo:   data.supplierInvoiceNo,
           supplierInvoiceDate: data.supplierInvoiceDate,
           notes:               data.notes,
+          sourceUploadId:      data.sourceUploadId,
           status:              "DRAFT",
           subtotal:            data.subtotal,
           totalGst:            data.totalGst,
@@ -640,8 +633,7 @@ export class PurchasesRepo {
           const po = await tx.purchaseOrder.findUnique({
             where:   { id: grn.purchaseOrderId },
             include: {
-              items: { select: { medicineId: true, quantity: true } },
-              grns:  {
+              grns: {
                 where:   { status: "CONFIRMED" },
                 include: { items: { select: { medicineId: true, receivedQty: true, freeQty: true } } },
               },
@@ -659,8 +651,9 @@ export class PurchasesRepo {
                 }
               }
             }
-            const namedPOItems = po.items.filter((i) => i.medicineId);
-            const allCovered   = namedPOItems.length > 0 &&
+            const poItems       = po.items as unknown as Array<{ medicineId: string; quantity: number }>;
+            const namedPOItems  = poItems.filter((i) => i.medicineId);
+            const allCovered    = namedPOItems.length > 0 &&
               namedPOItems.every((i) => (receivedByMedicine.get(i.medicineId) ?? 0) >= i.quantity);
             const newStatus    = allCovered ? "RECEIVED" : "PARTIAL";
             await tx.purchaseOrder.update({

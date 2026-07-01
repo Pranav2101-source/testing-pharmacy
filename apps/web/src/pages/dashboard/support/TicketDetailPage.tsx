@@ -10,6 +10,7 @@ import {
   Calendar, Clock, Tag, ShieldCheck, ExternalLink, Activity
 } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { ListSkeleton } from "@/components/Skeleton";
 import { cn } from "@/lib/utils";
 import { isSupportStaff, isPlatformAdmin, getStoredUser } from "@/lib/auth";
 import { useToast } from "@/hooks/useToast";
@@ -645,11 +646,8 @@ export default function TicketDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full bg-slate-50">
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 className="w-7 h-7 text-blue-500 animate-spin" />
-          <p className="text-[13px] text-slate-400">Loading ticket…</p>
-        </div>
+      <div className="h-full bg-slate-50">
+        <ListSkeleton rows={8} />
       </div>
     );
   }

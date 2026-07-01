@@ -178,6 +178,9 @@ export class BillingService {
 
       const gstRate = overrideGstRate.get(batch.medicine.id) ?? batch.medicine.gstRate;
       const gst = calcGstFromMrp(batch.mrp, item.quantity, item.discount, gstRate, isInterstate);
+      const location = batch.shelf
+        ? `${batch.shelf.rack.code}/${batch.shelf.code}`
+        : (batch.location ?? null);
 
       lineItems.push({
         inventoryId:   item.inventoryId,
@@ -196,6 +199,7 @@ export class BillingService {
         sgst:          gst.sgst,
         igst:          gst.igst,
         amount:        gst.totalAmount,
+        location,
       });
     }
 
@@ -295,6 +299,7 @@ export class BillingService {
             igst:          li.igst,
             taxableAmount: li.taxableAmount,
             amount:        li.amount,
+            location:      li.location,
           })),
         },
       },
@@ -507,12 +512,13 @@ export class BillingService {
   ) {
     // Prisma's Json type requires an explicit cast — the caller guarantees the
     // shape is valid because it was parsed through invoiceSettingsConfigSchema.
-    const json = config as Parameters<typeof this.app.prisma.invoiceSettings.upsert>[0]["create"]["settings"];
+    const json = config as Parameters<typeof this.app.prisma.pharmacy.update>[0]["data"]["invoiceSettings"];
 
-    const result = await this.app.prisma.invoiceSettings.upsert({
-      where:  { pharmacyId },
-      update: { settings: json },
-      create: { pharmacyId, settings: json },
+    // invoiceSettings is now a column on Pharmacy (was its own 1:1 table).
+    const result = await this.app.prisma.pharmacy.update({
+      where:  { id: pharmacyId },
+      data:   { invoiceSettings: json },
+      select: { invoiceSettings: true },
     });
 
     await this.app.prisma.auditLog.create({

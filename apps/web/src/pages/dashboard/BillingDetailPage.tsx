@@ -5,9 +5,10 @@ import { Link, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   ArrowLeft, Printer, XCircle, Loader2, AlertCircle,
-  User, Phone, Stethoscope, CreditCard, Calendar, RefreshCcw,
+  User, Phone, Stethoscope, CreditCard, Calendar, RefreshCcw, MapPin,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { ListSkeleton } from "@/components/Skeleton";
 import { cn } from "@/lib/utils";
 import { useInvoicePrintConfig } from "@/lib/useInvoicePrintConfig";
 import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
@@ -23,6 +24,7 @@ type InvoiceItem = {
   hsnCode: string | null;
   batchNumber: string;
   expiryDate: string;
+  location: string | null;
   quantity: number;
   mrp: number;
   rate: number;
@@ -139,12 +141,7 @@ export default function BillDetailPage() {
 
   // ── Loading ────────────────────────────────────────────────
   if (loading) {
-    return (
-      <div className="flex flex-col h-full items-center justify-center bg-white">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-400" />
-        <p className="text-slate-400 text-[13px] mt-3">Loading invoice…</p>
-      </div>
-    );
+    return <ListSkeleton rows={8} />;
   }
 
   // ── Error ──────────────────────────────────────────────────
@@ -408,7 +405,15 @@ export default function BillDetailPage() {
                   <tr key={item.id} className="hover:bg-slate-50/60 transition-colors">
                     <td className="px-4 py-2.5 text-slate-400">{i + 1}</td>
                     <td className="px-4 py-2.5 font-medium text-slate-800">{item.medicineName}</td>
-                    <td className="px-4 py-2.5 text-slate-600 font-mono text-[11px]">{item.batchNumber}</td>
+                    <td className="px-4 py-2.5">
+                      <p className="text-slate-600 font-mono text-[11px]">{item.batchNumber}</p>
+                      {item.location && (
+                        <div className="flex items-center gap-0.5 mt-0.5">
+                          <MapPin className="w-2.5 h-2.5 text-blue-400 flex-shrink-0" />
+                          <p className="text-[10px] text-blue-500 font-semibold">{item.location}</p>
+                        </div>
+                      )}
+                    </td>
                     <td className="px-4 py-2.5 text-slate-600">
                       {new Date(item.expiryDate).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}
                     </td>

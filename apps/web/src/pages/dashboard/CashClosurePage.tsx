@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ListSkeleton } from "@/components/Skeleton";
 import {
   Banknote, Plus, Loader2, AlertTriangle,
   ChevronLeft, ChevronRight, X, Lock, AlertCircle,
@@ -246,7 +247,7 @@ export default function CashClosurePage() {
       {/* Table */}
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
         {isLoading ? (
-          <div className="flex items-center justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-blue-300" /></div>
+          <ListSkeleton />
         ) : closures.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-slate-400">
             <Banknote className="w-10 h-10 text-slate-200 mb-3" strokeWidth={1.4} />

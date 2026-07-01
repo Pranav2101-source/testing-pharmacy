@@ -82,7 +82,7 @@ export function POSharePanel({
     const ok = await markPending();
     if (!ok) return;
     const printPO: PrintPO = {
-      orderNumber: po.orderNumber, orderedAt: po.orderedAt,
+      orderNumber: po.orderNumber, orderedAt: po.orderedAt, status: "PENDING",
       expectedDate: po.expectedDate, invoiceNo: po.invoiceNo, notes: po.notes,
       subtotal: po.subtotal, totalGst: po.totalGst, totalAmount: po.totalAmount,
       supplier: po.supplier,
@@ -223,7 +223,7 @@ export function POSharePanel({
                     </div>
                     <div>
                       <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Total</p>
-                      <span className="text-[13px] font-bold text-slate-800">{currency(po.totalAmount)}</span>
+                      <span className="text-[13px] font-bold text-slate-800">{po.totalAmount > 0 ? currency(po.totalAmount) : <span className="text-slate-300 font-normal">—</span>}</span>
                     </div>
                     <div>
                       <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Expected</p>

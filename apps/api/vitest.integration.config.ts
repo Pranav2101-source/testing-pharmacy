@@ -9,8 +9,6 @@ export default defineConfig({
     globalSetup:  ["src/test/globalSetup.ts"],
     testTimeout:  30_000,   // DB ops can be slow on first run
     hookTimeout:  120_000,  // migrations on a cold container take time
-    sequence: {
-      concurrent: false,    // run files one at a time — avoids inter-test DB races
-    },
+    fileParallelism: false,   // run test files sequentially — avoids Serializable SSI races across files
   },
 });

@@ -98,7 +98,18 @@ export class AuthRepo {
         passwordHash:                newPasswordHash,
         passwordResetToken:          null,
         passwordResetTokenExpiresAt: null,
-        tokenVersion:                { increment: 1 }, // invalidate all existing sessions
+        tokenVersion:                { increment: 1 },
+      },
+    });
+  }
+
+  /** Change password in-session: update hash and rotate tokenVersion to invalidate all sessions. */
+  async updatePasswordAndRotate(userId: string, newPasswordHash: string): Promise<void> {
+    await this.db.user.update({
+      where: { id: userId },
+      data:  {
+        passwordHash: newPasswordHash,
+        tokenVersion: { increment: 1 },
       },
     });
   }

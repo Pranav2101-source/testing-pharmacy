@@ -8,12 +8,15 @@ import {
   Package2, Flame, TrendingDown, Archive,
   ShoppingCart, FileCheck, CheckCircle2,
   BadgePercent, BookOpen, ArrowUpDown, Banknote,
+  ClipboardList, ArrowRight,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
+import { ListSkeleton } from "@/components/Skeleton";
 import { api } from "@/lib/api-client";
 
 // ─── Types ────────────────────────────────────────────────────────
-type ReportTab       = "sales" | "inventory" | "purchases" | "compliance";
+type ReportTab       = "sales" | "inventory" | "purchases" | "compliance" | "audit";
 type ComplianceSubTab = "gst" | "hsn-summary" | "schedule-h";
 type Period          = "today" | "week" | "month" | "custom";
 
@@ -326,7 +329,7 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
           />
         </div>
         {fastLoading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+          <ListSkeleton rows={5} />
         ) : topMedicines.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-slate-400">
             <Flame className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -436,7 +439,7 @@ function InventoryTab() {
         ) : undefined}
       >
         {expiryLoading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+          <ListSkeleton rows={5} />
         ) : expiryItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-slate-400">
             <CheckCircle2 className="w-8 h-8 text-emerald-200 mb-2" strokeWidth={1.4} />
@@ -513,7 +516,7 @@ function InventoryTab() {
         }
       >
         {deadLoading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+          <ListSkeleton rows={5} />
         ) : deadItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-slate-400">
             <CheckCircle2 className="w-8 h-8 text-emerald-200 mb-2" strokeWidth={1.4} />
@@ -549,7 +552,7 @@ function InventoryTab() {
       {/* Stock Valuation */}
       <Section title="Stock Valuation" icon={Banknote} iconBg="bg-emerald-50" iconColor="text-emerald-600">
         {valLoading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+          <ListSkeleton rows={5} />
         ) : (
           <div>
             {/* Summary bar */}
@@ -661,7 +664,7 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
           <PeriodSelector period={period} onChange={setPeriod} customFrom={customFrom} customTo={customTo} onCustomChange={(f,t) => { setCustomFrom(f); setCustomTo(t); }} />
         </div>
         {loading ? (
-          <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+          <ListSkeleton rows={5} />
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-slate-400">
             <ShoppingCart className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -815,7 +818,7 @@ function GstReportSection() {
       }
     >
       {loading ? (
-        <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+        <ListSkeleton rows={5} />
       ) : !data ? (
         <div className="flex flex-col items-center justify-center py-12 text-slate-400">
           <Receipt className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -920,7 +923,7 @@ function HsnSummarySection() {
       }
     >
       {loading ? (
-        <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+        <ListSkeleton rows={5} />
       ) : !rows ? (
         <div className="flex flex-col items-center justify-center py-12 text-slate-400">
           <BadgePercent className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -1051,7 +1054,7 @@ function ScheduleHSection() {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-blue-300" /></div>
+        <ListSkeleton rows={5} />
       ) : items.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-slate-400">
           <BookOpen className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -1105,19 +1108,149 @@ function ScheduleHSection() {
   );
 }
 
+// ─── Stock Audit Tab ──────────────────────────────────────────────
+type AuditSession = {
+  id: string; sessionNumber: string; approvedAt: string;
+  totalItems: number; itemsWithVariance: number;
+  gainValue: number; lossValue: number; netValue: number;
+};
+type AuditReport = {
+  sessions: AuditSession[];
+  totals: { gainValue: number; lossValue: number; netValue: number };
+};
+
+function AuditTab() {
+  const [data,    setData]    = useState<AuditReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get("/stock-audit/report")
+      .then(({ data: r }) => setData(r.data))
+      .catch((e: any) => setError(e?.message ?? "Failed to load audit report"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  function exportCsv() {
+    if (!data) return;
+    downloadCsv("stock-audit-report.csv", [
+      ["Session", "Approved Date", "Items", "Variances", "Surplus (₹)", "Shrinkage (₹)", "Net (₹)"],
+      ...data.sessions.map(s => [
+        s.sessionNumber,
+        fmtDate(s.approvedAt),
+        String(s.totalItems),
+        String(s.itemsWithVariance),
+        s.gainValue.toFixed(2),
+        s.lossValue.toFixed(2),
+        s.netValue.toFixed(2),
+      ]),
+    ]);
+  }
+
+  return (
+    <Section title="Stock Audit History" icon={ClipboardList} iconBg="bg-blue-50" iconColor="text-blue-600"
+      action={
+        <button onClick={exportCsv} disabled={!data || data.sessions.length === 0}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-[12px] font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40 transition-colors">
+          <Download className="w-3.5 h-3.5" /> Export CSV
+        </button>
+      }>
+      {loading ? (
+        <ListSkeleton rows={4} />
+      ) : error ? (
+        <div className="flex items-center gap-2 p-4 text-red-600 text-[13px]">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0" /> {error}
+        </div>
+      ) : !data || data.sessions.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+          <ClipboardList className="w-10 h-10 text-slate-200 mb-3" strokeWidth={1.3} />
+          <p className="text-[14px] font-semibold text-slate-500">No approved audits yet</p>
+          <p className="text-[12px] text-slate-400 mt-1">Completed and approved audits will appear here with P&L analysis.</p>
+          <Link to="/dashboard/inventory?tab=audit"
+            className="mt-4 flex items-center gap-1.5 text-[12px] font-semibold text-blue-600 hover:text-blue-700">
+            Start a stock audit <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {/* KPI row */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[
+              { label: "Audits done",    value: String(data.sessions.length),        icon: ClipboardList, color: "bg-blue-50 text-blue-600"   },
+              { label: "Total surplus",  value: "₹" + fmt(data.totals.gainValue),    icon: TrendingUp,    color: "bg-emerald-50 text-emerald-600" },
+              { label: "Total shrinkage",value: "₹" + fmt(data.totals.lossValue),    icon: TrendingDown,  color: "bg-red-50 text-red-600"      },
+              {
+                label: "Net P&L",
+                value: (data.totals.netValue >= 0 ? "+" : "") + "₹" + fmt(data.totals.netValue),
+                icon:  IndianRupee,
+                color: data.totals.netValue >= 0 ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600",
+              },
+            ].map(k => (
+              <div key={k.label} className="bg-white border border-slate-100 rounded-xl p-3 flex items-center gap-3">
+                <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0", k.color)}>
+                  <k.icon className="w-4 h-4" strokeWidth={1.8} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">{k.label}</p>
+                  <p className="text-[15px] font-black text-slate-800 tabular-nums leading-tight">{k.value}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Session table */}
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+            <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto_auto] gap-3 px-4 py-2 bg-slate-50/70 border-b border-slate-100">
+              {["Session", "Date", "Items", "Variances", "Surplus", "Shrinkage", "Net"].map(h => (
+                <span key={h} className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">{h}</span>
+              ))}
+            </div>
+            <div className="divide-y divide-slate-50">
+              {data.sessions.map(s => (
+                <Link key={s.id} to={`/dashboard/stock-audit/${s.id}`}
+                  className="grid grid-cols-[1fr_auto_auto_auto_auto_auto_auto] gap-3 items-center px-4 py-2.5 hover:bg-slate-50/60 transition-colors">
+                  <span className="text-[12px] font-bold text-blue-700 font-mono">{s.sessionNumber}</span>
+                  <span className="text-[11px] text-slate-500 whitespace-nowrap">{fmtDate(s.approvedAt)}</span>
+                  <span className="text-[12px] text-slate-700 tabular-nums text-right">{s.totalItems}</span>
+                  <span className={cn("text-[12px] tabular-nums text-right font-semibold",
+                    s.itemsWithVariance > 0 ? "text-amber-600" : "text-slate-400")}>
+                    {s.itemsWithVariance}
+                  </span>
+                  <span className="text-[12px] text-emerald-600 tabular-nums text-right font-semibold">
+                    {s.gainValue > 0 ? "₹" + fmt(s.gainValue) : "—"}
+                  </span>
+                  <span className="text-[12px] text-red-500 tabular-nums text-right font-semibold">
+                    {s.lossValue > 0 ? "₹" + fmt(s.lossValue) : "—"}
+                  </span>
+                  <span className={cn("text-[12px] tabular-nums text-right font-bold",
+                    s.netValue > 0 ? "text-emerald-600" : s.netValue < 0 ? "text-red-500" : "text-slate-400")}>
+                    {s.netValue === 0 ? "—" : (s.netValue > 0 ? "+" : "") + "₹" + fmt(s.netValue)}
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </Section>
+  );
+}
+
 // ─── Main Tabs config ─────────────────────────────────────────────
-const MAIN_TABS: { id: ReportTab; label: string; icon: React.ElementType; sub: string }[] = [
-  { id: "sales",      label: "Sales",      icon: TrendingUp,  sub: "Revenue & top medicines"  },
-  { id: "inventory",  label: "Inventory",  icon: Package2,    sub: "Expiry, dead stock, value" },
-  { id: "purchases",  label: "Purchases",  icon: ShoppingCart,sub: "Cost & margin analysis"    },
-  { id: "compliance", label: "Compliance", icon: FileCheck,   sub: "GST & Schedule H"          },
+const MAIN_TABS: { id: ReportTab; label: string; icon: React.ElementType; sub: string; ownerOnly?: boolean }[] = [
+  { id: "sales",      label: "Sales",      icon: TrendingUp,    sub: "Revenue & top medicines"   },
+  { id: "inventory",  label: "Inventory",  icon: Package2,      sub: "Expiry, dead stock, value"  },
+  { id: "purchases",  label: "Purchases",  icon: ShoppingCart,  sub: "Cost & margin analysis",    ownerOnly: true },
+  { id: "compliance", label: "Compliance", icon: FileCheck,     sub: "GST & Schedule H"           },
+  { id: "audit",      label: "Stock Audit",icon: ClipboardList, sub: "Approved audit P&L history", ownerOnly: true },
 ];
 
 // ─── Page ─────────────────────────────────────────────────────────
 export default function ReportsPage() {
   const role = useRef(getStoredUser()?.role ?? "CASHIER").current;
   const isManagerUp = role === "OWNER" || role === "MANAGER";
-  const visibleTabs = isManagerUp ? MAIN_TABS : MAIN_TABS.filter(t => t.id !== "purchases");
+  const visibleTabs = isManagerUp ? MAIN_TABS : MAIN_TABS.filter(t => !t.ownerOnly);
 
   // Deep-link support — e.g. /dashboard/reports?tab=purchases from Purchase page Quick Actions
   const [searchParams] = useSearchParams();
@@ -1181,6 +1314,7 @@ export default function ReportsPage() {
             />
           )}
           {tab === "compliance" && <ComplianceTab />}
+          {tab === "audit"      && <AuditTab />}
         </div>
 
       </div>

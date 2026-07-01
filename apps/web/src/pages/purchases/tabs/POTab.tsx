@@ -1,14 +1,15 @@
 import { useState } from "react";
-import { Loader2, RefreshCw, Plus, FileText, Check, X, Send, Building2 } from "lucide-react";
+import { RefreshCw, Plus, FileText, Check, X, Send, Building2, Paperclip } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/hooks/useDebounce";
 import { queryKeys } from "@/lib/queryKeys";
+import { TableSkeletonRows } from "@/components/Skeleton";
 import type { PurchaseOrder, Supplier } from "../types";
 import { PO_STATUS, APPROVAL_STATUS } from "../types";
-import { fmtDate, currency } from "../utils";
+import { fmtDate, currency, viewSourceUpload } from "../utils";
 import { FilterBar } from "../components/FilterBar";
 import { Pagination } from "../components/Pagination";
 import { EmptyState } from "../components/EmptyState";
@@ -16,6 +17,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { ActionBtn } from "../modals/shared";
 import { CreatePOModal } from "../modals/CreatePOModal";
 import { POSharePanel } from "../panels/POSharePanel";
+import { openPOPrintWindow } from "../utils/poPrint";
 
 export function POTab({ suppliers }: { suppliers: Supplier[] }) {
   const [page, setPage]           = useState(1);
@@ -28,6 +30,7 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
   const [actionId, setAction]     = useState<string | null>(null);
   const [approveId, setApproveId] = useState<string | null>(null);
   const [sharePoId, setSharePoId] = useState<string | null>(null);
+  const [pdfId, setPdfId]         = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const dSearch = useDebounce(search, 350);
@@ -69,6 +72,33 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
     catch (e: any) { alert(e?.response?.data?.error ?? "Failed"); } finally { setApproveId(null); }
   }
 
+  // Generate the actual Purchase Order document (not the source attachment the PO
+  // was uploaded from). Fetches the full PO (with line items) + pharmacy header,
+  // then opens the print-ready PO window.
+  async function downloadPOPdf(id: string) {
+    setPdfId(id);
+    try {
+      const [poRes, phRes] = await Promise.all([
+        api.get(`/purchases/orders/${id}`),
+        api.get("/pharmacy"),
+      ]);
+      const po = poRes.data.data;
+      openPOPrintWindow(
+        {
+          orderNumber: po.orderNumber, orderedAt: po.orderedAt, status: po.status,
+          expectedDate: po.expectedDate, invoiceNo: po.invoiceNo, notes: po.notes,
+          subtotal: po.subtotal, totalGst: po.totalGst, totalAmount: po.totalAmount,
+          supplier: po.supplier, items: po.items ?? [],
+        },
+        phRes.data.data,
+      );
+    } catch {
+      alert("Could not generate the PO document. Please try again.");
+    } finally {
+      setPdfId(null);
+    }
+  }
+
   return (
     <div className="flex flex-col h-full">
       <FilterBar search={search} onSearch={(v) => { setSearch(v); setPage(1); }}
@@ -100,7 +130,7 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={11} className="py-24 text-center"><Loader2 className="w-8 h-8 animate-spin text-blue-400 mx-auto" /></td></tr>
+              <TableSkeletonRows columns={11} widths={["w-6","w-20","w-28","w-16","w-14","w-14","w-8","w-16","w-16","w-16","w-24"]} />
             ) : orders.length === 0 ? (
               <tr><td colSpan={11}>
                 <EmptyState icon={FileText} title="No purchase orders found"
@@ -132,11 +162,21 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
                   )}
                 </td>
                 <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{po._count.items}</td>
-                <td className="px-4 py-3 text-[13px] font-bold text-slate-900 tabular-nums">{currency(po.totalAmount)}</td>
+                <td className="px-4 py-3 text-[13px] font-bold text-slate-900 tabular-nums">
+                  {po.totalAmount > 0 ? currency(po.totalAmount) : <span className="text-slate-300 font-normal" title="No purchase rates entered — added when goods are received (GRN)">—</span>}
+                </td>
                 <td className="px-4 py-3 text-[12px] text-slate-400">{fmtDate(po.expectedDate)}</td>
                 <td className="px-4 py-3 text-[12px] text-slate-500">{fmtDate(po.orderedAt)}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {/* The Purchase Order document itself (print-ready). */}
+                    <ActionBtn onClick={() => downloadPOPdf(po.id)} disabled={pdfId === po.id}
+                      icon={FileText} label="PDF" cls="text-blue-600 border-blue-200 hover:bg-blue-50" />
+                    {/* The source file this PO was drafted from (e.g. a supplier quote), if any. */}
+                    {po.sourceUploadId && (
+                      <ActionBtn onClick={() => viewSourceUpload(po.sourceUploadId!)} disabled={false}
+                        icon={Paperclip} label="File" cls="text-slate-600 border-slate-200 hover:bg-slate-50" />
+                    )}
                     {po.approvalStatus === "PENDING_APPROVAL" && (
                       <>
                         <ActionBtn onClick={() => approvePO(po.id, true)} disabled={approveId === po.id}

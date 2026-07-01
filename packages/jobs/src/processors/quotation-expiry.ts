@@ -1,6 +1,6 @@
 import type { Job } from "pg-boss";
 import { prisma } from "@pharmacy/database";
-import { notifyOwners } from "@pharmacy/mailer";
+import { inAppNotify } from "@pharmacy/mailer";
 
 async function processPharmacy(pharmacyId: string): Promise<void> {
   const pharmacy = await prisma.pharmacy.findUnique({
@@ -34,9 +34,9 @@ async function processPharmacy(pharmacyId: string): Promise<void> {
     })
     .join("\n");
 
-  await notifyOwners(prisma, pharmacy.id, {
-    subject: `⏰ ${expiring.length} Quotation(s) Expiring Soon — ${pharmacy.name}`,
-    message: `${expiring.length} quotation(s) expiring within 2 days:\n\n${lines}\n\nConvert to Purchase Order before they expire.`,
+  await inAppNotify(prisma, pharmacy.id, {
+    subject: `⏰ ${expiring.length} quotation(s) expiring within 2 days`,
+    message: `${lines}\n\nConvert to a Purchase Order before they expire.`,
   });
 
   console.info(`[quotation-expiry][${pharmacy.name}] sent alert: ${expiring.length} quotations`);

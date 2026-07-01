@@ -3,6 +3,7 @@ import { AppError } from "../../lib/AppError.js"
 import { StockAuditRepo } from "./stock-audit.repo.js"
 import type {
   ApproveSessionInput,
+  BatchUpdateItemsInput,
   CompleteSessionInput,
   CreateSessionInput,
   ListSessionsQuery,
@@ -32,6 +33,22 @@ export class StockAuditService {
 
   async updateItem(sessionId: string, itemId: string, pharmacyId: string, input: UpdateItemInput) {
     return this.repo.updateItem(sessionId, itemId, pharmacyId, input)
+  }
+
+  async batchUpdateItems(sessionId: string, pharmacyId: string, input: BatchUpdateItemsInput) {
+    return this.repo.batchUpdateItems(sessionId, pharmacyId, input)
+  }
+
+  async reopenSession(id: string, pharmacyId: string) {
+    return this.repo.reopenSession(id, pharmacyId)
+  }
+
+  async getOverview(pharmacyId: string) {
+    return this.repo.getOverview(pharmacyId)
+  }
+
+  async getReport(pharmacyId: string) {
+    return this.repo.getReport(pharmacyId)
   }
 
   async completeSession(id: string, pharmacyId: string, userId: string, input: CompleteSessionInput) {

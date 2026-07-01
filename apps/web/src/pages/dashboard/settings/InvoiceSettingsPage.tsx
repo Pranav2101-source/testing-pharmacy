@@ -5,6 +5,7 @@ import {
   AlertTriangle, Eye, ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ListSkeleton } from "@/components/Skeleton";
 import { api } from "@/lib/api-client";
 import { defaultInvoiceSettings } from "@pharmacy/types";
 import type { InvoiceSettingsConfig, PaperSize, InvoiceTheme, CustomField } from "@pharmacy/types";
@@ -576,11 +577,7 @@ export default function InvoiceSettingsPage() {
   // ─── Render ───────────────────────────────────────────────────────────────
 
   if (loading) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <Loader2 className="w-6 h-6 animate-spin text-blue-400" />
-      </div>
-    );
+    return <ListSkeleton rows={8} />;
   }
 
   return (

@@ -232,6 +232,7 @@ export class MedicinesRepo {
             mrp:              true,
             purchaseRate:     true,
             location:         true,
+            shelf:            { select: { code: true, rack: { select: { code: true } } } },
           },
         },
       },

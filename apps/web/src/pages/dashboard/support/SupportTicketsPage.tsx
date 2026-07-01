@@ -9,6 +9,7 @@ import {
   Download, ChevronDown, FileSpreadsheet, FileText,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { ListSkeleton } from "@/components/Skeleton";
 import { cn } from "@/lib/utils";
 import { isSupportStaff, isPlatformAdmin } from "@/lib/auth";
 import { useToast } from "@/hooks/useToast";
@@ -410,9 +411,7 @@ export default function SupportTicketsPage() {
       {/* ── Table ── */}
       <div className="flex-1 overflow-auto">
         {isLoading ? (
-          <div className="flex items-center justify-center h-64">
-            <Loader2 className="w-6 h-6 text-blue-500 animate-spin" />
-          </div>
+          <ListSkeleton />
         ) : error ? (
           <div className="flex flex-col items-center justify-center h-64 gap-3">
             <div className="w-12 h-12 rounded-2xl bg-red-50 flex items-center justify-center">

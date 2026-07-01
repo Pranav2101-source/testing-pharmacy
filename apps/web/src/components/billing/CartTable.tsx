@@ -1,15 +1,17 @@
 "use client";
 
-import { useCallback, memo } from "react";
+import { useCallback, memo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
-import { X, AlertTriangle } from "lucide-react";
+import { X, AlertTriangle, MapPin } from "lucide-react";
 import { useBillingStore, type CartItem } from "./useBillingStore";
 import { EmptyBillState } from "./EmptyBillState";
+import { RecentItemsCard } from "./RecentItemsCard";
+import { BatchPickerDialog, type InventoryBatch, expiryStatus, getLocationLabel } from "./BatchPickerDialog";
+import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 // Column grid — 11 cols: ItemName | Pack | Batch+Loc | Expiry | MRP | Qty | D% | Rate | GST% | Amount | Del
-// Loc folded into Batch cell as a sub-line — saves 58px on tight screens
 const COL = "grid-cols-[minmax(200px,1fr)_80px_104px_72px_80px_72px_64px_90px_64px_104px_38px]";
 
 const CONTROLLED_BADGE: Record<string, string> = {
@@ -58,15 +60,16 @@ function SkeletonRow({ idx }: { idx: number }) {
 
 // ─── Cart Row ─────────────────────────────────────────────────────
 const CartRow = memo(function CartRow({
-  item, idx, hasConflict, onKeyNav, onRemove, onQtyChange, onDiscountChange,
+  item, idx, hasConflict, onKeyNav, onRemove, onQtyChange, onDiscountChange, onSwapBatch,
 }: {
   item: CartItem; idx: number; hasConflict: boolean;
   onKeyNav:         (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => void;
   onRemove:         (id: string) => void;
   onQtyChange:      (id: string, qty: number) => void;
   onDiscountChange: (id: string, discount: number) => void;
+  onSwapBatch:      (item: CartItem) => void;
 }) {
-  const now = Date.now();
+  const now  = Date.now();
   const expiry = new Date(item.expiryDate).getTime();
   const isExpired      = expiry < now;
   const isExpiringSoon = !isExpired && expiry < now + 90 * 86400_000;
@@ -131,16 +134,40 @@ const CartRow = memo(function CartRow({
         </div>
       </div>
 
-      {/* Unit/Pack */}
+      {/* Pack */}
       <span className={cn("px-2.5 py-2 text-[13px] text-left truncate", item.packSize ? "text-slate-600 font-medium" : "text-slate-300")}>
         {item.packSize ?? "—"}
       </span>
 
-      {/* Batch + Loc combined */}
+      {/* Batch + Loc + stock — click opens batch picker */}
       <div className="px-2.5 py-2 min-w-0 text-right">
-        <p className="text-[12px] text-slate-600 font-mono truncate">{item.batchNumber}</p>
-        {item.location && (
-          <p className="text-[10px] text-blue-500 font-semibold truncate mt-0.5">{item.location}</p>
+        <button
+          onClick={() => onSwapBatch(item)}
+          title="Change batch"
+          className="text-[12px] font-mono font-semibold text-slate-700 hover:text-blue-600 transition-colors"
+        >
+          {item.batchNumber}
+        </button>
+        {item.location ? (
+          <div className="flex items-center justify-end gap-0.5 mt-0.5">
+            <MapPin className="w-2.5 h-2.5 text-blue-400 flex-shrink-0" />
+            <p className="text-[10px] text-blue-500 font-semibold truncate">{item.location}</p>
+          </div>
+        ) : (
+          <p className="text-[9px] text-slate-300 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            No location
+          </p>
+        )}
+        {item.availableStock != null && (
+          <p className={cn(
+            "text-[10px] font-semibold mt-0.5",
+            item.availableStock === 0 ? "text-red-500"   :
+            item.availableStock <= 5  ? "text-red-500"   :
+            item.availableStock <= 20 ? "text-amber-500" :
+            "text-emerald-600"
+          )}>
+            {item.availableStock} in stock
+          </p>
         )}
       </div>
 
@@ -203,7 +230,7 @@ const CartRow = memo(function CartRow({
         />
       </div>
 
-      {/* D.Price */}
+      {/* Rate */}
       <span className="px-2.5 py-2 text-[13px] text-slate-600 text-right tabnum">
         {item.rate.toFixed(2)}
       </span>
@@ -213,7 +240,7 @@ const CartRow = memo(function CartRow({
         {item.gstRate}%
       </span>
 
-      {/* Amount — CSS pop replaces motion.span key remount */}
+      {/* Amount */}
       <span
         key={item.amount}
         className="px-2.5 py-2 text-[15px] font-black text-slate-900 text-right tabnum block animate-amount-pop"
@@ -221,7 +248,7 @@ const CartRow = memo(function CartRow({
         {item.amount.toFixed(2)}
       </span>
 
-      {/* Delete — CSS scale replaces motion.button whileHover/whileTap */}
+      {/* Delete */}
       <div className="flex justify-center">
         <button
           onClick={() => onRemove(item.inventoryId)}
@@ -243,12 +270,49 @@ export function CartTableRows({
   showSkeleton?: boolean;
   conflictInventoryIds?: Set<string>;
 }) {
-  // Selectors: CartTableRows only subscribes to items + action callbacks.
-  // Meta changes (payment mode, customer name) will NOT trigger a re-render here.
   const items          = useBillingStore((s) => s.items);
   const removeItem     = useBillingStore((s) => s.removeItem);
   const updateQty      = useBillingStore((s) => s.updateQty);
   const updateDiscount = useBillingStore((s) => s.updateDiscount);
+  const replaceItem    = useBillingStore((s) => s.replaceItem);
+
+  const [swapTarget,  setSwapTarget]  = useState<CartItem | null>(null);
+  const [swapBatches, setSwapBatches] = useState<InventoryBatch[]>([]);
+
+  const handleSwapBatch = useCallback(async (item: CartItem) => {
+    setSwapTarget(item);
+    try {
+      const res = await api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
+        params: { search: item.medicineName, inStock: false, limit: 30 },
+      });
+      const batches = (res.data?.data?.items ?? [])
+        .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+      setSwapBatches(batches);
+    } catch {
+      setSwapTarget(null);
+    }
+  }, []);
+
+  const handleBatchSelect = useCallback((batch: InventoryBatch) => {
+    if (!swapTarget) return;
+    replaceItem(swapTarget.inventoryId, {
+      inventoryId:    batch.id,
+      medicineName:   batch.medicine.name,
+      hsnCode:        batch.medicine.hsnCode,
+      schedule:       swapTarget.schedule,
+      packSize:       swapTarget.packSize,
+      location:       getLocationLabel(batch) ?? undefined,
+      batchNumber:    batch.batchNumber,
+      expiryDate:     batch.expiryDate,
+      mrp:            batch.mrp,
+      quantity:       swapTarget.quantity,
+      discount:       swapTarget.discount,
+      gstRate:        batch.medicine.gstRate,
+      availableStock: batch.quantity - (batch.reservedQuantity ?? 0),
+    });
+    setSwapTarget(null);
+    setSwapBatches([]);
+  }, [swapTarget, replaceItem]);
 
   const handleKeyNav = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => {
@@ -285,26 +349,49 @@ export function CartTableRows({
     );
   }
 
-  if (items.length === 0) return <EmptyBillState />;
+  if (items.length === 0) {
+    return (
+      <div className="flex-1 overflow-y-auto flex flex-col">
+        <EmptyBillState />
+        <div className="px-4 pb-6 w-full max-w-sm mx-auto">
+          <RecentItemsCard />
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="overflow-y-auto overflow-x-auto flex-1">
-      <div className="min-w-max">
-        <AnimatePresence initial={false}>
-          {items.map((item, idx) => (
-            <CartRow
-              key={item.inventoryId}
-              item={item}
-              idx={idx}
-              hasConflict={conflictInventoryIds.has(item.inventoryId)}
-              onKeyNav={handleKeyNav}
-              onRemove={removeItem}
-              onQtyChange={updateQty}
-              onDiscountChange={updateDiscount}
-            />
-          ))}
-        </AnimatePresence>
+    <>
+      <div className="overflow-y-auto overflow-x-auto flex-1">
+        <div className="min-w-max">
+          <AnimatePresence initial={false}>
+            {items.map((item, idx) => (
+              <CartRow
+                key={item.inventoryId}
+                item={item}
+                idx={idx}
+                hasConflict={conflictInventoryIds.has(item.inventoryId)}
+                onKeyNav={handleKeyNav}
+                onRemove={removeItem}
+                onQtyChange={updateQty}
+                onDiscountChange={updateDiscount}
+                onSwapBatch={handleSwapBatch}
+              />
+            ))}
+          </AnimatePresence>
+        </div>
       </div>
-    </div>
+
+      <AnimatePresence>
+        {swapTarget && swapBatches.length > 0 && (
+          <BatchPickerDialog
+            medicineName={swapTarget.medicineName}
+            batches={swapBatches}
+            onSelect={handleBatchSelect}
+            onClose={() => { setSwapTarget(null); setSwapBatches([]); }}
+          />
+        )}
+      </AnimatePresence>
+    </>
   );
 }

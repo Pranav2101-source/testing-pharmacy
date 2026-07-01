@@ -39,7 +39,6 @@ const StaffPage           = lazy(() => import("./pages/dashboard/StaffPage"));
 const GinniPage           = lazy(() => import("./pages/dashboard/GinniPage"));
 const IntegrationPage     = lazy(() => import("./pages/dashboard/IntegrationPage"));
 const LocationsPage       = lazy(() => import("./pages/dashboard/LocationsPage"));
-const StockAuditPage      = lazy(() => import("./pages/dashboard/StockAuditPage"));
 const StockAuditDetailPage = lazy(() => import("./pages/dashboard/StockAuditDetailPage"));
 const CalendarPage         = lazy(() => import("./pages/dashboard/CalendarPage"));
 const CustomersPage        = lazy(() => import("./pages/dashboard/CustomersPage"));
@@ -61,14 +60,14 @@ const TicketDetailPage     = lazy(() => import("./pages/dashboard/support/Ticket
 const AgentsPage           = lazy(() => import("./pages/dashboard/support/AgentsPage"));
 
 // ─── Settings ─────────────────────────────────────────────────
-const PharmacyProfilePage    = lazy(() => import("./pages/dashboard/settings/PharmacyProfilePage"));
+const ProfilePage            = lazy(() => import("./pages/dashboard/settings/ProfilePage"));
 const DocumentsPage          = lazy(() => import("./pages/dashboard/settings/DocumentsPage"));
 const StaffSettingsPage      = lazy(() => import("./pages/dashboard/settings/StaffSettingsPage"));
 const PlansPage              = lazy(() => import("./pages/dashboard/settings/PlansPage"));
 const ChangePasswordPage     = lazy(() => import("./pages/dashboard/settings/ChangePasswordPage"));
 const InvoiceSettingsPage    = lazy(() => import("./pages/dashboard/settings/InvoiceSettingsPage"));
-const BillingPreferencesPage = lazy(() => import("./pages/dashboard/settings/BillingPreferencesPage"));
-const MyProfilePage          = lazy(() => import("./pages/dashboard/settings/MyProfilePage"));
+const BillingPreferencesPage  = lazy(() => import("./pages/dashboard/settings/BillingPreferencesPage"));
+const LocationsSettingsPage   = lazy(() => import("./pages/dashboard/settings/LocationsSettingsPage"));
 
 function PageLoader() {
   return (
@@ -128,7 +127,7 @@ export function App() {
                 <Route path="/dashboard/integration"         element={<IntegrationPage />} />
                 <Route path="/dashboard/locations"           element={<LocationsPage />} />
               </Route>
-              <Route path="/dashboard/stock-audit"           element={<StockAuditPage />} />
+              <Route path="/dashboard/stock-audit"           element={<Navigate to="/dashboard/inventory?tab=audit" replace />} />
               <Route path="/dashboard/stock-audit/:id"       element={<StockAuditDetailPage />} />
               <Route path="/dashboard/calendar"              element={<CalendarPage />} />
               <Route path="/dashboard/customers"            element={<CustomersPage />} />
@@ -163,16 +162,19 @@ export function App() {
               {/* Settings nested layout — pharmacy-profile and change-password open to all;
                   everything else is owner/manager only */}
               <Route element={<SettingsLayout />}>
-                <Route path="/dashboard/settings" element={<Navigate to="/dashboard/settings/my-profile" replace />} />
-                <Route path="/dashboard/settings/my-profile"       element={<MyProfilePage />} />
-                <Route path="/dashboard/settings/pharmacy-profile" element={<PharmacyProfilePage />} />
+                <Route path="/dashboard/settings" element={<Navigate to="/dashboard/settings/profile" replace />} />
+                {/* Redirects for any bookmarked old URLs */}
+                <Route path="/dashboard/settings/my-profile"       element={<Navigate to="/dashboard/settings/profile" replace />} />
+                <Route path="/dashboard/settings/pharmacy-profile" element={<Navigate to="/dashboard/settings/profile" replace />} />
+                <Route path="/dashboard/settings/profile"          element={<ProfilePage />} />
                 <Route path="/dashboard/settings/change-password"  element={<ChangePasswordPage />} />
 
-                <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} redirectTo="/dashboard/settings/pharmacy-profile" />}>
+                <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} redirectTo="/dashboard/settings/profile" />}>
                   <Route path="/dashboard/settings/documents" element={<DocumentsPage />} />
                   <Route path="/dashboard/settings/staff"     element={<StaffSettingsPage />} />
                   <Route path="/dashboard/settings/plans"     element={<PlansPage />} />
                   <Route path="/dashboard/settings/invoice"   element={<InvoiceSettingsPage />} />
+                  <Route path="/dashboard/settings/locations" element={<LocationsSettingsPage />} />
                   <Route path="/dashboard/settings/billing"   element={<BillingPreferencesPage />} />
                 </Route>
               </Route>

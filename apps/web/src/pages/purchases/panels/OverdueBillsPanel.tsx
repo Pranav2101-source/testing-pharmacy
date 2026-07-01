@@ -1,23 +1,32 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Loader2, CheckCircle2, AlertTriangle, Banknote, Check, X } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
+import { queryKeys } from "@/lib/queryKeys";
+import { CardSkeletonRows } from "@/components/Skeleton";
 import type { Supplier } from "../types";
 import { currency, fmtDate, daysUntil } from "../utils";
 import { SlidePanel } from "./AutoSuggestPanel";
 
+const OVERDUE_PARAMS = { overdue: true, status: "CONFIRMED", limit: 50 };
+
 export function OverdueBillsPanel({ suppliers, onClose }: { suppliers: Supplier[]; onClose: () => void }) {
-  const [items,   setItems]   = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
   const [payFor,  setPayFor]  = useState<any | null>(null);
   const [amount,  setAmount]  = useState("");
   const [saving,  setSaving]  = useState(false);
+  const queryClient = useQueryClient();
 
-  useEffect(() => {
-    api.get("/purchases/grn", { params: { overdue: true, status: "CONFIRMED", limit: 50 } })
-      .then(({ data }) => setItems(data.data.items))
-      .catch(() => setItems([]))
-      .finally(() => setLoading(false));
-  }, []);
+  const queryKey = queryKeys.purchases.grn(OVERDUE_PARAMS);
+  const { data, isPending } = useQuery({
+    queryKey,
+    queryFn: async () => {
+      const { data } = await api.get("/purchases/grn", { params: OVERDUE_PARAMS });
+      return data.data as { items: any[]; total: number };
+    },
+    staleTime: 30_000,
+  });
+  const items   = data?.items ?? [];
+  const loading = isPending;
 
   async function pay(grn: any) {
     if (!amount || isNaN(+amount) || +amount <= 0) return;
@@ -29,7 +38,8 @@ export function OverdueBillsPanel({ suppliers, onClose }: { suppliers: Supplier[
         amount:      +amount,
         paymentMode: "CASH",
       });
-      setItems((p) => p.filter((i) => i.id !== grn.id));
+      queryClient.setQueryData<{ items: any[]; total: number }>(queryKey, (old) =>
+        old ? { ...old, items: old.items.filter((i) => i.id !== grn.id), total: old.total - 1 } : old);
       setPayFor(null); setAmount("");
     } catch {/* */} finally { setSaving(false); }
   }
@@ -38,7 +48,7 @@ export function OverdueBillsPanel({ suppliers, onClose }: { suppliers: Supplier[
     <SlidePanel title="Overdue Bills" subtitle="GRNs past their payment due date" onClose={onClose}>
       <div className="px-5 py-4 space-y-3">
         {loading ? (
-          <div className="flex items-center justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-blue-400" /></div>
+          <CardSkeletonRows rows={3} />
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center py-12 text-center">
             <CheckCircle2 className="w-10 h-10 text-green-300 mb-3" />

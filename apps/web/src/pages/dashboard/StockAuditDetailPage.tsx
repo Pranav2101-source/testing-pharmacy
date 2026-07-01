@@ -8,6 +8,7 @@ import {
   ClipboardCheck, ShieldAlert,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { getStoredUser } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -343,6 +344,8 @@ export default function StockAuditDetailPage() {
   const [notesDraft,        setNotesDraft]        = useState<Record<string, string>>({});
   const [zeroConfirmShelf,  setZeroConfirmShelf]  = useState<string | null>(null);
   const [zeroingShelf,      setZeroingShelf]      = useState<string | null>(null);
+  const [matchingShelf,     setMatchingShelf]     = useState<string | null>(null);
+  const [matchConfirmShelf, setMatchConfirmShelf] = useState<string | null>(null);
   const [showAllItems,      setShowAllItems]      = useState(false);
 
   const inputRefs = useRef<Map<string, HTMLInputElement>>(new Map());
@@ -413,6 +416,20 @@ export default function StockAuditDetailPage() {
     [allGroups],
   );
 
+  // Auto-focus first uncounted input when session enters IN_PROGRESS
+  const hasAutoFocused = useRef(false);
+  useEffect(() => {
+    if (!session || session.status !== "IN_PROGRESS") return;
+    if (hasAutoFocused.current) return;
+    hasAutoFocused.current = true;
+    setTimeout(() => {
+      const firstId = allFlatItemIds.find(
+        (cid) => session.items.find((i) => i.id === cid)?.countedQty === null && inputRefs.current.has(cid),
+      );
+      if (firstId) { const el = inputRefs.current.get(firstId); el?.focus(); el?.select(); }
+    }, 150);
+  }, [session, allFlatItemIds]);
+
   // ── Summary stats with rupee values ─────────────────────────────────────────
 
   const stats = useMemo(() => {
@@ -451,10 +468,21 @@ export default function StockAuditDetailPage() {
     setActionLoading(true); setError(null);
     try {
       await api.delete(`/stock-audit/${id}`);
-      // Navigate back to the list — there's nothing actionable on a cancelled session.
-      navigate("/dashboard/stock-audit");
+      navigate("/dashboard/inventory?tab=audit");
     }
     catch (err: any) { setError((err as Error).message || "Failed to cancel"); }
+    finally { setActionLoading(false); }
+  }
+
+  async function doReopen() {
+    if (!id) return;
+    setActionLoading(true); setError(null);
+    try {
+      await api.patch(`/stock-audit/${id}/reopen`, {});
+      hasAutoFocused.current = false; // allow re-focus after reopen
+      load();
+    }
+    catch (err: any) { setError((err as Error).message || "Failed to reopen"); }
     finally { setActionLoading(false); }
   }
 
@@ -463,27 +491,18 @@ export default function StockAuditDetailPage() {
     setActionLoading(true); setError(null);
     try {
       const uncounted = session.items.filter((i) => i.countedQty === null);
-      // Patch all uncounted items to 0, then mark the session complete.
-      await Promise.all(uncounted.map((item) =>
-        api.patch(`/stock-audit/${id}/items/${item.id}`, { countedQty: 0 }),
-      ));
-      // Optimistically update local state so UI is consistent even before reload.
-      setCounts((prev) => {
-        const next = { ...prev };
-        uncounted.forEach((i) => { next[i.id] = "0"; });
-        return next;
-      });
-      setSession((prev) => {
-        if (!prev) return prev;
-        return { ...prev, items: prev.items.map((i) =>
-          uncounted.some((u) => u.id === i.id)
-            ? { ...i, countedQty: 0, varianceQty: -i.expectedQty }
-            : i,
-        )};
-      });
+      if (uncounted.length > 0) {
+        // Single batch request instead of N parallel PATCHes.
+        const res = await api.patch(`/stock-audit/${id}/items`, {
+          items: uncounted.map((i) => ({ itemId: i.id, countedQty: 0 })),
+        });
+        const updatedMap = new Map((res.data.data as AuditItem[]).map((i) => [i.id, i]));
+        setCounts((prev) => { const next = { ...prev }; uncounted.forEach((i) => { next[i.id] = "0"; }); return next; });
+        setSession((prev) => prev ? { ...prev, items: prev.items.map((i) => updatedMap.get(i.id) ?? i) } : null);
+      }
       await api.post(`/stock-audit/${id}/complete`, {});
       setShowSmartComplete(false);
-      load(true); // force-refresh so counts match server truth
+      load(true);
     } catch (err: any) { setError((err as Error).message || "Failed to complete"); }
     finally { setActionLoading(false); }
   }
@@ -496,14 +515,47 @@ export default function StockAuditDetailPage() {
     if (!uncounted.length) return;
     setZeroingShelf(shelfKey);
     try {
-      await Promise.all(uncounted.map((item) => api.patch(`/stock-audit/${id}/items/${item.id}`, { countedQty: 0 })));
+      const res = await api.patch(`/stock-audit/${id}/items`, {
+        items: uncounted.map((i) => ({ itemId: i.id, countedQty: 0 })),
+      });
+      const updatedMap = new Map((res.data.data as AuditItem[]).map((i) => [i.id, i]));
       setCounts((prev) => { const next = { ...prev }; uncounted.forEach((i) => { next[i.id] = "0"; }); return next; });
       setSession((prev) => {
         if (!prev) return prev;
-        return { ...prev, items: prev.items.map((i) => uncounted.some((u) => u.id === i.id) ? { ...i, countedQty: 0, varianceQty: 0 - i.expectedQty } : i) };
+        return { ...prev, items: prev.items.map((i) => updatedMap.get(i.id) ?? i) };
       });
     } catch (err: any) { setError((err as Error).message || "Failed to zero shelf"); }
     finally { setZeroingShelf(null); setZeroConfirmShelf(null); }
+  }
+
+  // ── Per-item: mark as matching expected qty ──────────────────────────────────
+
+  async function matchItem(item: AuditItem) {
+    const val = item.expectedQty;
+    setCounts((prev) => ({ ...prev, [item.id]: String(val) }));
+    await saveCountValue(item, val);
+    focusNext(item.id);
+  }
+
+  // ── Per-shelf: match all uncounted items to expected qty ──────────────────────
+
+  async function matchShelf(shelfKey: string, items: AuditItem[]) {
+    if (!id) return;
+    const uncounted = items.filter((i) => i.countedQty === null);
+    if (!uncounted.length) return;
+    setMatchingShelf(shelfKey);
+    try {
+      const res = await api.patch(`/stock-audit/${id}/items`, {
+        items: uncounted.map((i) => ({ itemId: i.id, countedQty: i.expectedQty })),
+      });
+      const updatedMap = new Map((res.data.data as AuditItem[]).map((i) => [i.id, i]));
+      setCounts((prev) => { const next = { ...prev }; uncounted.forEach((i) => { next[i.id] = String(i.expectedQty); }); return next; });
+      setSession((prev) => {
+        if (!prev) return prev;
+        return { ...prev, items: prev.items.map((i) => updatedMap.get(i.id) ?? i) };
+      });
+    } catch (err: any) { setError((err as Error).message || "Failed to match shelf"); }
+    finally { setMatchingShelf(null); setMatchConfirmShelf(null); }
   }
 
   // ── Count saving ─────────────────────────────────────────────────────────────
@@ -525,7 +577,7 @@ export default function StockAuditDetailPage() {
     const note = notesDraft[item.id] ?? "";
     if (note === (item.notes ?? "")) return;
     try { await api.patch(`/stock-audit/${id}/items/${item.id}`, { notes: note || null }); }
-    catch { /* non-critical, don't show error */ }
+    catch (err: any) { setError((err as Error).message || "Note failed to save — please try again"); }
   }
 
   // ── Keyboard navigation ───────────────────────────────────────────────────────
@@ -570,12 +622,14 @@ export default function StockAuditDetailPage() {
   if (loading) return <div className="flex items-center justify-center h-64"><Loader2 className="w-6 h-6 text-slate-300 animate-spin" /></div>;
   if (!session) return <div className="flex flex-col items-center justify-center h-64 gap-2 text-slate-400"><FileX className="w-8 h-8" /><span>Audit session not found</span></div>;
 
-  const cfg        = STATUS_CFG[session.status];
-  const Icon       = cfg.icon;
-  const canEdit    = session.status === "IN_PROGRESS";
-  const isApproved = session.status === "APPROVED";
-  const pct        = stats.total > 0 ? Math.round((stats.counted / stats.total) * 100) : 0;
-  const allCounted = stats.uncounted === 0;
+  const cfg          = STATUS_CFG[session.status];
+  const Icon         = cfg.icon;
+  const canEdit      = session.status === "IN_PROGRESS";
+  const isApproved   = session.status === "APPROVED";
+  const pct          = stats.total > 0 ? Math.round((stats.counted / stats.total) * 100) : 0;
+  const allCounted   = stats.uncounted === 0;
+  const userRole     = getStoredUser()?.role ?? "";
+  const isOwnerOrMgr = userRole === "OWNER" || userRole === "MANAGER";
 
   // When approved: show variance items by default (matched items are noise)
   const approvedDisplayItems = isApproved
@@ -583,11 +637,12 @@ export default function StockAuditDetailPage() {
     : null;
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="p-6 max-w-6xl mx-auto space-y-5">
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <div className="flex items-start gap-4">
-        <button onClick={() => navigate("/dashboard/stock-audit")}
+        <button onClick={() => navigate("/dashboard/inventory?tab=audit")}
           className="w-9 h-9 rounded-xl border border-slate-200 flex items-center justify-center hover:bg-slate-50 transition-colors flex-shrink-0 mt-0.5">
           <ArrowLeft className="w-4 h-4 text-slate-500" />
         </button>
@@ -612,6 +667,82 @@ export default function StockAuditDetailPage() {
           {session.notes && <p className="text-[12px] text-slate-500 mt-1 italic">{session.notes}</p>}
         </div>
       </div>
+
+      {/* ── Step wizard ──────────────────────────────────────────────────── */}
+      {!["APPROVED", "CANCELLED"].includes(session.status) && (
+        <div className="flex items-center gap-0">
+          {[
+            { label: "1. Create Audit", active: session.status === "DRAFT",       done: session.status !== "DRAFT" },
+            { label: "2. Count Items",  active: session.status === "IN_PROGRESS", done: ["COMPLETED", "APPROVED"].includes(session.status) },
+            { label: "3. Approve",      active: session.status === "COMPLETED",   done: false },
+          ].map((step, idx) => (
+            <div key={step.label} className="flex items-center">
+              <div className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-xl text-[12px] font-semibold transition-all",
+                step.active ? "bg-blue-600 text-white shadow-sm" :
+                step.done   ? "bg-emerald-50 text-emerald-700"   :
+                              "bg-slate-100 text-slate-400",
+              )}>
+                {step.done && <Check className="w-3.5 h-3.5" />}
+                {step.label}
+              </div>
+              {idx < 2 && <div className="w-6 h-px bg-slate-200 flex-shrink-0" />}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ── DRAFT / COMPLETED hero CTA ────────────────────────────────────── */}
+      {session.status === "DRAFT" && (
+        <div className="bg-blue-600 rounded-2xl p-5 flex items-center gap-5">
+          <div className="w-11 h-11 rounded-xl bg-white/20 flex items-center justify-center flex-shrink-0">
+            <ClipboardCheck className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[15px] font-bold text-white">Audit ready — {stats.total} items to count</p>
+            <p className="text-[12px] text-blue-100 mt-0.5">Walk to the first shelf, count the stock, and click <strong>Start Counting</strong> to begin.</p>
+          </div>
+          <button onClick={doStart} disabled={actionLoading}
+            className="flex items-center gap-2 px-5 py-2.5 bg-white text-blue-700 font-bold text-[14px] rounded-xl hover:bg-blue-50 disabled:opacity-60 transition-colors flex-shrink-0 shadow-sm">
+            {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />}
+            Start Counting
+          </button>
+        </div>
+      )}
+      {session.status === "COMPLETED" && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 flex items-center gap-5">
+          <div className="w-11 h-11 rounded-xl bg-amber-500 flex items-center justify-center flex-shrink-0">
+            <ShieldAlert className="w-5 h-5 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-[15px] font-bold text-amber-900">Counting complete — review variances below</p>
+            <p className="text-[12px] text-amber-700 mt-0.5">
+              {stats.varianceCount === 0
+                ? "All items matched. You can approve this audit."
+                : `${stats.varianceCount} item${stats.varianceCount > 1 ? "s" : ""} have variance. Review them, then approve to update your stock.`}
+            </p>
+            {!isOwnerOrMgr && (
+              <p className="text-[11px] text-amber-600 mt-1 font-semibold">Only owners and managers can approve audits.</p>
+            )}
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {isOwnerOrMgr && (
+              <button onClick={doReopen} disabled={actionLoading}
+                className="flex items-center gap-2 px-4 py-2.5 border border-amber-300 text-amber-800 text-[13px] font-semibold rounded-xl hover:bg-amber-100 disabled:opacity-60 transition-colors bg-amber-50">
+                <ArrowLeft className="w-3.5 h-3.5" />
+                Reopen
+              </button>
+            )}
+            {isOwnerOrMgr && (
+              <button onClick={() => setShowApprove(true)} disabled={actionLoading}
+                className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white font-bold text-[14px] rounded-xl hover:bg-emerald-700 disabled:opacity-60 transition-colors shadow-sm">
+                <Check className="w-4 h-4" />
+                Approve &amp; Apply
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Error banner ─────────────────────────────────────────────────── */}
       {error && (
@@ -673,13 +804,13 @@ export default function StockAuditDetailPage() {
                 {!allCounted && <span className="text-amber-200 text-[11px]">({stats.uncounted} left)</span>}
               </button>
             )}
-            {session.status === "COMPLETED" && (
+            {session.status === "COMPLETED" && isOwnerOrMgr && (
               <button onClick={() => setShowApprove(true)} disabled={actionLoading}
                 className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white text-[13px] font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-60 transition-colors">
                 <Check className="w-3.5 h-3.5" /> Approve &amp; Apply
               </button>
             )}
-            {["DRAFT", "IN_PROGRESS"].includes(session.status) && (
+            {["DRAFT", "IN_PROGRESS"].includes(session.status) && isOwnerOrMgr && (
               <button onClick={doCancel} disabled={actionLoading}
                 className="flex items-center gap-2 px-3 py-2 border border-red-200 text-red-600 text-[13px] font-semibold rounded-lg hover:bg-red-50 disabled:opacity-60 transition-colors ml-auto">
                 <Ban className="w-3.5 h-3.5" /> Cancel Audit
@@ -845,6 +976,24 @@ export default function StockAuditDetailPage() {
                             {sg.shelfLevel !== null && <span className="ml-1.5 text-[11px] font-normal text-slate-400">Level {sg.shelfLevel}</span>}
                           </span>
                           <div className="ml-auto flex items-center gap-2">
+                            {/* Per-shelf match all confirm / button */}
+                            {canEdit && uncountedInShelf > 0 && (
+                              matchConfirmShelf === sg.key ? (
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[11px] text-emerald-700 font-medium">All {uncountedInShelf} match expected?</span>
+                                  <button onClick={() => matchShelf(sg.key, sg.items)} disabled={matchingShelf === sg.key}
+                                    className="text-[11px] font-bold text-white bg-emerald-600 hover:bg-emerald-700 px-2 py-0.5 rounded-md transition-colors disabled:opacity-60">
+                                    {matchingShelf === sg.key ? <Loader2 className="w-3 h-3 animate-spin" /> : "Yes, match all"}
+                                  </button>
+                                  <button onClick={() => setMatchConfirmShelf(null)} className="text-[11px] text-slate-500 hover:text-slate-700 px-1">No</button>
+                                </div>
+                              ) : (
+                                <button onClick={() => setMatchConfirmShelf(sg.key)}
+                                  className="text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 border border-emerald-200 hover:border-emerald-400 bg-emerald-50 hover:bg-emerald-100 px-2.5 py-0.5 rounded-md transition-colors">
+                                  ✓ All Match
+                                </button>
+                              )
+                            )}
                             {/* Per-shelf zero confirm / button */}
                             {canEdit && uncountedInShelf > 0 && (
                               zeroConfirmShelf === sg.key ? (
@@ -859,7 +1008,7 @@ export default function StockAuditDetailPage() {
                               ) : (
                                 <button onClick={() => setZeroConfirmShelf(sg.key)}
                                   className="text-[11px] font-semibold text-slate-500 hover:text-amber-600 border border-slate-200 hover:border-amber-300 px-2.5 py-0.5 rounded-md transition-colors">
-                                  Zero {uncountedInShelf} uncounted
+                                  Zero {uncountedInShelf}
                                 </button>
                               )
                             )}
@@ -879,7 +1028,7 @@ export default function StockAuditDetailPage() {
                             <th className="text-center px-3 py-2 font-semibold text-slate-400 text-[11px] uppercase tracking-wide">Expected</th>
                             <th className="text-center px-3 py-2 font-semibold text-slate-400 text-[11px] uppercase tracking-wide">Counted</th>
                             <th className="text-center px-3 py-2 font-semibold text-slate-400 text-[11px] uppercase tracking-wide w-28">Variance / ₹</th>
-                            {canEdit && <th className="px-2 py-2 w-6" />}
+                            {canEdit && <th className="px-2 py-2 w-20 text-center text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Quick</th>}
                             <th className="px-2 py-2 w-6" />
                           </tr>
                         </thead>
@@ -897,7 +1046,10 @@ export default function StockAuditDetailPage() {
                             return (
                               <Fragment key={item.id}>
                                 <tr className={cn("transition-colors border-b border-slate-50 last:border-0",
-                                  uncounted && canEdit ? "bg-amber-50/40 hover:bg-amber-50/70" : "hover:bg-slate-50/60",
+                                  uncounted && canEdit           ? "bg-amber-50/40 hover:bg-amber-50/70" :
+                                  item.varianceQty === 0         ? "bg-emerald-50/30 hover:bg-emerald-50/50" :
+                                  (item.varianceQty ?? 0) !== 0 && item.countedQty !== null ? "bg-red-50/20 hover:bg-red-50/40" :
+                                  "hover:bg-slate-50/60",
                                 )}>
                                   {/* Medicine */}
                                   <td className="px-4 py-2.5">
@@ -927,8 +1079,8 @@ export default function StockAuditDetailPage() {
                                           onBlur={() => { if (isDirty) saveCountValue(item, parseInt(localVal)); }}
                                           onKeyDown={(e) => handleKeyDown(e, item)}
                                           placeholder="—"
-                                          className={cn("w-16 text-center border rounded-lg px-2 py-1 text-[13px] font-semibold focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all tabular-nums",
-                                            uncounted ? "border-amber-300 bg-amber-50 text-amber-800 placeholder-amber-400" : "border-slate-200 text-slate-800",
+                                          className={cn("w-20 text-center border rounded-lg px-2 py-1.5 text-[14px] font-bold focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all tabular-nums",
+                                            uncounted ? "border-amber-300 bg-amber-50 text-amber-800 placeholder-amber-400 ring-1 ring-amber-200" : "border-slate-200 text-slate-800",
                                           )}
                                         />
                                         {savingItem === item.id && <Loader2 className="w-3 h-3 text-blue-400 animate-spin flex-shrink-0" />}
@@ -950,14 +1102,20 @@ export default function StockAuditDetailPage() {
                                     )}
                                   </td>
 
-                                  {/* Quick 0 */}
+                                  {/* Quick Match + Quick 0 */}
                                   {canEdit && (
                                     <td className="px-2 py-2.5 text-center">
                                       {uncounted && (
-                                        <button onClick={() => markAsZero(item)} disabled={savingItem === item.id} title="Mark as 0"
-                                          className="w-6 h-6 rounded-md border border-slate-200 bg-slate-50 hover:border-amber-300 hover:bg-amber-50 text-[11px] font-bold text-slate-400 hover:text-amber-600 transition-colors disabled:opacity-40">
-                                          0
-                                        </button>
+                                        <div className="flex flex-col items-center gap-1">
+                                          <button onClick={() => matchItem(item)} disabled={savingItem === item.id} title={`Mark as ${item.expectedQty} (matches expected)`}
+                                            className="w-full px-2 py-0.5 rounded-md border border-emerald-200 bg-emerald-50 hover:border-emerald-400 hover:bg-emerald-100 text-[10px] font-bold text-emerald-700 transition-colors disabled:opacity-40 whitespace-nowrap">
+                                            ✓ {item.expectedQty}
+                                          </button>
+                                          <button onClick={() => markAsZero(item)} disabled={savingItem === item.id} title="Mark as 0"
+                                            className="w-full px-2 py-0.5 rounded-md border border-slate-200 bg-slate-50 hover:border-amber-300 hover:bg-amber-50 text-[10px] font-bold text-slate-400 hover:text-amber-600 transition-colors disabled:opacity-40">
+                                            0
+                                          </button>
+                                        </div>
                                       )}
                                     </td>
                                   )}
@@ -1021,6 +1179,7 @@ export default function StockAuditDetailPage() {
           />
         )}
       </AnimatePresence>
+    </div>
     </div>
   );
 }

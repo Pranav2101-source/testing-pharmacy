@@ -1,14 +1,30 @@
-import type { Db, Prisma } from "@pharmacy/database";
+import type { Db, DbTransactionClient, Prisma } from "@pharmacy/database";
 import { withTenant } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
+import { nextSequenceValue } from "../../lib/sequences.js";
+
+// Payments are stored in the shared supplier_ledger_entries table (type =
+// PAYMENT, alongside CREDIT_NOTE rows for supplier-credit-notes) — merged to
+// cut the Purchases module's table count without changing this module's API
+// contract. Every query below filters by type; every response is reshaped
+// back to the original `paymentNumber` field name so callers see the exact
+// same shape as before the merge.
+function toPayment<T extends { entryNumber: string }>(row: T) {
+  const { entryNumber, ...rest } = row;
+  return { ...rest, paymentNumber: entryNumber };
+}
 
 export class SupplierPaymentsRepo {
   constructor(private db: Db) {}
 
-  private async nextPaymentNumber(pharmacyId: string, tx: Omit<Db, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">): Promise<string> {
-    const count = await tx.supplierPayment.count({ where: { pharmacyId } });
-    const year  = new Date().getFullYear();
-    return `SP-${year}-${String(count + 1).padStart(5, "0")}`;
+  // "ALL" period = counter never resets (matches the old count()-based
+  // numbering, which also never reset by year — only the cosmetic year
+  // label in the formatted number changed). Atomic upsert instead of a
+  // full-table COUNT(*), and race-safe under concurrent creates.
+  private async nextPaymentNumber(pharmacyId: string, tx: DbTransactionClient): Promise<string> {
+    const seq  = await nextSequenceValue(tx, pharmacyId, "SUPPLIER_PAYMENT", "ALL");
+    const year = new Date().getFullYear();
+    return `SP-${year}-${String(seq).padStart(5, "0")}`;
   }
 
   async create(pharmacyId: string, userId: string, data: {
@@ -39,18 +55,19 @@ export class SupplierPaymentsRepo {
 
       const paymentNumber = await this.nextPaymentNumber(pharmacyId, tx);
 
-      const payment = await tx.supplierPayment.create({
+      const payment = await tx.supplierLedgerEntry.create({
         data: {
           pharmacyId,
-          supplierId:    data.supplierId,
-          grnId:         data.grnId,
-          paymentNumber,
-          amount:        data.amount,
-          paymentMode:   data.paymentMode as any,
-          reference:     data.reference,
-          notes:         data.notes,
-          paidAt:        data.paidAt ?? new Date(),
-          createdBy:     userId,
+          supplierId:  data.supplierId,
+          type:        "PAYMENT",
+          grnId:       data.grnId,
+          entryNumber: paymentNumber,
+          amount:      data.amount,
+          paymentMode: data.paymentMode as any,
+          reference:   data.reference,
+          notes:       data.notes,
+          paidAt:      data.paidAt ?? new Date(),
+          createdBy:   userId,
         },
         include: {
           supplier: { select: { id: true, name: true } },
@@ -58,34 +75,37 @@ export class SupplierPaymentsRepo {
         },
       });
 
-      // Decrement supplier ledger balance by the payment amount.
-      await tx.supplier.update({
-        where: { id: data.supplierId, pharmacyId },
-        data:  { ledgerBalance: { decrement: data.amount } },
-      });
+      // Ledger-balance decrement and audit log are independent writes —
+      // neither depends on the other's result, so run them together.
+      await Promise.all([
+        tx.supplier.update({
+          where: { id: data.supplierId, pharmacyId },
+          data:  { ledgerBalance: { decrement: data.amount } },
+        }),
+        tx.auditLog.create({
+          data: {
+            pharmacyId, userId,
+            action:   "CREATE",
+            entity:   "SupplierPayment",
+            entityId: payment.id,
+            newData:  payment as unknown as Prisma.InputJsonValue,
+          },
+        }),
+      ]);
 
-      await tx.auditLog.create({
-        data: {
-          pharmacyId, userId,
-          action:   "CREATE",
-          entity:   "SupplierPayment",
-          entityId: payment.id,
-          newData:  payment as unknown as Prisma.InputJsonValue,
-        },
-      });
-
-      return payment;
+      return toPayment(payment);
     });
   }
 
   async getById(id: string, pharmacyId: string) {
-    return this.db.supplierPayment.findFirst({
-      where:   { id, pharmacyId },
+    const payment = await this.db.supplierLedgerEntry.findFirst({
+      where:   { id, pharmacyId, type: "PAYMENT" },
       include: {
         supplier: { select: { id: true, name: true } },
         grn:      { select: { id: true, grnNumber: true, totalAmount: true, supplierInvoiceNo: true } },
       },
     });
+    return payment ? toPayment(payment) : null;
   }
 
   async list(pharmacyId: string, params: {
@@ -96,8 +116,9 @@ export class SupplierPaymentsRepo {
     from?:       Date;
     to?:         Date;
   }) {
-    const where: Prisma.SupplierPaymentWhereInput = {
+    const where: Prisma.SupplierLedgerEntryWhereInput = {
       pharmacyId,
+      type: "PAYMENT",
       ...(params.supplierId ? { supplierId: params.supplierId } : {}),
       ...(params.grnId      ? { grnId: params.grnId }           : {}),
       ...(params.from || params.to
@@ -105,8 +126,8 @@ export class SupplierPaymentsRepo {
         : {}),
     };
 
-    const [items, total] = await Promise.all([
-      this.db.supplierPayment.findMany({
+    const [rawItems, total] = await Promise.all([
+      this.db.supplierLedgerEntry.findMany({
         where,
         orderBy: { paidAt: "desc" },
         skip:    (params.page - 1) * params.limit,
@@ -116,10 +137,10 @@ export class SupplierPaymentsRepo {
           grn:      { select: { id: true, grnNumber: true } },
         },
       }),
-      this.db.supplierPayment.count({ where }),
+      this.db.supplierLedgerEntry.count({ where }),
     ]);
 
-    return { items, total, page: params.page, limit: params.limit };
+    return { items: rawItems.map(toPayment), total, page: params.page, limit: params.limit };
   }
 
   // Outstanding balance = total confirmed GRN amounts - total payments per supplier (#15 + #16)
@@ -135,8 +156,8 @@ export class SupplierPaymentsRepo {
         where: { pharmacyId, supplierId, status: "CONFIRMED" },
         _sum:  { totalAmount: true },
       }),
-      this.db.supplierPayment.aggregate({
-        where: { pharmacyId, supplierId },
+      this.db.supplierLedgerEntry.aggregate({
+        where: { pharmacyId, supplierId, type: "PAYMENT" },
         _sum:  { amount: true },
       }),
       this.db.goodsReceiptNote.findMany({

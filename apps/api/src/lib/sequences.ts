@@ -22,7 +22,9 @@ export type SequenceKind =
   | "GRN"
   | "SUPPLIER_RETURN"
   | "QUOTATION"
-  | "STOCK_AUDIT";
+  | "STOCK_AUDIT"
+  | "SUPPLIER_PAYMENT"
+  | "SUPPLIER_CREDIT_NOTE";
 
 const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
 

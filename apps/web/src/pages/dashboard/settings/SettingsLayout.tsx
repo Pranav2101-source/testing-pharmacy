@@ -1,14 +1,14 @@
 import { Suspense } from "react";
 import { Link, useLocation, Outlet } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Building2, FileText, CreditCard, KeyRound, ArrowLeft, Users, Receipt, FileOutput, User } from "lucide-react";
+import { FileText, CreditCard, KeyRound, ArrowLeft, Users, Receipt, FileOutput, User, MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { href: "/dashboard/settings/my-profile",       label: "My Profile",        icon: User       },
-  { href: "/dashboard/settings/pharmacy-profile", label: "Pharmacy Profile",  icon: Building2  },
-  { href: "/dashboard/settings/documents",        label: "Documents & Legal", icon: FileText   },
+  { href: "/dashboard/settings/profile",    label: "Profile",           icon: User       },
+  { href: "/dashboard/settings/documents",  label: "Documents & Legal", icon: FileText   },
   { href: "/dashboard/settings/staff",            label: "Staff Management",  icon: Users      },
+  { href: "/dashboard/settings/locations",         label: "Locations",         icon: MapPin     },
   { href: "/dashboard/settings/billing",          label: "Billing",           icon: Receipt    },
   { href: "/dashboard/settings/invoice",          label: "Invoice",           icon: FileOutput },
   { href: "/dashboard/settings/plans",            label: "Plans",             icon: CreditCard },

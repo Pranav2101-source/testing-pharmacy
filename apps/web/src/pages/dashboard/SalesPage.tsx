@@ -12,6 +12,7 @@ import {
   Package, RefreshCw, Trash2, Play, Clock, IndianRupee,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { TableSkeletonRows } from "@/components/Skeleton";
 import { cn } from "@/lib/utils";
 import { listDrafts, deleteDraft, clearAllDrafts } from "@/lib/draftStorage";
 import { useBillingStore } from "@/components/billing/useBillingStore";
@@ -266,7 +267,6 @@ function BillsPanel({ onCount }: { onCount: (n: number) => void }) {
     placeholderData: keepPreviousData,
   });
 
-  const invoices   = data?.items    ?? [];
   const total      = data?.total    ?? 0;
   const totalPages = data?.totalPages ?? 1;
 
@@ -275,6 +275,7 @@ function BillsPanel({ onCount }: { onCount: (n: number) => void }) {
 
   // Client-side amount filter + sort (no round-trip needed)
   const displayedInvoices = useMemo(() => {
+    const invoices = data?.items ?? [];
     const filtered = invoices.filter(inv => applyAmountFilter(inv, amountFilter));
     return [...filtered].sort((a, b) => {
       let va: string | number, vb: string | number;
@@ -288,7 +289,7 @@ function BillsPanel({ onCount }: { onCount: (n: number) => void }) {
       }
       return sortDir === "asc" ? (va < vb ? -1 : va > vb ? 1 : 0) : (va > vb ? -1 : va < vb ? 1 : 0);
     });
-  }, [invoices, amountFilter, sortCol, sortDir]);
+  }, [data?.items, amountFilter, sortCol, sortDir]);
 
   function handleSort(col: SortColB) {
     setSortDir(d => col === sortCol ? (d === "asc" ? "desc" : "asc") : "desc");
@@ -479,10 +480,7 @@ function BillsPanel({ onCount }: { onCount: (n: number) => void }) {
           </thead>
           <tbody>
             {isPending ? (
-              <tr><td colSpan={9} className="py-24 text-center">
-                <Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" />
-                <p className="text-slate-400 text-[13px] mt-3">Loading bills…</p>
-              </td></tr>
+              <TableSkeletonRows columns={9} />
             ) : isError ? (
               <tr><td colSpan={9} className="py-24 text-center">
                 <AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-3" />
@@ -715,23 +713,25 @@ function ReturnsPanel({ onCount }: { onCount: (n: number) => void }) {
     placeholderData: keepPreviousData,
   });
 
-  const rows       = data?.items    ?? [];
   const total      = data?.total    ?? 0;
   const totalPages = data?.totalPages ?? 1;
 
   useEffect(() => { if (data?.total !== undefined) onCount(data.total); }, [data?.total, onCount]);
 
-  const displayed = useMemo(() => [...rows].sort((a, b) => {
-    let va: string | number, vb: string | number;
-    switch (sortCol) {
-      case "returnNumber": va = a.returnNumber; vb = b.returnNumber; break;
-      case "createdAt":    va = a.createdAt;    vb = b.createdAt;    break;
-      case "customerName": va = a.customer?.name ?? ""; vb = b.customer?.name ?? ""; break;
-      case "totalAmount":  va = a.totalAmount;  vb = b.totalAmount;  break;
-      default: return 0;
-    }
-    return sortDir === "asc" ? (va < vb ? -1 : va > vb ? 1 : 0) : (va > vb ? -1 : va < vb ? 1 : 0);
-  }), [rows, sortCol, sortDir]);
+  const displayed = useMemo(() => {
+    const rows = data?.items ?? [];
+    return [...rows].sort((a, b) => {
+      let va: string | number, vb: string | number;
+      switch (sortCol) {
+        case "returnNumber": va = a.returnNumber; vb = b.returnNumber; break;
+        case "createdAt":    va = a.createdAt;    vb = b.createdAt;    break;
+        case "customerName": va = a.customer?.name ?? ""; vb = b.customer?.name ?? ""; break;
+        case "totalAmount":  va = a.totalAmount;  vb = b.totalAmount;  break;
+        default: return 0;
+      }
+      return sortDir === "asc" ? (va < vb ? -1 : va > vb ? 1 : 0) : (va > vb ? -1 : va < vb ? 1 : 0);
+    });
+  }, [data?.items, sortCol, sortDir]);
 
   function handleSort(col: SortColR) {
     setSortDir(d => col === sortCol ? (d === "asc" ? "desc" : "asc") : "desc");

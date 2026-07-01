@@ -7,6 +7,8 @@ const GST_RATES = [0, 5, 12, 18] as const;
 // PO items are draft — batch/expiry/rates are filled in when goods arrive (GRN).
 // Only medicine name and quantity are required at PO creation time.
 export const poItemSchema = z.object({
+  // medicineId may be "" for CSV/PDF-imported rows — resolved server-side by
+  // medicineName before the PO is saved (see purchases.service.ts createPO).
   medicineId:   z.string(),
   medicineName: z.string().min(1),
   batchNumber:  z.string().max(50).optional(),
@@ -18,11 +20,13 @@ export const poItemSchema = z.object({
 });
 
 export const createPOSchema = z.object({
-  supplierId:   z.string().min(1),
-  invoiceNo:    z.string().optional(),
-  notes:        z.string().max(1000).optional(),
-  expectedDate: z.string().datetime().optional(),
-  items:        z.array(poItemSchema).min(1),
+  supplierId:     z.string().min(1),
+  invoiceNo:      z.string().optional(),
+  notes:          z.string().max(1000).optional(),
+  expectedDate:   z.string().datetime().optional(),
+  items:          z.array(poItemSchema).min(1),
+  // Set when this PO was drafted from an uploaded supplier PDF (see /uploads/po-pdf).
+  sourceUploadId: z.string().optional(),
 });
 
 export const updatePOSchema = z.object({
@@ -56,6 +60,8 @@ export const sharePOSchema = z.object({
 // ── GRN ────────────────────────────────────────────────────────────────────
 
 export const grnItemSchema = z.object({
+  // medicineId may be "" for CSV/PDF-imported rows — resolved server-side by
+  // medicineName, same as poItemSchema above.
   medicineId:       z.string(),
   medicineName:     z.string().min(1),
   batchNumber:      z.string().min(1).max(50),
@@ -85,6 +91,8 @@ export const createGRNSchema = z.object({
   // (e.g. bought at a discount).  Without this flag the API rejects any
   // item expiring within NEAR_EXPIRY_DAYS to prevent accidental purchases.
   allowNearExpiry:     z.boolean().default(false),
+  // Set when this GRN was drafted from an uploaded supplier PDF (see /uploads/grn-pdf).
+  sourceUploadId:      z.string().optional(),
 });
 
 export const updateGRNSchema = z.object({

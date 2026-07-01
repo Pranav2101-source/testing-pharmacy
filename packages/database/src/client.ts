@@ -64,14 +64,6 @@ const createClient = () => {
         totalGst:    { needs: { totalGst: true },    compute: (p) => p.totalGst.toNumber() },
         totalAmount: { needs: { totalAmount: true }, compute: (p) => p.totalAmount.toNumber() },
       },
-      purchaseOrderItem: {
-        purchaseRate: { needs: { purchaseRate: true }, compute: (p) => p.purchaseRate.toNumber() },
-        mrp:          { needs: { mrp: true },          compute: (p) => p.mrp.toNumber() },
-        gstRate:      { needs: { gstRate: true },      compute: (p) => p.gstRate.toNumber() },
-        cgst:         { needs: { cgst: true },         compute: (p) => p.cgst.toNumber() },
-        sgst:         { needs: { sgst: true },         compute: (p) => p.sgst.toNumber() },
-        amount:       { needs: { amount: true },       compute: (p) => p.amount.toNumber() },
-      },
       invoice: {
         subtotal:       { needs: { subtotal: true },       compute: (i) => i.subtotal.toNumber() },
         discountAmount: { needs: { discountAmount: true }, compute: (i) => i.discountAmount.toNumber() },
@@ -142,20 +134,8 @@ const createClient = () => {
         totalGst:      { needs: { totalGst: true },      compute: (r) => r.totalGst.toNumber() },
         totalAmount:   { needs: { totalAmount: true },   compute: (r) => r.totalAmount.toNumber() },
       },
-      supplierReturnItem: {
-        purchaseRate:  { needs: { purchaseRate: true },  compute: (i) => i.purchaseRate.toNumber() },
-        taxableAmount: { needs: { taxableAmount: true }, compute: (i) => i.taxableAmount.toNumber() },
-        gstRate:       { needs: { gstRate: true },       compute: (i) => i.gstRate.toNumber() },
-        cgst:          { needs: { cgst: true },          compute: (i) => i.cgst.toNumber() },
-        sgst:          { needs: { sgst: true },          compute: (i) => i.sgst.toNumber() },
-        igst:          { needs: { igst: true },          compute: (i) => i.igst.toNumber() },
-        amount:        { needs: { amount: true },        compute: (i) => i.amount.toNumber() },
-      },
-      supplierPayment: {
-        amount: { needs: { amount: true }, compute: (p) => p.amount.toNumber() },
-      },
-      supplierCreditNote: {
-        amount: { needs: { amount: true }, compute: (c) => c.amount.toNumber() },
+      supplierLedgerEntry: {
+        amount: { needs: { amount: true }, compute: (e) => e.amount.toNumber() },
       },
       quotationItem: {
         quotedRate: { needs: { quotedRate: true }, compute: (q) => q.quotedRate === null ? null : q.quotedRate.toNumber() },

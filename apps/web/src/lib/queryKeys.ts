@@ -7,6 +7,7 @@ export const queryKeys = {
     grn:     (params: Record<string, unknown>) => ["purchases", "grn", params] as const,
     orders:  (params: Record<string, unknown>) => ["purchases", "orders", params] as const,
     returns: (params: Record<string, unknown>) => ["purchases", "returns", params] as const,
+    summary: () => ["purchases", "summary"] as const,
   },
   inventory: {
     list: (params: {
@@ -17,6 +18,8 @@ export const queryKeys = {
       lowStock:   boolean;
       nearExpiry: boolean;
     }) => ["inventory", "list", params] as const,
+    ledger: (params: Record<string, unknown>) => ["inventory", "ledger", params] as const,
+    alerts: () => ["inventory", "alerts"] as const,
   },
   medicineStock: {
     byName: (name: string) => ["medicine-stock", name] as const,

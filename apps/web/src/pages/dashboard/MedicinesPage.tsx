@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { TableSkeletonRows } from "@/components/Skeleton";
 import { useToast } from "@/hooks/useToast";
 import { isPlatformAdmin } from "@/lib/auth";
 
@@ -801,7 +802,7 @@ export default function MedicinesPage() {
     const delay = search ? 350 : 0;
     const t = setTimeout(fetch, delay);
     return () => clearTimeout(t);
-  }, [fetch]);
+  }, [fetch, search]);
 
   useEffect(() => {
     api.get("/medicines/overrides")
@@ -1008,12 +1009,7 @@ export default function MedicinesPage() {
 
           <tbody>
             {loading ? (
-              <tr>
-                <td colSpan={9} className="py-24 text-center">
-                  <Loader2 className="w-7 h-7 animate-spin text-blue-400 mx-auto" />
-                  <p className="text-slate-400 text-[13px] mt-3">Loading medicines…</p>
-                </td>
-              </tr>
+              <TableSkeletonRows columns={9} />
             ) : error ? (
               <tr>
                 <td colSpan={9} className="py-24 text-center">

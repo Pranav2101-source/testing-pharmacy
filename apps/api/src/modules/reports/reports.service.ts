@@ -69,12 +69,14 @@ export class ReportsService {
   async purchaseSummary(pharmacyId: string, period: ReportPeriod) {
     const { from, to, fromRaw, toRaw } = period;
 
-    const [grnAgg, poByStatus, topSuppliers, topItems, overduePayments] = await Promise.all([
+    const [grnAgg, poByStatus, topSuppliers, topItems, overduePayments, pendingApprovals, pendingGRNs] = await Promise.all([
       this.repo.grnSpendAggregate(pharmacyId, from, to),
       this.repo.poCountsByStatus(pharmacyId, from, to),
       this.repo.topSuppliersBySpend(pharmacyId, from, to),
       this.repo.topPurchasedItems(pharmacyId, from, to),
       this.repo.overdueGrnCount(pharmacyId),
+      this.repo.pendingApprovalCount(pharmacyId),
+      this.repo.draftGrnCount(pharmacyId),
     ]);
 
     const supplierIds   = topSuppliers.map((s) => s.supplierId);
@@ -88,6 +90,8 @@ export class ReportsService {
       totalSubtotal:   Number(grnAgg._sum.subtotal    ?? 0),
       invoiceCount:    grnAgg._count,
       overduePayments,
+      pendingApprovals,
+      pendingGRNs,
       poByStatus,
       topSuppliers: topSuppliers.map((s) => ({
         supplierId:   s.supplierId,

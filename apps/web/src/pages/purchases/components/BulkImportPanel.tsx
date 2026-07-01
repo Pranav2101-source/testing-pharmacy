@@ -19,6 +19,7 @@ import {
   GRN_CSV_TEMPLATE, downloadTemplate,
   parseRawRows, inferColumnMapping, parseWithMapping,
 } from "../utils";
+import { extractPdfTableText, isPdfFile } from "../utils/pdfExtract";
 import type { GRNLineItem } from "../types";
 
 // ─── Field metadata ───────────────────────────────────────────────────────────
@@ -40,10 +41,14 @@ const REQUIRED = FIELD_OPTIONS.filter((f) => f.req).map((f) => f.value);
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
+export function BulkImportPanel({ initialRaw = "", onImport, onClose, onPdfSelected }: {
   initialRaw?: string;
   onImport: (items: GRNLineItem[]) => void;
   onClose: () => void;
+  /** Called whenever a PDF is dropped/picked, so the parent can upload it and
+   * attach it as a reference document — independent of whether text extraction
+   * below finds a usable item table. */
+  onPdfSelected?: (file: File) => void;
 }) {
   const [raw,      setRaw]      = useState(initialRaw);
   const [headers,  setHeaders]  = useState<string[]>(() => initialRaw ? parseRawRows(initialRaw).headers : []);
@@ -53,6 +58,8 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
   );
   const [dragging,   setDragging]   = useState(false);
   const [fileError,  setFileError]  = useState<string | null>(null);
+  const [pdfNotice,  setPdfNotice]  = useState<string | null>(null);
+  const [pdfBusy,    setPdfBusy]    = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   // ── Load raw text (file or paste) ────────────────────────────────────────
@@ -74,6 +81,26 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
 
   function readFile(file: File) {
     setFileError(null);
+    setPdfNotice(null);
+
+    if (isPdfFile(file)) {
+      onPdfSelected?.(file);
+      setPdfBusy(true);
+      extractPdfTableText(file)
+        .then((tsv) => {
+          if (tsv) {
+            loadRaw(tsv);
+          } else {
+            setPdfNotice("Couldn't find a readable item table in this PDF — it may be a scanned image. We've attached it to this GRN for reference; please enter the medicines manually below.");
+          }
+        })
+        .catch(() => {
+          setPdfNotice("Couldn't find a readable item table in this PDF — it may be a scanned image. We've attached it to this GRN for reference; please enter the medicines manually below.");
+        })
+        .finally(() => setPdfBusy(false));
+      return;
+    }
+
     const isExcel = /\.(xlsx|xls|ods)$/i.test(file.name) ||
       file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
       file.type === "application/vnd.ms-excel";
@@ -116,7 +143,7 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
 
   function reset() {
     setRaw(""); setHeaders([]); setRows([]); setMapping({});
-    setFileError(null);
+    setFileError(null); setPdfNotice(null);
   }
 
   // ── Derived state ─────────────────────────────────────────────────────────
@@ -187,12 +214,18 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
                   ? "border-blue-400 bg-blue-50"
                   : "border-slate-200 hover:border-blue-300 hover:bg-slate-50/60",
               )}>
-              <input ref={fileRef} type="file" accept=".xlsx,.xls,.ods,.csv,.tsv,.txt" className="hidden"
+              <input ref={fileRef} type="file" accept=".xlsx,.xls,.ods,.csv,.tsv,.txt,.pdf" className="hidden"
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f); e.target.value = ""; }} />
-              <FileSpreadsheet className={cn("w-8 h-8 mx-auto mb-2", dragging ? "text-blue-400" : "text-slate-300")} />
-              <p className="text-[13px] font-semibold text-slate-600">Drop Excel or CSV file here, or click to browse</p>
+              {pdfBusy ? (
+                <Loader2 className="w-8 h-8 mx-auto mb-2 text-blue-400 animate-spin" />
+              ) : (
+                <FileSpreadsheet className={cn("w-8 h-8 mx-auto mb-2", dragging ? "text-blue-400" : "text-slate-300")} />
+              )}
+              <p className="text-[13px] font-semibold text-slate-600">
+                {pdfBusy ? "Reading PDF…" : "Drop Excel, CSV, or PDF file here, or click to browse"}
+              </p>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Supports .xlsx, .xls, .ods, .csv &nbsp;·&nbsp; Or use the template above
+                Supports .xlsx, .xls, .ods, .csv, .pdf &nbsp;·&nbsp; Or use the template above
               </p>
             </div>
 
@@ -234,6 +267,14 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose }: {
               <div className="flex items-start gap-2.5 bg-red-50 border border-red-200 rounded-xl px-3 py-2.5">
                 <AlertTriangle className="w-3.5 h-3.5 text-red-500 flex-shrink-0 mt-0.5" />
                 <p className="text-[12px] text-red-700">{fileError}</p>
+              </div>
+            )}
+
+            {/* PDF had no readable item table — attached for reference, not an error */}
+            {pdfNotice && (
+              <div className="flex items-start gap-2.5 bg-blue-50 border border-blue-200 rounded-xl px-3 py-2.5">
+                <FileSpreadsheet className="w-3.5 h-3.5 text-blue-500 flex-shrink-0 mt-0.5" />
+                <p className="text-[12px] text-blue-700">{pdfNotice}</p>
               </div>
             )}
           </div>

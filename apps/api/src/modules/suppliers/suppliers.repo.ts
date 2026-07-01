@@ -1,4 +1,4 @@
-import type { Db, PurchaseStatus } from "@pharmacy/database";
+import type { Db, Prisma, PurchaseStatus } from "@pharmacy/database";
 import type { CreateSupplierInput, UpdateSupplierInput } from "./suppliers.schema.js";
 
 export class SuppliersRepo {
@@ -52,13 +52,13 @@ export class SuppliersRepo {
 
   async getPurchaseHistory(id: string, pharmacyId: string, page = 1, limit = 20) {
     const where = { pharmacyId, supplierId: id };
-    const [orders, grns, totals] = await Promise.all([
+    const [rawOrders, grns, totals] = await Promise.all([
       this.db.purchaseOrder.findMany({
         where,
         orderBy: { orderedAt: "desc" },
         skip:    (page - 1) * limit,
         take:    limit,
-        include: { _count: { select: { items: true } } },
+        select:  { id: true, orderNumber: true, status: true, totalAmount: true, orderedAt: true, itemCount: true },
       }),
       this.db.goodsReceiptNote.findMany({
         where:   { pharmacyId, supplierId: id },
@@ -73,6 +73,10 @@ export class SuppliersRepo {
       }),
     ]);
 
+    // itemCount is a plain denormalized column (items moved off a child
+    // table) — reshape back into the `_count.items` form callers expect.
+    const orders = rawOrders.map((po) => ({ ...po, _count: { items: po.itemCount } }));
+
     return {
       orders: { items: orders, page, limit },
       recentGRNs: grns,
@@ -86,7 +90,7 @@ export class SuppliersRepo {
   // Backward-compat: kept for old route that creates PO+stock in one shot
   async listPurchaseOrders(pharmacyId: string, page = 1, limit = 20, status?: string) {
     const where = { pharmacyId, ...(status ? { status: status as PurchaseStatus } : {}) };
-    const [items, total] = await Promise.all([
+    const [rawItems, total] = await Promise.all([
       this.db.purchaseOrder.findMany({
         where,
         orderBy: { createdAt: "desc" },
@@ -94,11 +98,19 @@ export class SuppliersRepo {
         take:    limit,
         include: {
           supplier: { select: { name: true } },
-          items:    { select: { quantity: true, amount: true } },
         },
       }),
       this.db.purchaseOrder.count({ where }),
     ]);
+
+    // items used to come back as a narrow { quantity, amount } projection via
+    // a relational select — preserve that exact shape now that items live in
+    // a JSON column with the full line-item object.
+    const items = rawItems.map((po) => ({
+      ...po,
+      items: (po.items as Array<{ quantity: number; amount: number }>).map((i) => ({ quantity: i.quantity, amount: i.amount })),
+    }));
+
     return { items, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
@@ -136,9 +148,10 @@ export class SuppliersRepo {
         totalGst:     data.totalGst,
         totalAmount:  data.totalAmount,
         receivedAt:   new Date(),
-        items:        { create: data.items.map((item) => ({ ...item, pharmacyId })) },
+        items:        data.items as unknown as Prisma.InputJsonValue,
+        itemCount:    data.items.length,
       },
-      include: { items: true, supplier: true },
+      include: { supplier: true },
     });
   }
 }

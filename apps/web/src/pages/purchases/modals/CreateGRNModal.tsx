@@ -24,6 +24,7 @@ function daysUntil(dateStr: string) {
 function buildPayload(
   supplierId: string, invNo: string, invDate: string,
   poId: string, notes: string, items: GRNLineItem[], allowNearExpiry: boolean,
+  sourceUploadId?: string,
 ) {
   return {
     supplierId,
@@ -32,6 +33,7 @@ function buildPayload(
     purchaseOrderId:     poId    || undefined,
     notes:               notes   || undefined,
     allowNearExpiry,
+    sourceUploadId,
     items: items.map((i) => ({ ...i, expiryDate: new Date(i.expiryDate).toISOString() })),
   };
 }
@@ -61,6 +63,9 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
   const [poLoading,      setPoLoading]     = useState(false);
   const [poOptions,      setPoOptions]     = useState<{ id: string; orderNumber: string; itemCount: number }[]>([]);
   const [nearExpiryHits, setNearExpiryHits]= useState<NearExpiryHit[]>([]);
+  const [sourceUploadId, setSourceUploadId]= useState<string | undefined>(undefined);
+  const [pdfFileName,    setPdfFileName]   = useState<string | null>(null);
+  const [pdfUploading,   setPdfUploading]  = useState(false);
   const lastAddedSupplier = useRef<FullSupplier | undefined>(undefined);
 
   const nearExpiryNames = new Set(nearExpiryHits.map((h) => h.name.toLowerCase()));
@@ -104,6 +109,24 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
       orderedQty: 0, receivedQty: 1, freeQty: 0,
       purchaseRate: 0, mrp: 0, discount: 0, gstRate: m.gstRate,
     }]);
+  }
+
+  // Always uploads the PDF and attaches it to the GRN, regardless of whether
+  // text extraction below finds a usable item table — per design, a PDF
+  // (even a scanned one we can't parse) is never just discarded.
+  async function handlePdfSelected(file: File) {
+    setPdfUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const { data } = await api.post<{ data: { id: string } }>("/uploads/grn-pdf", fd);
+      setSourceUploadId(data.data.id);
+      setPdfFileName(file.name);
+    } catch {
+      // Non-fatal — GRN creation still works without the attachment.
+    } finally {
+      setPdfUploading(false);
+    }
   }
 
   function handleBulkImport(incoming: GRNLineItem[]) {
@@ -204,7 +227,7 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
 
     setSaving(true); setError(null); setNearExpiryHits([]);
     try {
-      await api.post("/purchases/grn", buildPayload(supplierId, invNo, invDate, poId, notes, items, false));
+      await api.post("/purchases/grn", buildPayload(supplierId, invNo, invDate, poId, notes, items, false, sourceUploadId));
       onDone(lastAddedSupplier.current);
     } catch (err: any) {
       const msg: string = err?.response?.data?.error ?? "";
@@ -228,7 +251,7 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
 
     setSaving(true); setNearExpiryHits([]); setError(null);
     try {
-      await api.post("/purchases/grn", buildPayload(supplierId, invNo, invDate, poId, notes, items, true));
+      await api.post("/purchases/grn", buildPayload(supplierId, invNo, invDate, poId, notes, items, true, sourceUploadId));
       onDone(lastAddedSupplier.current);
     } catch (err: any) {
       setError(getErrorMessage(err, "Failed to create GRN"));
@@ -291,7 +314,19 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
               initialRaw={pasteRaw}
               onImport={handleBulkImport}
               onClose={() => { setShowBulkImport(false); setPasteRaw(""); }}
+              onPdfSelected={handlePdfSelected}
             />
+          )}
+
+          {/* ── Attached supplier PDF indicator ────────────────────────── */}
+          {(pdfUploading || pdfFileName) && (
+            <div className="flex items-center gap-2 text-[11px] text-slate-500">
+              {pdfUploading ? (
+                <><Loader2 className="w-3 h-3 animate-spin" />Attaching {pdfFileName ?? "PDF"}…</>
+              ) : (
+                <><FileSpreadsheet className="w-3 h-3 text-blue-400" />Attached: {pdfFileName} — will be saved with this GRN</>
+              )}
+            </div>
           )}
 
           {/* ── Ctrl+V hint (shown when panel is closed + items exist) ─── */}

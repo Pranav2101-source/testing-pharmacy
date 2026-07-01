@@ -1,14 +1,28 @@
-import type { Db, Prisma } from "@pharmacy/database";
+import type { Db, DbTransactionClient, Prisma } from "@pharmacy/database";
 import { withTenant } from "@pharmacy/database";
 import { AppError } from "../../lib/AppError.js";
+import { nextSequenceValue } from "../../lib/sequences.js";
+
+// Credit notes are stored in the shared supplier_ledger_entries table
+// (type = CREDIT_NOTE, alongside PAYMENT rows for supplier-payments) — merged
+// to cut the Purchases module's table count without changing this module's
+// API contract. Every query below filters by type; every response is
+// reshaped back to the original `creditNoteNumber` field name.
+function toCreditNote<T extends { entryNumber: string }>(row: T) {
+  const { entryNumber, ...rest } = row;
+  return { ...rest, creditNoteNumber: entryNumber };
+}
 
 export class SupplierCreditNotesRepo {
   constructor(private db: Db) {}
 
-  private async nextCNNumber(pharmacyId: string, tx: Omit<Db, "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends">): Promise<string> {
-    const count = await tx.supplierCreditNote.count({ where: { pharmacyId } });
-    const year  = new Date().getFullYear();
-    return `SCN-${year}-${String(count + 1).padStart(5, "0")}`;
+  // "ALL" period = counter never resets (matches the old count()-based
+  // numbering). Atomic upsert instead of a full-table COUNT(*), and
+  // race-safe under concurrent creates.
+  private async nextCNNumber(pharmacyId: string, tx: DbTransactionClient): Promise<string> {
+    const seq  = await nextSequenceValue(tx, pharmacyId, "SUPPLIER_CREDIT_NOTE", "ALL");
+    const year = new Date().getFullYear();
+    return `SCN-${year}-${String(seq).padStart(5, "0")}`;
   }
 
   async create(pharmacyId: string, userId: string, data: {
@@ -32,12 +46,13 @@ export class SupplierCreditNotesRepo {
 
       const creditNoteNumber = await this.nextCNNumber(pharmacyId, tx);
 
-      const cn = await tx.supplierCreditNote.create({
+      const cn = await tx.supplierLedgerEntry.create({
         data: {
           pharmacyId,
           supplierId:       data.supplierId,
+          type:             "CREDIT_NOTE",
           supplierReturnId: data.supplierReturnId,
-          creditNoteNumber,
+          entryNumber:      creditNoteNumber,
           amount:           data.amount,
           status:           "PENDING",
           notes:            data.notes,
@@ -60,22 +75,22 @@ export class SupplierCreditNotesRepo {
         },
       });
 
-      return cn;
+      return toCreditNote(cn);
     });
   }
 
   async updateStatus(id: string, pharmacyId: string, userId: string, status: "APPLIED" | "CANCELLED", notes?: string) {
     return withTenant(this.db, pharmacyId, async (tx) => {
-      const existing = await tx.supplierCreditNote.findFirst({
-        where:  { id, pharmacyId },
-        select: { status: true, creditNoteNumber: true },
+      const existing = await tx.supplierLedgerEntry.findFirst({
+        where:  { id, pharmacyId, type: "CREDIT_NOTE" },
+        select: { status: true, entryNumber: true },
       });
       if (!existing) throw AppError.notFound("Credit note not found");
       if (existing.status !== "PENDING") {
         throw AppError.unprocessable(`Credit note is already ${existing.status}`);
       }
 
-      const updated = await tx.supplierCreditNote.update({
+      const updated = await tx.supplierLedgerEntry.update({
         where: { id },
         data:  { status, notes: notes ?? undefined },
         include: {
@@ -94,18 +109,19 @@ export class SupplierCreditNotesRepo {
         },
       });
 
-      return updated;
+      return toCreditNote(updated);
     });
   }
 
   async getById(id: string, pharmacyId: string) {
-    return this.db.supplierCreditNote.findFirst({
-      where:   { id, pharmacyId },
+    const cn = await this.db.supplierLedgerEntry.findFirst({
+      where:   { id, pharmacyId, type: "CREDIT_NOTE" },
       include: {
         supplier:       { select: { id: true, name: true, phone: true } },
         supplierReturn: { select: { id: true, returnNumber: true, totalAmount: true } },
       },
     });
+    return cn ? toCreditNote(cn) : null;
   }
 
   async list(pharmacyId: string, params: {
@@ -116,8 +132,9 @@ export class SupplierCreditNotesRepo {
     from?:       Date;
     to?:         Date;
   }) {
-    const where: Prisma.SupplierCreditNoteWhereInput = {
+    const where: Prisma.SupplierLedgerEntryWhereInput = {
       pharmacyId,
+      type: "CREDIT_NOTE",
       ...(params.supplierId ? { supplierId: params.supplierId } : {}),
       ...(params.status     ? { status: params.status as any } : {}),
       ...(params.from || params.to
@@ -125,8 +142,10 @@ export class SupplierCreditNotesRepo {
         : {}),
     };
 
-    const [items, total] = await Promise.all([
-      this.db.supplierCreditNote.findMany({
+    // All three queries are independent — batch into one round-trip instead
+    // of the count/findMany pair plus a separate sequential aggregate.
+    const [rawItems, total, pendingBalance] = await Promise.all([
+      this.db.supplierLedgerEntry.findMany({
         where,
         orderBy: { issuedAt: "desc" },
         skip:    (params.page - 1) * params.limit,
@@ -135,15 +154,17 @@ export class SupplierCreditNotesRepo {
           supplier: { select: { id: true, name: true } },
         },
       }),
-      this.db.supplierCreditNote.count({ where }),
+      this.db.supplierLedgerEntry.count({ where }),
+      this.db.supplierLedgerEntry.aggregate({
+        where: { pharmacyId, type: "CREDIT_NOTE", status: "PENDING" },
+        _sum:  { amount: true },
+      }),
     ]);
 
-    // Compute supplier-level pending credit balance
-    const pendingBalance = await this.db.supplierCreditNote.aggregate({
-      where: { pharmacyId, status: "PENDING" },
-      _sum:  { amount: true },
-    });
-
-    return { items, total, page: params.page, limit: params.limit, totalPendingCredit: Number(pendingBalance._sum.amount ?? 0) };
+    return {
+      items:              rawItems.map(toCreditNote),
+      total, page: params.page, limit: params.limit,
+      totalPendingCredit: Number(pendingBalance._sum.amount ?? 0),
+    };
   }
 }

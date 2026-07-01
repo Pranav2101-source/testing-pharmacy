@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { Eye, Loader2, AlertTriangle, Phone, FileText } from "lucide-react";
+import { Eye, Loader2, AlertTriangle, Phone, FileText, Paperclip } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { ModalShell, ErrorBanner } from "./shared";
-import { fmtDate, currency, isOverdue, daysUntil } from "../utils";
+import { fmtDate, currency, isOverdue, daysUntil, viewSourceUpload } from "../utils";
 
 type GRNDetailItem = {
   id: string;
@@ -30,6 +30,7 @@ type GRNDetail = {
   createdAt: string;
   confirmedAt: string | null;
   paymentDueDate: string | null;
+  sourceUploadId: string | null;
   supplier: { id: string; name: string; phone: string | null };
   purchaseOrder: { id: string; orderNumber: string } | null;
   items: GRNDetailItem[];
@@ -124,6 +125,12 @@ export function GRNViewModal({ grnId, onClose }: { grnId: string; onClose: () =>
             <div className="flex items-center gap-4 text-[12px] text-slate-500">
               <span>Entry: <strong className="text-slate-700">{fmtDate(grn.createdAt)}</strong></span>
               {grn.confirmedAt && <span>Confirmed: <strong className="text-slate-700">{fmtDate(grn.confirmedAt)}</strong></span>}
+              {grn.sourceUploadId && (
+                <button type="button" onClick={() => viewSourceUpload(grn.sourceUploadId!)}
+                  className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium">
+                  <Paperclip className="w-3 h-3" />View original PDF
+                </button>
+              )}
             </div>
 
             {/* Line items */}

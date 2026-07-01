@@ -6,6 +6,7 @@ import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/hooks/useDebounce";
 import { queryKeys } from "@/lib/queryKeys";
+import { TableSkeletonRows } from "@/components/Skeleton";
 import type { FullSupplier } from "../types";
 import { fmtDate, currency } from "../utils";
 import { Pagination } from "../components/Pagination";
@@ -185,7 +186,7 @@ export function DistributorsTab({ onSupplierAdded }: { onSupplierAdded: (s: Full
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={11} className="py-24 text-center"><Loader2 className="w-8 h-8 animate-spin text-blue-400 mx-auto" /></td></tr>
+              <TableSkeletonRows columns={11} widths={["w-28","w-20","w-20","w-16","w-12","w-16","w-16","w-10","w-16","w-8","w-6"]} />
             ) : suppliers.length === 0 ? (
               <tr><td colSpan={11}>
                 <div className="flex flex-col items-center justify-center py-20 text-center">

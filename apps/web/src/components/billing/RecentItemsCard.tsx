@@ -1,37 +1,65 @@
 "use client";
 
 import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { motion, AnimatePresence, type Variants } from "framer-motion";
 import { Plus, Check, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api-client";
+import { useBillingStore } from "./useBillingStore";
+import { expiryStatus, getLocationLabel, fmtExpiry } from "./BatchPickerDialog";
 
-const RECENT_MEDICINES = [
-  { name: "Paracetamol 650", generic: "Paracetamol", freq: 12, color: "blue" },
-  { name: "Amoxicillin 500", generic: "Amoxicillin", freq: 8,  color: "violet" },
-  { name: "Azithromycin 500", generic: "Azithromycin", freq: 6, color: "indigo" },
-  { name: "Cetirizine 10mg",  generic: "Cetirizine", freq: 5,  color: "sky" },
-  { name: "Pantoprazole 40",  generic: "Pantoprazole", freq: 4, color: "teal" },
-];
+type FrequentBatch = {
+  id:               string;
+  batchNumber:      string;
+  expiryDate:       string;
+  mrp:              number;
+  quantity:         number;
+  reservedQuantity: number;
+  location:         string | null;
+  shelf:            { code: string; rack: { code: string; name: string } } | null;
+  freq:             number;
+  medicine: {
+    name:        string;
+    genericName: string | null;
+    hsnCode:     string | null;
+    gstRate:     number;
+    isActive:    boolean;
+    schedule:    string | null;
+    packSize:    string | null;
+  };
+};
+
+const PALETTE = ["blue", "violet", "indigo", "sky", "teal", "amber", "rose", "emerald", "orange", "purple"] as const;
 
 const FREQ_COLOR: Record<string, string> = {
-  blue:   "bg-blue-100 text-blue-600",
-  violet: "bg-violet-100 text-violet-600",
-  indigo: "bg-indigo-100 text-indigo-600",
-  sky:    "bg-sky-100 text-sky-600",
-  teal:   "bg-teal-100 text-teal-600",
+  blue:    "bg-blue-100 text-blue-600",
+  violet:  "bg-violet-100 text-violet-600",
+  indigo:  "bg-indigo-100 text-indigo-600",
+  sky:     "bg-sky-100 text-sky-600",
+  teal:    "bg-teal-100 text-teal-600",
+  amber:   "bg-amber-100 text-amber-600",
+  rose:    "bg-rose-100 text-rose-600",
+  emerald: "bg-emerald-100 text-emerald-600",
+  orange:  "bg-orange-100 text-orange-600",
+  purple:  "bg-purple-100 text-purple-600",
 };
 
 const FREQ_BTN: Record<string, string> = {
-  blue:   "group-hover:bg-blue-500",
-  violet: "group-hover:bg-violet-500",
-  indigo: "group-hover:bg-indigo-500",
-  sky:    "group-hover:bg-sky-500",
-  teal:   "group-hover:bg-teal-500",
+  blue:    "group-hover:bg-blue-500",
+  violet:  "group-hover:bg-violet-500",
+  indigo:  "group-hover:bg-indigo-500",
+  sky:     "group-hover:bg-sky-500",
+  teal:    "group-hover:bg-teal-500",
+  amber:   "group-hover:bg-amber-500",
+  rose:    "group-hover:bg-rose-500",
+  emerald: "group-hover:bg-emerald-500",
+  orange:  "group-hover:bg-orange-500",
+  purple:  "group-hover:bg-purple-500",
 };
 
-// Stagger container
 const listVariants: Variants = {
-  hidden: {},
+  hidden:  {},
   visible: { transition: { staggerChildren: 0.07, delayChildren: 0.05 } },
 };
 const itemVariants: Variants = {
@@ -48,13 +76,45 @@ function SkeletonItem() {
   );
 }
 
-export function RecentItemsCard({ loading = false }: { loading?: boolean }) {
-  const [added, setAdded] = useState<Set<string>>(new Set());
+export function RecentItemsCard() {
+  const addItem = useBillingStore((s) => s.addItem);
+  const [added, setAdded]     = useState<Set<string>>(new Set());
+  const [errMsg, setErrMsg]   = useState<string>("");
 
-  function handleAdd(name: string) {
-    setAdded((prev) => new Set(prev).add(name));
-    setTimeout(() => setAdded((prev) => { const s = new Set(prev); s.delete(name); return s; }), 1800);
-    // TODO: addItem from billing store when connected to API
+  const { data: items = [], isLoading } = useQuery({
+    queryKey: ["inventory-frequent"],
+    queryFn:  () =>
+      api.get<{ data: FrequentBatch[] }>("/inventory/frequent")
+        .then((r) => r.data.data),
+    staleTime: 5 * 60_000,
+  });
+
+  function handleAdd(batch: FrequentBatch) {
+    const status = expiryStatus(batch.expiryDate);
+    if (status.color === "red") {
+      setErrMsg(`${batch.medicine.name} — batch ${batch.batchNumber} expired ${fmtExpiry(batch.expiryDate)}.`);
+      setTimeout(() => setErrMsg(""), 3000);
+      return;
+    }
+
+    addItem({
+      inventoryId:    batch.id,
+      medicineName:   batch.medicine.name,
+      hsnCode:        batch.medicine.hsnCode,
+      schedule:       batch.medicine.schedule,
+      packSize:       batch.medicine.packSize ?? undefined,
+      location:       getLocationLabel(batch) ?? undefined,
+      batchNumber:    batch.batchNumber,
+      expiryDate:     batch.expiryDate,
+      mrp:            batch.mrp,
+      quantity:       1,
+      discount:       0,
+      gstRate:        batch.medicine.gstRate,
+      availableStock: batch.quantity - (batch.reservedQuantity ?? 0),
+    });
+
+    setAdded((prev) => new Set(prev).add(batch.id));
+    setTimeout(() => setAdded((prev) => { const s = new Set(prev); s.delete(batch.id); return s; }), 1800);
   }
 
   return (
@@ -68,17 +128,21 @@ export function RecentItemsCard({ loading = false }: { loading?: boolean }) {
           </div>
           <h3 className="text-sm font-semibold text-slate-800">Quick Add</h3>
         </div>
-        <button className="text-[11px] text-blue-500 hover:text-blue-700 font-semibold transition-colors hover-lift px-2 py-0.5 rounded-lg hover:bg-blue-50">
-          View All
-        </button>
+        {errMsg && (
+          <span className="text-[10px] text-red-500 truncate max-w-[160px]">{errMsg}</span>
+        )}
       </div>
 
       {/* List */}
       <div className="p-2">
-        {loading ? (
+        {isLoading ? (
           <div className="space-y-1">
             {[...Array(5)].map((_, i) => <SkeletonItem key={i} />)}
           </div>
+        ) : items.length === 0 ? (
+          <p className="text-[11px] text-slate-400 text-center py-4 px-3">
+            Quick Add will appear here after your first few bills.
+          </p>
         ) : (
           <motion.ul
             variants={listVariants}
@@ -86,15 +150,16 @@ export function RecentItemsCard({ loading = false }: { loading?: boolean }) {
             animate="visible"
             className="space-y-0.5"
           >
-            {RECENT_MEDICINES.map(({ name, generic, freq, color }) => {
-              const isAdded = added.has(name);
+            {items.map((batch, idx) => {
+              const color   = PALETTE[idx % PALETTE.length] ?? "blue";
+              const isAdded = added.has(batch.id);
               return (
-                <motion.li key={name} variants={itemVariants}>
+                <motion.li key={batch.id} variants={itemVariants}>
                   <motion.button
                     whileHover={{ y: -1 }}
                     whileTap={{ scale: 0.98 }}
                     transition={{ type: "spring", stiffness: 400, damping: 25 }}
-                    onClick={() => handleAdd(name)}
+                    onClick={() => handleAdd(batch)}
                     className={cn(
                       "w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl",
                       "transition-all duration-150 text-left group",
@@ -107,9 +172,11 @@ export function RecentItemsCard({ loading = false }: { loading?: boolean }) {
                         "text-xs font-semibold truncate transition-colors",
                         isAdded ? "text-emerald-700" : "text-slate-700 group-hover:text-blue-700"
                       )}>
-                        {name}
+                        {batch.medicine.name}
                       </p>
-                      <p className="text-[10px] text-slate-400 truncate mt-0.5">{generic}</p>
+                      <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                        {batch.medicine.genericName ?? batch.batchNumber}
+                      </p>
                     </div>
 
                     {/* Frequency badge */}
@@ -117,7 +184,7 @@ export function RecentItemsCard({ loading = false }: { loading?: boolean }) {
                       "pill text-[9px] flex-shrink-0 tabnum",
                       FREQ_COLOR[color] ?? "bg-slate-100 text-slate-500"
                     )}>
-                      {freq}×
+                      {batch.freq}×
                     </span>
 
                     {/* Add / check button */}

@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import { motion } from "framer-motion";
+import { ListSkeleton } from "@/components/Skeleton";
 import {
   ChevronLeft, ChevronRight, Plus, RefreshCw, Loader2, CalendarDays,
 } from "lucide-react";
@@ -202,9 +203,7 @@ export default function CalendarPage() {
           {/* Grid area */}
           <div className="flex-1 overflow-y-auto px-5 py-4">
             {isLoading ? (
-              <div className="flex items-center justify-center h-64">
-                <Loader2 className="w-6 h-6 animate-spin text-blue-400" />
-              </div>
+              <ListSkeleton />
             ) : (
               <CalendarGrid
                 days={calendarDays}

@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Loader2, FileX, RefreshCw, AlertTriangle, Eye, Building2 } from "lucide-react";
+import { FileX, RefreshCw, AlertTriangle, Eye, Building2 } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/hooks/useDebounce";
 import { queryKeys } from "@/lib/queryKeys";
+import { TableSkeletonRows } from "@/components/Skeleton";
 import type { GRN, Supplier } from "../types";
 import { fmtDate, currency, isOverdue, daysUntil } from "../utils";
 import { FilterBar } from "../components/FilterBar";
@@ -70,7 +71,7 @@ export function PurchaseTab({ suppliers }: { suppliers: Supplier[] }) {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={11} className="py-24 text-center"><Loader2 className="w-8 h-8 animate-spin text-blue-400 mx-auto" /></td></tr>
+              <TableSkeletonRows columns={11} widths={["w-6","w-20","w-16","w-16","w-16","w-28","w-8","w-16","w-12","w-20","w-6"]} />
             ) : grns.length === 0 ? (
               <tr><td colSpan={11}>
                 <EmptyState icon={FileX} title="No purchase invoices found" desc="Confirmed GRNs will appear here" />

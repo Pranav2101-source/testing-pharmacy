@@ -28,7 +28,16 @@ export const resetPasswordSchema = z.object({
   newPassword: z.string().min(8).max(64, "Password must be 8–64 characters"),
 });
 
-export type LoginInput          = z.infer<typeof loginSchema>;
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, "Current password is required"),
+  newPassword:     z.string().min(8).max(64, "New password must be 8–64 characters"),
+}).refine((d) => d.currentPassword !== d.newPassword, {
+  message: "New password must differ from current password",
+  path:    ["newPassword"],
+});
+
+export type LoginInput           = z.infer<typeof loginSchema>;
 export type RegisterInput        = z.infer<typeof registerSchema>;
 export type ForgotPasswordInput  = z.infer<typeof forgotPasswordSchema>;
 export type ResetPasswordInput   = z.infer<typeof resetPasswordSchema>;
+export type ChangePasswordInput  = z.infer<typeof changePasswordSchema>;
