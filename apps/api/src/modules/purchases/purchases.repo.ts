@@ -366,8 +366,9 @@ export class PurchasesRepo {
           },
         },
         include: {
-          supplier: { select: { id: true, name: true } },
-          items:    { include: { medicine: { select: { name: true } } } },
+          supplier:      { select: { id: true, name: true } },
+          purchaseOrder: { select: { id: true, orderNumber: true } },
+          items:         { include: { medicine: { select: { name: true } } } },
         },
       });
 

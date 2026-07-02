@@ -54,7 +54,11 @@ function isTabularText(text: string): boolean {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }: {
-  suppliers: Supplier[]; onClose: () => void; onDone: (newSupplier?: FullSupplier) => void;
+  suppliers: Supplier[]; onClose: () => void;
+  // createdGrn is the raw API response — passed through so callers that show
+  // a live list (e.g. GateInwardTab) can splice it in directly instead of
+  // re-fetching the whole list after every create.
+  onDone: (newSupplier?: FullSupplier, createdGrn?: any) => void;
 }) {
   const [suppliers,      setSuppliers]     = useState<Supplier[]>(initialSuppliers);
   const [supplierId,     setSupplierId]    = useState("");
@@ -237,8 +241,8 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
 
     setSaving(true); setError(null); setNearExpiryHits([]);
     try {
-      await api.post("/purchases/grn", buildPayload(supplierId, invNo, invDate, poId, notes, items, false, sourceUploadId));
-      onDone(lastAddedSupplier.current);
+      const { data } = await api.post("/purchases/grn", buildPayload(supplierId, invNo, invDate, poId, notes, items, false, sourceUploadId));
+      onDone(lastAddedSupplier.current, data.data);
     } catch (err: any) {
       const msg: string = err?.response?.data?.error ?? "";
       if (msg.includes("expire within")) {
@@ -261,8 +265,8 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
 
     setSaving(true); setNearExpiryHits([]); setError(null);
     try {
-      await api.post("/purchases/grn", buildPayload(supplierId, invNo, invDate, poId, notes, items, true, sourceUploadId));
-      onDone(lastAddedSupplier.current);
+      const { data } = await api.post("/purchases/grn", buildPayload(supplierId, invNo, invDate, poId, notes, items, true, sourceUploadId));
+      onDone(lastAddedSupplier.current, data.data);
     } catch (err: any) {
       setError(getErrorMessage(err, "Failed to create GRN"));
     } finally { setSaving(false); }
