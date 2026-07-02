@@ -1,5 +1,5 @@
 import type { FastifyRequest } from "fastify";
-import type { AuditModule, AuditSeverity, AuditStatus } from "@prisma/client";
+import type { AuditModule, AuditSeverity, AuditStatus } from "@pharmacy/database";
 import { boss } from "@pharmacy/jobs";
 
 export type AuditLogInput = {

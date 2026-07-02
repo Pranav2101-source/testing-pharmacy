@@ -8,6 +8,8 @@ export type KPICard = {
   change: number; // % vs previous period
   changeLabel: string; // e.g. "vs last 30 days"
   sparkline: number[]; // 7 data points for mini chart
+  to?: string;
+  onClick?: () => void;
 };
 
 export type RevenueAnalytics = {
@@ -119,3 +121,34 @@ export type AnalyticsDashboard = {
 
 export type DateRangePreset = "TODAY" | "LAST_7_DAYS" | "LAST_30_DAYS" | "LAST_90_DAYS" | "THIS_YEAR" | "CUSTOM";
 export type AutoRefreshInterval = 0 | 30000 | 60000 | 300000;
+
+export type NewPharmacyItem = {
+  id: string;
+  logoUrl: string | null;
+  name: string;
+  tenantCode: string | null;
+  ownerName: string;
+  ownerEmail: string;
+  plan: {
+    name: string;
+    color: string;
+  };
+  createdAt: string;
+  status: string;
+};
+
+export type NewPharmacyDrilldownResult = {
+  summary: {
+    total: number;
+    active: number;
+    suspended: number;
+    archived: number;
+  };
+  pagination: {
+    page: number;
+    limit: number;
+    totalPages: number;
+    total: number;
+  };
+  items: NewPharmacyItem[];
+};

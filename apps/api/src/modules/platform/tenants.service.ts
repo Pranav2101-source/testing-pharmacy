@@ -1,28 +1,13 @@
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { Prisma } from "@pharmacy/database";
+import { Readable } from "stream";
 import type { CreateTenantInput } from "./tenants.schema.js";
 import { auditService } from "../audit/audit.service.js";
-
+import { PharmacyOnboardingService } from "../pharmacy/pharmacy-onboarding.service.js";
 export class TenantsService {
   constructor(private app: FastifyInstance) {}
-
-  // ── Generate Tenant Code ──────────────────────────────────────────────────
-
-  private async generateTenantCode(): Promise<string> {
-    const last = await this.app.prisma.pharmacy.findFirst({
-      where: { tenantCode: { not: null } },
-      orderBy: { tenantCode: "desc" },
-      select: { tenantCode: true },
-    });
-    let nextNum = 1;
-    if (last?.tenantCode) {
-      const match = last.tenantCode.match(/TEN-(\d+)/);
-      if (match) nextNum = parseInt(match[1]!, 10) + 1;
-    }
-    return `TEN-${String(nextNum).padStart(6, "0")}`;
-  }
 
   // ── Generate Secure Password ──────────────────────────────────────────────
 
@@ -38,113 +23,45 @@ export class TenantsService {
 
   // ── Create Tenant ─────────────────────────────────────────────────────────
 
-  async createTenant(input: CreateTenantInput, adminUserId: string) {
-    const tenantCode = await this.generateTenantCode();
+  async createTenant(req: FastifyRequest | null, input: CreateTenantInput) {
     const temporaryPassword = this.generateSecurePassword();
     const passwordHash = await bcrypt.hash(temporaryPassword, 12);
 
-    const slug = input.name
-      .toLowerCase()
-      .replace(/\s+/g, "-")
-      .replace(/[^a-z0-9-]/g, "")
-      .slice(0, 50);
-
-    // Check for duplicate pharmacy name or owner email
-    const existingPharmacy = await this.app.prisma.pharmacy.findFirst({
-      where: { name: { equals: input.name, mode: "insensitive" } },
-    });
-    if (existingPharmacy) {
-      throw Object.assign(new Error("A pharmacy with this name already exists"), { statusCode: 409 });
-    }
-
-    const validUntil = new Date();
-    validUntil.setDate(validUntil.getDate() + 30);
-
-    const pharmacy = await this.app.prisma.pharmacy.create({
-      data: {
-        tenantCode,
+    const onboardingService = new PharmacyOnboardingService(this.app);
+    const pharmacy = await onboardingService.onboardPharmacy(req, {
+      pharmacyData: {
         name: input.name,
-        slug: `${slug}-${Date.now()}`,
-        gstin: input.gstin || null,
-        drugLicense: input.drugLicense || null,
-        phone: input.phone || null,
-        email: input.email || null,
-        address: input.address || null,
-        city: input.city || null,
-        state: input.state || null,
-        pincode: input.pincode || null,
-        isActive: true,
-        tenantStatus: "ACTIVE",
-        subscription: {
-          create: {
-            planName: input.planName || "Free",
-            status: "ACTIVE",
-            validUntil,
-            billingCycle: "MONTHLY",
-            amount: 0,
-            autoRenew: true,
-          },
-        },
-        tenantSettings: {
-          create: {
-            doctorLimit: input.doctorLimit,
-            staffLimit: input.staffLimit,
-            patientLimit: input.patientLimit,
-            storageLimit: input.storageLimit,
-            enableBilling: input.enableBilling,
-            enableInventory: input.enableInventory,
-            enableEmr: input.enableEmr,
-            enableCrm: input.enableCrm,
-            enableWhatsapp: input.enableWhatsapp,
-            enableSms: input.enableSms,
-            enableApiAccess: input.enableApiAccess,
-            enableOnlineBooking: input.enableOnlineBooking,
-          },
-        },
-        users: {
-          create: {
-            name: input.ownerName,
-            email: input.ownerEmail,
-            phone: input.ownerPhone || null,
-            passwordHash,
-            role: "OWNER",
-          },
-        },
+        gstin: input.gstin,
+        drugLicense: input.drugLicense,
+        phone: input.phone,
+        email: input.email,
+        address: input.address,
+        city: input.city,
+        state: input.state,
+        pincode: input.pincode,
       },
-      include: {
-        subscription: true,
-        tenantSettings: true,
-        users: { where: { role: "OWNER" }, take: 1, select: { id: true, name: true, email: true } },
+      tenantSettings: {
+        doctorLimit: input.doctorLimit,
+        staffLimit: input.staffLimit,
+        patientLimit: input.patientLimit,
+        storageLimit: input.storageLimit,
+        enableBilling: input.enableBilling,
+        enableInventory: input.enableInventory,
+        enableEmr: input.enableEmr,
+        enableCrm: input.enableCrm,
+        enableWhatsapp: input.enableWhatsapp,
+        enableSms: input.enableSms,
+        enableApiAccess: input.enableApiAccess,
+        enableOnlineBooking: input.enableOnlineBooking,
       },
+      ownerData: {
+        name: input.ownerName,
+        email: input.ownerEmail,
+        phone: input.ownerPhone,
+        passwordHash,
+      },
+      createOwner: true,
     });
-
-    // Audit log
-    void auditService.log(null, {
-      pharmacyId: pharmacy.id,
-      userId: adminUserId,
-      module: "TENANTS",
-      action: "TENANT_CREATED",
-      entity: "PHARMACY",
-      entityId: pharmacy.id,
-      resourceName: pharmacy.name,
-      severity: "INFO",
-      status: "SUCCESS",
-      newData: { tenantCode, name: input.name, plan: input.planName },
-    });
-
-    if (pharmacy.subscription) {
-      void auditService.log(null, {
-        pharmacyId: pharmacy.id,
-        userId: adminUserId,
-        module: "SUBSCRIPTIONS",
-        action: "SUBSCRIPTION_CREATED",
-        entity: "SUBSCRIPTION",
-        entityId: pharmacy.subscription.id,
-        severity: "INFO",
-        status: "SUCCESS",
-        newData: { plan: pharmacy.subscription.planName },
-      });
-    }
 
     return {
       pharmacy: {
@@ -158,7 +75,6 @@ export class TenantsService {
       temporaryPassword,
     };
   }
-
   // ── Update Tenant Status ──────────────────────────────────────────────────
 
   async updateTenantStatus(
@@ -251,23 +167,13 @@ export class TenantsService {
 
   // ── Import Tenants ────────────────────────────────────────────────────────
 
-  async importTenants(rows: Array<Record<string, any>>, adminUserId: string) {
+  async importTenants(req: FastifyRequest | null, rows: Array<Record<string, any>>) {
     const results = { imported: 0, skipped: 0, failed: 0, errors: [] as Array<{ row: number; email: string; reason: string }> };
 
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i]!;
       try {
-        // Check duplicate
-        const exists = await this.app.prisma.user.findFirst({
-          where: { email: row.ownerEmail },
-        });
-        if (exists) {
-          results.skipped++;
-          results.errors.push({ row: i + 1, email: row.ownerEmail, reason: "Duplicate email" });
-          continue;
-        }
-
-        await this.createTenant({
+        await this.createTenant(req, {
           name: row.name,
           ownerName: row.ownerName,
           ownerEmail: row.ownerEmail,
@@ -293,29 +199,37 @@ export class TenantsService {
           enableSms: false,
           enableApiAccess: false,
           enableOnlineBooking: false,
-        }, adminUserId);
+        });
         results.imported++;
       } catch (err: any) {
-        results.failed++;
-        results.errors.push({ row: i + 1, email: row.ownerEmail || "", reason: err.message || "Unknown error" });
+        if (err.statusCode === 409) {
+          results.skipped++;
+          results.errors.push({ row: i + 1, email: row.ownerEmail || "", reason: err.message });
+        } else {
+          results.failed++;
+          results.errors.push({ row: i + 1, email: row.ownerEmail || "", reason: err.message || "Unknown error" });
+        }
       }
     }
 
     // Audit log
-    const adminPharmacy = await this.app.prisma.user.findUnique({
-      where: { id: adminUserId },
-      select: { pharmacyId: true },
-    });
-    if (adminPharmacy) {
-      await this.app.prisma.auditLog.create({
-        data: {
-          pharmacyId: adminPharmacy.pharmacyId,
-          userId: adminUserId,
-          action: "IMPORTED_TENANTS",
-          entity: "PHARMACY",
-          newData: { imported: results.imported, skipped: results.skipped, failed: results.failed },
-        },
+    const adminUserId = req ? (req as any).user?.id : null;
+    if (adminUserId) {
+      const adminPharmacy = await this.app.prisma.user.findUnique({
+        where: { id: adminUserId },
+        select: { pharmacyId: true },
       });
+      if (adminPharmacy) {
+        await this.app.prisma.auditLog.create({
+          data: {
+            pharmacyId: adminPharmacy.pharmacyId,
+            userId: adminUserId,
+            action: "IMPORTED_TENANTS",
+            entity: "PHARMACY",
+            newData: { imported: results.imported, skipped: results.skipped, failed: results.failed },
+          },
+        });
+      }
     }
 
     return results;
@@ -323,7 +237,7 @@ export class TenantsService {
 
   // ── Export Tenants ─────────────────────────────────────────────────────────
 
-  async exportTenants(params: {
+  exportTenantsStream(params: {
     search?: string;
     status: string;
     plan?: string;
@@ -354,38 +268,52 @@ export class TenantsService {
     }
 
     if (state) where.state = { equals: state, mode: "insensitive" };
+    
+    const prisma = this.app.prisma;
 
-    const pharmacies = await this.app.prisma.pharmacy.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      include: {
-        users: {
-          where: { role: "OWNER" },
-          take: 1,
-          select: { name: true, email: true, phone: true, lastLoginAt: true },
-        },
-        subscription: { select: { planName: true, status: true, validUntil: true } },
-        _count: { select: { doctors: true, customers: true } },
-      },
-    });
+    async function* generateTenantsCsv() {
+      yield "Tenant ID,Code,Pharmacy Name,Owner,Owner Email,Owner Phone,Plan,Status,Created Date,Renewal Date,Doctors,Patients,Storage,Last Login,Subscription Status\n";
+      
+      let cursor: string | undefined = undefined;
 
-    return pharmacies.map((p) => ({
-      tenantId: p.id,
-      tenantCode: p.tenantCode || "--",
-      pharmacyName: p.name,
-      owner: p.users[0]?.name || "--",
-      ownerEmail: p.users[0]?.email || "--",
-      ownerPhone: p.users[0]?.phone || "--",
-      plan: p.subscription?.planName || "Not Configured",
-      status: p.tenantStatus,
-      createdDate: p.createdAt.toISOString().split("T")[0],
-      renewalDate: p.subscription?.validUntil?.toISOString().split("T")[0] || "--",
-      doctors: p._count.doctors,
-      patients: p._count.customers,
-      storage: "--",
-      lastLogin: p.users[0]?.lastLoginAt?.toISOString() || "--",
-      subscriptionStatus: p.subscription?.status || "--",
-    }));
+      while (true) {
+        const pharmacies = await prisma.pharmacy.findMany({
+          where,
+          orderBy: { id: "asc" },
+          take: 1000,
+          skip: cursor ? 1 : 0,
+          cursor: cursor ? { id: cursor } : undefined,
+          include: {
+            users: {
+              where: { role: "OWNER" },
+              take: 1,
+              select: { name: true, email: true, phone: true, lastLoginAt: true },
+            },
+            subscription: { select: { planName: true, status: true, validUntil: true } },
+            _count: { select: { doctors: true, customers: true } },
+          },
+        }) as any[];
+
+        if (pharmacies.length === 0) break;
+
+        let chunk = "";
+        for (const p of pharmacies) {
+          const owner = p.users[0]?.name || "--";
+          const ownerEmail = p.users[0]?.email || "--";
+          const ownerPhone = p.users[0]?.phone || "--";
+          const plan = p.subscription?.planName || "Not Configured";
+          const renewalDate = p.subscription?.validUntil?.toISOString().split("T")[0] || "--";
+          const lastLogin = p.users[0]?.lastLoginAt?.toISOString() || "--";
+          const subStatus = p.subscription?.status || "--";
+
+          chunk += `"${p.id}","${p.tenantCode || '--'}","${p.name}","${owner}","${ownerEmail}","${ownerPhone}","${plan}","${p.tenantStatus}","${p.createdAt.toISOString().split("T")[0]}","${renewalDate}","${p._count.doctors}","${p._count.customers}","--","${lastLogin}","${subStatus}"\n`;
+        }
+        yield chunk;
+        cursor = pharmacies[pharmacies.length - 1].id;
+      }
+    }
+
+    return Readable.from(generateTenantsCsv());
   }
 
   // ── List Tenants (existing, updated for new fields) ───────────────────────

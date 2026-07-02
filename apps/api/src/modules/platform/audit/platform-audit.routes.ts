@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { authenticate, requireRole } from "../../../middleware/auth.js";
 import { z } from "zod";
+import { Readable } from "stream";
 
 const auditQuerySchema = z.object({
   page: z.coerce.number().min(1).default(1),
@@ -100,25 +101,41 @@ const platformAuditRoutes: FastifyPluginAsync = async (app) => {
       if (query.from) where.createdAt.gte = new Date(query.from);
       if (query.to) where.createdAt.lte = new Date(query.to);
     }
+    if (query.module) where.module = query.module;
+    if (query.action) where.action = query.action;
+    if ((query as any).userId) where.userId = (query as any).userId;
 
-    const items = await app.prisma.auditLog.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      take: 5000, // Hard limit for CSV export to prevent memory issues
-      include: {
-        user: { select: { name: true, email: true } },
-        pharmacy: { select: { name: true } },
-      },
-    });
+    async function* generateAuditCsv() {
+      yield "ID,Date,Tenant,User,Module,Action,Target,Severity,Status,IP Address\n";
+      let cursor: string | undefined = undefined;
+      
+      while (true) {
+        const items = await app.prisma.auditLog.findMany({
+          where,
+          take: 1000,
+          skip: cursor ? 1 : 0,
+          cursor: cursor ? { id: cursor } : undefined,
+          orderBy: { id: "asc" },
+          include: {
+            user: { select: { name: true, email: true } },
+            pharmacy: { select: { name: true } },
+          },
+        }) as any[];
 
-    let csv = "ID,Date,Tenant,User,Module,Action,Target,Severity,Status,IP Address\n";
-    for (const item of items) {
-      csv += `"${item.id}","${item.createdAt.toISOString()}","${item.pharmacy?.name || 'Platform'}","${item.userEmail || item.user?.email || 'System'}","${item.module}","${item.action}","${item.resourceName || item.entityId || ''}","${item.severity}","${item.status}","${item.ipAddress || ''}"\n`;
+        if (items.length === 0) break;
+
+        let chunk = "";
+        for (const item of items) {
+          chunk += `"${item.id}","${item.createdAt.toISOString()}","${item.pharmacy?.name || 'Platform'}","${item.userEmail || item.user?.email || 'System'}","${item.module}","${item.action}","${item.resourceName || item.entityId || ''}","${item.severity}","${item.status}","${item.ipAddress || ''}"\n`;
+        }
+        yield chunk;
+        cursor = items[items.length - 1].id;
+      }
     }
 
     reply.header("Content-Type", "text/csv");
     reply.header("Content-Disposition", `attachment; filename="platform-audit-${new Date().toISOString().split("T")[0]}.csv"`);
-    return reply.send(csv);
+    return reply.send(Readable.from(generateAuditCsv()));
   });
 
   app.get("/:id", { preHandler }, async (req, reply) => {

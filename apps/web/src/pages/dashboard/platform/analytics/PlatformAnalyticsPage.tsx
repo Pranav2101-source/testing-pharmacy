@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
+import { api } from "@/lib/api-client";
 import { useQuery } from "@tanstack/react-query";
 import { analyticsApi } from "./analytics.api";
 import { AnalyticsHeader } from "./components/AnalyticsHeader";
@@ -15,15 +16,22 @@ import { SystemHealthCard } from "./components/SystemHealth";
 import { GeographicInsights } from "./components/GeographicInsights";
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { TopLists } from "./components/TopLists";
+import { NewPharmaciesDrawer } from "./components/NewPharmaciesDrawer";
+import { TenantDrawer } from "../components/TenantDrawer";
 import type { AnalyticsDateRange } from "./analytics.types";
 import { AlertCircle } from "lucide-react";
 
 export default function PlatformAnalyticsPage() {
-  const [range, setRange] = useState<AnalyticsDateRange>({
-    from: new Date(new Date().getTime() - 30 * 86400000),
-    to: new Date()
-  });
   const [autoRefresh, setAutoRefresh] = useState<number>(0);
+  const [isNewPharmaciesDrawerOpen, setIsNewPharmaciesDrawerOpen] = useState(false);
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
+
+  // Generate 30-day rolling window for charts
+  const range = useMemo(() => {
+    const to = new Date();
+    const from = new Date(to.getTime() - 30 * 86400000);
+    return { from, to };
+  }, []);
 
   const { data, isLoading, isRefetching, error, refetch } = useQuery({
     queryKey: ["platform-analytics", range.from.toISOString(), range.to.toISOString()],
@@ -32,19 +40,48 @@ export default function PlatformAnalyticsPage() {
     staleTime: 30_000,
   });
 
-  const handleExport = () => {
-    analyticsApi.exportCSV(range.from.toISOString(), range.to.toISOString());
+  const handleExport = async (format: "csv" | "xlsx", startDate: string, endDate: string) => {
+    try {
+      const qs = new URLSearchParams({
+        from: startDate,
+        to: endDate,
+        format,
+        allTime: "false"
+      }).toString();
+      
+      const res = await api.get(`/platform/analytics/export?${qs}`, {
+        responseType: 'blob'
+      });
+      
+      // Get filename from Content-Disposition header if possible, else default
+      let filename = `PlatformAnalytics_${startDate}_to_${endDate}.${format}`;
+      const disposition = res.headers['content-disposition'];
+      if (disposition && disposition.indexOf('attachment') !== -1) {
+        const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+        const matches = filenameRegex.exec(disposition);
+        if (matches != null && matches[1]) { 
+          filename = matches[1].replace(/['"]/g, '');
+        }
+      }
+      
+      const url = window.URL.createObjectURL(new Blob([res.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      console.error("Export failed:", err);
+    }
   };
 
   return (
     <div className="p-4 md:p-8 max-w-[1600px] mx-auto space-y-8 h-full overflow-y-auto">
       <AnalyticsHeader 
-        range={range} 
-        onRangeChange={setRange}
         autoRefresh={autoRefresh} 
         onAutoRefreshChange={setAutoRefresh}
         onRefresh={() => {
-          // manually passing refresh=true to bypass cache
           analyticsApi.getDashboard(range.from.toISOString(), range.to.toISOString(), true).then(() => refetch());
         }} 
         onExport={handleExport}
@@ -77,7 +114,12 @@ export default function PlatformAnalyticsPage() {
       ) : data ? (
         <>
           <CriticalAlerts alerts={data.alerts} />
-          <ExecutiveCards cards={data.executive} />
+          <ExecutiveCards 
+            cards={data.executive} 
+            onCardClick={(key) => {
+              if (key === "newPharmacies") setIsNewPharmaciesDrawerOpen(true);
+            }} 
+          />
           <RevenueSection data={data.revenue} />
           <TenantGrowth data={data.tenants} />
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-8 mb-8">
@@ -95,6 +137,21 @@ export default function PlatformAnalyticsPage() {
           </div>
         </>
       ) : null}
+
+      <NewPharmaciesDrawer 
+        isOpen={isNewPharmaciesDrawerOpen} 
+        onClose={() => setIsNewPharmaciesDrawerOpen(false)} 
+        days={30} 
+        onTenantClick={(tenantId) => {
+          setSelectedTenantId(tenantId);
+          setIsNewPharmaciesDrawerOpen(false);
+        }} 
+      />
+      
+      <TenantDrawer 
+        tenantId={selectedTenantId} 
+        onClose={() => setSelectedTenantId(null)} 
+      />
     </div>
   );
 }

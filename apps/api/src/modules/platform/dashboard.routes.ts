@@ -12,6 +12,16 @@ const dashboardRoutes: FastifyPluginAsync = async (app) => {
     const stats = await service.getPlatformDashboardStats();
     return reply.send({ success: true, data: stats });
   });
+
+  app.get("/export", { preHandler: adminAuth }, async (_req, reply) => {
+    const csvContent = await service.exportDashboardReport();
+    
+    const today = new Date().toISOString().split('T')[0];
+    reply.header("Content-Type", "text/csv");
+    reply.header("Content-Disposition", `attachment; filename=platform-report-${today}.csv`);
+    
+    return reply.send(csvContent);
+  });
 };
 
 export default dashboardRoutes;

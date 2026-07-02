@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useToast } from "@/hooks/useToast";
 import { api } from "@/lib/api-client";
 import { 
   Building2, Users, Receipt, AlertTriangle, Activity, 
@@ -10,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from "recharts";
 import { Link } from "react-router-dom";
+import { NewPharmacyWizard } from "./components/NewPharmacyWizard";
 
 type DashboardStats = {
   real: {
@@ -24,24 +27,22 @@ type DashboardStats = {
     totalConsultations: number;
     activityFeed: Array<{ id: string; type: string; message: string; timestamp: string }>;
   };
-  mock: {
-    revenue: {
-      mrr: number;
-      arr: number;
-      todaysRevenue: number;
-      renewalsToday: number;
-      failedPayments: number;
-      outstandingInvoices: number;
-    };
-    systemHealth: {
-      database: { status: string; value: string; detail: string };
-      redis: { status: string; value: string; detail: string };
-      queue: { status: string; value: string; detail: string };
-      storage: { status: string; value: string; detail: string };
-      api: { status: string; value: string; detail: string };
-    };
-    criticalAlerts: Array<{ id: string; type: string; message: string }>;
+  metrics: {
+    mrr: number;
+    arr: number;
+    todaysRevenue: number;
+    renewalsToday: number;
+    failedPayments: number;
+    outstandingInvoices: number;
   };
+  systemHealth: {
+    database: { status: string; value: string; detail: string };
+    redis: { status: string; value: string; detail: string };
+    queue: { status: string; value: string; detail: string };
+    storage: { status: string; value: string; detail: string };
+    api: { status: string; value: string; detail: string };
+  };
+  criticalAlerts: Array<{ id: string; type: string; message: string }>;
 };
 
 function formatCurrency(amount: number) {
@@ -66,12 +67,13 @@ function timeAgo(dateString: string) {
   return Math.floor(seconds) + " secs ago";
 }
 
-// Dummy chart data for sparkline
-const dummySparklineData = [
-  { value: 400 }, { value: 300 }, { value: 550 }, { value: 450 }, { value: 700 }
-];
+
 
 export default function PlatformAdminDashboard() {
+  const toast = useToast();
+  const [isExporting, setIsExporting] = useState(false);
+  const [isPharmacyWizardOpen, setIsPharmacyWizardOpen] = useState(false);
+
   const { data: res, isLoading, error } = useQuery({
     queryKey: ["platform-dashboard-stats"],
     queryFn: async () => {
@@ -101,7 +103,26 @@ export default function PlatformAdminDashboard() {
     );
   }
 
-  const { real, mock } = res;
+  const { real, metrics, systemHealth, criticalAlerts } = res;
+
+  const handleExport = async () => {
+    try {
+      setIsExporting(true);
+      const response = await api.get("/platform/export", { responseType: "blob" });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `platform-report-${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success("Report downloaded successfully");
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error || err.message || "Failed to download report");
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   return (
     <div className="p-4 md:p-8 max-w-[1600px] mx-auto space-y-8 bg-slate-50 h-full overflow-y-auto">
@@ -114,16 +135,21 @@ export default function PlatformAdminDashboard() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <button className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 transition-colors">
-            Download Report
+          <button 
+            onClick={handleExport}
+            disabled={isExporting}
+            className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 shadow-sm hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            {isExporting ? <Clock className="w-4 h-4 animate-spin" /> : null}
+            {isExporting ? "Generating..." : "Download Report"}
           </button>
         </div>
       </div>
 
       {/* Critical Alerts */}
-      {mock.criticalAlerts.length > 0 && (
+      {criticalAlerts.length > 0 && (
         <div className="flex flex-col gap-3">
-          {mock.criticalAlerts.map(alert => (
+          {criticalAlerts.map(alert => (
             <div key={alert.id} className={cn(
               "flex items-center gap-3 p-4 rounded-xl border shadow-sm font-medium",
               alert.type === "DANGER" ? "bg-red-50 border-red-200 text-red-800" : "bg-amber-50 border-amber-200 text-amber-800"
@@ -137,7 +163,7 @@ export default function PlatformAdminDashboard() {
 
       {/* Top KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <KpiCard title="Monthly Recurring Revenue" value={formatCurrency(mock.revenue.mrr)} trend="+12.5%" trendUp icon={<CreditCard className="w-5 h-5" />} color="indigo" />
+        <KpiCard title="Monthly Recurring Revenue" value={formatCurrency(metrics.mrr)} trend="+12.5%" trendUp icon={<CreditCard className="w-5 h-5" />} color="indigo" />
         <KpiCard title="Active Pharmacies" value={real.activePharmacies.toString()} trend="+4" trendUp icon={<Building2 className="w-5 h-5" />} color="emerald" />
         <KpiCard title="Total Doctors" value={real.totalDoctors.toString()} trend="+18%" trendUp icon={<Users className="w-5 h-5" />} color="blue" />
         <KpiCard title="Open Urgent Tickets" value={real.urgentTickets.toString()} trend={real.urgentTickets > 5 ? "Action required" : "Healthy"} trendUp={real.urgentTickets === 0} icon={<AlertTriangle className="w-5 h-5" />} color={real.urgentTickets > 0 ? "red" : "slate"} />
@@ -156,19 +182,19 @@ export default function PlatformAdminDashboard() {
             <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-slate-100">
               <div className="p-6 text-center">
                 <p className="text-sm font-medium text-slate-500">ARR</p>
-                <p className="text-2xl font-bold text-slate-900 mt-1">{formatCurrency(mock.revenue.arr)}</p>
+                <p className="text-2xl font-bold text-slate-900 mt-1">{formatCurrency(metrics.arr)}</p>
               </div>
               <div className="p-6 text-center">
                 <p className="text-sm font-medium text-slate-500">Today's Revenue</p>
-                <p className="text-2xl font-bold text-slate-900 mt-1">{formatCurrency(mock.revenue.todaysRevenue)}</p>
+                <p className="text-2xl font-bold text-slate-900 mt-1">{formatCurrency(metrics.todaysRevenue)}</p>
               </div>
               <div className="p-6 text-center">
                 <p className="text-sm font-medium text-slate-500">Renewals Today</p>
-                <p className="text-2xl font-bold text-emerald-600 mt-1">{mock.revenue.renewalsToday}</p>
+                <p className="text-2xl font-bold text-emerald-600 mt-1">{metrics.renewalsToday}</p>
               </div>
               <div className="p-6 text-center">
                 <p className="text-sm font-medium text-slate-500">Outstanding Invoices</p>
-                <p className="text-2xl font-bold text-amber-600 mt-1">{mock.revenue.outstandingInvoices}</p>
+                <p className="text-2xl font-bold text-amber-600 mt-1">{metrics.outstandingInvoices}</p>
               </div>
             </div>
           </div>
@@ -179,11 +205,11 @@ export default function PlatformAdminDashboard() {
               <h2 className="text-lg font-bold text-slate-800">System Health</h2>
             </div>
             <div className="p-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              <HealthMetric icon={<Database />} label="Database" health={mock.systemHealth.database} />
-              <HealthMetric icon={<Server />} label="Redis" health={mock.systemHealth.redis} />
-              <HealthMetric icon={<Activity />} label="Queue" health={mock.systemHealth.queue} />
-              <HealthMetric icon={<HardDrive />} label="Storage" health={mock.systemHealth.storage} />
-              <HealthMetric icon={<Zap />} label="API" health={mock.systemHealth.api} />
+              <HealthMetric icon={<Database />} label="Database" health={systemHealth.database} />
+              <HealthMetric icon={<Server />} label="Redis" health={systemHealth.redis} />
+              <HealthMetric icon={<Activity />} label="Queue" health={systemHealth.queue} />
+              <HealthMetric icon={<HardDrive />} label="Storage" health={systemHealth.storage} />
+              <HealthMetric icon={<Zap />} label="API" health={systemHealth.api} />
             </div>
           </div>
 
@@ -223,12 +249,12 @@ export default function PlatformAdminDashboard() {
               <h2 className="text-lg font-bold text-slate-800">Quick Actions</h2>
             </div>
             <div className="p-3 grid grid-cols-1 gap-1">
-              <QuickAction icon={<Plus />} label="New Pharmacy" />
-              <QuickAction icon={<AlertTriangle />} label="Create Support Ticket" />
-              <QuickAction icon={<Key />} label="Invite Admin" />
-              <QuickAction icon={<BellRing />} label="Broadcast Notice" />
-              <QuickAction icon={<CreditCard />} label="Create Coupon" />
-              <QuickAction icon={<TrendingUp />} label="Upgrade Subscription" />
+              <QuickAction icon={<Plus />} label="New Pharmacy" onClick={() => setIsPharmacyWizardOpen(true)} />
+              <QuickAction icon={<AlertTriangle />} label="Create Support Ticket" to="/dashboard/support?action=new" />
+              <QuickAction icon={<Key />} label="Invite Admin" disabled tooltipText="Feature coming in Phase 6" />
+              <QuickAction icon={<BellRing />} label="Broadcast Notice" disabled tooltipText="Feature coming in Phase 6" />
+              <QuickAction icon={<CreditCard />} label="Create Coupon" disabled tooltipText="Coupons will be added in v1.2" />
+              <QuickAction icon={<TrendingUp />} label="Upgrade Subscription" to="/dashboard/subscriptions" />
               <QuickAction icon={<Shield />} label="View Audit Logs" to="/dashboard/audit" />
             </div>
           </div>
@@ -264,11 +290,15 @@ export default function PlatformAdminDashboard() {
 
         </div>
       </div>
+      <NewPharmacyWizard 
+        open={isPharmacyWizardOpen} 
+        onClose={() => setIsPharmacyWizardOpen(false)} 
+      />
     </div>
   );
 }
 
-function KpiCard({ title, value, trend, trendUp, icon, color }: any) {
+function KpiCard({ title, value, trend, trendUp, icon, color, sparklineData }: any) {
   const colorMap = {
     indigo: "bg-indigo-50 text-indigo-600",
     emerald: "bg-emerald-50 text-emerald-600",
@@ -296,13 +326,15 @@ function KpiCard({ title, value, trend, trendUp, icon, color }: any) {
       <p className="text-3xl font-extrabold text-slate-900 mt-1 tracking-tight">{value}</p>
       
       {/* Sparkline decorative background */}
-      <div className="absolute bottom-0 left-0 right-0 h-16 opacity-10 group-hover:opacity-20 transition-opacity pointer-events-none">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={dummySparklineData}>
-            <Area type="monotone" dataKey="value" stroke={trendUp ? "#10b981" : "#ef4444"} fill={trendUp ? "#10b981" : "#ef4444"} strokeWidth={2} />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
+      {sparklineData && sparklineData.length > 0 && (
+        <div className="absolute bottom-0 left-0 right-0 h-16 opacity-10 group-hover:opacity-20 transition-opacity pointer-events-none">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={sparklineData}>
+              <Area type="monotone" dataKey="value" stroke={trendUp ? "#10b981" : "#ef4444"} fill={trendUp ? "#10b981" : "#ef4444"} strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 }
@@ -329,25 +361,36 @@ function HealthMetric({ icon, label, health }: any) {
   );
 }
 
-function QuickAction({ icon, label, to }: any) {
+function QuickAction({ icon, label, to, onClick, disabled, tooltipText }: any) {
   const content = (
     <>
-      <div className="text-slate-400 group-hover:text-brand-600 transition-colors">
+      <div className={cn("transition-colors", disabled ? "text-slate-300" : "text-slate-400 group-hover:text-brand-600")}>
         {icon}
       </div>
-      <span className="text-sm font-semibold text-slate-700 group-hover:text-slate-900 flex-1 text-left">{label}</span>
-      <ChevronRight className="w-4 h-4 text-slate-300 group-hover:text-slate-500" />
+      <span className={cn("text-sm font-semibold flex-1 text-left", disabled ? "text-slate-400" : "text-slate-700 group-hover:text-slate-900")}>{label}</span>
+      <ChevronRight className={cn("w-4 h-4", disabled ? "text-slate-200" : "text-slate-300 group-hover:text-slate-500")} />
     </>
   );
 
-  const className = "flex items-center gap-3 w-full p-3 rounded-xl hover:bg-slate-50 transition-colors group";
+  const className = cn(
+    "flex items-center gap-3 w-full p-3 rounded-xl transition-colors group relative",
+    disabled ? "bg-slate-50 cursor-not-allowed" : "hover:bg-slate-50 cursor-pointer"
+  );
+
+  if (disabled) {
+    return (
+      <button type="button" className={className} disabled title={tooltipText}>
+        {content}
+      </button>
+    );
+  }
 
   if (to) {
-    return <Link to={to} className={className}>{content}</Link>;
+    return <Link to={to} className={className} title={tooltipText}>{content}</Link>;
   }
 
   return (
-    <button className={className}>
+    <button type="button" onClick={onClick} className={className} title={tooltipText}>
       {content}
     </button>
   );

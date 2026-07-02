@@ -52,6 +52,12 @@ import { env, allowedOrigins, trustProxyHops } from "./config/env.js";
 import { AppError } from "./lib/AppError.js";
 import { Prisma } from "@pharmacy/database";
 
+declare module "fastify" {
+  interface FastifyInstance {
+    redis?: import("ioredis").Redis;
+  }
+}
+
 import { startWorkers, setupScheduledJobs, boss } from "@pharmacy/jobs";
 
 // Turns a Zod issue path like ["items", 2, "quantity"] into "Item 3 → quantity"
@@ -157,6 +163,7 @@ export async function buildApp() {
 
   // Close the Redis connection cleanly when the app shuts down.
   if (redisClient) {
+    app.decorate("redis", redisClient);
     app.addHook("onClose", async () => {
       await redisClient!.quit().catch((err: unknown) => {
         app.log.warn(err, "[redis] error during disconnect");

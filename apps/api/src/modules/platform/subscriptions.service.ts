@@ -307,42 +307,58 @@ export class SubscriptionsService {
   // ── Change Plan ───────────────────────────────────────────────────────────
 
   async changePlan(id: string, plan: string, billingCycle: string | undefined, amount: number | undefined, adminUserId: string) {
-    const sub = await this.app.prisma.subscription.findUnique({ where: { id } });
-    if (!sub) throw Object.assign(new Error("Subscription not found"), { statusCode: 404 });
+    try {
+      console.log(`[changePlan] START - id (tenantId/subId): ${id}`);
+      console.log(`[changePlan] planId/targetPlan: ${plan}, billingCycle: ${billingCycle}, amount: ${amount}`);
 
-    const cycle = billingCycle || sub.billingCycle;
-    const pricing = PLAN_PRICING[plan];
-    const computedAmount = amount !== undefined ? amount : (pricing ? pricing[cycle.toLowerCase() as keyof typeof pricing] || 0 : 0);
+      const sub = await this.app.prisma.subscription.findUnique({ where: { id } });
+      console.log(`[changePlan] current subscription:`, sub ? `Found (plan: ${sub.planName})` : `NOT FOUND`);
+      
+      if (!sub) {
+        throw Object.assign(new Error("Subscription not found"), { statusCode: 404 });
+      }
 
-    const updated = await this.app.prisma.subscription.update({
-      where: { id },
-      data: { planName: plan, billingCycle: cycle, amount: computedAmount },
-    });
+      const cycle = billingCycle || sub.billingCycle;
+      const pricing = PLAN_PRICING[plan];
+      console.log(`[changePlan] pricing for plan ${plan}:`, pricing ? "Found" : "NOT FOUND");
 
-    await this.app.prisma.subscriptionAuditLog.create({
-      data: {
-        subscriptionId: id,
+      const computedAmount = amount !== undefined ? amount : (pricing ? pricing[cycle.toLowerCase() as keyof typeof pricing] || 0 : 0);
+      console.log(`[changePlan] computedAmount: ${computedAmount}`);
+
+      const updated = await this.app.prisma.subscription.update({
+        where: { id },
+        data: { planName: plan, billingCycle: cycle, amount: computedAmount },
+      });
+      console.log(`[changePlan] subscription updated successfully`);
+
+      await this.app.prisma.subscriptionAuditLog.create({
+        data: {
+          subscriptionId: id,
+          action: "PLAN_CHANGED",
+          oldValue: JSON.stringify({ plan: sub.planName, cycle: sub.billingCycle, amount: sub.amount }),
+          newValue: JSON.stringify({ plan, cycle, amount: computedAmount }),
+          performedBy: adminUserId,
+        },
+      });
+
+      void auditService.log(null, {
+        pharmacyId: sub.pharmacyId,
+        userId: adminUserId,
+        module: "SUBSCRIPTIONS",
         action: "PLAN_CHANGED",
-        oldValue: JSON.stringify({ plan: sub.planName, cycle: sub.billingCycle, amount: sub.amount }),
-        newValue: JSON.stringify({ plan, cycle, amount: computedAmount }),
-        performedBy: adminUserId,
-      },
-    });
+        entity: "SUBSCRIPTION",
+        entityId: id,
+        severity: "INFO",
+        status: "SUCCESS",
+        oldData: { plan: sub.planName, cycle: sub.billingCycle, amount: sub.amount },
+        newData: { plan, cycle, amount: computedAmount },
+      });
 
-    void auditService.log(null, {
-      pharmacyId: sub.pharmacyId,
-      userId: adminUserId,
-      module: "SUBSCRIPTIONS",
-      action: "PLAN_CHANGED",
-      entity: "SUBSCRIPTION",
-      entityId: id,
-      severity: "INFO",
-      status: "SUCCESS",
-      oldData: { plan: sub.planName, cycle: sub.billingCycle, amount: sub.amount },
-      newData: { plan, cycle, amount: computedAmount },
-    });
-
-    return updated;
+      return updated;
+    } catch (error: any) {
+      console.error(`[changePlan] ERROR:`, error.stack || error);
+      throw error;
+    }
   }
 
   // ── Renew ─────────────────────────────────────────────────────────────────

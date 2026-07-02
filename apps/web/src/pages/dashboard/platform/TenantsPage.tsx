@@ -38,9 +38,6 @@ type TenantsResponse = {
   meta: { total: number; page: number; limit: number; totalPages: number };
 };
 
-const dummySparklineData = [
-  { value: 400 }, { value: 300 }, { value: 550 }, { value: 450 }, { value: 700 }
-];
 
 const STATUS_BADGE: Record<string, { bg: string; text: string; label: string }> = {
   ACTIVE: { bg: "bg-emerald-50 ring-emerald-600/20", text: "text-emerald-700", label: "Active" },
@@ -477,7 +474,7 @@ export default function TenantsPage() {
 }
 
 // ─── Extracted KPI Card Component to avoid duplication ────────────────────
-function KpiCard({ title, value, isLoading, icon, color }: any) {
+function KpiCard({ title, value, isLoading, icon, color, sparklineData }: any) {
   const colorMap = {
     indigo: "bg-indigo-50 text-indigo-600",
     emerald: "bg-emerald-50 text-emerald-600",
@@ -502,13 +499,15 @@ function KpiCard({ title, value, isLoading, icon, color }: any) {
       )}
 
       {/* Sparkline decorative background */}
-      <div className="absolute bottom-0 left-0 right-0 h-16 opacity-10 group-hover:opacity-20 transition-opacity pointer-events-none">
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={dummySparklineData}>
-            <Area type="monotone" dataKey="value" stroke="#6366f1" fill="#6366f1" strokeWidth={2} />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
+      {sparklineData && sparklineData.length > 0 && (
+        <div className="absolute bottom-0 left-0 right-0 h-16 opacity-10 group-hover:opacity-20 transition-opacity pointer-events-none">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={sparklineData}>
+              <Area type="monotone" dataKey="value" stroke="#6366f1" fill="#6366f1" strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 }

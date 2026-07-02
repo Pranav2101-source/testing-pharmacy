@@ -47,7 +47,7 @@ const subscriptionsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/bulk", { preHandler: adminAuth }, async (req, reply) => {
     const { ids, action, planName } = bulkSubscriptionActionSchema.parse(req.body);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.bulkAction(ids, action, adminUserId, planName);
     return reply.send({ success: true, data: result });
   });
@@ -66,7 +66,7 @@ const subscriptionsRoutes: FastifyPluginAsync = async (app) => {
   app.patch("/:id/plan", { preHandler: adminAuth }, async (req, reply) => {
     const { id } = getSubscriptionParamsSchema.parse(req.params);
     const { planName, billingCycle, amount } = changePlanSchema.parse(req.body);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.changePlan(id, planName, billingCycle, amount, adminUserId);
     return reply.send({ success: true, data: result });
   });
@@ -75,7 +75,7 @@ const subscriptionsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/:id/renew", { preHandler: adminAuth }, async (req, reply) => {
     const { id } = getSubscriptionParamsSchema.parse(req.params);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.renew(id, adminUserId);
     return reply.send({ success: true, data: result });
   });
@@ -84,7 +84,7 @@ const subscriptionsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/:id/pause", { preHandler: adminAuth }, async (req, reply) => {
     const { id } = getSubscriptionParamsSchema.parse(req.params);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.pause(id, adminUserId);
     return reply.send({ success: true, data: result });
   });
@@ -93,7 +93,7 @@ const subscriptionsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/:id/resume", { preHandler: adminAuth }, async (req, reply) => {
     const { id } = getSubscriptionParamsSchema.parse(req.params);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.resume(id, adminUserId);
     return reply.send({ success: true, data: result });
   });
@@ -102,7 +102,7 @@ const subscriptionsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/:id/cancel", { preHandler: adminAuth }, async (req, reply) => {
     const { id } = getSubscriptionParamsSchema.parse(req.params);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.cancel(id, adminUserId);
     return reply.send({ success: true, data: result });
   });
@@ -111,7 +111,7 @@ const subscriptionsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/:id/reminder", { preHandler: adminAuth }, async (req, reply) => {
     const { id } = getSubscriptionParamsSchema.parse(req.params);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.sendReminder(id, adminUserId);
     return reply.send({ success: true, data: result });
   });
@@ -120,7 +120,7 @@ const subscriptionsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/:id/invoice", { preHandler: adminAuth }, async (req, reply) => {
     const { id } = getSubscriptionParamsSchema.parse(req.params);
-    const adminUserId = (req as any).user.id;
+    const adminUserId = req.user.sub;
     const result = await service.generateInvoice(id, adminUserId);
     return reply.send({ success: true, data: result });
   });
