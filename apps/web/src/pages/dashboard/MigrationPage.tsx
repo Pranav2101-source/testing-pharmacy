@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Upload, ArrowRight, ArrowLeft, Check, AlertTriangle,
   Info, RefreshCw, FileSpreadsheet, Download,
-  Loader2, ShieldCheck,
+  Loader2, ShieldCheck, Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
@@ -61,13 +61,14 @@ interface Session {
 }
 
 interface ImportJob {
-  id:          string;
-  entityType:  string;
-  status:      string;
-  totalRows:   number;
-  successRows: number;
-  failedRows:  number;
-  errors:      IssueRow[];
+  id:            string;
+  entityType:    string;
+  status:        string;
+  totalRows:     number;
+  processedRows: number;
+  successRows:   number;
+  failedRows:    number;
+  errors:        IssueRow[];
 }
 
 interface IssueRow {
@@ -295,6 +296,93 @@ function ColMappingTable({
           ))}
         </tbody>
       </table>
+      {/* #11 — Format hints so exports don't fail validation on ambiguous fields */}
+      <div className="border-t border-slate-100 bg-slate-50/60 px-3 py-2 text-[10.5px] text-slate-500 leading-relaxed">
+        <span className="font-semibold text-slate-600">Accepted formats:</span>{" "}
+        Dates <span className="font-mono">DD/MM/YYYY</span>, <span className="font-mono">MM/YY</span> or <span className="font-mono">YYYY-MM-DD</span>
+        {" · "}Phone 10-digit mobile
+        {" · "}GSTIN 15-char{" · "}GST rate one of 0 / 5 / 12 / 18.
+        {" "}Columns left as <span className="font-mono">(skip)</span> are ignored.
+      </div>
+    </div>
+  );
+}
+
+// #12 — "You've imported this before" heads-up shown before a re-import.
+function PriorImportBanner({ info, entity }: { info?: { successRows: number; completedAt: string | null }; entity: string }) {
+  if (!info) return null;
+  const when = info.completedAt
+    ? new Date(info.completedAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+    : "earlier";
+  return (
+    <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-[11.5px] text-amber-800">
+      <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+      <span>
+        You already imported <span className="font-semibold">{info.successRows.toLocaleString()} {entity}</span> on {when}.
+        Re-importing <span className="font-semibold">updates</span> existing records and skips duplicates — it won't create duplicates,
+        but double-check this is the file you mean to import.
+      </span>
+    </div>
+  );
+}
+
+// Clear, honest result banner for any commit (inventory or entity) — distinguishes
+// full success, partial success, "nothing new" (all rows were duplicates, not an
+// error), and true failure, and always shows WHY when rows didn't succeed.
+function ImportOutcomeBanner({
+  result, entity,
+}: {
+  result: { successRows: number; failedRows: number; skippedRows?: number; errors: IssueRow[] };
+  entity: string;
+}) {
+  const skipped = result.skippedRows ?? 0;
+  const allSkippedNoNew = result.successRows === 0 && result.failedRows === 0 && skipped > 0;
+  const trueFailure     = result.successRows === 0 && result.failedRows > 0;
+  const partial         = result.successRows > 0 && result.failedRows > 0;
+
+  const tone = trueFailure ? "red" : partial ? "amber" : allSkippedNoNew ? "blue" : "green";
+  const toneClasses: Record<string, string> = {
+    red:   "bg-red-50 border-red-200 text-red-800",
+    amber: "bg-amber-50 border-amber-200 text-amber-800",
+    blue:  "bg-blue-50 border-blue-200 text-blue-800",
+    green: "bg-green-50 border-green-200 text-green-800",
+  };
+  const Icon = trueFailure || partial ? AlertTriangle : allSkippedNoNew ? Info : Check;
+
+  const headline = trueFailure
+    ? `Import failed — 0 ${entity} imported`
+    : allSkippedNoNew
+    ? `Nothing new to import — all ${skipped} row${skipped === 1 ? "" : "s"} already existed`
+    : partial
+    ? `Partially imported — ${result.successRows} ${entity} imported, ${result.failedRows} failed`
+    : `${result.successRows} ${entity} imported successfully`;
+
+  const issues = result.errors ?? [];
+
+  return (
+    <div className={cn("rounded-lg border px-3 py-2 text-[12px]", toneClasses[tone])}>
+      <div className="flex items-center gap-1.5 font-semibold">
+        <Icon className="w-3.5 h-3.5 flex-shrink-0" />
+        {headline}
+      </div>
+      {skipped > 0 && !allSkippedNoNew && (
+        <p className="text-[11px] mt-0.5 opacity-80">{skipped} row{skipped === 1 ? "" : "s"} skipped as duplicates (updated instead of re-created)</p>
+      )}
+      {issues.length > 0 && (
+        <div className="mt-2 max-h-40 overflow-y-auto border border-black/10 rounded-md divide-y divide-black/5 bg-white/60">
+          {issues.slice(0, 50).map((e, i) => (
+            <div key={i} className="flex items-start gap-2 px-2 py-1">
+              {e.severity === "error"
+                ? <AlertTriangle className="w-3 h-3 text-red-500 flex-shrink-0 mt-0.5" />
+                : <Info className="w-3 h-3 text-amber-500 flex-shrink-0 mt-0.5" />}
+              <span className="text-[10px] text-slate-600">Row {e.row}: {e.message}</span>
+            </div>
+          ))}
+          {issues.length > 50 && (
+            <p className="text-[10px] text-slate-400 px-2 py-1">…and {issues.length - 50} more</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -310,6 +398,7 @@ export default function MigrationPage() {
   const [step,           setStep]           = useState<Step>("start");
   const [sessionId,      setSessionId]      = useState<string | null>(null);
   const [sourceSoftware, setSourceSoftware] = useState("Marg ERP");
+  const [showRollback,   setShowRollback]   = useState(false);
 
   // Inventory CSV
   const [csvText,       setCsvText]       = useState("");
@@ -371,6 +460,15 @@ export default function MigrationPage() {
     }
   }, [sessionQueryFailed, sessionId, toast]);
 
+  // #12 — Prior successful imports for this pharmacy, so we can warn before a
+  // re-import. Re-fetched when the wizard advances so it reflects the latest.
+  const { data: importHistory } = useQuery<{ entityType: string; successRows: number; completedAt: string | null }[]>({
+    queryKey: ["migration-history", session?.completedSteps?.length ?? 0],
+    queryFn:  () => apiFetch("/history"),
+  });
+  const priorImport = (entity: string) =>
+    importHistory?.find((h) => h.entityType.toUpperCase() === entity.toUpperCase());
+
   // Warn before leaving while an import is actively running
   useEffect(() => {
     const hasActiveImport = session?.importJobs.some((j) => j.status === "PROCESSING");
@@ -398,6 +496,24 @@ export default function MigrationPage() {
       });
     }
   }, [session?.importJobs, step, commitResult?.jobId]);
+
+  // Finalize async supplier/customer/doctor imports: when a large file was
+  // dispatched to the background, replace its provisional result with the job's
+  // real counts once the worker finishes (session polling drives this).
+  useEffect(() => {
+    if (!session?.importJobs) return;
+    for (const entity of ["suppliers", "customers", "doctors"] as const) {
+      const r = entityResults[entity];
+      if (!r?.async || !r.jobId) continue;
+      const job = session.importJobs.find((j) => j.id === r.jobId);
+      if (job && (job.status === "COMPLETED" || job.status === "FAILED")) {
+        setEntityResults((p) => ({
+          ...p,
+          [entity]: { entityType: job.entityType, totalRows: job.totalRows, successRows: job.successRows, failedRows: job.failedRows, errors: job.errors ?? [], async: false },
+        }));
+      }
+    }
+  }, [session?.importJobs, entityResults]);
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
@@ -535,6 +651,18 @@ export default function MigrationPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  // #13 — Roll back everything this session created (with clear messaging in the modal).
+  const rollbackSession = useMutation({
+    mutationFn: () => apiFetch(`/sessions/${sessionId}`, { method: "DELETE" }),
+    onSuccess:  () => {
+      qc.invalidateQueries({ queryKey: ["migration-session", sessionId] });
+      qc.invalidateQueries({ queryKey: ["migration-history"] });
+      setShowRollback(false);
+      toast.success("Import rolled back — the records created by this migration were removed.");
+    },
+    onError: (e: Error) => { setShowRollback(false); toast.error(e.message); },
+  });
+
   // ── CSV handlers ──────────────────────────────────────────────────────────
 
   function handleInventoryCsvLoaded(text: string) {
@@ -554,6 +682,10 @@ export default function MigrationPage() {
       return;
     }
     setEntityCsvTexts((p) => ({ ...p, [entity]: text }));
+    // A new file replaces whatever the last attempt's result was — otherwise the
+    // Import button stays hidden forever after one failed/partial attempt, even
+    // once the user fixes their file.
+    setEntityResults((p) => { const { [entity]: _drop, ...rest } = p; return rest; });
     try {
       const cols = await apiFetch<ColumnDetection[]>("/detect-columns", {
         method: "POST", body: { headers },
@@ -648,6 +780,8 @@ export default function MigrationPage() {
               <Download className="w-3.5 h-3.5" /> Download Template
             </button>
           </div>
+
+          <PriorImportBanner info={priorImport("INVENTORY")} entity="inventory batches" />
 
           <CsvDropZone
             onText={handleInventoryCsvLoaded}
@@ -1005,30 +1139,26 @@ export default function MigrationPage() {
             </>
           ) : commitResult ? (
             <>
-              <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">
-                <Check className="w-7 h-7 text-green-600" />
+              <p className="text-[15px] font-bold text-slate-800 mb-3">Inventory Import Result</p>
+              <div className="text-left max-w-md mx-auto">
+                <ImportOutcomeBanner result={commitResult} entity="inventory rows" />
               </div>
-              <p className="text-[15px] font-bold text-slate-800">Inventory Imported</p>
-              <p className="text-[13px] text-green-600 mt-1 font-medium">
-                {commitResult.successRows} rows imported
-                {commitResult.failedRows > 0 && ` · ${commitResult.failedRows} skipped`}
-              </p>
-              {commitResult.failedRows > 0 && (
-                <div className="mt-3 max-h-40 overflow-y-auto border border-slate-200 rounded-lg divide-y divide-slate-100 text-left">
-                  {(commitResult.errors as IssueRow[]).slice(0, 50).map((e, i) => (
-                    <div key={i} className="flex items-start gap-2 px-3 py-1.5">
-                      <AlertTriangle className="w-3 h-3 text-red-400 flex-shrink-0 mt-0.5" />
-                      <span className="text-[10px] text-slate-600">Row {e.row}: {e.message}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <button
-                onClick={() => setStep("other-entities")}
-                className="mt-5 flex items-center gap-2 mx-auto bg-brand-600 hover:bg-brand-700 text-white text-[13px] font-semibold px-6 py-2.5 rounded-lg"
-              >
-                Continue to Other Entities <ArrowRight className="w-4 h-4" />
-              </button>
+              <div className="flex items-center justify-center gap-3 mt-5">
+                {commitResult.successRows === 0 && (
+                  <button
+                    onClick={() => setStep("medicine-map")}
+                    className="flex items-center gap-1.5 text-[13px] text-slate-600 border border-slate-200 hover:bg-slate-50 px-4 py-2 rounded-lg font-medium"
+                  >
+                    <ArrowLeft className="w-4 h-4" /> Fix Mapping & Retry
+                  </button>
+                )}
+                <button
+                  onClick={() => setStep("other-entities")}
+                  className="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white text-[13px] font-semibold px-6 py-2.5 rounded-lg"
+                >
+                  Continue to Other Entities <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
             </>
           ) : null}
         </div>
@@ -1045,7 +1175,12 @@ export default function MigrationPage() {
               All optional. Skip any you don't have or don't need to migrate.
             </p>
             <div className="flex gap-2">
-              {(["suppliers", "customers", "doctors"] as const).map((e) => (
+              {(["suppliers", "customers", "doctors"] as const).map((e) => {
+                const r = entityResults[e];
+                const inFlight  = r?.async === true;
+                const succeeded = !!r && !inFlight && r.successRows > 0;
+                const failed    = !!r && !inFlight && r.successRows === 0 && r.failedRows > 0;
+                return (
                 <button
                   key={e}
                   onClick={() => setActiveEntity(e)}
@@ -1053,15 +1188,22 @@ export default function MigrationPage() {
                     "flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-lg border transition-colors capitalize",
                     activeEntity === e
                       ? "bg-brand-600 border-brand-600 text-white"
-                      : entityResults[e]
+                      : failed
+                      ? "bg-red-50 border-red-300 text-red-700"
+                      : succeeded
                       ? "bg-green-50 border-green-300 text-green-700"
                       : "border-slate-200 text-slate-600 hover:border-brand-300",
                   )}
                 >
-                  {entityResults[e] && <Check className="w-3 h-3" />}
+                  {inFlight
+                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                    : failed
+                    ? <AlertTriangle className="w-3 h-3" />
+                    : succeeded && <Check className="w-3 h-3" />}
                   {e}
                 </button>
-              ))}
+                );
+              })}
             </div>
           </div>
 
@@ -1080,6 +1222,8 @@ export default function MigrationPage() {
                 <Download className="w-3 h-3" /> Template
               </button>
             </div>
+
+            <PriorImportBanner info={priorImport(activeEntity)} entity={activeEntity} />
 
             {/* Drop zone — key remounts on tab switch so filename/state resets */}
             <CsvDropZone
@@ -1102,56 +1246,82 @@ export default function MigrationPage() {
               />
             )}
 
-            {/* Success result for this entity */}
-            {entityResults[activeEntity] && (
-              <div className="bg-green-50 border border-green-200 rounded-lg px-3 py-2 text-[12px] text-green-800">
-                <Check className="w-3.5 h-3.5 inline mr-1" />
-                <span className="font-semibold">{entityResults[activeEntity].successRows}</span>{" "}
-                {activeEntity} imported
-                {entityResults[activeEntity].failedRows > 0 && (
-                  <span className="text-orange-600 ml-1">
-                    · {entityResults[activeEntity].failedRows} skipped
-                  </span>
-                )}
-              </div>
+            {/* Async progress for a large (background) import of this entity */}
+            {entityResults[activeEntity]?.async && (() => {
+              const job = session?.importJobs.find((j) => j.id === entityResults[activeEntity].jobId);
+              const total = job?.totalRows ?? entityResults[activeEntity].totalRows ?? 0;
+              const done  = job?.processedRows ?? 0;
+              const pct   = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
+              return (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5 text-[12px] text-blue-800">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span className="font-semibold">Importing {activeEntity} in the background…</span>
+                    <span className="ml-auto tabular-nums">{done.toLocaleString()} / {total.toLocaleString()}</span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-blue-100 overflow-hidden">
+                    <div className="h-full bg-blue-500 transition-all" style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Finalized result for this entity — honest success/partial/failure state + why */}
+            {entityResults[activeEntity] && !entityResults[activeEntity].async && (
+              <ImportOutcomeBanner result={entityResults[activeEntity]} entity={activeEntity} />
             )}
           </div>
 
           {/* Footer buttons — always visible */}
           <div className="px-6 py-4 border-t border-slate-100 flex items-center gap-3 flex-shrink-0 bg-white rounded-b-xl">
-            {entityCsvTexts[activeEntity] && !entityResults[activeEntity] && (
-              <button
-                onClick={() => commitEntity.mutate(activeEntity)}
-                disabled={commitEntity.isPending}
-                className="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white text-[13px] font-semibold px-4 py-2 rounded-lg disabled:opacity-50"
-              >
-                {commitEntity.isPending
-                  ? <Loader2 className="w-4 h-4 animate-spin" />
-                  : <Upload className="w-4 h-4" />
-                }
-                Import {activeEntity}
-              </button>
-            )}
-            <button
-              onClick={() => {
-                const hasImported = Object.values(entityResults).some(Boolean);
-                if (!hasImported) {
-                  if (!window.confirm(
-                    "You haven't imported any suppliers, customers or doctors.\n\n" +
-                    "These can be imported later. Continue to complete the migration?"
-                  )) return;
-                }
-                completeSession.mutate();
-              }}
-              disabled={completeSession.isPending}
-              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white text-[13px] font-semibold px-4 py-2 rounded-lg disabled:opacity-50"
-            >
-              {completeSession.isPending
-                ? <Loader2 className="w-4 h-4 animate-spin" />
-                : <ShieldCheck className="w-4 h-4" />
-              }
-              Complete Migration
-            </button>
+            {/* Shown whenever there's a file and no clean full success yet (and nothing
+                is currently processing in the background) — lets the user fix the
+                column mapping and retry without needing to re-upload the same file. */}
+            {(() => {
+              const r = entityResults[activeEntity];
+              const inFlight       = r?.async === true;
+              const fullySucceeded = !!r && !inFlight && r.successRows > 0 && r.failedRows === 0;
+              if (!entityCsvTexts[activeEntity] || inFlight || fullySucceeded) return null;
+              return (
+                <button
+                  onClick={() => commitEntity.mutate(activeEntity)}
+                  disabled={commitEntity.isPending}
+                  className="flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white text-[13px] font-semibold px-4 py-2 rounded-lg disabled:opacity-50"
+                >
+                  {commitEntity.isPending
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <Upload className="w-4 h-4" />
+                  }
+                  {r ? `Retry ${activeEntity}` : `Import ${activeEntity}`}
+                </button>
+              );
+            })()}
+            {(() => {
+              const anyProcessing = session?.importJobs.some((j) => j.status === "PROCESSING" || j.status === "PENDING") ?? false;
+              return (
+                <button
+                  onClick={() => {
+                    const hasImported = Object.values(entityResults).some(Boolean);
+                    if (!hasImported) {
+                      if (!window.confirm(
+                        "You haven't imported any suppliers, customers or doctors.\n\n" +
+                        "These can be imported later. Continue to complete the migration?"
+                      )) return;
+                    }
+                    completeSession.mutate();
+                  }}
+                  disabled={completeSession.isPending || anyProcessing}
+                  title={anyProcessing ? "Wait for the background import to finish first" : undefined}
+                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white text-[13px] font-semibold px-4 py-2 rounded-lg disabled:opacity-50"
+                >
+                  {completeSession.isPending || anyProcessing
+                    ? <Loader2 className="w-4 h-4 animate-spin" />
+                    : <ShieldCheck className="w-4 h-4" />
+                  }
+                  {anyProcessing ? "Finishing import…" : "Complete Migration"}
+                </button>
+              );
+            })()}
             <span className="text-[11px] text-slate-400 ml-auto">
               All optional — skip any you don't have
             </span>
@@ -1212,6 +1382,57 @@ export default function MigrationPage() {
             >
               Go to Dashboard
             </Link>
+          </div>
+
+          {/* #13 — Undo, only while nothing is still processing and not already rolled back */}
+          {session?.status !== "ROLLED_BACK" && !session?.importJobs.some((j) => j.status === "PROCESSING") && (
+            <button
+              onClick={() => setShowRollback(true)}
+              className="mt-5 text-[12px] font-medium text-red-500 hover:text-red-600 hover:underline"
+            >
+              Imported the wrong data? Undo this migration
+            </button>
+          )}
+          {session?.status === "ROLLED_BACK" && (
+            <p className="mt-5 text-[12px] text-slate-400">This migration was rolled back.</p>
+          )}
+        </div>
+      )}
+
+      {/* #13 — Rollback confirmation with an explicit "what this does / doesn't do" */}
+      {showRollback && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-9 h-9 rounded-full bg-red-100 flex items-center justify-center">
+                <AlertTriangle className="w-4.5 h-4.5 text-red-600" />
+              </div>
+              <h3 className="font-bold text-slate-900">Undo this migration?</h3>
+            </div>
+            <p className="text-[12.5px] text-slate-600 mb-3">This removes what this migration created. Specifically:</p>
+            <ul className="text-[12px] text-slate-600 space-y-1.5 mb-3 list-disc pl-5">
+              <li><span className="font-semibold text-slate-800">Deletes</span> the inventory batches, suppliers, customers and doctors added by this migration.</li>
+              <li><span className="font-semibold text-slate-800">Deactivates</span> (hides, not deletes) any new medicines added to the shared catalog — other pharmacies may already reference them.</li>
+              <li><span className="font-semibold text-slate-800">Does not undo</span> updates made to records that already existed before this migration.</li>
+            </ul>
+            <p className="text-[12px] text-slate-500 mb-5">This can't be reversed. You can always re-import afterwards.</p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowRollback(false)}
+                disabled={rollbackSession.isPending}
+                className="text-[13px] font-semibold text-slate-600 border border-slate-200 hover:bg-slate-50 px-4 py-2 rounded-lg disabled:opacity-50"
+              >
+                Keep my data
+              </button>
+              <button
+                onClick={() => rollbackSession.mutate()}
+                disabled={rollbackSession.isPending}
+                className="flex items-center gap-2 text-[13px] font-semibold text-white bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg disabled:opacity-50"
+              >
+                {rollbackSession.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                Undo migration
+              </button>
+            </div>
           </div>
         </div>
       )}

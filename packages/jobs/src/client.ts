@@ -1,11 +1,13 @@
 import { boss } from "./boss.js";
 
+export type MigrationEntityType = "INVENTORY" | "SUPPLIERS" | "CUSTOMERS" | "DOCTORS";
+
 export type MigrationImportJobData = {
   jobId:          string;
   sessionId:      string;
   pharmacyId:     string;
   userId:         string;
-  entityType:     "INVENTORY";
+  entityType:     MigrationEntityType;
   csvText:        string;
   columnMappings: Record<string, string>;
 };
