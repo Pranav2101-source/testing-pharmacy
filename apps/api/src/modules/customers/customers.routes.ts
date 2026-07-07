@@ -29,6 +29,12 @@ const customersRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: result });
   });
 
+  // Receivables — customers who owe money. Static segment, registered before /:id.
+  app.get("/outstanding", { preHandler: auth }, async (req, reply) => {
+    const result = await service.listOutstanding(req.pharmacyId);
+    return reply.send({ success: true, data: result });
+  });
+
   app.post("/", { preHandler: auth }, async (req, reply) => {
     const input    = createCustomerSchema.parse(req.body);
     const customer = await service.create(req.pharmacyId, input, req.user.sub);

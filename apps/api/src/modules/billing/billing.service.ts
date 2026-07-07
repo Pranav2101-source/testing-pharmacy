@@ -555,5 +555,87 @@ export class BillingService {
     return batch;
   }
 
+  // ── Repeat last bill ───────────────────────────────────────────────────────
+  // Rebuilds a cart from the customer's most recent bill. Crucially it does NOT
+  // clone the old batches (they may be sold out or expired): it re-picks the
+  // current earliest-expiring live batch for each medicine, caps the quantity to
+  // what's in stock, applies the pharmacy's GST override so the preview matches
+  // checkout, and reports anything that can't be supplied so the operator knows.
+  async getRepeatCart(pharmacyId: string, customerId: string) {
+    const invoice = await this.repo.getLastInvoiceForCustomer(pharmacyId, customerId);
+    if (!invoice) throw AppError.notFound("No previous bill found for this customer");
+
+    // Aggregate quantities per medicine; keep the discount from the first line seen.
+    const wanted = new Map<string, { qty: number; discount: number; name: string }>();
+    for (const it of invoice.items) {
+      const mid = it.inventory?.medicineId;
+      if (!mid) continue; // sold batch was deleted — can't re-resolve reliably
+      const prev = wanted.get(mid);
+      wanted.set(mid, {
+        qty:      (prev?.qty ?? 0) + it.quantity,
+        discount: prev?.discount ?? it.discount,
+        name:     it.medicineName,
+      });
+    }
+
+    const medicineIds = [...wanted.keys()];
+    const [batches, overrides] = await Promise.all([
+      this.repo.getActiveBatchesForMedicines(pharmacyId, medicineIds),
+      this.repo.getMedicineOverrides(pharmacyId, medicineIds),
+    ]);
+    const gstOverride = new Map(
+      overrides.filter((o) => o.gstRate !== null).map((o) => [o.medicineId, o.gstRate as number]),
+    );
+
+    // Earliest-expiry sellable batch per medicine (batches already sorted asc).
+    const best = new Map<string, (typeof batches)[number]>();
+    for (const b of batches) {
+      if (b.quantity - b.reservedQuantity <= 0) continue;
+      if (!best.has(b.medicineId)) best.set(b.medicineId, b);
+    }
+
+    type RepeatItem = {
+      inventoryId: string; medicineName: string; hsnCode: string | null;
+      schedule: string | null; packSize: string | null; location: string | null;
+      batchNumber: string; expiryDate: string; mrp: number; gstRate: number;
+      discount: number; quantity: number; availableStock: number;
+      requestedQuantity: number; capped: boolean;
+    };
+    const items: RepeatItem[] = [];
+    const unavailable: { medicineName: string; reason: string }[] = [];
+
+    for (const [mid, w] of wanted) {
+      const b = best.get(mid);
+      if (!b) { unavailable.push({ medicineName: w.name, reason: "Out of stock" }); continue; }
+      if (b.medicine.isActive === false) { unavailable.push({ medicineName: w.name, reason: "Discontinued" }); continue; }
+      const available = b.quantity - b.reservedQuantity;
+      const quantity  = Math.min(w.qty, available);
+      items.push({
+        inventoryId:       b.id,
+        medicineName:      b.medicine.name,
+        hsnCode:           b.medicine.hsnCode,
+        schedule:          b.medicine.schedule,
+        packSize:          b.medicine.packSize,
+        location:          b.location,
+        batchNumber:       b.batchNumber,
+        expiryDate:        b.expiryDate.toISOString(),
+        mrp:               b.mrp,
+        gstRate:           gstOverride.get(mid) ?? b.medicine.gstRate,
+        discount:          w.discount,
+        quantity,
+        availableStock:    available,
+        requestedQuantity: w.qty,
+        capped:            quantity < w.qty,
+      });
+    }
+
+    return {
+      invoiceNumber: invoice.invoiceNumber,
+      invoiceDate:   invoice.createdAt,
+      items,
+      unavailable,
+    };
+  }
+
 }
 

@@ -56,7 +56,7 @@ const CATEGORIES: HelpCategory[] = [
         blocks: [
           { type: "text", content: "These shortcuts work on any page in the app — no matter where you are." },
           { type: "shortcut", keys: ["F2"],           desc: "Open New Bill from anywhere in the app" },
-          { type: "shortcut", keys: ["Ctrl", "K"],    desc: "Focus the global search bar in the top nav" },
+          { type: "shortcut", keys: ["Ctrl", "K"],    desc: "Open the command palette — jump to any page or action (New Bill, Add Stock, Dues…)" },
           { type: "shortcut", keys: ["Escape"],        desc: "Close any open dropdown, modal, or panel" },
           { type: "tip", content: "F2 is the fastest way to start billing. It works from any page as long as your cursor is not inside an input box." },
         ],
@@ -154,7 +154,7 @@ const CATEGORIES: HelpCategory[] = [
               { icon: Zap,          label: "More",      desc: "Customers, medicines, Ginni, quotations",   color: "bg-amber-100 text-amber-600"  },
             ],
           },
-          { type: "shortcut", keys: ["Ctrl", "K"], desc: "Open global search from anywhere" },
+          { type: "shortcut", keys: ["Ctrl", "K"], desc: "Open the command palette — jump to any page or action" },
           { type: "shortcut", keys: ["F2"],        desc: "Jump directly to New Bill screen" },
         ],
       },
@@ -216,6 +216,19 @@ const CATEGORIES: HelpCategory[] = [
     id: "billing", label: "Billing & Sales", icon: Receipt,
     color: "text-blue-600", bg: "bg-blue-50", activeBg: "bg-blue-600",
     items: [
+      {
+        id: "repeat-last-bill", question: "Repeat a regular customer's last bill",
+        tags: ["repeat", "reorder", "regular", "chronic", "last bill", "customer"],
+        blocks: [
+          { type: "text", content: "For customers who buy the same medicines every month, you don't have to search each item again." },
+          { type: "steps", steps: [
+            "Select the customer at the top of the New Bill page.",
+            "Click 'Repeat last bill' next to their name.",
+            "Their previous bill loads into the cart automatically.",
+          ] },
+          { type: "tip", content: "Items are re-checked against current stock: out-of-stock items are skipped and quantities are trimmed to what's available — you'll see a note for each." },
+        ],
+      },
       {
         id: "bills-drafts-returns", question: "Bills, Drafts, Returns — what's the difference?",
         tags: ["bill", "draft", "return", "tabs", "sales", "overview", "difference"],
@@ -348,6 +361,32 @@ const CATEGORIES: HelpCategory[] = [
     id: "inventory", label: "Inventory", icon: Package2,
     color: "text-emerald-600", bg: "bg-emerald-50", activeBg: "bg-emerald-600",
     items: [
+      {
+        id: "add-stock", question: "How do I add stock manually?",
+        tags: ["add stock", "receive", "batch", "new stock", "inventory", "non tech"],
+        blocks: [
+          { type: "text", content: "The quickest way to add received stock without a spreadsheet or full GRN." },
+          { type: "steps", steps: [
+            "Go to Inventory → click the green 'Add Stock' button.",
+            "Pick the medicine, then fill batch number, expiry, quantity, MRP and purchase rate.",
+            "Save — the stock is live and recorded in the Stock Ledger.",
+          ] },
+          { type: "tip", content: "Adding to a batch number that already exists just increases its quantity. Owners and managers can add stock." },
+        ],
+      },
+      {
+        id: "map-barcodes", question: "How do I link barcodes to medicines?",
+        tags: ["barcode", "map", "scan", "link", "ean", "scanner"],
+        blocks: [
+          { type: "text", content: "Barcode scanning at billing and receiving only works once a product's barcode is linked to its medicine." },
+          { type: "steps", steps: [
+            "Go to Medicines → click 'Map Barcodes'.",
+            "Scan a product. If it's new, search and pick the medicine it belongs to.",
+            "It's saved instantly — scan the next product. Already-linked codes are recognised and skipped.",
+          ] },
+          { type: "tip", content: "Do a shelf in one sitting. Each barcode maps to exactly one medicine." },
+        ],
+      },
       {
         id: "batch", question: "What is a Batch Number?",
         tags: ["batch", "lot", "batch number", "manufacture"],
@@ -773,6 +812,18 @@ const CATEGORIES: HelpCategory[] = [
     id: "operations", label: "Operations", icon: Users,
     color: "text-teal-600", bg: "bg-teal-50", activeBg: "bg-teal-600",
     items: [
+      {
+        id: "dues", question: "Where do I see money owed (Dues)?",
+        tags: ["dues", "money owed", "payable", "receivable", "outstanding", "credit", "supplier", "customer", "balance"],
+        blocks: [
+          { type: "text", content: "The Dues screen shows all outstanding money in one place. Open it from More → Dues (or press Ctrl+K and type 'Dues'). Owners and managers only." },
+          { type: "grid", items: [
+            { icon: ShoppingCart, label: "Payables",    desc: "What you owe each supplier, with overdue amounts flagged.", color: "bg-rose-100 text-rose-600"    },
+            { icon: Users,        label: "Receivables", desc: "What customers owe you on credit sales, with over-limit flags.", color: "bg-emerald-100 text-emerald-600" },
+          ] },
+          { type: "tip", content: "Totals update automatically as you record supplier payments and collect customer credit." },
+        ],
+      },
       {
         id: "customers", question: "What is the Customers module?",
         tags: ["customer", "patient", "profile", "history"],

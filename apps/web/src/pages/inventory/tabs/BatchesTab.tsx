@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { AnimatePresence } from "framer-motion";
 import {
-  Search, Loader2, FileX, AlertCircle, Sparkles, Printer, MapPin, Info,
+  Search, Loader2, FileX, AlertCircle, Sparkles, Printer, MapPin, Info, PackagePlus,
 } from "lucide-react";
 import { queryKeys } from "@/lib/queryKeys";
 import { BarcodeLabelModal } from "@/components/BarcodeLabelModal";
@@ -15,6 +16,7 @@ import { fmt, daysUntil } from "../utils";
 import { TableSkeletonRows, ListSkeleton } from "@/components/Skeleton";
 import { BATCH_STATUS_CFG } from "../types";
 import type { BatchStatus, InventoryItem, AlertCounts } from "../types";
+import { AddStockModal } from "../modals/AddStockModal";
 import { AdjustStockModal } from "../modals/AdjustStockModal";
 import { BatchStatusModal } from "../modals/BatchStatusModal";
 import { AssignLocationModal } from "../modals/AssignLocationModal";
@@ -38,8 +40,22 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   const [locationModal,    setLocationModal]    = useState<InventoryItem | null>(null);
   const [barcodePrintItem, setBarcodePrintItem] = useState<InventoryItem | null>(null);
   const [showCalibrate,    setShowCalibrate]    = useState(false);
+  const [showAddStock,     setShowAddStock]     = useState(false);
 
   const isOwnerOrManager = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
+
+  // Deep-link from the command palette ("Add Stock" action) — open the modal
+  // then strip the param so a refresh doesn't reopen it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    if (searchParams.get("action") === "add-stock" && isOwnerOrManager) {
+      setShowAddStock(true);
+      const next = new URLSearchParams(searchParams);
+      next.delete("action");
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Debounce search input before it becomes part of the query key
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -110,6 +126,16 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
         </span>
         {isOwnerOrManager && (
           <button
+            onClick={() => setShowAddStock(true)}
+            title="Add newly received stock"
+            className="flex items-center gap-1.5 h-[30px] px-3 rounded-md text-[12px] font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors shadow-sm whitespace-nowrap"
+          >
+            <PackagePlus className="w-3.5 h-3.5" />
+            Add Stock
+          </button>
+        )}
+        {isOwnerOrManager && (
+          <button
             onClick={() => setShowCalibrate(true)}
             title="Auto-set minimum stock levels from your sales data"
             className="flex items-center gap-1.5 h-[30px] px-3 rounded-md text-[12px] font-semibold border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors shadow-sm whitespace-nowrap"
@@ -125,6 +151,15 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
           onApplied={invalidateInventory}
         />
       )}
+      <AnimatePresence>
+        {showAddStock && (
+          <AddStockModal
+            onClose={() => setShowAddStock(false)}
+            onDone={() => { setShowAddStock(false); invalidateInventory(); }}
+            onToast={(msg, v) => v === "success" ? toast.success(msg) : toast.error(msg)}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Table (desktop) / Cards (phone) — dim slightly during background re-fetch */}
       <div className={cn("flex-1 overflow-auto min-h-0 transition-opacity duration-150", loading && items.length > 0 && "opacity-60")}>

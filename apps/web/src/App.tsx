@@ -47,6 +47,7 @@ const DoctorsPage          = lazy(() => import("./pages/dashboard/DoctorsPage"))
 const CashClosurePage      = lazy(() => import("./pages/dashboard/CashClosurePage"));
 const PrescriptionsPage    = lazy(() => import("./pages/dashboard/PrescriptionsPage"));
 const MigrationPage        = lazy(() => import("./pages/dashboard/MigrationPage"));
+const DuesPage             = lazy(() => import("./pages/dashboard/DuesPage"));
 
 const PlatformAdminDashboard = lazy(() => import("./pages/dashboard/platform/PlatformAdminDashboard"));
 const TenantsPage            = lazy(() => import("./pages/dashboard/platform/TenantsPage"));
@@ -112,9 +113,10 @@ export function App() {
               <Route path="/dashboard/purchase"              element={<PurchasePage />} />
               <Route path="/dashboard/suppliers"             element={<SuppliersPage />} />
 
-              {/* Reports: owners + managers only (financial data) */}
+              {/* Reports + Dues: owners + managers only (financial data) */}
               <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} redirectTo="/dashboard" />}>
                 <Route path="/dashboard/reports"             element={<ReportsPage />} />
+                <Route path="/dashboard/dues"                element={<DuesPage />} />
               </Route>
 
               <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} redirectTo="/dashboard" />}>

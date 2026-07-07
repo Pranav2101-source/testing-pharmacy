@@ -6,13 +6,14 @@ import {
   Plus, Search, SlidersHorizontal, ChevronDown, Loader2,
   FileX, AlertCircle, Pencil, PowerOff, Power, X, Check,
   RefreshCw, FlaskConical, Upload, Download, CheckCircle2, XCircle,
-  BadgePercent,
+  BadgePercent, ScanLine,
 } from "lucide-react";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { TableSkeletonRows } from "@/components/Skeleton";
 import { useToast } from "@/hooks/useToast";
-import { isPlatformAdmin } from "@/lib/auth";
+import { isPlatformAdmin, getStoredUser } from "@/lib/auth";
+import { BarcodeMappingModal } from "@/components/BarcodeMappingModal";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -136,6 +137,35 @@ function parseCSV(text: string): ParsedRow[] {
   });
 }
 
+// Excel → rows. Reads the FIRST sheet as an array-of-arrays (header row + data),
+// mapping columns by header name — the same object shape parseCSV produces, so
+// the preview/validation/submit pipeline is shared. Going via rows (not CSV)
+// avoids the comma-in-cell breakage of naive CSV splitting.
+function aoaToRows(aoa: unknown[][]): ParsedRow[] {
+  if (aoa.length < 2) return [];
+  const headers = (aoa[0] ?? []).map((h) => String(h ?? "").trim());
+  return aoa
+    .slice(1)
+    .filter((r) => Array.isArray(r) && r.some((c) => String(c ?? "").trim() !== ""))
+    .map((r) => {
+      const row: ParsedRow = {};
+      headers.forEach((h, i) => { if (h) row[h] = String(r[i] ?? "").trim(); });
+      return row;
+    });
+}
+
+async function parseUpload(file: File): Promise<ParsedRow[]> {
+  if (/\.(xlsx|xls)$/i.test(file.name)) {
+    const XLSX = await import("@e965/xlsx");
+    const wb   = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: false });
+    const ws   = wb.Sheets[wb.SheetNames[0]!];
+    if (!ws) return [];
+    const aoa  = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, blankrows: false, defval: "", raw: false });
+    return aoaToRows(aoa);
+  }
+  return parseCSV(await file.text());
+}
+
 function validateRow(row: ParsedRow): { valid: boolean; error?: string } {
   if (!row.name?.trim()) return { valid: false, error: "name is required" };
   if (row.gstRate && !["0","5","12","18"].includes(String(row.gstRate).trim())) {
@@ -155,21 +185,26 @@ function BulkUploadModal({ onClose, onDone }: { onClose: () => void; onDone: () 
   const [uploading, setUploading] = useState(false);
   const [result,    setResult]    = useState<{ added: number; skipped: number; failed: number; parseErrors: string[] } | null>(null);
   const [dragOver,  setDragOver]  = useState(false);
+  const [parseError, setParseError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  function handleFile(file: File) {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target?.result as string;
-      const parsed = parseCSV(text);
+  async function handleFile(file: File) {
+    setParseError(null);
+    try {
+      const parsed = await parseUpload(file);
+      if (parsed.length === 0) {
+        setParseError("No data rows found. Make sure the first row has column headers (name, gstRate, …) and there is at least one row below it.");
+        return;
+      }
       const preview: PreviewRow[] = parsed.map((row) => {
         const { valid, error } = validateRow(row);
         return { ...row, _valid: valid, _error: error };
       });
       setRows(preview);
       setStep("preview");
-    };
-    reader.readAsText(file);
+    } catch {
+      setParseError("Couldn't read that file. Upload a .csv or .xlsx exported from Excel / Google Sheets.");
+    }
   }
 
   async function submit() {
@@ -249,11 +284,17 @@ function BulkUploadModal({ onClose, onDone }: { onClose: () => void; onDone: () 
                 )}
               >
                 <Upload className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-                <p className="text-[14px] font-semibold text-slate-600">Drop your CSV file here</p>
+                <p className="text-[14px] font-semibold text-slate-600">Drop your Excel or CSV file here</p>
                 <p className="text-[12px] text-slate-400 mt-1">or click to browse</p>
-                <p className="text-[11px] text-slate-300 mt-3">Supports .csv files · Max 5,000 rows</p>
-                <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+                <p className="text-[11px] text-slate-300 mt-3">Supports .xlsx, .xls, .csv · Max 5,000 rows</p>
+                <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
               </div>
+
+              {parseError && (
+                <div className="mt-3 flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-[12px] text-red-600">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />{parseError}
+                </div>
+              )}
 
               {/* Template download */}
               <div className="mt-4 flex items-center justify-between bg-slate-50 rounded-xl px-4 py-3">
@@ -761,7 +802,8 @@ export default function MedicinesPage() {
   const [filterActive,   setFilterActive]   = useState<"" | "true" | "false">("");
   const [showFilters,    setShowFilters]     = useState(false);
 
-  const [modal,       setModal]       = useState<"add" | "edit" | "bulk" | "override" | null>(null);
+  const [modal,       setModal]       = useState<"add" | "edit" | "bulk" | "override" | "barcode" | null>(null);
+  const canMapBarcodes = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
   const [editing,     setEditing]     = useState<Medicine | null>(null);
   const [reindexing,  setReindexing]  = useState(false);
   // medicineId → this pharmacy's override (loaded once; mutated by the modal)
@@ -880,6 +922,17 @@ export default function MedicinesPage() {
             <Upload className="w-3.5 h-3.5" />
             Bulk Upload
           </button>
+
+          {canMapBarcodes && (
+            <button
+              onClick={() => setModal("barcode")}
+              title="Scan products to link barcodes so POS & receiving scans work"
+              className="flex items-center gap-1.5 border border-violet-200 hover:border-violet-300 bg-violet-50 text-violet-700 hover:bg-violet-100 text-[13px] font-semibold px-3 py-1.5 rounded-md transition-colors shadow-sm"
+            >
+              <ScanLine className="w-3.5 h-3.5" />
+              Map Barcodes
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -1185,6 +1238,12 @@ export default function MedicinesPage() {
           <BulkUploadModal
             onClose={() => setModal(null)}
             onDone={() => { setModal(null); fetch(); }}
+          />
+        )}
+        {modal === "barcode" && (
+          <BarcodeMappingModal
+            onClose={() => { setModal(null); fetch(); }}
+            onToast={(msg, v) => v === "success" ? toast.success(msg) : toast.error(msg)}
           />
         )}
       </AnimatePresence>

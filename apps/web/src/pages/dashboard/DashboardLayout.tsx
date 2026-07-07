@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { Outlet } from "react-router-dom";
 import { TopNav } from "@/components/layout/TopNav";
 import { HelpWidget } from "@/components/help/HelpWidget";
+import { CommandPalette } from "@/components/CommandPalette";
 
 function PageFallback() {
   return (
@@ -24,6 +25,7 @@ export default function DashboardLayout() {
         </Suspense>
       </main>
       <HelpWidget />
+      <CommandPalette />
     </div>
   );
 }

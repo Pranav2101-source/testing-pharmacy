@@ -79,4 +79,8 @@ export class CustomersService {
   async getCreditSummary(id: string, pharmacyId: string) {
     return this.repo.getCreditSummary(id, pharmacyId);
   }
+
+  async listOutstanding(pharmacyId: string) {
+    return this.repo.listOutstanding(pharmacyId);
+  }
 }

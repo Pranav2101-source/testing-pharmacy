@@ -2,12 +2,25 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { User, Phone, UserPlus, X, Loader2, AlertCircle } from "lucide-react";
+import { User, Phone, UserPlus, X, Loader2, AlertCircle, RotateCcw } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { useBillingStore } from "./useBillingStore";
+import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
+
+type RepeatItem = {
+  inventoryId: string; medicineName: string; hsnCode: string | null;
+  schedule: string | null; packSize: string | null; location: string | null;
+  batchNumber: string; expiryDate: string; mrp: number; gstRate: number;
+  discount: number; quantity: number; availableStock: number;
+  requestedQuantity: number; capped: boolean;
+};
+type RepeatResp = {
+  invoiceNumber: string; invoiceDate: string;
+  items: RepeatItem[]; unavailable: { medicineName: string; reason: string }[];
+};
 import { CustomerModal } from "@/components/customers/CustomerModal";
 import type { CustomerRecord } from "@/components/customers/CustomerModal";
 
@@ -46,7 +59,10 @@ export function CustomerSearchCombobox() {
   const customerPhone           = useBillingStore((s) => s.meta.customerPhone);
   const customerDefaultDiscount = useBillingStore((s) => s.meta.customerDefaultDiscount);
   const setMeta                 = useBillingStore((s) => s.setMeta);
+  const addItem                 = useBillingStore((s) => s.addItem);
+  const toast                   = useToast();
 
+  const [repeating,    setRepeating]    = useState(false);
   const [query,        setQuery]        = useState("");
   const [debouncedQ,   setDebouncedQ]   = useState("");   // 300 ms behind query
   const [open,         setOpen]         = useState(false);
@@ -154,6 +170,47 @@ export function CustomerSearchCombobox() {
     setOpen(false);
   }
 
+  // Load the customer's most recent bill into the cart, re-resolved to current
+  // stock (see billing.service.getRepeatCart). "COUNTER"/walk-in has no history.
+  async function repeatLastBill() {
+    if (!customerId || customerId === "COUNTER" || repeating) return;
+    setRepeating(true);
+    try {
+      const { data } = await api.get<{ data: RepeatResp }>(`/billing/repeat/${customerId}`);
+      const r = data.data;
+      for (const it of r.items) {
+        addItem({
+          inventoryId:    it.inventoryId,
+          medicineName:   it.medicineName,
+          hsnCode:        it.hsnCode,
+          schedule:       it.schedule,
+          packSize:       it.packSize ?? undefined,
+          location:       it.location ?? undefined,
+          batchNumber:    it.batchNumber,
+          expiryDate:     it.expiryDate,
+          mrp:            it.mrp,
+          quantity:       it.quantity,
+          discount:       it.discount,
+          gstRate:        it.gstRate,
+          availableStock: it.availableStock,
+        });
+      }
+      if (r.items.length > 0) {
+        toast.success(`Loaded ${r.items.length} item${r.items.length !== 1 ? "s" : ""} from ${r.invoiceNumber}`);
+      }
+      const capped = r.items.filter((i) => i.capped);
+      if (capped.length > 0) toast.warning(`Reduced to available stock: ${capped.map((i) => i.medicineName).join(", ")}`);
+      if (r.unavailable.length > 0) toast.warning(`Out of stock, skipped: ${r.unavailable.map((u) => u.medicineName).join(", ")}`);
+      if (r.items.length === 0 && r.unavailable.length > 0) toast.error("None of the last bill's items are in stock right now.");
+    } catch (err) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 404) toast.info("No previous bill found for this customer.");
+      else toast.error(getErrorMessage(err, "Couldn't load the last bill. Please try again."));
+    } finally {
+      setRepeating(false);
+    }
+  }
+
   function clearCustomer() {
     setMeta({
       customerId:              "",
@@ -213,6 +270,11 @@ export function CustomerSearchCombobox() {
             )}
           </div>
         </div>
+        <button onClick={repeatLastBill} disabled={repeating}
+          title="Load this customer's most recent bill into the cart"
+          className="flex items-center gap-1 text-[10px] text-blue-500 hover:text-blue-700 font-semibold transition-colors flex-shrink-0 disabled:opacity-60">
+          {repeating ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />} Repeat last bill
+        </button>
         <button onClick={clearCustomer} title="Remove customer"
           className="flex items-center gap-0.5 text-[10px] text-slate-400 hover:text-red-500 font-semibold transition-colors flex-shrink-0">
           <X className="w-3 h-3" /> Clear

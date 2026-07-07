@@ -140,7 +140,7 @@ export class SuppliersService {
     return this.repo.listPurchaseOrders(pharmacyId, page, limit, status);
   }
 
-  async receivePurchaseOrder(pharmacyId: string, input: CreatePurchaseOrderInput) {
+  async receivePurchaseOrder(pharmacyId: string, userId: string, input: CreatePurchaseOrderInput) {
     let subtotal = 0;
     let totalGst = 0;
 
@@ -176,9 +176,12 @@ export class SuppliersService {
       items:        processedItems,
     });
 
+    // Add received stock AND write a ledger movement per line, so a quick
+    // purchase is traceable in the Stock Ledger just like a confirmed GRN
+    // (previously this incremented stock silently with no movement).
     await Promise.all(
       input.items.map((item) =>
-        this.inventoryRepo.upsertBatch(pharmacyId, {
+        this.inventoryRepo.addStockWithLedger(pharmacyId, userId, {
           medicineId:   item.medicineId,
           batchNumber:  item.batchNumber,
           expiryDate:   new Date(item.expiryDate),
@@ -186,6 +189,11 @@ export class SuppliersService {
           purchaseRate: item.purchaseRate,
           mrp:          item.mrp,
           minimumStock: 10,
+        }, {
+          type:          "PURCHASE",
+          referenceType: "OTHER",
+          referenceId:   order.id,
+          notes:         `Received via quick purchase order${order.orderNumber ? ` ${order.orderNumber}` : ""}`,
         }),
       ),
     );

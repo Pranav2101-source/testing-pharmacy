@@ -59,6 +59,15 @@ const billingRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({ success: true, data: batch });
   });
 
+  // ── Repeat last bill ────────────────────────────────────────────────────
+  // Returns a cart rebuilt from the customer's most recent bill, re-resolved to
+  // current stock. "repeat" is a static segment so it never collides with /:id.
+  app.get("/repeat/:customerId", { preHandler: auth }, async (req, reply) => {
+    const { customerId } = req.params as { customerId: string };
+    const data = await service.getRepeatCart(req.pharmacyId, customerId);
+    return reply.send({ success: true, data });
+  });
+
   // ── Invoices ──────────────────────────────────────────────────────────────
 
   app.post("/", { preHandler: auth }, async (req, reply) => {

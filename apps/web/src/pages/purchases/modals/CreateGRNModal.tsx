@@ -199,8 +199,31 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
   async function handleBarcodeScan(code: string) {
     try {
       const { data } = await api.get(`/medicines/barcode/${encodeURIComponent(code)}`);
-      addMed(data.data);
-    } catch { setError("No medicine found for this barcode"); }
+      const m: Medicine = data.data;
+      setError(null);
+      // Receiving multiple cartons of the same product is the norm, so a repeat
+      // scan increments the quantity on the existing line instead of adding a
+      // duplicate row. (A different batch can still be split off manually.)
+      setItems((prev) => {
+        const idx = prev.findIndex((i) => i.medicineId === m.id);
+        if (idx === -1) {
+          return [...prev, {
+            medicineId: m.id, medicineName: m.name,
+            batchNumber: "", expiryDate: "",
+            orderedQty: 0, receivedQty: 1, freeQty: 0,
+            purchaseRate: 0, mrp: 0, discount: 0, gstRate: m.gstRate,
+          }];
+        }
+        const next = [...prev];
+        next[idx] = { ...next[idx]!, receivedQty: next[idx]!.receivedQty + 1 };
+        return next;
+      });
+    } catch (err) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      setError(status === 404
+        ? `No medicine is linked to barcode "${code}". Add the medicine to the catalogue and set its barcode, then scan again.`
+        : `Couldn't look up barcode "${code}". Check your connection and scan again.`);
+    }
   }
 
   function upd(idx: number, key: keyof GRNLineItem, val: string | number) {

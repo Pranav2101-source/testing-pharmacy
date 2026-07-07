@@ -74,10 +74,13 @@ export default function PurchasePage() {
     const medicineName = searchParams.get("medicine")    ?? "";
     const gstRate      = Number(searchParams.get("gstRate") ?? 0);
     setSearchParams({}, { replace: true }); // clean the URL immediately
-    if (!medicineId || !medicineName) return;
+    // Open the create-PO modal in all cases. A medicine seed is optional — the
+    // Inventory alerts button supplies one; the command palette opens it blank.
     setTab("po");
     setMounted((prev) => (prev.has("po") ? prev : new Set(prev).add("po")));
-    setReorderMed({ id: medicineId, name: medicineName, gstRate });
+    if (medicineId && medicineName) {
+      setReorderMed({ id: medicineId, name: medicineName, gstRate });
+    }
     setShow(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

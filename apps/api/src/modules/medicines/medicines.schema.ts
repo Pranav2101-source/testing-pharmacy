@@ -49,6 +49,18 @@ export const upsertOverrideSchema = z
     message: "Set gstRate and/or defaultDiscountPct — use DELETE to remove an override",
   });
 
+// Narrow "set barcode only" mutation. A barcode (EAN/UPC) is a universal product
+// identifier, so mapping it is safe for a pharmacy to do even though other
+// catalog fields (name/gstRate/schedule) remain platform-admin-only. `null`
+// clears the mapping.
+export const setBarcodeSchema = z.object({
+  barcode: z.string().trim().max(64).nullable().refine(
+    (v) => v === null || v.length >= 3,
+    "Barcode must be at least 3 characters",
+  ),
+});
+
+export type SetBarcodeInput      = z.infer<typeof setBarcodeSchema>;
 export type CreateMedicineInput  = z.infer<typeof createMedicineSchema>;
 export type UpdateMedicineInput  = z.infer<typeof updateMedicineSchema>;
 export type ListMedicinesQuery   = z.infer<typeof listMedicinesQuerySchema>;
