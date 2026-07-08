@@ -65,7 +65,14 @@ function useAuthUrl(fileUrl: string) {
   useEffect(() => {
     let alive = true;
     let objectUrl = "";
-    const base = import.meta.env.VITE_API_URL?.replace("/api", "") ?? "http://localhost:4000";
+    // Origin the API is served from. VITE_API_URL is either an absolute URL
+    // (local dev: http://localhost:4000/api/v1) or a same-origin path (prod:
+    // /api/v1, proxied to the backend by vercel.json). Strip the /api/v1 suffix
+    // to get the origin; for the relative form the origin is the current page.
+    const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api/v1";
+    const base   = apiUrl.startsWith("http")
+      ? apiUrl.replace(/\/api\/v1$/, "")
+      : window.location.origin;
     const src  = fileUrl.startsWith("http") ? fileUrl : `${base}${fileUrl}`;
 
     api.get<Blob>(src, { responseType: "blob" })
