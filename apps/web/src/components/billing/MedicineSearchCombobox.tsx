@@ -13,6 +13,7 @@ import { useBillingStore } from "./useBillingStore";
 import { cn } from "@/lib/utils";
 import type { MedicineSearchResult } from "@pharmacy/types";
 import { BatchPickerDialog, type InventoryBatch, expiryStatus, fmtExpiry, getLocationLabel } from "./BatchPickerDialog";
+import { BarcodeInput } from "@/components/BarcodeInput";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -84,6 +85,9 @@ export function MedicineSearchCombobox({
   const barcodeCharCount = useRef<number>(0);
   const isBarcodeRef     = useRef<boolean>(false);
   const [isBarcode, setIsBarcode] = useState(false);
+  // Visible scan mode — reveals a dedicated barcode box (mirrors the GRN screen)
+  // so counter staff can plainly see they can scan, not just rely on auto-detect.
+  const [scanMode, setScanMode] = useState(false);
 
   // Debounce: commit query to debouncedQuery after typing pauses
   useEffect(() => {
@@ -168,7 +172,9 @@ export function MedicineSearchCombobox({
       setNearExpiryWarn({ name: batch.medicine.name, days: status.days });
     }
 
-    inputRef.current?.focus();
+    // In scan mode, leave focus on the dedicated barcode box so the next scan
+    // lands there; otherwise return focus to the search input.
+    if (!scanMode) inputRef.current?.focus();
   }
 
   // ── Fetch batches for a medicine (cached 30 s so repeat clicks are instant) ──
@@ -407,7 +413,34 @@ export function MedicineSearchCombobox({
               Barcode
             </span>
           )}
+
+          {/* Visible scan toggle — always shown so staff know scanning exists */}
+          <button
+            type="button"
+            onClick={() => setScanMode((v) => !v)}
+            title="Scan a product barcode"
+            className={cn(
+              "flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold flex-shrink-0 border transition-colors",
+              scanMode
+                ? "bg-emerald-600 border-emerald-600 text-white"
+                : "bg-white border-slate-200 text-slate-600 hover:border-emerald-300 hover:text-emerald-700",
+            )}
+          >
+            <ScanBarcode className="w-3.5 h-3.5" />
+            {scanMode ? "Close Scanner" : "Scan Barcode"}
+          </button>
         </div>
+
+        {/* ── Dedicated scan box (visible affordance, mirrors GRN) ─────── */}
+        {scanMode && (
+          <div className="flex items-center gap-2 px-4 py-2.5 bg-emerald-50 border-t border-emerald-100">
+            <ScanBarcode className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <div className="flex-1">
+              <BarcodeInput onScan={handleBarcodeScan} loading={addingId === "barcode"} autoFocus placeholder="Scan or type barcode, then Enter…" />
+            </div>
+            <span className="text-[11px] text-emerald-600 font-medium whitespace-nowrap hidden sm:block">Scan to add to bill</span>
+          </div>
+        )}
 
         {/* ── Inline toasts (stock error + near-expiry) ─────────── */}
         <AnimatePresence>
