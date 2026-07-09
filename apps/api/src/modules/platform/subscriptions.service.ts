@@ -1,14 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { Prisma } from "@pharmacy/database";
 import { auditService } from "../audit/audit.service.js";
-
-// Plan pricing config
-const PLAN_PRICING: Record<string, { monthly: number; yearly: number; quarterly: number }> = {
-  Free:         { monthly: 0,    yearly: 0,     quarterly: 0 },
-  Standard:     { monthly: 999,  yearly: 9590,  quarterly: 2697 },
-  Professional: { monthly: 2499, yearly: 23990, quarterly: 6747 },
-  Enterprise:   { monthly: 4999, yearly: 47990, quarterly: 13497 },
-};
+import { PLAN_PRICING } from "../pharmacy/pharmacy.constants.js";
 
 export class SubscriptionsService {
   constructor(private app: FastifyInstance) {}
@@ -307,58 +300,45 @@ export class SubscriptionsService {
   // ── Change Plan ───────────────────────────────────────────────────────────
 
   async changePlan(id: string, plan: string, billingCycle: string | undefined, amount: number | undefined, adminUserId: string) {
-    try {
-      console.log(`[changePlan] START - id (tenantId/subId): ${id}`);
-      console.log(`[changePlan] planId/targetPlan: ${plan}, billingCycle: ${billingCycle}, amount: ${amount}`);
+    const sub = await this.app.prisma.subscription.findUnique({ where: { id } });
 
-      const sub = await this.app.prisma.subscription.findUnique({ where: { id } });
-      console.log(`[changePlan] current subscription:`, sub ? `Found (plan: ${sub.planName})` : `NOT FOUND`);
-      
-      if (!sub) {
-        throw Object.assign(new Error("Subscription not found"), { statusCode: 404 });
-      }
-
-      const cycle = billingCycle || sub.billingCycle;
-      const pricing = PLAN_PRICING[plan];
-      console.log(`[changePlan] pricing for plan ${plan}:`, pricing ? "Found" : "NOT FOUND");
-
-      const computedAmount = amount !== undefined ? amount : (pricing ? pricing[cycle.toLowerCase() as keyof typeof pricing] || 0 : 0);
-      console.log(`[changePlan] computedAmount: ${computedAmount}`);
-
-      const updated = await this.app.prisma.subscription.update({
-        where: { id },
-        data: { planName: plan, billingCycle: cycle, amount: computedAmount },
-      });
-      console.log(`[changePlan] subscription updated successfully`);
-
-      await this.app.prisma.subscriptionAuditLog.create({
-        data: {
-          subscriptionId: id,
-          action: "PLAN_CHANGED",
-          oldValue: JSON.stringify({ plan: sub.planName, cycle: sub.billingCycle, amount: sub.amount }),
-          newValue: JSON.stringify({ plan, cycle, amount: computedAmount }),
-          performedBy: adminUserId,
-        },
-      });
-
-      void auditService.log(null, {
-        pharmacyId: sub.pharmacyId,
-        userId: adminUserId,
-        module: "SUBSCRIPTIONS",
-        action: "PLAN_CHANGED",
-        entity: "SUBSCRIPTION",
-        entityId: id,
-        severity: "INFO",
-        status: "SUCCESS",
-        oldData: { plan: sub.planName, cycle: sub.billingCycle, amount: sub.amount },
-        newData: { plan, cycle, amount: computedAmount },
-      });
-
-      return updated;
-    } catch (error: any) {
-      console.error(`[changePlan] ERROR:`, error.stack || error);
-      throw error;
+    if (!sub) {
+      throw Object.assign(new Error("Subscription not found"), { statusCode: 404 });
     }
+
+    const cycle = billingCycle || sub.billingCycle;
+    const pricing = PLAN_PRICING[plan];
+    const computedAmount = amount !== undefined ? amount : (pricing ? pricing[cycle.toLowerCase() as keyof typeof pricing] || 0 : 0);
+
+    const updated = await this.app.prisma.subscription.update({
+      where: { id },
+      data: { planName: plan, billingCycle: cycle, amount: computedAmount },
+    });
+
+    await this.app.prisma.subscriptionAuditLog.create({
+      data: {
+        subscriptionId: id,
+        action: "PLAN_CHANGED",
+        oldValue: JSON.stringify({ plan: sub.planName, cycle: sub.billingCycle, amount: sub.amount }),
+        newValue: JSON.stringify({ plan, cycle, amount: computedAmount }),
+        performedBy: adminUserId,
+      },
+    });
+
+    void auditService.log(null, {
+      pharmacyId: sub.pharmacyId,
+      userId: adminUserId,
+      module: "SUBSCRIPTIONS",
+      action: "PLAN_CHANGED",
+      entity: "SUBSCRIPTION",
+      entityId: id,
+      severity: "INFO",
+      status: "SUCCESS",
+      oldData: { plan: sub.planName, cycle: sub.billingCycle, amount: sub.amount },
+      newData: { plan, cycle, amount: computedAmount },
+    });
+
+    return updated;
   }
 
   // ── Renew ─────────────────────────────────────────────────────────────────

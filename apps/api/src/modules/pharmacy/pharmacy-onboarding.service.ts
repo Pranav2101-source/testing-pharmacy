@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { Prisma } from "@pharmacy/database";
 import { auditService } from "../audit/audit.service.js";
-import { DEFAULT_SUBSCRIPTION } from "./pharmacy.constants.js";
+import { DEFAULT_SUBSCRIPTION, PLAN_PRICING } from "./pharmacy.constants.js";
 
 export interface OnboardPharmacyParams {
   pharmacyData: {
@@ -37,6 +37,8 @@ export interface OnboardPharmacyParams {
     passwordHash: string;
   };
   createOwner?: boolean;
+  planName?: string;
+  billingCycle?: "MONTHLY" | "QUARTERLY" | "YEARLY";
 }
 
 export class PharmacyOnboardingService {
@@ -64,6 +66,11 @@ export class PharmacyOnboardingService {
       throw Object.assign(new Error("Owner data is required when createOwner is true"), { statusCode: 400 });
     }
 
+    const planName = params.planName || DEFAULT_SUBSCRIPTION.planName;
+    const billingCycle = params.billingCycle || DEFAULT_SUBSCRIPTION.billingCycle;
+    const pricing = PLAN_PRICING[planName];
+    const amount = pricing ? pricing[billingCycle.toLowerCase() as keyof typeof pricing] : DEFAULT_SUBSCRIPTION.amount;
+
     const tenantCode = await this.generateTenantCode();
 
     const slug = pharmacyData.slug || pharmacyData.name
@@ -77,6 +84,14 @@ export class PharmacyOnboardingService {
 
     try {
       const pharmacy = await this.app.prisma.$transaction(async (tx) => {
+        // Pharmacy name has no DB uniqueness constraint, so enforce it here.
+        const existingPharmacy = await tx.pharmacy.findFirst({
+          where: { name: { equals: pharmacyData.name, mode: "insensitive" } },
+        });
+        if (existingPharmacy) {
+          throw Object.assign(new Error("A pharmacy with this name already exists"), { statusCode: 409 });
+        }
+
         if (createOwner && ownerData) {
           // Manually enforce global email uniqueness since DB only has @@unique([pharmacyId, email])
           const existingUser = await tx.user.findFirst({ where: { email: ownerData.email } });
@@ -102,10 +117,10 @@ export class PharmacyOnboardingService {
             tenantStatus: "ACTIVE",
             subscription: {
               create: {
-                planName: DEFAULT_SUBSCRIPTION.planName,
+                planName,
                 status: DEFAULT_SUBSCRIPTION.status,
-                billingCycle: DEFAULT_SUBSCRIPTION.billingCycle,
-                amount: DEFAULT_SUBSCRIPTION.amount,
+                billingCycle,
+                amount,
                 autoRenew: DEFAULT_SUBSCRIPTION.autoRenew,
                 validUntil,
               },
@@ -159,7 +174,7 @@ export class PharmacyOnboardingService {
           resourceName: pharmacy.name,
           severity: "INFO",
           status: "SUCCESS",
-          newData: { tenantCode, name: pharmacy.name, plan: DEFAULT_SUBSCRIPTION.planName },
+          newData: { tenantCode, name: pharmacy.name, plan: pharmacy.subscription?.planName ?? planName },
         });
 
         if (pharmacy.subscription) {

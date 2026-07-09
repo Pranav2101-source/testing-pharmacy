@@ -98,4 +98,5 @@ export const exportTenantsQuerySchema = z.object({
   plan: z.string().optional(),
   state: z.string().optional(),
   scope: z.enum(["all", "filtered"]).optional().default("filtered"),
+  ids: z.string().optional(),
 });

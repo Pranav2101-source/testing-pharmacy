@@ -118,8 +118,13 @@ export class DashboardService {
     }
 
     if (cachedFinancials) {
-      financials = JSON.parse(cachedFinancials);
-    } else {
+      try {
+        financials = JSON.parse(cachedFinancials);
+      } catch {
+        cachedFinancials = null;
+      }
+    }
+    if (!cachedFinancials) {
       // Filter: active subscriptions
       const activeSubs = await prisma.subscription.findMany({
         where: { status: "ACTIVE" },

@@ -513,7 +513,7 @@ export class AnalyticsService {
     const uploadsAgg = await this.app.prisma.upload.aggregate({ _sum: { fileSize: true }, _count: { _all: true } });
 
     return {
-      database: { status: dbLatency > 0 ? "HEALTHY" : "WARNING", latencyMs: dbLatency, sizeGb: Number(sizeGb.toFixed(2)) },
+      database: { status: dbLatency < 100 ? "HEALTHY" : "WARNING", latencyMs: dbLatency, sizeGb: Number(sizeGb.toFixed(2)) },
       redis: { status: this.app.redis ? "HEALTHY" : "OFFLINE", connected: !!this.app.redis },
       queue: { status: "HEALTHY", waiting: 0, active: 0, failed: 0 },
       api: { avgLatencyMs: 0, requestsPerMin: 0 }, // Would require Prometheus/APM metrics

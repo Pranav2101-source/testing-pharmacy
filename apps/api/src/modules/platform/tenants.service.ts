@@ -61,6 +61,7 @@ export class TenantsService {
         passwordHash,
       },
       createOwner: true,
+      planName: input.planName,
     });
 
     return {
@@ -213,7 +214,7 @@ export class TenantsService {
     }
 
     // Audit log
-    const adminUserId = req ? (req as any).user?.id : null;
+    const adminUserId = req ? req.user?.sub ?? null : null;
     if (adminUserId) {
       const adminPharmacy = await this.app.prisma.user.findUnique({
         where: { id: adminUserId },
@@ -242,10 +243,15 @@ export class TenantsService {
     status: string;
     plan?: string;
     state?: string;
+    ids?: string;
   }) {
-    const { search, status, plan, state } = params;
+    const { search, status, plan, state, ids } = params;
 
     const where: Prisma.PharmacyWhereInput = {};
+
+    if (ids) {
+      where.id = { in: ids.split(",").map((id) => id.trim()).filter(Boolean) };
+    }
 
     if (search) {
       where.OR = [
