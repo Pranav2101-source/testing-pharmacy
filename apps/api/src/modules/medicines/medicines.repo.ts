@@ -83,6 +83,10 @@ export class MedicinesRepo {
           { genericName:  { contains: params.search, mode: "insensitive" } },
           { manufacturer: { contains: params.search, mode: "insensitive" } },
           { composition:  { contains: params.search, mode: "insensitive" } },
+          // Exact barcode match — lets a scanned/typed barcode resolve through the
+          // normal search path when Meilisearch (which does not index barcode)
+          // returns no hits. Exact-only: partial matches would be meaningless here.
+          { barcode:      { equals: params.search, mode: "insensitive" } },
         ],
       } : {}),
     };
@@ -114,6 +118,20 @@ export class MedicinesRepo {
     return this.db.medicine.findFirst({
       where: { barcode: { equals: barcode, mode: "insensitive" }, isActive: true },
     });
+  }
+
+  // Collision guard for barcode assignment — returns any OTHER medicine already
+  // holding this barcode (active or not), so we never create an ambiguous
+  // barcode→medicine mapping that findByBarcode would resolve arbitrarily.
+  async findBarcodeOwner(barcode: string, excludeId: string) {
+    return this.db.medicine.findFirst({
+      where:  { barcode: { equals: barcode, mode: "insensitive" }, id: { not: excludeId } },
+      select: { id: true, name: true },
+    });
+  }
+
+  async setBarcode(id: string, barcode: string | null) {
+    return this.db.medicine.update({ where: { id }, data: { barcode } });
   }
 
   /**

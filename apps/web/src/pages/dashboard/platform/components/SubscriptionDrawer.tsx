@@ -203,19 +203,25 @@ function ActionBtn({ icon: Icon, label, color, onClick, loading }: { icon: any; 
 // ── Tab: Overview ────────────────────────────────────────────────────────────
 
 function OverviewTab({ detail }: { detail: any }) {
-  const daysLeft = Math.ceil((new Date(detail.validUntil).getTime() - Date.now()) / 86400000);
+  // validUntil can be absent (e.g. a tenant without a billed subscription yet) —
+  // guard the same way TenantDrawer's SubscriptionTab already does, instead of
+  // letting Date math on `undefined` produce "NaN days left".
+  const hasValidUntil = Boolean(detail.validUntil);
+  const daysLeft = hasValidUntil ? Math.ceil((new Date(detail.validUntil).getTime() - Date.now()) / 86400000) : null;
   return (
     <div className="space-y-6">
       {/* Renewal Countdown */}
-      <div className={cn("p-5 rounded-2xl border", daysLeft <= 7 ? "bg-red-50 border-red-200" : daysLeft <= 30 ? "bg-amber-50 border-amber-200" : "bg-emerald-50 border-emerald-200")}>
+      <div className={cn("p-5 rounded-2xl border", daysLeft === null ? "bg-slate-50 border-slate-200" : daysLeft <= 7 ? "bg-red-50 border-red-200" : daysLeft <= 30 ? "bg-amber-50 border-amber-200" : "bg-emerald-50 border-emerald-200")}>
         <div className="flex justify-between items-center">
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Renewal</p>
-            <p className="text-2xl font-extrabold text-slate-900 mt-1">{daysLeft > 0 ? `${daysLeft} days left` : `${Math.abs(daysLeft)} days overdue`}</p>
+            <p className="text-2xl font-extrabold text-slate-900 mt-1">
+              {daysLeft === null ? "--" : daysLeft > 0 ? `${daysLeft} days left` : `${Math.abs(daysLeft)} days overdue`}
+            </p>
           </div>
-          <Calendar className={cn("w-8 h-8", daysLeft <= 7 ? "text-red-400" : daysLeft <= 30 ? "text-amber-400" : "text-emerald-400")} />
+          <Calendar className={cn("w-8 h-8", daysLeft === null ? "text-slate-400" : daysLeft <= 7 ? "text-red-400" : daysLeft <= 30 ? "text-amber-400" : "text-emerald-400")} />
         </div>
-        <p className="text-xs text-slate-500 mt-2">Valid until {format(new Date(detail.validUntil), "MMM d, yyyy • h:mm a")}</p>
+        <p className="text-xs text-slate-500 mt-2">Valid until {hasValidUntil ? format(new Date(detail.validUntil), "MMM d, yyyy • h:mm a") : "--"}</p>
       </div>
 
       {/* Plan & Cycle */}

@@ -7,20 +7,24 @@ import {
   batchRecallSchema, listBatchRecallQuerySchema,
   patchInventorySchema, listAlertsQuerySchema, calibrateStockSchema,
 } from "./inventory.schema.js";
-import { authenticate, requireOwner } from "../../middleware/auth.js";
+import { authenticate, requireOwner, requireManager } from "../../middleware/auth.js";
 import { resolvePharmacy } from "../../middleware/tenant.js";
 
 const inventoryRoutes: FastifyPluginAsync = async (app) => {
   const service    = new InventoryService(app);
   const auth       = [authenticate, resolvePharmacy];
   const ownerOnly  = [authenticate, requireOwner, resolvePharmacy];
+  // Adding received stock is a routine operation staff managers perform, and it
+  // mirrors the OWNER+MANAGER gate already used for stock adjustments (PATCH /:id).
+  const managerPlus = [authenticate, requireManager, resolvePharmacy];
 
   // ── Batch CRUD ─────────────────────────────────────────────────────────────
 
-  app.post("/", { preHandler: ownerOnly }, async (req, reply) => {
-    const input = addStockSchema.parse(req.body);
-    const item  = await service.addStock(req.pharmacyId, input);
-    return reply.status(201).send({ success: true, data: item });
+  app.post("/", { preHandler: managerPlus }, async (req, reply) => {
+    const input  = addStockSchema.parse(req.body);
+    // req.user.sub is the authenticated user id (JWT payload uses `sub`, not `id`).
+    const result = await service.addStock(req.pharmacyId, req.user.sub, input);
+    return reply.status(201).send({ success: true, data: result.item, meta: { merged: result.merged } });
   });
 
   app.get("/", { preHandler: auth }, async (req, reply) => {

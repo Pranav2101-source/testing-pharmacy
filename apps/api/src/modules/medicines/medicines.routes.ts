@@ -5,8 +5,9 @@ import {
   updateMedicineSchema,
   listMedicinesQuerySchema,
   upsertOverrideSchema,
+  setBarcodeSchema,
 } from "./medicines.schema.js";
-import { authenticate, requireOwner, requireRole } from "../../middleware/auth.js";
+import { authenticate, requireOwner, requireManager, requireRole } from "../../middleware/auth.js";
 import { resolvePharmacy } from "../../middleware/tenant.js";
 
 const medicinesRoutes: FastifyPluginAsync = async (app) => {
@@ -18,6 +19,9 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
   // every other pharmacy bills against (name, gstRate, schedule), so those
   // operations are restricted to the platform team.
   const owner   = [authenticate, requireOwner];
+  // Barcode mapping is safe day-to-day data entry (a barcode is a universal
+  // product code, unlike name/gstRate/schedule), so owners AND managers may do it.
+  const managerPlus   = [authenticate, requireManager];
   const platformAdmin = [authenticate, requireRole("PLATFORM_ADMIN")];
   const scoped       = [authenticate, resolvePharmacy];
   const ownerScoped  = [authenticate, resolvePharmacy, requireOwner];
@@ -39,6 +43,16 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
     if (!medicine) return reply.status(404).send({ success: false, error: "No medicine found for this barcode" });
     // Barcode→medicine mapping is immutable once a product is registered.
     reply.header("Cache-Control", "public, max-age=3600");
+    return reply.send({ success: true, data: medicine });
+  });
+
+  // ── Assign / clear a medicine's barcode (owner + manager) ───────────────
+  // Narrow mutation of the global catalog: only the barcode field. Guarded
+  // against collisions so one barcode never maps to two medicines.
+  app.patch("/:id/barcode", { preHandler: managerPlus }, async (req, reply) => {
+    const { id }      = req.params as { id: string };
+    const { barcode } = setBarcodeSchema.parse(req.body);
+    const medicine    = await service.setBarcode(id, barcode);
     return reply.send({ success: true, data: medicine });
   });
 

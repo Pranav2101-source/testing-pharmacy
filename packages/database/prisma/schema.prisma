@@ -118,6 +118,8 @@ model Subscription {
   invoices  SubscriptionInvoice[]
   auditLogs SubscriptionAuditLog[]
 
+  @@index([status])
+  @@index([validUntil])
   @@map("subscriptions")
 }
 
@@ -1144,6 +1146,12 @@ model GoodsReceiptNote {
   @@index([pharmacyId, supplierId])
   @@index([pharmacyId, paymentDueDate])
   @@index([pharmacyId, createdAt])
+  // Covers the actual list-view query shape (WHERE pharmacyId = ? AND status = ?
+  // ORDER BY createdAt DESC) used by Gate Inward (DRAFT), Purchase (CONFIRMED),
+  // and Overdue Bills — without it, Postgres can use either the (pharmacyId,
+  // status) or (pharmacyId, createdAt) index alone but still has to re-sort or
+  // over-scan as each status bucket grows.
+  @@index([pharmacyId, status, createdAt])
   // Duplicate supplier-invoice detection scoped to pharmacy
   @@index([pharmacyId, supplierInvoiceNo])
   // "All GRNs for this PO" — common join on PO detail page, previously unindexed
@@ -1619,6 +1627,7 @@ model SupportTicket {
   @@index([pharmacyId, createdAt(sort: Desc)])
   @@index([assignedAgentId, status])
   @@index([raisedById])
+  @@index([priority])
   @@map("support_tickets")
 }
 

@@ -1,12 +1,20 @@
-// â"€â"€â"€ Column alias dictionary â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─── Column alias dictionary ─────────────────────────────────────────────────
 // Maps every known variant header from Marg / Busy / RetailGraph / GoFrugal /
 // RedBook / Tally exports to our canonical field name.
 // Match is case-insensitive and whitespace-normalised before lookup.
+//
+// CSV parsing, date normalisation, and the ParsedRow type now live in the
+// shared @pharmacy/utils migration-core so the async pg-boss worker uses
+// byte-for-byte identical logic. They are re-exported below so existing
+// imports in this module keep working unchanged.
 
-import type { CanonicalField, ColumnDetection, ColumnMappings } from "./migration.types.js";
+import type { CanonicalField, ColumnDetection } from "./migration.types.js";
+import type { ParsedRow } from "@pharmacy/utils";
+
+export { parseCsv, normaliseDate, splitLine, type ParsedRow } from "@pharmacy/utils";
 
 const ALIASES: Record<CanonicalField, string[]> = {
-  // â"€â"€ Inventory / medicine â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+  // Inventory / medicine
   medicineName: [
     "medicine name", "item name", "product name", "drug name", "item description",
     "description", "medicine", "product", "item", "name", "particulars",
@@ -55,7 +63,7 @@ const ALIASES: Record<CanonicalField, string[]> = {
     "min qty", "safety stock", "reorder point",
   ],
 
-  // â"€â"€ Supplier â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+  // Supplier
   supplierName: [
     "supplier name", "vendor name", "supplier", "vendor",
     "distributor name", "distributor", "creditor name",
@@ -85,7 +93,7 @@ const ALIASES: Record<CanonicalField, string[]> = {
     "payable", "opening due", "op balance",
   ],
 
-  // â"€â"€ Customer â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+  // Customer
   customerName: [
     "customer name", "patient name", "customer", "client name",
     "member name",
@@ -111,7 +119,7 @@ const ALIASES: Record<CanonicalField, string[]> = {
   ],
   notes: ["notes", "remarks", "comment", "note"],
 
-  // â"€â"€ Doctor â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+  // Doctor
   doctorName: [
     "doctor name", "dr name", "physician name", "consultant name",
     "doctor", "dr",
@@ -130,13 +138,13 @@ const ALIASES: Record<CanonicalField, string[]> = {
   ],
 };
 
-// â"€â"€ Helpers â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function normalise(s: string): string {
   return s
     .toLowerCase()
-    .replace(/[_-]/g, " ")            // underscores and dashes â†’ spaces
-    .replace(/[^a-z0-9\s]/g, " ")    // strip special chars (%, â‚¹, ., /)
+    .replace(/[_-]/g, " ")            // underscores and dashes -> spaces
+    .replace(/[^a-z0-9\s]/g, " ")     // strip special chars (%, currency, ., /)
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -149,160 +157,55 @@ for (const [field, aliases] of Object.entries(ALIASES) as [CanonicalField, strin
   }
 }
 
-// â"€â"€ Public API â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
+// ─── Public API ──────────────────────────────────────────────────────────────
+
+// A word in `a` matches a word in `b` if equal or one is a prefix of the other
+// (so "qty" ~ "quantity", "mfr" ~ "mfr name"). Only words >= 3 chars count, to
+// avoid "id"/"no"/"cp" false positives.
+function wordScore(aWords: string[], bWords: string[]): number {
+  if (aWords.length === 0 || bWords.length === 0) return 0;
+  let matched = 0;
+  for (const aw of aWords) {
+    if (bWords.some((bw) => bw === aw || bw.startsWith(aw) || aw.startsWith(bw))) matched++;
+  }
+  // Jaccard-style coverage over the larger word set — rewards fuller overlap so
+  // the BEST alias wins rather than whichever happened to be declared first.
+  return matched / Math.max(aWords.length, bWords.length);
+}
 
 export function detectColumns(headers: string[]): ColumnDetection[] {
   return headers.map((header) => {
     const norm = normalise(header);
 
-    // 1. Exact alias match â†’ high confidence
+    // 1. Exact alias match -> high confidence
     const exact = REVERSE.get(norm);
     if (exact) return { csvHeader: header, suggestedField: exact, confidence: "high" };
 
-    // 2. Whole-word partial match â†’ medium confidence
-    // Only consider meaningful words (â‰¥ 3 chars) to avoid "id", "cp", "no" false positives.
+    // 2. Best-scoring partial match across ALL aliases (not the first hit).
     const normWords = norm.split(" ").filter((w) => w.length >= 3);
-    if (normWords.length > 0) {
-      for (const [alias, canonical] of REVERSE.entries()) {
-        const aliasWords = alias.split(" ").filter((w) => w.length >= 3);
-        if (aliasWords.length === 0) continue;
-        // All alias words must appear in the norm words (or vice versa)
-        const aliasInNorm = aliasWords.every((aw) => normWords.some((nw) => nw === aw || nw.startsWith(aw) || aw.startsWith(nw)));
-        const normInAlias = normWords.every((nw) => aliasWords.some((aw) => aw === nw || aw.startsWith(nw) || nw.startsWith(aw)));
-        if (aliasInNorm || normInAlias) {
-          return { csvHeader: header, suggestedField: canonical, confidence: "medium" };
-        }
+    if (normWords.length === 0) return { csvHeader: header, suggestedField: null, confidence: "none" };
+
+    let best: { field: CanonicalField; score: number } | null = null;
+    for (const [alias, canonical] of REVERSE.entries()) {
+      const aliasWords = alias.split(" ").filter((w) => w.length >= 3);
+      const score = wordScore(aliasWords, normWords);
+      if (score > 0 && (!best || score > best.score)) {
+        best = { field: canonical, score };
       }
     }
 
-    return { csvHeader: header, suggestedField: null, confidence: "none" };
+    if (!best) return { csvHeader: header, suggestedField: null, confidence: "none" };
+    // Full overlap (all words matched both ways) is nearly as good as exact.
+    const confidence = best.score >= 0.99 ? "high" : best.score >= 0.5 ? "medium" : "low";
+    return { csvHeader: header, suggestedField: best.field, confidence };
   });
-}
-
-// â"€â"€ CSV Parser â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-
-export interface ParsedRow {
-  rowNumber: number;
-  fields:    Record<string, string>;
-}
-
-/**
- * Parses a CSV or TSV string (handles both delimiters, quoted fields, CRLF).
- * Returns raw { fieldName â†’ value } objects using the column mappings to key the fields.
- * Rows that map to no recognised columns still appear in the output â€" the
- * validator decides which fields are required.
- */
-export function parseCsv(
-  csvText:        string,
-  columnMappings: ColumnMappings,
-): { rows: ParsedRow[]; headers: string[] } {
-  // Strip UTF-8 BOM (U+FEFF) if present — most Excel-exported CSVs start with one.
-  const normalised = csvText.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
-  const lines      = normalised.split("\n");
-  if (lines.length < 2) return { rows: [], headers: [] };
-
-  // Auto-detect delimiter: TSV if the header line contains more tabs than commas
-  const headerLine = lines[0] ?? "";
-  const delimiter  = (headerLine.match(/\t/g)?.length ?? 0) > (headerLine.match(/,/g)?.length ?? 0)
-    ? "\t"
-    : ",";
-
-  const csvHeaders = splitLine(headerLine, delimiter);
-  const rows: ParsedRow[] = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    const line = (lines[i] ?? "").trim();
-    if (!line) continue;
-
-    const cols   = splitLine(line, delimiter);
-    const fields: Record<string, string> = {};
-
-    for (let c = 0; c < csvHeaders.length; c++) {
-      const csvHeader = csvHeaders[c] ?? "";
-      const canonical = columnMappings[csvHeader];
-      if (canonical) {
-        fields[canonical] = (cols[c] ?? "").trim();
-      }
-    }
-
-    rows.push({ rowNumber: i + 1, fields });
-  }
-
-  return { rows, headers: csvHeaders };
-}
-
-function splitLine(line: string, delimiter: string): string[] {
-  const result: string[] = [];
-  let current = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (ch === delimiter && !inQuotes) {
-      result.push(current.trim());
-      current = "";
-    } else {
-      current += ch;
-    }
-  }
-  result.push(current.trim());
-  return result;
-}
-
-// â"€â"€ Date normaliser â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-// Handles: YYYY-MM-DD, DD/MM/YYYY, MM/YYYY (last day of month), MM-YY, MM/YY
-
-export function normaliseDate(raw: string): string | null {
-  const s = raw.trim();
-
-  // YYYY-MM-DD
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-    const d = new Date(s);
-    return isNaN(d.getTime()) ? null : d.toISOString();
-  }
-
-  // DD/MM/YYYY
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
-    const [dd, mm, yyyy] = s.split("/");
-    const d = new Date(`${yyyy}-${mm}-${dd}`);
-    // Reject silently-overflowed dates (e.g. month 13 â†’ Jan next year)
-    if (isNaN(d.getTime())) return null;
-    if (d.getFullYear() !== +yyyy! || d.getMonth() + 1 !== +mm! || d.getDate() !== +dd!) return null;
-    return d.toISOString();
-  }
-
-  // MM/YYYY or MM-YYYY â€" treat as last day of that month
-  const mmYyyy = s.match(/^(\d{2})[-/](\d{4})$/);
-  if (mmYyyy) {
-    const [, mm, yyyy] = mmYyyy;
-    const d = new Date(Number(yyyy), Number(mm), 0); // day 0 = last day of prev month
-    return isNaN(d.getTime()) ? null : d.toISOString();
-  }
-
-  // MM/YY â€" assume 2000s
-  const mmYy = s.match(/^(\d{2})[-/](\d{2})$/);
-  if (mmYy) {
-    const [, mm, yy] = mmYy;
-    const yyyy = 2000 + Number(yy);
-    const d    = new Date(yyyy, Number(mm), 0);
-    return isNaN(d.getTime()) ? null : d.toISOString();
-  }
-
-  return null;
 }
 
 // Returns { display: original case, key: lowercase } pairs, deduplicated case-insensitively.
 // Callers must use `.key` for database lookups (MedicineMapping.csvValue is stored lowercase)
 // and `.display` for search queries and user-facing UI.
 export function extractUniqueMedicineNames(rows: ParsedRow[]): { display: string; key: string }[] {
-  const seen = new Map<string, string>(); // lowercase key â†’ first-seen original casing
+  const seen = new Map<string, string>(); // lowercase key -> first-seen original casing
   for (const row of rows) {
     const name = (row.fields["medicineName"] ?? "").trim();
     if (name) {

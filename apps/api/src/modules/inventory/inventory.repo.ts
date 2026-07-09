@@ -110,6 +110,91 @@ export class InventoryRepo {
     });
   }
 
+  // Adds stock AND atomically writes an InventoryMovement so the addition is
+  // traceable in the Stock Ledger ("where did this stock come from?"). Used by
+  // manual Add Stock (default OPENING/OPENING_BALANCE labelling) and by the
+  // supplier quick-receive path (which passes PURCHASE labelling) — both of
+  // which would otherwise silently increment stock with no ledger trail.
+  // Returns the saved batch plus whether it merged into an existing batch.
+  async addStockWithLedger(pharmacyId: string, userId: string, data: {
+    medicineId:   string;
+    batchNumber:  string;
+    expiryDate:   Date;
+    quantity:     number;
+    purchaseRate: number;
+    mrp:          number;
+    location?:    string;
+    shelfId?:     string;
+    minimumStock: number;
+    reorderLevel?: number;
+  }, movement?: {
+    type?:          MovementType;
+    referenceType?: string;
+    referenceId?:   string;
+    notes?:         string;
+  }): Promise<{ item: unknown; merged: boolean; quantityBefore: number }> {
+    return withTenant(this.db, pharmacyId, async (tx) => {
+      const existing = await tx.inventory.findUnique({
+        where:  { pharmacyId_medicineId_batchNumber: { pharmacyId, medicineId: data.medicineId, batchNumber: data.batchNumber } },
+        select: { id: true, quantity: true },
+      });
+      const quantityBefore = existing?.quantity ?? 0;
+
+      const locationUpdate =
+        data.shelfId !== undefined
+          ? { shelfId: data.shelfId, location: null }
+          : data.location !== undefined
+            ? { location: data.location, shelfId: null }
+            : {};
+
+      const item = await tx.inventory.upsert({
+        where: {
+          pharmacyId_medicineId_batchNumber: { pharmacyId, medicineId: data.medicineId, batchNumber: data.batchNumber },
+        },
+        update: {
+          quantity:     { increment: data.quantity },
+          purchaseRate: data.purchaseRate,
+          mrp:          data.mrp,
+          expiryDate:   data.expiryDate,
+          ...locationUpdate,
+          status:       "ACTIVE",
+        },
+        create: {
+          pharmacyId,
+          medicineId:   data.medicineId,
+          batchNumber:  data.batchNumber,
+          expiryDate:   data.expiryDate,
+          quantity:     data.quantity,
+          purchaseRate: data.purchaseRate,
+          mrp:          data.mrp,
+          minimumStock: data.minimumStock,
+          reorderLevel: data.reorderLevel ?? 5,
+          status:       "ACTIVE",
+          ...locationUpdate,
+        },
+        include: INVENTORY_INCLUDE,
+      });
+
+      await tx.inventoryMovement.create({
+        data: {
+          pharmacyId,
+          userId,
+          inventoryId:    item.id,
+          type:           (movement?.type ?? "OPENING") as MovementType,
+          direction:      "IN" as MovementDirection,
+          quantity:       data.quantity,
+          quantityBefore,
+          quantityAfter:  quantityBefore + data.quantity,
+          referenceType:  movement?.referenceType ?? "OPENING_BALANCE",
+          referenceId:    movement?.referenceId,
+          notes:          movement?.notes ?? (existing ? "Manual stock entry (added to existing batch)" : "Manual stock entry (new batch)"),
+        },
+      });
+
+      return { item, merged: Boolean(existing), quantityBefore };
+    });
+  }
+
   async list(pharmacyId: string, params: {
     page:        number;
     limit:       number;

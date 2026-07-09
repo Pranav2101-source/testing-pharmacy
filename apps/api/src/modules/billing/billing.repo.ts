@@ -256,15 +256,21 @@ export class BillingRepo {
         `;
 
         if (updated.length === 0) {
-          // No row matched — the update was blocked by the credit limit clause.
-          // Read the current balance inside the transaction for a precise message.
+          // No row matched — either the customer isn't a credit customer, or the
+          // limit would be exceeded. Read the real record (no customerType filter)
+          // to tell the two apart and give a message the counter can act on.
           const cust = await tx.customer.findFirst({
-            where:  { id: params.customerId!, pharmacyId: params.pharmacyId, customerType: "CREDIT" },
-            select: { creditLimit: true, creditUsed: true },
+            where:  { id: params.customerId!, pharmacyId: params.pharmacyId },
+            select: { name: true, customerType: true, creditLimit: true, creditUsed: true },
           });
-          const available = cust ? cust.creditLimit - cust.creditUsed : 0;
+          if (!cust || cust.customerType !== "CREDIT") {
+            throw AppError.unprocessable(
+              `${cust?.name ?? "This customer"} is not set up for credit. Change their customer type to "Credit" (and set a credit limit) to sell on credit.`,
+            );
+          }
+          const available = cust.creditLimit - cust.creditUsed;
           throw AppError.unprocessable(
-            `Credit limit exceeded. Available: ₹${available.toFixed(2)}, required: ₹${params.totalAmount.toFixed(2)}`,
+            `Credit limit exceeded for ${cust.name}. Available: ₹${available.toFixed(2)}, required: ₹${params.totalAmount.toFixed(2)}`,
           );
         }
 
@@ -1267,5 +1273,49 @@ export class BillingRepo {
       take:    25,
     });
     return candidates.find((b) => b.quantity - b.reservedQuantity >= quantity) ?? null;
+  }
+
+  // ── Repeat last bill ───────────────────────────────────────────────────────
+
+  // The customer's most recent non-cancelled invoice, with the medicineId behind
+  // each sold line (resolved through the batch that was sold, since InvoiceItem
+  // stores inventoryId, not medicineId).
+  async getLastInvoiceForCustomer(pharmacyId: string, customerId: string) {
+    return this.db.invoice.findFirst({
+      where:   { pharmacyId, customerId, isCancelled: false },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id:            true,
+        invoiceNumber: true,
+        createdAt:     true,
+        items: {
+          select: {
+            quantity:     true,
+            discount:     true,
+            medicineName: true,
+            inventory:    { select: { medicineId: true } },
+          },
+        },
+      },
+    });
+  }
+
+  // Current sellable batches for a set of medicines, earliest-expiry first, so
+  // the service can re-pick a live batch for each — the originally-sold batch
+  // may be depleted or expired by the time the bill is repeated.
+  async getActiveBatchesForMedicines(pharmacyId: string, medicineIds: string[]) {
+    if (medicineIds.length === 0) return [];
+    return this.db.inventory.findMany({
+      where: {
+        pharmacyId,
+        medicineId: { in: medicineIds },
+        status:     "ACTIVE",
+        expiryDate: { gt: new Date() },
+      },
+      orderBy: { expiryDate: "asc" },
+      include: {
+        medicine: { select: { id: true, name: true, gstRate: true, hsnCode: true, schedule: true, packSize: true, isActive: true } },
+      },
+    });
   }
 }

@@ -36,16 +36,72 @@ export function GateInwardTab({ suppliers }: { suppliers: Supplier[] }) {
   const total   = data?.total ?? 0;
   const loading = isPending;
 
-  // Confirming/cancelling a GRN also moves it between Gate Inward (DRAFT) and
-  // Purchase (CONFIRMED) tabs, so invalidate the whole /purchases/grn family.
-  function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["purchases", "grn"] });
+  const myKey = queryKeys.purchases.grn({ page, supplierId, status: "DRAFT" });
+
+  // Confirming/cancelling/creating a GRN also affects the Purchase (CONFIRMED)
+  // tab and the Overdue Bills panel, both of which cache their own /purchases/grn
+  // queries — invalidate everything else in that family so they're correct
+  // next time they're viewed. Excludes our own key: we update that directly
+  // (see removeFromOwnList/handleCreated below) so we don't pay for a redundant
+  // refetch of data we already know is correct.
+  function invalidateOthers() {
+    queryClient.invalidateQueries({
+      predicate: (q) =>
+        q.queryKey[0] === "purchases" && q.queryKey[1] === "grn" &&
+        JSON.stringify(q.queryKey) !== JSON.stringify(myKey),
+    });
+    queryClient.invalidateQueries({ queryKey: queryKeys.purchases.summary() });
+  }
+
+  function removeFromOwnList(id: string) {
+    const current = queryClient.getQueryData<{ items: GRN[]; total: number }>(myKey);
+    // If this was the last row on a page beyond the first, step back a page
+    // instead of leaving the view stranded on a now-empty page.
+    const goBack = page > 1 && current?.items.length === 1 && current.items[0]?.id === id;
+    queryClient.setQueryData<{ items: GRN[]; total: number }>(myKey, (old) =>
+      old ? { ...old, items: old.items.filter((g) => g.id !== id), total: Math.max(0, old.total - 1) } : old);
+    if (goBack) setPage((p) => Math.max(1, p - 1));
+  }
+
+  // The create endpoint already returns the full created GRN — splice it in
+  // directly instead of waiting on a follow-up GET round-trip.
+  function handleCreated(createdGrn: any) {
+    setShow(false);
+    if (!createdGrn) { invalidateOthers(); return; }
+    const belongsHere = page === 1 && (!supplierId || createdGrn.supplierId === supplierId);
+    if (belongsHere) {
+      queryClient.setQueryData<{ items: GRN[]; total: number }>(myKey, (old) => {
+        if (!old) return old;
+        const mapped: GRN = {
+          id: createdGrn.id,
+          grnNumber: createdGrn.grnNumber,
+          supplierInvoiceNo: createdGrn.supplierInvoiceNo,
+          status: createdGrn.status,
+          subtotal: createdGrn.subtotal,
+          totalGst: createdGrn.totalGst,
+          totalAmount: createdGrn.totalAmount,
+          createdAt: createdGrn.createdAt,
+          confirmedAt: createdGrn.confirmedAt,
+          paymentDueDate: createdGrn.paymentDueDate,
+          sourceUploadId: createdGrn.sourceUploadId,
+          supplier: createdGrn.supplier,
+          purchaseOrder: createdGrn.purchaseOrder ?? null,
+          _count: { items: createdGrn.items?.length ?? 0 },
+        };
+        return { ...old, items: [mapped, ...old.items].slice(0, 20), total: old.total + 1 };
+      });
+    } else {
+      // Doesn't belong on the page/filter currently in view — just this one
+      // query needs a real refetch, not the whole grn family.
+      queryClient.invalidateQueries({ queryKey: myKey });
+    }
+    queryClient.invalidateQueries({ queryKey: queryKeys.purchases.summary() });
   }
 
   async function confirm(id: string) {
     if (!window.confirm("Confirm this GRN? This will update inventory stock and cannot be undone.")) return;
     setAction(id);
-    try { await api.patch(`/purchases/grn/${id}/confirm`); invalidate(); }
+    try { await api.patch(`/purchases/grn/${id}/confirm`); removeFromOwnList(id); invalidateOthers(); }
     catch (e: any) { alert(e?.response?.data?.error ?? "Failed to confirm GRN"); }
     finally { setAction(null); }
   }
@@ -53,7 +109,7 @@ export function GateInwardTab({ suppliers }: { suppliers: Supplier[] }) {
   async function cancel(id: string) {
     if (!window.confirm("Cancel this GRN?")) return;
     setAction(id);
-    try { await api.delete(`/purchases/grn/${id}`); invalidate(); }
+    try { await api.delete(`/purchases/grn/${id}`); removeFromOwnList(id); invalidateOthers(); }
     catch {/* */} finally { setAction(null); }
   }
 
@@ -132,7 +188,7 @@ export function GateInwardTab({ suppliers }: { suppliers: Supplier[] }) {
       <Pagination page={page} totalPages={Math.ceil(total / 20) || 1} total={total} limit={20} onChange={setPage} />
 
       <AnimatePresence>
-        {showCreate && <CreateGRNModal suppliers={suppliers} onClose={() => setShow(false)} onDone={() => { setShow(false); invalidate(); }} />}
+        {showCreate && <CreateGRNModal suppliers={suppliers} onClose={() => setShow(false)} onDone={(_supplier, createdGrn) => handleCreated(createdGrn)} />}
       </AnimatePresence>
     </div>
   );

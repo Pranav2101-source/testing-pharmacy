@@ -10,7 +10,7 @@ import { SlidePanel } from "./AutoSuggestPanel";
 
 const OVERDUE_PARAMS = { overdue: true, status: "CONFIRMED", limit: 50 };
 
-export function OverdueBillsPanel({ suppliers, onClose }: { suppliers: Supplier[]; onClose: () => void }) {
+export function OverdueBillsPanel({ suppliers, onClose, onDone }: { suppliers: Supplier[]; onClose: () => void; onDone: () => void }) {
   const [payFor,  setPayFor]  = useState<any | null>(null);
   const [amount,  setAmount]  = useState("");
   const [saving,  setSaving]  = useState(false);
@@ -40,6 +40,7 @@ export function OverdueBillsPanel({ suppliers, onClose }: { suppliers: Supplier[
       });
       queryClient.setQueryData<{ items: any[]; total: number }>(queryKey, (old) =>
         old ? { ...old, items: old.items.filter((i) => i.id !== grn.id), total: old.total - 1 } : old);
+      onDone();
       setPayFor(null); setAmount("");
     } catch {/* */} finally { setSaving(false); }
   }

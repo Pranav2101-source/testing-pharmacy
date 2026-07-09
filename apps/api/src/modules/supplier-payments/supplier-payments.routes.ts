@@ -23,6 +23,14 @@ const supplierPaymentsRoutes: FastifyPluginAsync = async (app) => {
     return reply.status(201).send({ success: true, data: payment });
   });
 
+  // Payables across all suppliers. Static segment, registered before /:id.
+  app.get("/outstanding", { preHandler: auth }, async (req, reply) => {
+    const result = await service.listOutstanding(req.pharmacyId);
+    reply.header("Cache-Control", "private, max-age=30, must-revalidate");
+    reply.header("Vary", "Authorization");
+    return reply.send({ success: true, data: result });
+  });
+
   app.get("/:id", { preHandler: auth }, async (req, reply) => {
     const { id } = req.params as { id: string };
     const payment = await service.getById(id, req.pharmacyId);

@@ -27,6 +27,19 @@ const colorMap: Record<string, string> = {
   uptime: "emerald"
 };
 
+// Tailwind's JIT scanner only picks up class names it can see as complete
+// literal strings in source — `bg-${color}-50` is invisible to it and
+// produces no CSS in the production build. This lookup keeps the class
+// names whole so the scanner finds them.
+const colorClasses: Record<string, string> = {
+  indigo:  "bg-indigo-50 text-indigo-600",
+  emerald: "bg-emerald-50 text-emerald-600",
+  blue:    "bg-blue-50 text-blue-600",
+  violet:  "bg-violet-50 text-violet-600",
+  amber:   "bg-amber-50 text-amber-600",
+  slate:   "bg-slate-50 text-slate-600",
+};
+
 export function ExecutiveCards({ cards, onCardClick }: { cards: KPICard[], onCardClick?: (key: string) => void }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -46,7 +59,7 @@ export function ExecutiveCards({ cards, onCardClick }: { cards: KPICard[], onCar
             <div className="flex justify-between items-start mb-4 relative z-10">
             <div className={cn(
               "p-3 rounded-xl",
-              `bg-${colorMap[card.key]}-50 text-${colorMap[card.key]}-600`
+              colorClasses[colorMap[card.key] ?? "slate"]
             )}>
               {iconMap[card.key]}
             </div>

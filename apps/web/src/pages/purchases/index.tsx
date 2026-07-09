@@ -74,10 +74,13 @@ export default function PurchasePage() {
     const medicineName = searchParams.get("medicine")    ?? "";
     const gstRate      = Number(searchParams.get("gstRate") ?? 0);
     setSearchParams({}, { replace: true }); // clean the URL immediately
-    if (!medicineId || !medicineName) return;
+    // Open the create-PO modal in all cases. A medicine seed is optional — the
+    // Inventory alerts button supplies one; the command palette opens it blank.
     setTab("po");
     setMounted((prev) => (prev.has("po") ? prev : new Set(prev).add("po")));
-    setReorderMed({ id: medicineId, name: medicineName, gstRate });
+    if (medicineId && medicineName) {
+      setReorderMed({ id: medicineId, name: medicineName, gstRate });
+    }
     setShow(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -193,7 +196,10 @@ export default function PurchasePage() {
       {/* Slide-in Panels */}
       <AnimatePresence>
         {activePanel === "auto-suggest"       && <AutoSuggestPanel       onClose={() => setPanel(null)} />}
-        {activePanel === "overdue-bills"      && <OverdueBillsPanel      suppliers={suppliers} onClose={() => setPanel(null)} />}
+        {activePanel === "overdue-bills"      && <OverdueBillsPanel      suppliers={suppliers} onClose={() => setPanel(null)} onDone={() => {
+          queryClient.setQueryData(queryKeys.purchases.summary(), (old: typeof summary) =>
+            old ? { ...old, overduePayments: Math.max(0, old.overduePayments - 1), overdueGRNs: Math.max(0, old.overdueGRNs - 1) } : old);
+        }} />}
         {activePanel === "pending-approvals"  && <PendingApprovalsPanel  onClose={() => setPanel(null)} onDone={() => {
           queryClient.setQueryData(queryKeys.purchases.summary(), (old: typeof summary) =>
             old ? { ...old, pendingApprovals: Math.max(0, old.pendingApprovals - 1) } : old);

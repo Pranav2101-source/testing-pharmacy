@@ -32,9 +32,10 @@ class AuditService {
       let pharmacyId = data.pharmacyId;
       
       if (req && !userId) {
-        // req.user might be present depending on auth middleware
+        // req.user might be present depending on auth middleware — the JWT
+        // payload's user-id claim is `sub`, not `id` (see JwtPayload in middleware/auth.ts)
         const user = (req as any).user;
-        if (user?.id) userId = user.id;
+        if (user?.sub) userId = user.sub;
       }
 
       if (req && !pharmacyId) {

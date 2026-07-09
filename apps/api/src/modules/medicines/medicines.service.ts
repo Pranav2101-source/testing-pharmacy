@@ -177,6 +177,25 @@ export class MedicinesService {
     return this.repo.findByBarcode(barcode.trim());
   }
 
+  async setBarcode(id: string, barcode: string | null) {
+    const medicine = await this.repo.getById(id);
+    if (!medicine) throw AppError.notFound("Medicine not found");
+
+    const value = barcode?.trim() || null;
+    if (value) {
+      const clash = await this.repo.findBarcodeOwner(value, id);
+      if (clash) {
+        throw AppError.conflict(`Barcode "${value}" is already assigned to "${clash.name}". Each barcode can map to only one medicine.`);
+      }
+    }
+
+    const updated = await this.repo.setBarcode(id, value);
+    // Keep the search index in sync so the new barcode is immediately usable.
+    this.syncOne(updated as Record<string, unknown>);
+    this.bustListCache();
+    return updated;
+  }
+
   async reindex() {
     const all = await this.repo.listAll();
     if (all.length === 0) return { indexed: 0 };

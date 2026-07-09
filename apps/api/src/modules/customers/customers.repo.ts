@@ -224,4 +224,17 @@ export class CustomersRepo {
       creditAvailable: customer.creditLimit > 0 ? customer.creditLimit - customer.creditUsed : null,
     };
   }
+
+  // Receivables — customers who currently owe money (credit sales not fully paid).
+  // creditUsed is maintained on the Customer record as credit invoices are raised
+  // and paid, so this is a single indexed scan, highest dues first.
+  async listOutstanding(pharmacyId: string) {
+    const customers = await this.db.customer.findMany({
+      where:   { pharmacyId, ...ACTIVE, creditUsed: { gt: 0 } },
+      select:  { id: true, name: true, phone: true, customerType: true, creditUsed: true, creditLimit: true },
+      orderBy: { creditUsed: "desc" },
+    });
+    const totalOutstanding = customers.reduce((sum, c) => sum + Number(c.creditUsed), 0);
+    return { customers, totalOutstanding, count: customers.length };
+  }
 }

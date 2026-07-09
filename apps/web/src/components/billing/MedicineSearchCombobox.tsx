@@ -13,6 +13,7 @@ import { useBillingStore } from "./useBillingStore";
 import { cn } from "@/lib/utils";
 import type { MedicineSearchResult } from "@pharmacy/types";
 import { BatchPickerDialog, type InventoryBatch, expiryStatus, fmtExpiry, getLocationLabel } from "./BatchPickerDialog";
+import { BarcodeInput } from "@/components/BarcodeInput";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -84,6 +85,9 @@ export function MedicineSearchCombobox({
   const barcodeCharCount = useRef<number>(0);
   const isBarcodeRef     = useRef<boolean>(false);
   const [isBarcode, setIsBarcode] = useState(false);
+  // Visible scan mode — reveals a dedicated barcode box (mirrors the GRN screen)
+  // so counter staff can plainly see they can scan, not just rely on auto-detect.
+  const [scanMode, setScanMode] = useState(false);
 
   // Debounce: commit query to debouncedQuery after typing pauses
   useEffect(() => {
@@ -168,7 +172,9 @@ export function MedicineSearchCombobox({
       setNearExpiryWarn({ name: batch.medicine.name, days: status.days });
     }
 
-    inputRef.current?.focus();
+    // In scan mode, leave focus on the dedicated barcode box so the next scan
+    // lands there; otherwise return focus to the search input.
+    if (!scanMode) inputRef.current?.focus();
   }
 
   // ── Fetch batches for a medicine (cached 30 s so repeat clicks are instant) ──
@@ -242,6 +248,48 @@ export function MedicineSearchCombobox({
     }
   }
 
+  // ── Exact barcode lookup ──────────────────────────────────────────────────
+  // A scanner types the barcode into the search box then fires Enter. The fuzzy
+  // /medicines/search endpoint does NOT match on barcode, so we resolve the code
+  // against the authoritative exact-match endpoint and feed the medicine straight
+  // into the normal batch-selection flow. This is what makes "scan → line added"
+  // actually work — searching the raw code would either miss or match the wrong item.
+  async function handleBarcodeScan(code: string) {
+    setOpen(false);
+    setAddingId("barcode");
+    // Clear the input immediately so the next scan starts clean and the stale
+    // code never leaks into the fuzzy search dropdown.
+    setQuery("");
+    setDebouncedQuery("");
+    isBarcodeRef.current     = false;
+    barcodeCharCount.current = 0;
+    setIsBarcode(false);
+
+    try {
+      const res = await api.get<{ data: MedicineSearchResult & { isActive?: boolean } }>(
+        `/medicines/barcode/${encodeURIComponent(code)}`,
+      );
+      const m = res.data.data;
+      if (m.isActive === false) {
+        setStockError(`"${m.name}" is discontinued and cannot be billed.`);
+        return;
+      }
+      // selectMedicine fetches live batches → adds directly if one batch, else
+      // opens the batch picker. Identical to a manual pick, so all downstream
+      // expiry/stock guards apply.
+      await selectMedicine(m);
+    } catch (err) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      if (status === 404) {
+        setStockError(`No medicine is linked to barcode "${code}". Search by name, then set this barcode on the medicine so future scans work.`);
+      } else {
+        setStockError(`Couldn't look up barcode "${code}". Check your connection and scan again.`);
+      }
+    } finally {
+      setAddingId(null);
+    }
+  }
+
   function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     const now  = Date.now();
     const diff = now - lastKeyTimeRef.current;
@@ -287,6 +335,15 @@ export function MedicineSearchCombobox({
 
     if (e.key === "Enter") {
       e.preventDefault();
+      const raw = query.trim();
+      // Barcode precedence: a detected scan (fast key bursts) OR a bare numeric
+      // code with no name matches resolves via the exact barcode endpoint rather
+      // than guessing from fuzzy results — which could bill the wrong medicine.
+      const looksLikeBareCode = /^\d{6,}$/.test(raw) && results.length === 0;
+      if ((isBarcodeRef.current && raw.length >= 4) || looksLikeBareCode) {
+        void handleBarcodeScan(raw);
+        return;
+      }
       const target = results[cursor] ?? results[0];
       if (target) selectMedicine(target);
     } else if (e.key === "Escape") {
@@ -356,7 +413,34 @@ export function MedicineSearchCombobox({
               Barcode
             </span>
           )}
+
+          {/* Visible scan toggle — always shown so staff know scanning exists */}
+          <button
+            type="button"
+            onClick={() => setScanMode((v) => !v)}
+            title="Scan a product barcode"
+            className={cn(
+              "flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold flex-shrink-0 border transition-colors",
+              scanMode
+                ? "bg-emerald-600 border-emerald-600 text-white"
+                : "bg-white border-slate-200 text-slate-600 hover:border-emerald-300 hover:text-emerald-700",
+            )}
+          >
+            <ScanBarcode className="w-3.5 h-3.5" />
+            {scanMode ? "Close Scanner" : "Scan Barcode"}
+          </button>
         </div>
+
+        {/* ── Dedicated scan box (visible affordance, mirrors GRN) ─────── */}
+        {scanMode && (
+          <div className="flex items-center gap-2 px-4 py-2.5 bg-emerald-50 border-t border-emerald-100">
+            <ScanBarcode className="w-4 h-4 text-emerald-600 flex-shrink-0" />
+            <div className="flex-1">
+              <BarcodeInput onScan={handleBarcodeScan} loading={addingId === "barcode"} autoFocus placeholder="Scan or type barcode, then Enter…" />
+            </div>
+            <span className="text-[11px] text-emerald-600 font-medium whitespace-nowrap hidden sm:block">Scan to add to bill</span>
+          </div>
+        )}
 
         {/* ── Inline toasts (stock error + near-expiry) ─────────── */}
         <AnimatePresence>

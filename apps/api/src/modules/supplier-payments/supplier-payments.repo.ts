@@ -143,6 +143,63 @@ export class SupplierPaymentsRepo {
     return { items: rawItems.map(toPayment), total, page: params.page, limit: params.limit };
   }
 
+  // Payables across ALL suppliers — same formula as getSupplierBalance
+  // (confirmed GRN total − payments), computed in bulk via groupBy so the
+  // dues screen stays one round-trip regardless of supplier count.
+  async listOutstanding(pharmacyId: string) {
+    const now = new Date();
+    const [suppliers, purchased, paid, overdue] = await Promise.all([
+      this.db.supplier.findMany({
+        where:  { pharmacyId },
+        select: { id: true, name: true, phone: true, creditDays: true },
+      }),
+      this.db.goodsReceiptNote.groupBy({
+        by: ["supplierId"],
+        where: { pharmacyId, status: "CONFIRMED" },
+        _sum: { totalAmount: true },
+      }),
+      this.db.supplierLedgerEntry.groupBy({
+        by: ["supplierId"],
+        where: { pharmacyId, type: "PAYMENT" },
+        _sum: { amount: true },
+      }),
+      this.db.goodsReceiptNote.groupBy({
+        by: ["supplierId"],
+        where: { pharmacyId, status: "CONFIRMED", paymentDueDate: { lt: now } },
+        _sum: { totalAmount: true },
+      }),
+    ]);
+
+    const purchasedMap = new Map(purchased.map((r) => [r.supplierId, Number(r._sum.totalAmount ?? 0)]));
+    const paidMap      = new Map(paid.map((r) => [r.supplierId, Number(r._sum.amount ?? 0)]));
+    const overdueMap   = new Map(overdue.map((r) => [r.supplierId, Number(r._sum.totalAmount ?? 0)]));
+
+    const list = suppliers
+      .map((s) => {
+        const totalPurchased = purchasedMap.get(s.id) ?? 0;
+        const totalPaid      = paidMap.get(s.id) ?? 0;
+        return {
+          id:            s.id,
+          name:          s.name,
+          phone:         s.phone,
+          creditDays:    s.creditDays,
+          totalPurchased,
+          totalPaid,
+          outstanding:   totalPurchased - totalPaid,
+          overdueAmount: overdueMap.get(s.id) ?? 0,
+        };
+      })
+      .filter((s) => s.outstanding > 0.01)
+      .sort((a, b) => b.outstanding - a.outstanding);
+
+    return {
+      suppliers:        list,
+      totalOutstanding: list.reduce((sum, s) => sum + s.outstanding, 0),
+      totalOverdue:     list.reduce((sum, s) => sum + s.overdueAmount, 0),
+      count:            list.length,
+    };
+  }
+
   // Outstanding balance = total confirmed GRN amounts - total payments per supplier (#15 + #16)
   async getSupplierBalance(supplierId: string, pharmacyId: string) {
     const supplier = await this.db.supplier.findFirst({

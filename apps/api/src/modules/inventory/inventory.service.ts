@@ -27,8 +27,8 @@ export class InventoryService {
     this.repo = new InventoryRepo(app.prisma);
   }
 
-  async addStock(pharmacyId: string, input: AddStockInput) {
-    return this.repo.upsertBatch(pharmacyId, { ...input, expiryDate: new Date(input.expiryDate) });
+  async addStock(pharmacyId: string, userId: string, input: AddStockInput) {
+    return this.repo.addStockWithLedger(pharmacyId, userId, { ...input, expiryDate: new Date(input.expiryDate) });
   }
 
   // ── Per-pharmacy override overlay ─────────────────────────────────────────

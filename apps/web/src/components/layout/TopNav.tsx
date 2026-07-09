@@ -10,7 +10,7 @@ import {
   Dot, Monitor, Info, MapPin, Pill,
   Receipt, ClipboardList, Plus, Users,
   MoreHorizontal, TicketCheck, Stethoscope, Banknote, BarChart2, ArrowUpCircle,
-  Building2, CreditCard, ShieldAlert,
+  Building2, CreditCard, ShieldAlert, Wallet,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCalendarTodayCount } from "@/components/calendar/useCalendarEvents";
@@ -41,6 +41,7 @@ const MORE_ITEMS: StyledItem[] = [
   { href: "/dashboard/doctors",        label: "Doctors",        description: "Doctor master & prescription links",    icon: Stethoscope,   iconBg: "bg-indigo-500",  iconColor: "text-white", hoverBg: "hover:bg-indigo-50",  activeBg: "bg-indigo-50",  activeText: "text-indigo-700",  accent: "bg-indigo-500"  },
   { href: "/dashboard/prescriptions", label: "Prescriptions", description: "Manage Rx for Schedule H/H1/X drugs", icon: ClipboardList, iconBg: "bg-violet-600",  iconColor: "text-white", hoverBg: "hover:bg-violet-50",  activeBg: "bg-violet-50",  activeText: "text-violet-700",  accent: "bg-violet-600"  },
   { href: "/dashboard/cash-closure",  label: "Cash Closure",  description: "Day-end cash reconciliation",          icon: Banknote,      iconBg: "bg-amber-500",   iconColor: "text-white", hoverBg: "hover:bg-amber-50",   activeBg: "bg-amber-50",   activeText: "text-amber-800",   accent: "bg-amber-500"   },
+  { href: "/dashboard/dues",          label: "Dues",          description: "Supplier payables & customer credit",  icon: Wallet,        iconBg: "bg-rose-500",    iconColor: "text-white", hoverBg: "hover:bg-rose-50",    activeBg: "bg-rose-50",    activeText: "text-rose-700",    accent: "bg-rose-500",   requiredRoles: ["OWNER", "MANAGER"] },
   { href: "/dashboard/ginni",        label: "Ginni",        description: "AI assistant",                       icon: Zap,          iconBg: "bg-violet-500",  iconColor: "text-white", hoverBg: "hover:bg-violet-50", activeBg: "bg-violet-50", activeText: "text-violet-700", accent: "bg-violet-500" },
 ];
 
@@ -183,41 +184,26 @@ const CalendarPill = memo(function CalendarPill() {
 });
 
 // ─── Global Search ────────────────────────────────────────────────
-// memo: no dynamic props — only internal focused state changes
+// A trigger for the global Command Palette (Ctrl/Cmd+K). The palette itself
+// owns the keyboard shortcut and lives in DashboardLayout; clicking here fires
+// the "open-command-palette" event it listens for. (Previously this was a plain
+// text input that did nothing.)
 const GlobalSearchBar = memo(function GlobalSearchBar() {
-  const [focused, setFocused] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "k") { e.preventDefault(); inputRef.current?.focus(); }
-    };
-    window.addEventListener("keydown", handler, { passive: false });
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
-
+  const openPalette = () => window.dispatchEvent(new Event("open-command-palette"));
   return (
-    <div className={cn(
-      "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 w-44 transition-all duration-150",
-      focused ? "bg-white/18 ring-1 ring-white/30" : "bg-white/8 hover:bg-white/12"
-    )}>
+    <button
+      type="button"
+      onClick={openPalette}
+      aria-label="Open command palette"
+      className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 w-44 transition-all duration-150 bg-white/8 hover:bg-white/12"
+    >
       <Search className="w-3 h-3 text-white/40 flex-shrink-0" aria-hidden />
-      <input
-        ref={inputRef}
-        type="search"
-        aria-label="Global search"
-        placeholder="Search…"
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        className="flex-1 min-w-0 bg-transparent text-[12px] text-white placeholder-white/30 focus:outline-none"
-      />
-      {!focused && (
-        <div className="flex items-center gap-0.5 flex-shrink-0">
-          <kbd className="kbd-hint">Ctrl</kbd>
-          <kbd className="kbd-hint">K</kbd>
-        </div>
-      )}
-    </div>
+      <span className="flex-1 min-w-0 text-left text-[12px] text-white/40">Search…</span>
+      <span className="flex items-center gap-0.5 flex-shrink-0">
+        <kbd className="kbd-hint">Ctrl</kbd>
+        <kbd className="kbd-hint">K</kbd>
+      </span>
+    </button>
   );
 });
 

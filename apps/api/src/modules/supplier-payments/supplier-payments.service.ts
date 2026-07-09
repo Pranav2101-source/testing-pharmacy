@@ -42,4 +42,8 @@ export class SupplierPaymentsService {
   async getSupplierBalance(supplierId: string, pharmacyId: string) {
     return this.repo.getSupplierBalance(supplierId, pharmacyId);
   }
+
+  async listOutstanding(pharmacyId: string) {
+    return this.repo.listOutstanding(pharmacyId);
+  }
 }

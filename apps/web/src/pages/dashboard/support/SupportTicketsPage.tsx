@@ -99,8 +99,9 @@ function triggerDownload(content: string, filename: string, mimeType: string) {
 
 // ── Export dropdown ───────────────────────────────────────────────────────────
 
-function ExportDropdown({ tickets, disabled }: { tickets: Ticket[]; disabled: boolean }) {
-  const [open, setOpen] = useState(false);
+function ExportDropdown({ search, statusFilter, disabled }: { search: string; statusFilter: TicketStatus | ""; disabled: boolean }) {
+  const [open, setOpen]         = useState(false);
+  const [exporting, setExporting] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const toast = useToast();
 
@@ -112,9 +113,31 @@ function ExportDropdown({ tickets, disabled }: { tickets: Ticket[]; disabled: bo
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  function handleExport(format: "csv" | "xlsx") {
+  // The visible table is paginated (PAGE_LIMIT rows), but "export" means every
+  // ticket matching the current filters — page through the API (server caps
+  // limit at 50) rather than exporting just whatever page happens to be on screen.
+  async function fetchAllMatching(): Promise<Ticket[]> {
+    const all: Ticket[] = [];
+    let page = 1;
+    for (;;) {
+      const params = new URLSearchParams({
+        page: String(page), limit: "50",
+        ...(search.trim() ? { search: search.trim() } : {}),
+        ...(statusFilter  ? { status: statusFilter }  : {}),
+      });
+      const { data } = await api.get<{ data: ListResponse }>(`/support/tickets?${params}`);
+      all.push(...data.data.items);
+      if (page >= data.data.totalPages) break;
+      page += 1;
+    }
+    return all;
+  }
+
+  async function handleExport(format: "csv" | "xlsx") {
     setOpen(false);
+    setExporting(true);
     try {
+      const tickets   = await fetchAllMatching();
       const timestamp = new Date().toISOString().slice(0, 10);
       if (format === "csv") {
         triggerDownload(buildCsv(tickets), `support-tickets-${timestamp}.csv`, "text/csv");
@@ -124,6 +147,8 @@ function ExportDropdown({ tickets, disabled }: { tickets: Ticket[]; disabled: bo
       toast.success(`Exported ${tickets.length} ticket${tickets.length !== 1 ? "s" : ""} as ${format.toUpperCase()}`);
     } catch {
       toast.error("Export failed. Please try again.");
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -132,7 +157,7 @@ function ExportDropdown({ tickets, disabled }: { tickets: Ticket[]; disabled: bo
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        disabled={disabled}
+        disabled={disabled || exporting}
         className={cn(
           "flex items-center gap-1.5 h-9 px-3 rounded-xl border text-[13px] font-semibold transition-all",
           "disabled:opacity-40 disabled:cursor-not-allowed",
@@ -141,8 +166,8 @@ function ExportDropdown({ tickets, disabled }: { tickets: Ticket[]; disabled: bo
             : "bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-slate-300",
         )}
       >
-        <Download className="w-3.5 h-3.5" />
-        Export
+        {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+        {exporting ? "Exporting…" : "Export"}
         <ChevronDown className={cn("w-3.5 h-3.5 text-slate-400 transition-transform", open && "rotate-180")} />
       </button>
 
@@ -348,7 +373,7 @@ export default function SupportTicketsPage() {
           </button>
 
           {/* Export */}
-          <ExportDropdown tickets={list} disabled={isLoading} />
+          <ExportDropdown search={search} statusFilter={statusFilter} disabled={isLoading} />
 
           {/* Create Ticket — visible for platform admin, hidden for support agents */}
           {(!isAgent || isAdmin) && (

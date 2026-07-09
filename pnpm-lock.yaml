@@ -324,6 +324,9 @@ importers:
       '@pharmacy/mailer':
         specifier: workspace:*
         version: link:../mailer
+      '@pharmacy/utils':
+        specifier: workspace:*
+        version: link:../utils
       pg-boss:
         specifier: ^12.20.0
         version: 12.20.0

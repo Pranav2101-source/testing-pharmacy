@@ -108,15 +108,12 @@ export interface ParsedDoctorRow {
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
+// Single source of truth lives in @pharmacy/utils migration-core (shared with
+// the async pg-boss worker). Imported for local use + re-exported so this
+// module's imports stay stable.
 
-export type ValidationSeverity = "error" | "warning";
-
-export interface RowIssue {
-  row:      number;
-  field?:   string;
-  message:  string;
-  severity: ValidationSeverity;
-}
+import type { RowIssue } from "@pharmacy/utils";
+export type { ValidationSeverity, RowIssue } from "@pharmacy/utils";
 
 // ── Medicine matching ─────────────────────────────────────────────────────────
 
@@ -146,6 +143,7 @@ export interface CommitResult {
   totalRows:    number;
   successRows:  number;
   failedRows:   number;
+  skippedRows?: number;           // batches skipped because they already existed
   errors:       RowIssue[];
   jobId?:       string;           // set when dispatched to pg-boss
   async:        boolean;

@@ -245,7 +245,7 @@ export class PurchasesRepo {
   async listPOs(pharmacyId: string, params: {
     page:            number;
     limit:           number;
-    status?:         string;
+    status?:         string[];
     approvalStatus?: string;
     supplierId?:     string;
     from?:           Date;
@@ -254,7 +254,7 @@ export class PurchasesRepo {
   }) {
     const where: Prisma.PurchaseOrderWhereInput = {
       pharmacyId,
-      ...(params.status         ? { status: params.status as any }         : {}),
+      ...(params.status?.length ? { status: { in: params.status as any } } : {}),
       ...(params.approvalStatus ? { approvalStatus: params.approvalStatus as any } : {}),
       ...(params.supplierId     ? { supplierId: params.supplierId }         : {}),
       ...(params.from || params.to
@@ -366,8 +366,9 @@ export class PurchasesRepo {
           },
         },
         include: {
-          supplier: { select: { id: true, name: true } },
-          items:    { include: { medicine: { select: { name: true } } } },
+          supplier:      { select: { id: true, name: true } },
+          purchaseOrder: { select: { id: true, orderNumber: true } },
+          items:         { include: { medicine: { select: { name: true } } } },
         },
       });
 
@@ -754,41 +755,44 @@ export class PurchasesRepo {
   async getAutoSuggestions(pharmacyId: string, daysThreshold: number, supplierId?: string) {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    // Step 1: Get total stock per medicine
-    const stockAgg = await this.db.inventory.groupBy({
-      by:     ["medicineId"],
-      where:  { pharmacyId, status: "ACTIVE" },
-      _sum:   { quantity: true },
-      _min:   { minimumStock: true },
-    });
+    // Steps 1-3 are independent of each other — run concurrently.
+    const [stockAgg, salesAgg, inventoryItems] = await Promise.all([
+      // Step 1: Get total stock per medicine
+      this.db.inventory.groupBy({
+        by:     ["medicineId"],
+        where:  { pharmacyId, status: "ACTIVE" },
+        _sum:   { quantity: true },
+        _min:   { minimumStock: true },
+      }),
 
-    // Step 2: Get sales in last 30 days grouped by medicineId via the inventory FK.
-    // Previously grouped by `medicineName` (a snapshot string), which broke whenever
-    // a medicine was renamed — the old snapshot name wouldn't match the current master
-    // name, so sales for that medicine were silently dropped and it never appeared in
-    // suggestions.  Joining through inventory gives us the stable FK.
-    const salesAgg = await this.db.$queryRaw<{ medicineId: string; totalQty: number }[]>`
-      SELECT inv."medicineId", COALESCE(SUM(ii.quantity), 0)::int AS "totalQty"
-      FROM   invoice_items ii
-      JOIN   inventory     inv ON inv.id      = ii."inventoryId"
-      JOIN   invoices      i   ON i.id        = ii."invoiceId"
-      WHERE  i."pharmacyId"  = ${pharmacyId}
-        AND  i."isCancelled" = false
-        AND  i."createdAt"  >= ${thirtyDaysAgo}
-      GROUP  BY inv."medicineId"
-    `;
+      // Step 2: Get sales in last 30 days grouped by medicineId via the inventory FK.
+      // Previously grouped by `medicineName` (a snapshot string), which broke whenever
+      // a medicine was renamed — the old snapshot name wouldn't match the current master
+      // name, so sales for that medicine were silently dropped and it never appeared in
+      // suggestions.  Joining through inventory gives us the stable FK.
+      this.db.$queryRaw<{ medicineId: string; totalQty: number }[]>`
+        SELECT inv."medicineId", COALESCE(SUM(ii.quantity), 0)::int AS "totalQty"
+        FROM   invoice_items ii
+        JOIN   inventory     inv ON inv.id      = ii."inventoryId"
+        JOIN   invoices      i   ON i.id        = ii."invoiceId"
+        WHERE  i."pharmacyId"  = ${pharmacyId}
+          AND  i."isCancelled" = false
+          AND  i."createdAt"  >= ${thirtyDaysAgo}
+        GROUP  BY inv."medicineId"
+      `,
+
+      // Step 3: Fetch medicine names for the suggestion output
+      this.db.inventory.findMany({
+        where:    { pharmacyId, status: "ACTIVE" },
+        select:   { medicineId: true, medicine: { select: { name: true } } },
+        distinct: ["medicineId"],
+      }),
+    ]);
 
     // Build medicine sales map keyed by medicineId
     const salesByMedicineId = new Map<string, number>(
       salesAgg.map((r) => [r.medicineId, r.totalQty]),
     );
-
-    // Step 3: Fetch medicine names for the suggestion output
-    const inventoryItems = await this.db.inventory.findMany({
-      where:    { pharmacyId, status: "ACTIVE" },
-      select:   { medicineId: true, medicine: { select: { name: true } } },
-      distinct: ["medicineId"],
-    });
 
     // Step 4: Compute suggestions
     const suggestions: {

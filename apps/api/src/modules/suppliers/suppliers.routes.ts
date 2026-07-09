@@ -69,7 +69,7 @@ const suppliersRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/purchase-orders", { preHandler: auth }, async (req, reply) => {
     const input = createPurchaseOrderSchema.parse(req.body);
-    const order = await service.receivePurchaseOrder(req.pharmacyId, input);
+    const order = await service.receivePurchaseOrder(req.pharmacyId, req.user.sub, input);
     return reply.status(201).send({ success: true, data: order });
   });
 };
