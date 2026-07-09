@@ -8,6 +8,7 @@ export type KPICard = {
   change: number; // % vs previous period
   changeLabel: string; // e.g. "vs last 30 days"
   sparkline: number[]; // 7 data points for mini chart
+  to?: string; // Routing intent
 };
 
 export type RevenueAnalytics = {

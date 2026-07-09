@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { format } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -175,7 +176,7 @@ export function TenantDrawer({ tenantId, onClose }: TenantDrawerProps) {
                             </span>
                           )}
                           <span className="flex items-center gap-1">
-                            <Calendar className="w-3.5 h-3.5" /> {new Date(tenant.createdAt).toLocaleDateString()}
+                            <Calendar className="w-3.5 h-3.5" /> {format(new Date(tenant.createdAt), "MMM d, yyyy • h:mm a")}
                           </span>
                         </div>
                       </div>
@@ -337,7 +338,7 @@ function SubscriptionTab({ tenant, navigate }: { tenant: any; navigate: any }) {
         <div className="space-y-2 mt-4">
           <div className="flex justify-between text-sm">
             <span className="text-slate-500">Valid Until</span>
-            <span className="font-medium text-slate-900">{sub?.validUntil ? new Date(sub.validUntil).toLocaleDateString() : "--"}</span>
+            <span className="font-medium text-slate-900">{sub?.validUntil ? format(new Date(sub.validUntil), "MMM d, yyyy • h:mm a") : "--"}</span>
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-slate-500">Billing Cycle</span>
@@ -353,7 +354,7 @@ function SubscriptionTab({ tenant, navigate }: { tenant: any; navigate: any }) {
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-slate-500">Created</span>
-            <span className="font-medium text-slate-900">{sub?.createdAt ? new Date(sub.createdAt).toLocaleDateString() : "--"}</span>
+            <span className="font-medium text-slate-900">{sub?.createdAt ? format(new Date(sub.createdAt), "MMM d, yyyy • h:mm a") : "--"}</span>
           </div>
         </div>
         {sub?.id && (
@@ -482,7 +483,7 @@ function ActivityTab({ activity }: { activity: any }) {
                 {act.action} {act.entity}
               </p>
               <p className="text-xs text-slate-500">
-                {new Date(act.createdAt).toLocaleString()} by {act.user?.name || "System"}
+                {format(new Date(act.createdAt), "MMM d, yyyy • h:mm a")} by {act.user?.name || "System"}
               </p>
             </div>
           </div>

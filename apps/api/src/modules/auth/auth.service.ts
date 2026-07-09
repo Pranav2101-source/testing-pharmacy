@@ -8,7 +8,8 @@ import { AppError } from "../../lib/AppError.js";
 import { env } from "../../config/env.js";
 import { notifyOwners } from "../../lib/notifications.js";
 import { auditService } from "../audit/audit.service.js";
-
+import { PharmacyOnboardingService } from "../pharmacy/pharmacy-onboarding.service.js";
+import type { FastifyRequest } from "fastify";
 /** Convert a TTL string like "1h" / "30m" to milliseconds. */
 function parseTtlMs(ttl: string): number {
   const match = ttl.match(/^(\d+)(m|h|d)$/);
@@ -29,28 +30,29 @@ export class AuthService {
 
   // ── Register ──────────────────────────────────────────────────────────────
 
-  async register(input: RegisterInput) {
-    const slug = input.pharmacyName
-      .toLowerCase()
-      .replace(/\s+/g, "-")
-      .replace(/[^a-z0-9-]/g, "")
-      .slice(0, 50);
-
+  async register(req: FastifyRequest, input: RegisterInput) {
     const passwordHash = await bcrypt.hash(input.password, 12);
 
-    const pharmacy = await this.repo.createPharmacyWithOwner({
-      pharmacyName: input.pharmacyName,
-      slug:         `${slug}-${Date.now()}`,
-      ownerName:    input.ownerName,
-      email:        input.email,
-      passwordHash,
-      phone:        input.phone,
-      gstin:        input.gstin,
-      drugLicense:  input.drugLicense,
-      address:      input.address,
-      city:         input.city,
-      state:        input.state,
-      pincode:      input.pincode,
+    const onboardingService = new PharmacyOnboardingService(this.app);
+    const pharmacy = await onboardingService.onboardPharmacy(req, {
+      pharmacyData: {
+        name: input.pharmacyName,
+        gstin: input.gstin,
+        drugLicense: input.drugLicense,
+        phone: input.phone,
+        email: input.email,
+        address: input.address,
+        city: input.city,
+        state: input.state,
+        pincode: input.pincode,
+      },
+      ownerData: {
+        name: input.ownerName,
+        email: input.email,
+        phone: input.phone,
+        passwordHash,
+      },
+      createOwner: true,
     });
 
     const owner = pharmacy.users[0];

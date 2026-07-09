@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { format } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -220,7 +221,7 @@ function OverviewTab({ detail }: { detail: any }) {
           </div>
           <Calendar className={cn("w-8 h-8", daysLeft === null ? "text-slate-400" : daysLeft <= 7 ? "text-red-400" : daysLeft <= 30 ? "text-amber-400" : "text-emerald-400")} />
         </div>
-        <p className="text-xs text-slate-500 mt-2">Valid until {hasValidUntil ? new Date(detail.validUntil).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" }) : "--"}</p>
+        <p className="text-xs text-slate-500 mt-2">Valid until {hasValidUntil ? format(new Date(detail.validUntil), "MMM d, yyyy • h:mm a") : "--"}</p>
       </div>
 
       {/* Plan & Cycle */}
@@ -261,7 +262,7 @@ function BillingTab({ detail, invoices }: { detail: any; invoices: any[] | undef
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4">
         <InfoCard label="Last Invoice" value={billing?.lastInvoice ? `${billing.lastInvoice.invoiceNumber} — ${formatCurrency(billing.lastInvoice.total)}` : "None"} />
-        <InfoCard label="Next Invoice" value={billing?.nextInvoiceDate ? new Date(billing.nextInvoiceDate).toLocaleDateString("en-IN") : "--"} />
+        <InfoCard label="Next Invoice" value={billing?.nextInvoiceDate ? format(new Date(billing.nextInvoiceDate), "MMM d, yyyy • h:mm a") : "--"} />
         <InfoCard label="Outstanding" value={formatCurrency(billing?.outstanding || 0)} highlight={billing?.outstanding > 0} />
         <InfoCard label="Credit Balance" value={formatCurrency(billing?.creditBalance || 0)} />
         <InfoCard label="GST (Pharmacy)" value={billing?.gstinPharmacy || "Not Provided"} />
@@ -279,7 +280,7 @@ function BillingTab({ detail, invoices }: { detail: any; invoices: any[] | undef
               <div key={inv.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs">
                 <div>
                   <span className="font-mono font-bold text-slate-700">{inv.invoiceNumber}</span>
-                  <span className="text-slate-400 ml-2">{new Date(inv.createdAt).toLocaleDateString()}</span>
+                  <span className="text-slate-400 ml-2">{format(new Date(inv.createdAt), "MMM d, yyyy • h:mm a")}</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <span className={cn("px-2 py-0.5 rounded-full font-bold",
@@ -309,7 +310,7 @@ function InvoicesTab({ invoices }: { invoices: any[] | undefined }) {
           <div className="flex items-start justify-between">
             <div>
               <p className="font-mono font-bold text-sm text-slate-900">{inv.invoiceNumber}</p>
-              <p className="text-xs text-slate-500 mt-0.5">Due: {new Date(inv.dueDate).toLocaleDateString()}</p>
+              <p className="text-xs text-slate-500 mt-0.5">Due: {format(new Date(inv.dueDate), "MMM d, yyyy • h:mm a")}</p>
             </div>
             <span className={cn("px-2 py-0.5 rounded-full text-[10px] font-bold",
               inv.status === "PAID" ? "bg-emerald-100 text-emerald-700" : inv.status === "OVERDUE" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
@@ -473,7 +474,7 @@ function AuditTab({ logs }: { logs: any[] | undefined }) {
             <p className="text-sm font-medium text-slate-800">{log.action.replace(/_/g, " ")}</p>
             {log.oldValue && <p className="text-[10px] text-slate-400 mt-0.5">From: {log.oldValue}</p>}
             {log.newValue && <p className="text-[10px] text-slate-400">To: {log.newValue}</p>}
-            <p className="text-[10px] text-slate-400 mt-0.5">{new Date(log.createdAt).toLocaleString()}</p>
+            <p className="text-[10px] text-slate-400 mt-0.5">{format(new Date(log.createdAt), "MMM d, yyyy • h:mm a")}</p>
           </div>
         </div>
       ))}

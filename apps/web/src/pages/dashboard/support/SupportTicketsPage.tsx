@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -285,7 +285,8 @@ export default function SupportTicketsPage() {
   const [search,       setSearch]       = useState("");
   const [statusFilter, setStatusFilter] = useState<TicketStatus | "">("");
   const [page,         setPage]         = useState(1);
-  const [showCreate,   setShowCreate]   = useState(false);
+  const [searchParams] = useSearchParams();
+  const [showCreate,   setShowCreate]   = useState(searchParams.get("action") === "new");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const refreshGuard = useRef(false);
 

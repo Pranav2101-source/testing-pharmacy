@@ -59,7 +59,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/register", { config: { rateLimit: AUTH_RATE_LIMIT } }, async (req, reply) => {
     const input  = registerSchema.parse(req.body);
-    const tokens = await service.register(input);
+    const tokens = await service.register(req, input);
     setRefreshCookie(reply, tokens.refreshToken);
     return reply.status(201).send({ success: true, data: { accessToken: tokens.accessToken } });
   });

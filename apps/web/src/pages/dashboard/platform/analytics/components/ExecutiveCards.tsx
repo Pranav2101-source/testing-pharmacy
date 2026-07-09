@@ -1,6 +1,7 @@
 import { TrendingUp, TrendingDown, DollarSign, Users, Building2, FileText, LifeBuoy, Activity } from "lucide-react";
 import { ResponsiveContainer, AreaChart, Area } from "recharts";
 import { motion } from "framer-motion";
+import { Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import type { KPICard } from "../analytics.types";
 
@@ -39,18 +40,23 @@ const colorClasses: Record<string, string> = {
   slate:   "bg-slate-50 text-slate-600",
 };
 
-export function ExecutiveCards({ cards }: { cards: KPICard[] }) {
+export function ExecutiveCards({ cards, onCardClick }: { cards: KPICard[], onCardClick?: (key: string) => void }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-      {cards.map((card, idx) => (
-        <motion.div
-          key={card.key}
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: idx * 0.05 }}
-          className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 flex flex-col relative overflow-hidden group hover-lift card-glow-hover"
-        >
-          <div className="flex justify-between items-start mb-4 relative z-10">
+      {cards.map((card, idx) => {
+        const isClickable = card.to || (onCardClick && card.key === "newPharmacies");
+        const content = (
+          <motion.div
+            key={card.key}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: idx * 0.05 }}
+            className={cn(
+              "bg-white rounded-2xl p-6 shadow-sm border border-slate-200 flex flex-col relative overflow-hidden group hover-lift card-glow-hover h-full",
+              isClickable ? "cursor-pointer" : ""
+            )}
+          >
+            <div className="flex justify-between items-start mb-4 relative z-10">
             <div className={cn(
               "p-3 rounded-xl",
               colorClasses[colorMap[card.key] ?? "slate"]
@@ -93,7 +99,22 @@ export function ExecutiveCards({ cards }: { cards: KPICard[] }) {
             </ResponsiveContainer>
           </div>
         </motion.div>
-      ))}
+        );
+        
+        if (onCardClick && card.key === "newPharmacies") {
+          return (
+            <div key={card.key} onClick={() => onCardClick(card.key)} className="block h-full outline-none focus:ring-2 focus:ring-slate-400 rounded-2xl cursor-pointer">
+              {content}
+            </div>
+          );
+        }
+
+        return card.to ? (
+          <Link to={card.to} key={card.key} className="block h-full outline-none focus:ring-2 focus:ring-slate-400 rounded-2xl">
+            {content}
+          </Link>
+        ) : content;
+      })}
     </div>
   );
 }

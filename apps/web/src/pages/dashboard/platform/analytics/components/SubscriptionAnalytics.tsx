@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 
 import type { SubscriptionAnalytics } from "../analytics.types";
+import { EmptyWidgetState } from "./EmptyWidgetState";
 
 const formatMoney = (val: number) => 
   new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(val);
@@ -53,28 +54,32 @@ export function SubscriptionAnalyticsCard({ data }: { data: SubscriptionAnalytic
         {/* Plan Distribution */}
         <div className="flex-1">
           <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Plan Distribution</h3>
-          <div className="space-y-3">
-            {data.planDistribution.map(plan => (
-              <div 
-                key={plan.plan}
-                onClick={() => navigate(`/dashboard/subscriptions?plan=${plan.plan}`)}
-                className="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors"
-              >
-                <div className="flex items-center gap-3">
-                  <div className={`w-2 h-2 rounded-full ${
-                    plan.plan === 'Enterprise' ? 'bg-purple-500' :
-                    plan.plan === 'Professional' ? 'bg-blue-500' :
-                    plan.plan === 'Standard' ? 'bg-emerald-500' : 'bg-slate-400'
-                  }`} />
-                  <span className="text-sm font-medium text-slate-700">{plan.plan}</span>
+          {data.planDistribution.length === 0 ? (
+            <EmptyWidgetState message="No active plans." />
+          ) : (
+            <div className="space-y-3">
+              {data.planDistribution.map(plan => (
+                <div 
+                  key={plan.plan}
+                  onClick={() => navigate(`/dashboard/subscriptions?plan=${plan.plan}`)}
+                  className="flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 cursor-pointer transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className={`w-2 h-2 rounded-full ${
+                      plan.plan === 'Enterprise' ? 'bg-purple-500' :
+                      plan.plan === 'Professional' ? 'bg-blue-500' :
+                      plan.plan === 'Standard' ? 'bg-emerald-500' : 'bg-slate-400'
+                    }`} />
+                    <span className="text-sm font-medium text-slate-700">{plan.plan}</span>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold text-slate-900">{plan.count}</p>
+                    <p className="text-xs text-slate-500">{formatMoney(plan.revenue)}</p>
+                  </div>
                 </div>
-                <div className="text-right">
-                  <p className="text-sm font-bold text-slate-900">{plan.count}</p>
-                  <p className="text-xs text-slate-500">{formatMoney(plan.revenue)}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

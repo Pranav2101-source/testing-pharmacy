@@ -1,14 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { Prisma } from "@pharmacy/database";
 import { auditService } from "../audit/audit.service.js";
-
-// Plan pricing config
-const PLAN_PRICING: Record<string, { monthly: number; yearly: number; quarterly: number }> = {
-  Free:         { monthly: 0,    yearly: 0,     quarterly: 0 },
-  Standard:     { monthly: 999,  yearly: 9590,  quarterly: 2697 },
-  Professional: { monthly: 2499, yearly: 23990, quarterly: 6747 },
-  Enterprise:   { monthly: 4999, yearly: 47990, quarterly: 13497 },
-};
+import { PLAN_PRICING } from "../pharmacy/pharmacy.constants.js";
 
 export class SubscriptionsService {
   constructor(private app: FastifyInstance) {}
@@ -308,7 +301,10 @@ export class SubscriptionsService {
 
   async changePlan(id: string, plan: string, billingCycle: string | undefined, amount: number | undefined, adminUserId: string) {
     const sub = await this.app.prisma.subscription.findUnique({ where: { id } });
-    if (!sub) throw Object.assign(new Error("Subscription not found"), { statusCode: 404 });
+
+    if (!sub) {
+      throw Object.assign(new Error("Subscription not found"), { statusCode: 404 });
+    }
 
     const cycle = billingCycle || sub.billingCycle;
     const pricing = PLAN_PRICING[plan];

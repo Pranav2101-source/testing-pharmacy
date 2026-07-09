@@ -62,36 +62,105 @@ export class DashboardService {
       }))
     ].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 
-    // --- MOCK DATA ---
-    // For elements requested that don't exist in Prisma schema yet.
-    
-    // Revenue
-    const mrr = 845000;
-    const arr = 10140000;
-    const todaysRevenue = 14999;
-    const renewalsToday = 24;
-    const failedPayments = 3;
-    const outstandingInvoices = 8;
-    
-    // System Health
+    // System Health (Live Checks)
+    let dbStatus = "WARNING", dbValue = "Timeout", dbDetail = "Could not connect";
+    try {
+      const start = Date.now();
+      await prisma.$queryRaw`SELECT 1`;
+      const latency = Date.now() - start;
+      dbStatus = "HEALTHY";
+      dbValue = `${latency}ms`;
+      dbDetail = "PostgreSQL active";
+    } catch (e) { }
+
+    let redisStatus = "WARNING", redisValue = "Disconnected", redisDetail = "No connection";
+    const redis = this.app.redis;
+    if (redis) {
+      try {
+        await redis.ping();
+        redisStatus = "HEALTHY";
+        redisValue = "Connected";
+        redisDetail = "Active";
+      } catch (e) { }
+    } else {
+      redisStatus = "OFFLINE";
+      redisDetail = "Not configured";
+    }
+
+    let storageStatus = "WARNING", storageValue = "Unknown", storageDetail = "Unable to read size";
+    try {
+      // Query PostgreSQL for current database size
+      const result: any[] = await prisma.$queryRaw`SELECT pg_database_size(current_database()) as size`;
+      const sizeBytes = result[0]?.size || 0;
+      const sizeMB = (Number(sizeBytes) / 1024 / 1024).toFixed(2);
+      storageStatus = "HEALTHY";
+      storageValue = `${sizeMB} MB`;
+      storageDetail = "PostgreSQL DB Size";
+    } catch (e) { }
+
+    // Query Boss for queue status (if boss table exists, otherwise just omit queue or keep basic check)
+    let queueStatus = "OFFLINE", queueValue = "--", queueDetail = "Not tracked";
+
     const systemHealth = {
-      database: { status: "HEALTHY", value: "98.7%", detail: "3 ms latency" },
-      redis: { status: "HEALTHY", value: "Connected", detail: "Active" },
-      queue: { status: "WARNING", value: "12 waiting", detail: "Processing delayed" },
-      storage: { status: "HEALTHY", value: "67%", detail: "2.1 TB used" },
-      api: { status: "HEALTHY", value: "428 req/min", detail: "Avg 45ms" }
+      database: { status: dbStatus, value: dbValue, detail: dbDetail },
+      redis: { status: redisStatus, value: redisValue, detail: redisDetail },
+      queue: { status: queueStatus, value: queueValue, detail: queueDetail },
+      storage: { status: storageStatus, value: storageValue, detail: storageDetail },
+      api: { status: "HEALTHY", value: "Online", detail: "Serving requests" }
     };
+
+    // Financial Metrics (MRR / ARR)
+    // Cache Key: platform:dashboard:financials
+    let financials = { mrr: 0, arr: 0, todaysRevenue: 0, renewalsToday: 0, failedPayments: 0, outstandingInvoices: 0 };
+    let cachedFinancials: string | null = null;
+    if (redis) {
+      cachedFinancials = await redis.get("platform:dashboard:financials");
+    }
+
+    if (cachedFinancials) {
+      try {
+        financials = JSON.parse(cachedFinancials);
+      } catch {
+        cachedFinancials = null;
+      }
+    }
+    if (!cachedFinancials) {
+      // Filter: active subscriptions
+      const activeSubs = await prisma.subscription.findMany({
+        where: { status: "ACTIVE" },
+        select: { amount: true, billingCycle: true }
+      });
+
+      let mrr = 0;
+      for (const sub of activeSubs) {
+        const amt = sub.amount || 0;
+        if (sub.billingCycle === "MONTHLY") mrr += amt;
+        else if (sub.billingCycle === "QUARTERLY") mrr += amt / 3;
+        else if (sub.billingCycle === "YEARLY") mrr += amt / 12;
+      }
+      
+      const arr = mrr * 12;
+      
+      // We don't have tables for payments or invoices yet, so they remain 0
+      financials = {
+        mrr: Math.round(mrr),
+        arr: Math.round(arr),
+        todaysRevenue: 0,
+        renewalsToday: 0,
+        failedPayments: 0,
+        outstandingInvoices: 0
+      };
+
+      if (redis) {
+        await redis.setex("platform:dashboard:financials", 60, JSON.stringify(financials));
+      }
+    }
     
     // Critical Alerts
     const criticalAlerts = [];
-    if (failedPayments > 0) {
-      criticalAlerts.push({ id: "alert-1", type: "WARNING", message: `⚠ ${failedPayments} Failed payments today` });
-    }
     if (urgentTickets > 0) {
       criticalAlerts.push({ id: "alert-2", type: "DANGER", message: `⚠ ${urgentTickets} open urgent tickets` });
     }
-    criticalAlerts.push({ id: "alert-3", type: "WARNING", message: "⚠ Subscription expires tomorrow" });
-    criticalAlerts.push({ id: "alert-4", type: "DANGER", message: "⚠ Storage 95%" }); // Mock alert as requested by user example
 
     return {
       real: {
@@ -106,11 +175,52 @@ export class DashboardService {
         totalConsultations,
         activityFeed
       },
-      mock: {
-        revenue: { mrr, arr, todaysRevenue, renewalsToday, failedPayments, outstandingInvoices },
-        systemHealth,
-        criticalAlerts
-      }
+      // Note: `mock` property is removed, sending these under a `metrics` and `systemHealth` object instead.
+      metrics: financials,
+      systemHealth,
+      criticalAlerts
     };
+  }
+
+  async exportDashboardReport(): Promise<string> {
+    const stats = await this.getPlatformDashboardStats();
+
+    // Required columns:
+    // Monthly Recurring Revenue, Annual Recurring Revenue, Active Pharmacies, Active Doctors,
+    // Active Patients, Active Subscriptions, Revenue Summary, Storage Usage, Support Ticket Summary
+
+    const mrr = stats.metrics.mrr;
+    const arr = stats.metrics.arr;
+    const activePharmacies = stats.real.activePharmacies;
+    const activeDoctors = stats.real.totalDoctors;
+    const activePatients = stats.real.totalPatients;
+    
+    // We can count active subscriptions directly since it's an easy aggregation
+    const activeSubscriptions = await this.app.prisma.subscription.count({ where: { status: "ACTIVE" } });
+
+    const todaysRevenue = stats.metrics.todaysRevenue;
+    const storageUsage = stats.systemHealth.storage.value;
+    const supportTickets = `${stats.real.openTickets} Open / ${stats.real.urgentTickets} Urgent`;
+
+    const headers = [
+      "Metric",
+      "Value"
+    ].join(",");
+
+    const rows = [
+      ["Monthly Recurring Revenue (MRR)", mrr],
+      ["Annual Recurring Revenue (ARR)", arr],
+      ["Today's Revenue", todaysRevenue],
+      ["Active Subscriptions", activeSubscriptions],
+      ["Active Pharmacies", activePharmacies],
+      ["Active Doctors", activeDoctors],
+      ["Active Patients", activePatients],
+      ["Storage Usage", storageUsage],
+      ["Support Tickets", supportTickets]
+    ];
+
+    const csvRows = rows.map(r => r.join(","));
+    
+    return [headers, ...csvRows].join("\n");
   }
 }

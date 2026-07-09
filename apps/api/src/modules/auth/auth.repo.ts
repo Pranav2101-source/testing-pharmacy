@@ -17,44 +17,7 @@ export class AuthRepo {
     });
   }
 
-  async createPharmacyWithOwner(data: {
-    pharmacyName:  string;
-    slug:          string;
-    ownerName:     string;
-    email:         string;
-    passwordHash:  string;
-    phone:         string;
-    gstin?:        string;
-    drugLicense?:  string;
-    address?:      string;
-    city?:         string;
-    state?:        string;
-    pincode?:      string;
-  }) {
-    return this.db.pharmacy.create({
-      data: {
-        name:        data.pharmacyName,
-        slug:        data.slug,
-        gstin:       data.gstin,
-        drugLicense: data.drugLicense,
-        phone:       data.phone,
-        address:     data.address,
-        city:        data.city,
-        state:       data.state,
-        pincode:     data.pincode,
-        users: {
-          create: {
-            name:         data.ownerName,
-            email:        data.email,
-            phone:        data.phone,
-            passwordHash: data.passwordHash,
-            role:         "OWNER",
-          },
-        },
-      },
-      include: { users: true },
-    });
-  }
+
 
   async updateLastLogin(userId: string) {
     return this.db.user.update({

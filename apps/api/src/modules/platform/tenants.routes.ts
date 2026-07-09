@@ -27,8 +27,7 @@ const tenantsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/", { preHandler: adminAuth }, async (req, reply) => {
     const input = createTenantSchema.parse(req.body);
-    const adminUserId = req.user.sub;
-    const result = await service.createTenant(input, adminUserId);
+    const result = await service.createTenant(req, input);
     return reply.status(201).send({ success: true, data: result });
   });
 
@@ -36,8 +35,7 @@ const tenantsRoutes: FastifyPluginAsync = async (app) => {
 
   app.post("/import", { preHandler: adminAuth }, async (req, reply) => {
     const { rows } = importTenantsSchema.parse(req.body);
-    const adminUserId = req.user.sub;
-    const result = await service.importTenants(rows, adminUserId);
+    const result = await service.importTenants(req, rows);
     return reply.send({ success: true, data: result });
   });
 
@@ -45,8 +43,10 @@ const tenantsRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/export", { preHandler: adminAuth }, async (req, reply) => {
     const query = exportTenantsQuerySchema.parse(req.query);
-    const data = await service.exportTenants(query);
-    return reply.send({ success: true, data });
+    const stream = service.exportTenantsStream(query);
+    reply.header("Content-Type", "text/csv");
+    reply.header("Content-Disposition", `attachment; filename="tenants-export-${new Date().toISOString().split("T")[0]}.csv"`);
+    return reply.send(stream);
   });
 
   // ── Bulk Actions ────────────────────────────────────────────────────────────

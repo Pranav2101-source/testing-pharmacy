@@ -2,6 +2,7 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianG
 import { useNavigate } from "react-router-dom";
 import { TrendingDown, Building2, CreditCard, AlertOctagon } from "lucide-react";
 import type { ChurnAnalytics } from "../analytics.types";
+import { EmptyWidgetState } from "./EmptyWidgetState";
 
 export function ChurnAnalyticsCard({ data }: { data: ChurnAnalytics }) {
   const navigate = useNavigate();
@@ -55,25 +56,29 @@ export function ChurnAnalyticsCard({ data }: { data: ChurnAnalytics }) {
         <div className="flex-1 min-h-[150px] flex flex-col">
           <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Churn Trend</h3>
           <div className="flex-1 min-h-0">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={data.churnTrend} margin={{ top: 5, right: 10, bottom: 0, left: -20 }}>
-                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} dy={10} />
-                <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
-                <Tooltip 
-                  contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                />
-                <Line 
-                  type="monotone" 
-                  dataKey="churned" 
-                  name="Churned Subs" 
-                  stroke="#ef4444" 
-                  strokeWidth={3} 
-                  dot={{ r: 4, strokeWidth: 2 }} 
-                  activeDot={{ r: 6 }} 
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {data.churnTrend.every(d => d.churned === 0) ? (
+              <EmptyWidgetState message="No churn events recorded." />
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={data.churnTrend} margin={{ top: 5, right: 10, bottom: 0, left: -20 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                  <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} dy={10} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
+                  <Tooltip 
+                    contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                  />
+                  <Line 
+                    type="monotone" 
+                    dataKey="churned" 
+                    name="Churned Subs" 
+                    stroke="#ef4444" 
+                    strokeWidth={3} 
+                    dot={{ r: 4, strokeWidth: 2 }} 
+                    activeDot={{ r: 6 }} 
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
       </div>
