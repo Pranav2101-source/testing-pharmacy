@@ -20,7 +20,7 @@ export default defineConfig({
         manualChunks: {
           "react-vendor": ["react", "react-dom", "react-router-dom"],
           "motion":       ["framer-motion"],
-          "ui":           ["lucide-react", "clsx", "tailwind-merge", "class-variance-authority"],
+          "ui":           ["lucide-react", "clsx", "tailwind-merge"],
           "forms":        ["react-hook-form", "@hookform/resolvers", "zod"],
           "query":        ["@tanstack/react-query", "axios"],
         },

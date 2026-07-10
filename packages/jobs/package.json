@@ -12,7 +12,9 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch"
@@ -21,9 +23,7 @@
     "@pharmacy/database": "workspace:*",
     "@pharmacy/mailer": "workspace:*",
     "@pharmacy/utils": "workspace:*",
-    "pg-boss": "^12.20.0",
-    "pino": "^9.4.0",
-    "pino-pretty": "^13.0.0"
+    "pg-boss": "^12.20.0"
   },
   "devDependencies": {
     "typescript": "^5.5.0"
