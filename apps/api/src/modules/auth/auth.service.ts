@@ -60,7 +60,17 @@ export class AuthService {
       throw AppError.internal("Failed to create owner account");
     }
 
-    return this.signTokens(owner.id, pharmacy.id, "OWNER", owner.email, owner.tokenVersion);
+    return {
+      tokens: this.signTokens(owner.id, pharmacy.id, "OWNER", owner.email, owner.tokenVersion),
+      user: {
+        id:           owner.id,
+        name:         owner.name,
+        email:        owner.email,
+        role:         "OWNER" as UserRole,
+        pharmacyId:   pharmacy.id,
+        pharmacyName: pharmacy.name,
+      },
+    };
   }
 
   // ── Login ─────────────────────────────────────────────────────────────────
