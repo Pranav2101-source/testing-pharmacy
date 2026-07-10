@@ -7,10 +7,13 @@ export class StaffService {
   constructor(private app: FastifyInstance) {}
 
   async create(pharmacyId: string, requesterId: string, input: CreateStaffInput) {
+    // Email is the login identifier and is unique across the whole system, not
+    // just this pharmacy (see the @@unique([email]) constraint) — otherwise a
+    // login lookup by email alone couldn't tell two same-email users apart.
     const exists = await this.app.prisma.user.findFirst({
-      where: { pharmacyId, email: input.email },
+      where: { email: input.email },
     });
-    if (exists) throw AppError.conflict("Email already registered in this pharmacy");
+    if (exists) throw AppError.conflict("This email is already registered to an account.");
 
     const passwordHash = await bcrypt.hash(input.password, 12);
     return this.app.prisma.user.create({

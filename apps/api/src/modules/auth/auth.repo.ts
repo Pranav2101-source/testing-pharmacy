@@ -3,9 +3,9 @@ import type { Db } from "@pharmacy/database";
 export class AuthRepo {
   constructor(private db: Db) {}
 
-  async findUserByEmail(email: string, pharmacyId?: string) {
-    return this.db.user.findFirst({
-      where: { email, ...(pharmacyId ? { pharmacyId } : {}) },
+  async findUserByEmail(email: string) {
+    return this.db.user.findUnique({
+      where: { email },
       include: { pharmacy: { select: { id: true, name: true, isActive: true } } },
     });
   }

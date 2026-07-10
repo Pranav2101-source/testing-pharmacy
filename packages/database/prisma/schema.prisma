@@ -276,7 +276,12 @@ model User {
   batchRecalls          BatchRecall[]         @relation("BatchRecallUser")
   migrationSessions     MigrationSession[]
 
-  @@unique([pharmacyId, email])
+  // Email is the login identifier and must be unique across the whole system,
+  // not just within one pharmacy — otherwise two pharmacies could each create
+  // a user with the same email and login couldn't tell them apart (it looks
+  // up by email alone). See PharmacyOnboardingService, which already relies
+  // on email being globally unique.
+  @@unique([email])
   @@index([pharmacyId, role])
   @@map("users")
 }
