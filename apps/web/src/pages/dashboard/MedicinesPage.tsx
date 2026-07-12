@@ -14,6 +14,8 @@ import { TableSkeletonRows } from "@/components/Skeleton";
 import { useToast } from "@/hooks/useToast";
 import { isPlatformAdmin, getStoredUser } from "@/lib/auth";
 import { BarcodeMappingModal } from "@/components/BarcodeMappingModal";
+import { IconGridPicker } from "@/components/IconGridPicker";
+import { PACKAGING_UNITS, PRODUCT_CATEGORIES, ProductTag } from "@/lib/product-taxonomy";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -571,8 +573,14 @@ function MedicineModal({
             </Field>
           </div>
 
-          <Field label="Category">
-            <Input value={form.category} onChange={set("category")} placeholder="e.g. Analgesic" />
+          <Field label="Category / Type">
+            <IconGridPicker
+              value={form.category}
+              onChange={set("category")}
+              options={PRODUCT_CATEGORIES}
+              title="Product Category"
+              placeholder="Select category"
+            />
           </Field>
           <Field label="Schedule">
             <Select value={form.schedule} onChange={set("schedule")} options={SCHEDULES} placeholder="Select schedule" />
@@ -585,8 +593,14 @@ function MedicineModal({
             <Input value={form.strength} onChange={set("strength")} placeholder="e.g. 650mg" />
           </Field>
 
-          <Field label="Unit">
-            <Input value={form.unit} onChange={set("unit")} placeholder="e.g. strip, bottle" />
+          <Field label="Packaging">
+            <IconGridPicker
+              value={form.unit}
+              onChange={set("unit")}
+              options={PACKAGING_UNITS}
+              title="Packaging Type"
+              placeholder="Select packaging"
+            />
           </Field>
           <Field label="Pack Size">
             <Input value={form.packSize} onChange={set("packSize")} placeholder="e.g. 15 tablets" />
@@ -1092,8 +1106,14 @@ export default function MedicinesPage() {
                     !m.isActive && "bg-slate-50/60",
                   )}
                 >
-                  <td className="px-4 py-3 text-[13px] font-semibold text-slate-800 max-w-[180px]">
+                  <td className="px-4 py-3 text-[13px] font-semibold text-slate-800 max-w-[200px]">
                     <span className="truncate block">{m.name}</span>
+                    {(m.category || m.unit) && (
+                      <span className="flex items-center gap-1 mt-1 flex-wrap">
+                        <ProductTag value={m.category} kind="category" size="xs" />
+                        <ProductTag value={m.unit} kind="packaging" size="xs" />
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-[13px] text-slate-500 max-w-[140px]">
                     <span className="truncate block">{m.genericName ?? <span className="text-slate-300">—</span>}</span>

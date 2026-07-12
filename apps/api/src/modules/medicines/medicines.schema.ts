@@ -60,8 +60,23 @@ export const setBarcodeSchema = z.object({
   ),
 });
 
-export type SetBarcodeInput      = z.infer<typeof setBarcodeSchema>;
-export type CreateMedicineInput  = z.infer<typeof createMedicineSchema>;
+// Narrow "set category / packaging" mutation — same rationale as barcode: a
+// product's type ("Baby Care") and packaging ("Bottle") are universal facts,
+// not pharmacy-specific pricing, so owners/managers may fill them in from their
+// day-to-day screens (inventory, add-stock, POS) even though the rest of the
+// catalog stays platform-admin-only. Every field optional; `null` clears it.
+export const setClassificationSchema = z
+  .object({
+    category: z.string().max(100).nullable().optional(),
+    unit:     z.string().max(50).nullable().optional(),
+  })
+  .refine((v) => v.category !== undefined || v.unit !== undefined, {
+    message: "Provide a category and/or packaging value",
+  });
+
+export type SetBarcodeInput        = z.infer<typeof setBarcodeSchema>;
+export type SetClassificationInput = z.infer<typeof setClassificationSchema>;
+export type CreateMedicineInput    = z.infer<typeof createMedicineSchema>;
 export type UpdateMedicineInput  = z.infer<typeof updateMedicineSchema>;
 export type ListMedicinesQuery   = z.infer<typeof listMedicinesQuerySchema>;
 export type UpsertOverrideInput  = z.infer<typeof upsertOverrideSchema>;

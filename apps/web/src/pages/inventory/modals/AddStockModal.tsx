@@ -1,11 +1,15 @@
 import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Loader2, X, Check, AlertCircle, Search, Pill, PackagePlus, Info,
 } from "lucide-react";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { getStoredUser } from "@/lib/auth";
+import { IconGridPicker } from "@/components/IconGridPicker";
+import { PACKAGING_UNITS, PRODUCT_CATEGORIES } from "@/lib/product-taxonomy";
+import { syncProductClassification } from "@/lib/product-cache";
 import type { MedicineSearchResult } from "@pharmacy/types";
 
 // ── Manual "Add Stock" — a guided, non-technical alternative to the CSV
@@ -14,7 +18,7 @@ import type { MedicineSearchResult } from "@pharmacy/types";
 
 type PickedMedicine = Pick<
   MedicineSearchResult,
-  "id" | "name" | "genericName" | "manufacturer" | "form" | "strength" | "packSize"
+  "id" | "name" | "genericName" | "manufacturer" | "form" | "strength" | "packSize" | "category" | "unit"
 >;
 
 export function AddStockModal({ onClose, onDone, onToast }: {
@@ -35,9 +39,15 @@ export function AddStockModal({ onClose, onDone, onToast }: {
   const [location,     setLocation]     = useState("");
   const [minimumStock, setMinimumStock] = useState(10);
 
+  const [category,     setCategory]     = useState("");
+  const [unit,         setUnit]         = useState("");
+
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState<string | null>(null);
 
+  const canClassify = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
+
+  const queryClient = useQueryClient();
   const searchRef = useRef<HTMLInputElement>(null);
   useEffect(() => { searchRef.current?.focus(); }, []);
 
@@ -59,6 +69,8 @@ export function AddStockModal({ onClose, onDone, onToast }: {
 
   function selectMedicine(m: MedicineSearchResult) {
     setPicked(m);
+    setCategory(m.category ?? "");
+    setUnit(m.unit ?? "");
     setDropdownOpen(false);
     setQuery("");
     setDebounced("");
@@ -102,6 +114,24 @@ export function AddStockModal({ onClose, onDone, onToast }: {
         ...(location.trim() ? { location: location.trim() } : {}),
         minimumStock,
       });
+      // If the operator set/changed the product's category or packaging, save it
+      // too. Non-fatal: the stock is already recorded, so a classification hiccup
+      // must never surface as an "add stock failed" error.
+      const classChanged = (category || "") !== (picked!.category ?? "") || (unit || "") !== (picked!.unit ?? "");
+      if (canClassify && classChanged) {
+        try {
+          await api.patch(`/medicines/${picked!.id}/classification`, {
+            category: category.trim() || null,
+            unit: unit.trim() || null,
+          });
+          // Reflect the new classification everywhere instantly.
+          syncProductClassification(queryClient, picked!.id, {
+            category: category.trim() || null,
+            unit: unit.trim() || null,
+          });
+        } catch { /* stock already saved — ignore */ }
+      }
+
       const merged = res.data?.meta?.merged === true;
       onToast(
         merged
@@ -197,6 +227,20 @@ export function AddStockModal({ onClose, onDone, onToast }: {
               </div>
             )}
           </div>
+
+          {/* ── Category / Packaging (owner+manager; saved with the stock) ── */}
+          {picked && canClassify && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Category / Type</label>
+                <IconGridPicker value={category} onChange={setCategory} options={PRODUCT_CATEGORIES} title="Product Category" placeholder="Select category" />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Packaging</label>
+                <IconGridPicker value={unit} onChange={setUnit} options={PACKAGING_UNITS} title="Packaging Type" placeholder="Select packaging" />
+              </div>
+            </div>
+          )}
 
           {/* ── Batch + Expiry ─────────────────────────────────────────── */}
           <div className="grid grid-cols-2 gap-3">

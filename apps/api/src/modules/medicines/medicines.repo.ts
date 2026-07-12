@@ -23,6 +23,11 @@ export class MedicinesRepo {
     return this.db.medicine.findUnique({ where: { id } });
   }
 
+  /** Narrow update of just category/unit (nullable to allow clearing). */
+  async setClassification(id: string, data: { category?: string | null; unit?: string | null }) {
+    return this.db.medicine.update({ where: { id }, data });
+  }
+
   async checkDuplicate(name: string, excludeId?: string) {
     return this.db.medicine.findFirst({
       where: {

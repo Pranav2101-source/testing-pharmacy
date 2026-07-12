@@ -23,8 +23,10 @@ export type InventoryItem = {
     id:          string;
     name:        string;
     genericName: string | null;
+    category:    string | null;
     form:        string | null;
     strength:    string | null;
+    unit:        string | null;
     hsnCode:     string | null;
     gstRate:     number;
     isActive:    boolean;

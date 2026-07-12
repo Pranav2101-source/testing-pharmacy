@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { AnimatePresence } from "framer-motion";
 import {
-  Search, Loader2, FileX, AlertCircle, Sparkles, Printer, MapPin, Info, PackagePlus,
+  Search, Loader2, FileX, AlertCircle, Sparkles, Printer, MapPin, Info, PackagePlus, Pencil, Tag,
 } from "lucide-react";
 import { queryKeys } from "@/lib/queryKeys";
 import { BarcodeLabelModal } from "@/components/BarcodeLabelModal";
@@ -14,6 +14,8 @@ import { getStoredUser } from "@/lib/auth";
 import { StatusBadge } from "../components/shared";
 import { fmt, daysUntil } from "../utils";
 import { TableSkeletonRows, ListSkeleton } from "@/components/Skeleton";
+import { ProductTag } from "@/lib/product-taxonomy";
+import { ClassifyModal, type ClassifyTarget } from "@/components/ClassifyModal";
 import { BATCH_STATUS_CFG } from "../types";
 import type { BatchStatus, InventoryItem, AlertCounts } from "../types";
 import { AddStockModal } from "../modals/AddStockModal";
@@ -41,6 +43,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   const [barcodePrintItem, setBarcodePrintItem] = useState<InventoryItem | null>(null);
   const [showCalibrate,    setShowCalibrate]    = useState(false);
   const [showAddStock,     setShowAddStock]     = useState(false);
+  const [classifyTarget,   setClassifyTarget]   = useState<ClassifyTarget | null>(null);
 
   const isOwnerOrManager = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
 
@@ -196,7 +199,29 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
               return (
                 <tr key={item.id} className="border-b border-slate-100 hover:bg-blue-50/30 transition-colors">
                   <td className="px-4 py-3">
-                    <p className="text-[13px] font-semibold text-slate-800 max-w-[160px] truncate">{item.medicine.name}</p>
+                    <div className="flex items-center gap-1.5 max-w-[220px]">
+                      <p className="text-[13px] font-semibold text-slate-800 truncate">{item.medicine.name}</p>
+                      <ProductTag value={item.medicine.category} kind="category" size="xs" className="flex-shrink-0" />
+                      {isOwnerOrManager && (
+                        item.medicine.category ? (
+                          <button
+                            onClick={() => setClassifyTarget(item.medicine)}
+                            title="Edit category / packaging"
+                            className="flex-shrink-0 w-5 h-5 rounded-md hover:bg-blue-100 flex items-center justify-center text-slate-300 hover:text-blue-600 transition-colors"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => setClassifyTarget(item.medicine)}
+                            title="Set category / packaging"
+                            className="flex-shrink-0 inline-flex items-center gap-0.5 text-[10px] font-semibold text-blue-500 hover:text-blue-700 border border-dashed border-blue-200 hover:border-blue-400 rounded-full px-1.5 py-0.5 transition-colors"
+                          >
+                            <Tag className="w-2.5 h-2.5" /> Categorize
+                          </button>
+                        )
+                      )}
+                    </div>
                     {item.medicine.genericName && <p className="text-[11px] text-slate-400 truncate">{item.medicine.genericName}</p>}
                     {item.medicine.brand && <p className="text-[10px] text-blue-400">{item.medicine.brand.name}</p>}
                   </td>
@@ -275,7 +300,28 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                   <div key={item.id} className="p-4">
                     <div className="flex items-start justify-between gap-2 mb-2">
                       <div className="min-w-0">
-                        <p className="text-[14px] font-semibold text-slate-800 truncate">{item.medicine.name}</p>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <p className="text-[14px] font-semibold text-slate-800 truncate">{item.medicine.name}</p>
+                          <ProductTag value={item.medicine.category} kind="category" size="xs" className="flex-shrink-0" />
+                          {isOwnerOrManager && !item.medicine.category && (
+                            <button
+                              onClick={() => setClassifyTarget(item.medicine)}
+                              title="Set category / packaging"
+                              className="flex-shrink-0 inline-flex items-center gap-0.5 text-[10px] font-semibold text-blue-500 border border-dashed border-blue-200 rounded-full px-1.5 py-0.5"
+                            >
+                              <Tag className="w-2.5 h-2.5" /> Categorize
+                            </button>
+                          )}
+                          {isOwnerOrManager && item.medicine.category && (
+                            <button
+                              onClick={() => setClassifyTarget(item.medicine)}
+                              title="Edit category / packaging"
+                              className="flex-shrink-0 w-5 h-5 rounded-md hover:bg-blue-100 flex items-center justify-center text-slate-300 hover:text-blue-600"
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
                         {item.medicine.genericName && <p className="text-[11px] text-slate-400 truncate">{item.medicine.genericName}</p>}
                         {item.medicine.brand && <p className="text-[10px] text-blue-400">{item.medicine.brand.name}</p>}
                       </div>
@@ -352,6 +398,13 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
       )}
 
       <AnimatePresence>
+        {classifyTarget && (
+          <ClassifyModal
+            target={classifyTarget}
+            onClose={() => setClassifyTarget(null)}
+            onSaved={() => setClassifyTarget(null)}
+          />
+        )}
         {statusModal && (
           <BatchStatusModal item={statusModal} onClose={() => setStatusModal(null)}
             onDone={() => { setStatusModal(null); invalidateInventory(); }}

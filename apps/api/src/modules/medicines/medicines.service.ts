@@ -196,6 +196,22 @@ export class MedicinesService {
     return updated;
   }
 
+  /** Owner/manager-settable classification (category + packaging). */
+  async setClassification(id: string, input: { category?: string | null; unit?: string | null }) {
+    const medicine = await this.repo.getById(id);
+    if (!medicine) throw AppError.notFound("Medicine not found");
+
+    const data: { category?: string | null; unit?: string | null } = {};
+    if (input.category !== undefined) data.category = input.category?.trim() || null;
+    if (input.unit !== undefined)     data.unit     = input.unit?.trim() || null;
+
+    const updated = await this.repo.setClassification(id, data);
+    // Resync search so the new category/packaging tag shows immediately in POS.
+    this.syncOne(updated as Record<string, unknown>);
+    this.bustListCache();
+    return updated;
+  }
+
   async reindex() {
     const all = await this.repo.listAll();
     if (all.length === 0) return { indexed: 0 };

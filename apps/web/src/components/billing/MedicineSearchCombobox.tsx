@@ -14,6 +14,10 @@ import { cn } from "@/lib/utils";
 import type { MedicineSearchResult } from "@pharmacy/types";
 import { BatchPickerDialog, type InventoryBatch, expiryStatus, fmtExpiry, getLocationLabel } from "./BatchPickerDialog";
 import { BarcodeInput } from "@/components/BarcodeInput";
+import { ProductTag } from "@/lib/product-taxonomy";
+import { ClassifyModal, type ClassifyTarget } from "@/components/ClassifyModal";
+import { getStoredUser } from "@/lib/auth";
+import { Tag } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -53,6 +57,9 @@ export function MedicineSearchCombobox({
   const [pickerState,      setPickerState]      = useState<PickerState | null>(null);
   const [nearExpiryWarn,   setNearExpiryWarn]   = useState<{ name: string; days: number } | null>(null);
   const [stockError,       setStockError]       = useState<string | null>(null);
+  const [classifyTarget,   setClassifyTarget]   = useState<ClassifyTarget | null>(null);
+
+  const canClassify = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
 
   const addItem      = useBillingStore((s) => s.addItem);
   const queryClient  = useQueryClient();
@@ -368,6 +375,13 @@ export function MedicineSearchCombobox({
             onClose={() => setPickerState(null)}
           />
         )}
+        {classifyTarget && (
+          <ClassifyModal
+            target={classifyTarget}
+            onClose={() => setClassifyTarget(null)}
+            onSaved={() => setClassifyTarget(null)}
+          />
+        )}
       </AnimatePresence>
 
       <div ref={containerRef} className="relative flex-1">
@@ -504,7 +518,19 @@ export function MedicineSearchCombobox({
                       </div>
 
                       <div className="flex-1 min-w-0">
-                        <p className="text-[15px] font-semibold text-slate-800 truncate">{med.name}</p>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <p className="text-[15px] font-semibold text-slate-800 truncate">{med.name}</p>
+                          <ProductTag value={med.category} kind="category" size="xs" className="flex-shrink-0" />
+                          {canClassify && !med.category && (
+                            <button
+                              onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setClassifyTarget(med); }}
+                              title="Set category / packaging"
+                              className="flex-shrink-0 inline-flex items-center gap-0.5 text-[10px] font-semibold text-blue-500 hover:text-blue-700 border border-dashed border-blue-200 hover:border-blue-400 rounded-full px-1.5 py-0.5 transition-colors"
+                            >
+                              <Tag className="w-2.5 h-2.5" /> Tag
+                            </button>
+                          )}
+                        </div>
                         <p className="text-[12px] text-slate-400 truncate">
                           {[
                             med.genericName,

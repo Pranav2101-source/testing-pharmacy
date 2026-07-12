@@ -26,6 +26,10 @@ export type MedicineSearchResult = {
   hsnCode: string | null;
   gstRate: number;
   schedule: string | null;
+  // Optional: the search index already returns these (see SEARCH_ATTRS); surfaced
+  // in the POS as an at-a-glance product-type tag. Optional so no caller breaks.
+  category?: string | null;
+  unit?: string | null;
   hasAlternatives?: boolean;
 };
 

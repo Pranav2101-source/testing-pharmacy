@@ -6,6 +6,7 @@ import {
   listMedicinesQuerySchema,
   upsertOverrideSchema,
   setBarcodeSchema,
+  setClassificationSchema,
 } from "./medicines.schema.js";
 import { authenticate, requireOwner, requireManager, requireRole } from "../../middleware/auth.js";
 import { resolvePharmacy } from "../../middleware/tenant.js";
@@ -30,9 +31,10 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
   app.get("/search", { preHandler: auth }, async (req, reply) => {
     const { q = "", limit = "10" } = req.query as Record<string, string>;
     const hits = await service.search(q, Math.min(50, Number(limit)));
-    // Medicine catalog is global — same for every user. Short public cache lets
-    // CDN/reverse-proxy deduplicate identical search queries from multiple tabs.
-    reply.header("Cache-Control", "public, max-age=120, stale-while-revalidate=60");
+    // Medicine catalog is global — same for every user. A short public cache
+    // still dedupes bursts of identical searches, but is kept brief so an
+    // owner's category/packaging edit propagates to other tabs/devices quickly.
+    reply.header("Cache-Control", "public, max-age=30, stale-while-revalidate=30");
     return reply.send({ success: true, data: hits });
   });
 
@@ -53,6 +55,17 @@ const medicinesRoutes: FastifyPluginAsync = async (app) => {
     const { id }      = req.params as { id: string };
     const { barcode } = setBarcodeSchema.parse(req.body);
     const medicine    = await service.setBarcode(id, barcode);
+    return reply.send({ success: true, data: medicine });
+  });
+
+  // ── Set a medicine's category / packaging (owner + manager) ─────────────
+  // Narrow mutation of the global catalog: only the category and/or unit
+  // fields — universal product facts, same rationale as barcode. Lets staff
+  // enrich classification from inventory / add-stock / POS over time.
+  app.patch("/:id/classification", { preHandler: managerPlus }, async (req, reply) => {
+    const { id }  = req.params as { id: string };
+    const input   = setClassificationSchema.parse(req.body);
+    const medicine = await service.setClassification(id, input);
     return reply.send({ success: true, data: medicine });
   });
 
