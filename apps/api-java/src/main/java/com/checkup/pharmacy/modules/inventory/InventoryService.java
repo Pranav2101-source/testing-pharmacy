@@ -41,6 +41,8 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -71,6 +73,14 @@ public class InventoryService {
     private static final int EXPIRY_WINDOW_DAYS = 90;
     private static final int EXPIRY_CRITICAL_DAYS = 30;
     private static final int EXPIRY_WARNING_DAYS = 60;
+
+    // Waste-risk / reorder-insight sales lookback — kept short (vs. calibrateStock's 90-day
+    // window) since these features answer "will TODAY's stock sell before it expires / before
+    // the next delivery", which should track recent velocity, not a quarter-long average.
+    private static final int ALERT_SALES_WINDOW_DAYS = 30;
+    private static final int REORDER_COVER_DAYS = 30;
+    private static final int REORDER_LEAD_TIME_DAYS = 7;
+
     private static final Set<Role> STOCK_WRITE_ROLES = Set.of(Role.OWNER, Role.MANAGER);
 
     private final InventoryRepository inventoryRepository;
@@ -293,6 +303,9 @@ public class InventoryService {
 
         List<Inventory> rows = inventoryRepository.findExpiryAlerts(
                 pharmacyId, d90, PageRequest.of(0, MAX_ALERT_ROWS));
+        if (rows.isEmpty()) {
+            return List.of();
+        }
 
         // enrich() is a BATCH loader: it collects the distinct medicine/shelf/rack
         // ids across all rows and resolves them in three queries. Calling it as
@@ -300,6 +313,8 @@ public class InventoryService {
         // that used the batching machinery to defeat itself. One call, then zip by
         // index (enrich preserves input order).
         List<InventoryResponse> enriched = enrich(rows);
+        Map<String, Double> avgDailySalesByMedicine = avgDailySalesByMedicine(pharmacyId, rows);
+
         List<AlertsResponse.ExpiryAlert> alerts = new ArrayList<>(rows.size());
         for (int idx = 0; idx < rows.size(); idx++) {
             Inventory i = rows.get(idx);
@@ -308,7 +323,13 @@ public class InventoryService {
                     : i.getExpiryDate().isBefore(d30) || i.getExpiryDate().equals(d30) ? "CRITICAL"
                     : i.getExpiryDate().isBefore(d60) || i.getExpiryDate().equals(d60) ? "WARNING"
                     : "NOTICE";
-            alerts.add(new AlertsResponse.ExpiryAlert(enriched.get(idx), tier, (int) daysToExpiry));
+
+            Double avgDailySales = avgDailySalesByMedicine.get(i.getMedicineId());
+            AlertsResponse.WasteRisk wasteRisk = computeWasteRisk(i.getQuantity(), daysToExpiry,
+                    tier.equals("EXPIRED"), avgDailySales == null ? 0 : avgDailySales, avgDailySales != null,
+                    i.getPurchaseRate());
+
+            alerts.add(AlertsResponse.ExpiryAlert.of(enriched.get(idx), tier, (int) daysToExpiry, wasteRisk));
         }
         return alerts;
     }
@@ -316,14 +337,82 @@ public class InventoryService {
     private List<AlertsResponse.LowStockAlert> buildLowStockAlerts(String pharmacyId) {
         List<Inventory> rows = inventoryRepository.findLowStockAlerts(
                 pharmacyId, PageRequest.of(0, MAX_ALERT_ROWS));
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+
         List<InventoryResponse> enriched = enrich(rows); // batched — see buildExpiryAlerts
+        Map<String, Double> avgDailySalesByMedicine = avgDailySalesByMedicine(pharmacyId, rows);
+
         List<AlertsResponse.LowStockAlert> alerts = new ArrayList<>(rows.size());
         for (int idx = 0; idx < rows.size(); idx++) {
             Inventory i = rows.get(idx);
             String tier = i.getQuantity() == 0 ? "OUT_OF_STOCK" : i.getQuantity() <= i.getReorderLevel() ? "REORDER" : "LOW";
-            alerts.add(new AlertsResponse.LowStockAlert(enriched.get(idx), tier));
+
+            Double avgDailySales = avgDailySalesByMedicine.get(i.getMedicineId());
+            AlertsResponse.ReorderInsight reorder = computeReorderInsight(avgDailySales == null ? 0 : avgDailySales,
+                    avgDailySales != null, REORDER_COVER_DAYS, REORDER_LEAD_TIME_DAYS);
+
+            alerts.add(AlertsResponse.LowStockAlert.of(enriched.get(idx), tier, reorder));
         }
         return alerts;
+    }
+
+    /**
+     * Trailing-{@value ALERT_SALES_WINDOW_DAYS}-day avg daily sales per medicine, for the
+     * distinct medicines referenced by {@code rows}. A medicine absent from the returned map had
+     * zero qualifying SALE movements in the window — callers treat that as "no data" (NO_DATA /
+     * hasData=false), not as a literal zero, since a genuinely slow-but-selling medicine and a
+     * medicine nobody has ever billed should not read identically to the pharmacist.
+     */
+    private Map<String, Double> avgDailySalesByMedicine(String pharmacyId, List<Inventory> rows) {
+        Instant to = Instant.now();
+        Instant from = to.minus(ALERT_SALES_WINDOW_DAYS, ChronoUnit.DAYS);
+        Map<String, Double> result = new HashMap<>();
+        for (InventoryMovementRepository.MedicineSalesAggregateRow row
+                : movementRepository.aggregateSalesByMedicine(pharmacyId, from, to)) {
+            result.put(row.getMedicineId(), round1(row.getTotalQuantity() / (double) ALERT_SALES_WINDOW_DAYS));
+        }
+        return result;
+    }
+
+    /**
+     * Ported from the old Node backend's {@code computeWasteRisk} (inventory.calc.ts) — an
+     * expired batch is always HIGH risk regardless of sales data (it is already unsellable), a
+     * medicine with no sales history in the window is NO_DATA rather than guessed at, and
+     * otherwise risk tier is driven by the fraction of on-hand quantity that historical velocity
+     * would not clear before expiry.
+     */
+    private static AlertsResponse.WasteRisk computeWasteRisk(int quantity, long daysToExpiry, boolean isExpired,
+                                                              double avgDailySales, boolean hasData, BigDecimal purchaseRate) {
+        if (isExpired) {
+            int potentialLoss = purchaseRate.multiply(BigDecimal.valueOf(quantity))
+                    .setScale(0, RoundingMode.HALF_UP).intValue();
+            return new AlertsResponse.WasteRisk(round1(avgDailySales), 0, quantity, potentialLoss, "HIGH");
+        }
+        if (!hasData || avgDailySales == 0) {
+            return new AlertsResponse.WasteRisk(0, 0, 0, 0, "NO_DATA");
+        }
+
+        long daysLeft = Math.max(0, daysToExpiry);
+        int willSell = (int) Math.min(quantity, Math.floor(avgDailySales * daysLeft));
+        int atRisk = quantity - willSell;
+        double atRiskPct = quantity > 0 ? (double) atRisk / quantity : 0;
+        String riskTier = atRisk == 0 ? "SAFE" : atRiskPct < 0.2 ? "LOW" : atRiskPct < 0.5 ? "MEDIUM" : "HIGH";
+        int potentialLoss = purchaseRate.multiply(BigDecimal.valueOf(atRisk)).setScale(0, RoundingMode.HALF_UP).intValue();
+
+        return new AlertsResponse.WasteRisk(round1(avgDailySales), willSell, atRisk, potentialLoss, riskTier);
+    }
+
+    /** Ported from the old Node backend's {@code computeReorderInsight} (inventory.calc.ts). */
+    private static AlertsResponse.ReorderInsight computeReorderInsight(double avgDailySales, boolean hasData,
+                                                                        int coverDays, int leadTimeDays) {
+        int suggestedQty = hasData ? (int) Math.ceil(avgDailySales * (coverDays + leadTimeDays)) : 0;
+        return new AlertsResponse.ReorderInsight(round1(avgDailySales), suggestedQty, coverDays, leadTimeDays, hasData);
+    }
+
+    private static double round1(double v) {
+        return Math.round(v * 10) / 10.0;
     }
 
     // ── Stock Reservation ────────────────────────────────────────────────────

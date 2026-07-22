@@ -266,8 +266,9 @@ public class StockAuditService {
         Map<String, Long> variance = sessionIds.isEmpty() ? Map.of() : toMap(itemRepository.countVarianceBySessionIds(sessionIds));
 
         List<SessionSummary> summaries = sessions.stream().map(s -> new SessionSummary(
-                s.getId(), s.getSessionNumber(), s.getStatus().name(), s.getStartedAt(), s.getCompletedAt(),
-                s.getApprovedAt(), total.getOrDefault(s.getId(), 0L).intValue(),
+                s.getId(), s.getSessionNumber(), s.getStatus().name(), s.getNotes(), s.getCreatedBy(),
+                s.getStartedAt(), s.getCompletedAt(), s.getApprovedAt(),
+                new SessionResponse.CountRef(total.getOrDefault(s.getId(), 0L).intValue()),
                 counted.getOrDefault(s.getId(), 0L).intValue(), variance.getOrDefault(s.getId(), 0L).intValue(),
                 s.getCreatedAt())).toList();
 
@@ -424,7 +425,7 @@ public class StockAuditService {
         }
         return new SessionResponse(session.getId(), session.getSessionNumber(), session.getStatus().name(),
                 session.getNotes(), session.getStartedAt(), session.getCompletedAt(), session.getApprovedAt(),
-                approverRef, items.size(), (int) counted, (int) variance,
+                approverRef, new SessionResponse.CountRef(items.size()), (int) counted, (int) variance,
                 items.stream().map(i -> toItemResponse(i, inventoryById, medicineById)).toList(), session.getCreatedAt());
     }
 
