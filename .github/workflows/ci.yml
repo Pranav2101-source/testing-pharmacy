@@ -7,9 +7,9 @@ on:
     branches: [main]
 
 jobs:
-  # ── 1. Type-check · Build · Audit ──────────────────────────────────────────
-  ci:
-    name: Type-check & Build
+  # ── Web + shared TS packages: type-check, build, audit ─────────────────────
+  web:
+    name: Web · type-check & build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,69 +32,73 @@ jobs:
       - name: Dependency security audit
         run: pnpm audit --audit-level=high
 
-  # ── 2. Build · Push to ECR · Scan ──────────────────────────────────────────
-  # Disabled — deployment is now handled by Railway (not AWS App Runner).
-  docker:
-    name: Build · Push to ECR · Scan
-    needs: [ci]
-    if: false
+  # ── Java API: compile, test, package ───────────────────────────────────────
+  api:
+    name: API (Java) · build
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write   # for uploading Trivy SARIF results
-    outputs:
-      image: ${{ steps.uri.outputs.value }}
+
+    # Backing services for the *IT integration tests. These did not exist when the
+    # suite was unit-only; the ITs boot the real Spring context against a real
+    # Postgres carrying the real Prisma schema, because this schema is Prisma-owned
+    # and uses Postgres-only features an in-memory database does not implement.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pharmacy
+        # 5433 to match infra/docker/docker-compose.yml, so the default in
+        # AbstractPostgresIT works identically here and on a developer machine.
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/setup-java@v4
         with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ secrets.AWS_REGION }}
+          distribution: temurin
+          java-version: "21"
+          cache: maven
 
-      - name: Log in to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+      # `verify` runs BOTH suites: surefire for unit tests (*Test, no database
+      # needed) and failsafe for integration tests (*IT, against the services
+      # above). They are split so `mvn test` stays fast and Docker-free locally.
+      #
+      # Includes two build-failing tenant guards:
+      #   TenantIsolationGuardTest      — a repository METHOD that reads a
+      #                                   tenant-owned entity without scoping.
+      #   UnscopedFinderCallGuardTest   — a SERVICE calling an inherited
+      #                                   findById/findAllById on a tenant-owned
+      #                                   repository without a stated justification.
+      # Those checks are the reason this job must stay required.
+      - name: Build & test
+        working-directory: apps/api-java
+        run: mvn -B -ntp verify
 
-      # Expose the full image URI so the deploy job can reference it without
-      # needing to re-derive it from secrets (secrets aren't available in outputs).
-      - name: Set image URI output
-        id: uri
-        run: |
-          echo "value=${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}" >> $GITHUB_OUTPUT
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
+      - name: Publish test report
+        # Runs even on failure — a red build is exactly when the report is wanted.
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          context: .
-          push: true
-          tags: |
-            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:${{ github.sha }}
-            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
-          # GitHub Actions layer cache — makes repeated builds ~3x faster
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Trivy runs in the same job so it can pull the image using the ECR
-      # credentials already configured above — no re-auth needed.
-      # exit-code 0: reports CVEs but doesn't block the pipeline yet.
-      # Change to 1 when you're ready to enforce no HIGH/CRITICAL in prod.
-      - name: Scan image for vulnerabilities
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:latest
-          format:    sarif
-          output:    trivy-results.sarif
-          severity:  HIGH,CRITICAL
-          exit-code: "0"
-
-      - name: Upload scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v4
-        if: always() && hashFiles('trivy-results.sarif') != ''
-        with:
-          sarif_file: trivy-results.sarif
+          name: api-java-test-reports
+          # Both, not just surefire: an integration failure would otherwise leave no
+          # artifact to read, which is precisely the build you most want details from.
+          path: |
+            apps/api-java/target/surefire-reports/
+            apps/api-java/target/failsafe-reports/
+          if-no-files-found: warn

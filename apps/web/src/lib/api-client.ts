@@ -1,7 +1,22 @@
 import axios, { AxiosError, type InternalAxiosRequestConfig } from "axios";
 import { clearSession, getAccessToken, storeTokens } from "./auth";
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api/v1";
+/**
+ * Where the API lives. Single source of truth — this used to be copy-pasted into
+ * four files, and every copy still pointed at port 4000, which was the OLD Node
+ * backend. The Java backend listens on 8080 (see application.yml `server.port`),
+ * so the fallback had been silently wrong since the rewrite.
+ *
+ * It only bites when VITE_API_URL is unset, which is exactly the fresh-clone case:
+ * `.env.local` is gitignored, so a new checkout has no value, falls back to a port
+ * nothing is listening on, and every request fails as "Network error" with no clue
+ * why. Deployed environments always set VITE_API_URL (`/api/v1`, same-origin,
+ * rewritten to the backend), so this default is a developer-experience fix.
+ */
+export const API_BASE_URL: string =
+  import.meta.env.VITE_API_URL ?? "http://localhost:8080/api/v1";
+
+const BASE_URL = API_BASE_URL;
 
 export const api = axios.create({
   baseURL:         BASE_URL,
@@ -32,25 +47,6 @@ api.interceptors.request.use((config) => {
 // On page reload the in-memory access token is gone. The first 401 from any
 // request triggers this silent refresh, so users never see the login screen
 // mid-shift as long as their refresh-token cookie (7-day TTL) is still valid.
-
-/** Call once at app boot (from PrivateRoute) to pre-populate the in-memory
- *  access token from the httpOnly refresh-token cookie. Prevents the wave of
- *  401 → retry → success noise that happens when the dashboard mounts before
- *  any token is in memory. Returns true if a valid session exists. */
-export async function initAuth(): Promise<boolean> {
-  if (getAccessToken()) return true;
-  try {
-    const res = await axios.post<{ success: boolean; data: { accessToken: string } }>(
-      `${BASE_URL}/auth/refresh`,
-      {},
-      { headers: { "Content-Type": "application/json" }, withCredentials: true },
-    );
-    storeTokens(res.data.data.accessToken);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 const NO_REFRESH_URLS = [
   "/auth/login",
@@ -83,6 +79,23 @@ async function refreshAccessToken(): Promise<string | null> {
     // Refresh token expired or revoked — the session is genuinely over.
     return null;
   }
+}
+
+/** Call once at app boot (from PrivateRoute) to pre-populate the in-memory
+ *  access token from the httpOnly refresh-token cookie. Prevents the wave of
+ *  401 → retry → success noise that happens when the dashboard mounts before
+ *  any token is in memory. Returns true if a valid session exists.
+ *
+ *  Goes through the same single-flight refreshPromise as the 401 interceptor
+ *  below, not its own independent axios call — React StrictMode (and, in
+ *  production, simply having two tabs open) can invoke this twice in close
+ *  succession, and since the backend rotates the refresh token on every use,
+ *  a second concurrent call with the same now-stale cookie always 401s and
+ *  bounces the user back to the landing page right after a successful login. */
+export async function initAuth(): Promise<boolean> {
+  if (getAccessToken()) return true;
+  refreshPromise ??= refreshAccessToken().finally(() => { refreshPromise = null; });
+  return (await refreshPromise) !== null;
 }
 
 function redirectToLogin(): void {

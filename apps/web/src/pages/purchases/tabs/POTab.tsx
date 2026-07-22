@@ -161,7 +161,7 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
                     </span>
                   )}
                 </td>
-                <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{po._count.items}</td>
+                <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{po.itemCount}</td>
                 <td className="px-4 py-3 text-[13px] font-bold text-slate-900 tabular-nums">
                   {po.totalAmount > 0 ? currency(po.totalAmount) : <span className="text-slate-300 font-normal" title="No purchase rates entered — added when goods are received (GRN)">—</span>}
                 </td>

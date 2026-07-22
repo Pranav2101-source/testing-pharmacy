@@ -1,0 +1,203 @@
+server:
+  # Railway injects PORT; default 8080 for local dev.
+  port: ${PORT:8080}
+  servlet:
+    context-path: /
+
+  # ── Response compression (BACKLOG A7) ──────────────────────────────────────
+  # Measured before enabling this, against a pharmacy with ~1.2k invoices:
+  #   reports/schedule-h  78 KB   reports/expiry  51 KB   medicines?limit=50  13 KB
+  # all served UNCOMPRESSED even when the browser sent "Accept-Encoding: gzip".
+  #
+  # JSON of this shape compresses by roughly 85-90%, so this is the largest
+  # user-visible win available: the bottleneck for a pharmacy on Indian mobile
+  # broadband is payload size on the wire, not the ~40-60ms the server spends.
+  # It also matters more as data grows — these reports are unpaginated, so they
+  # get bigger every month.
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain,text/css,application/javascript
+    # Below ~1 KB, gzip's CPU cost and header overhead outweigh the saving.
+    min-response-size: 1024
+
+  # ── Graceful shutdown ──────────────────────────────────────────────────────
+  # Spring Boot's default is IMMEDIATE: on SIGTERM, in-flight requests are cut
+  # off mid-execution. Any container redeploy sends SIGTERM, so without this a
+  # pharmacist mid-sale gets a failed request and cannot tell whether the invoice
+  # was created.
+  #
+  # The database transaction does roll back with the connection, and invoice
+  # idempotency keys make a retry safe — so this is about not producing that
+  # moment at the counter, not about data integrity.
+  shutdown: graceful
+
+spring:
+  application:
+    name: checkup-pharmacy-api
+
+  lifecycle:
+    # How long graceful shutdown waits for in-flight requests before forcing exit.
+    # Must stay BELOW the hosting platform's own kill timeout, or the container is
+    # SIGKILLed mid-drain and the grace period achieves nothing. Most platforms
+    # allow ~30s by default, so 20s leaves headroom; override if yours differs.
+    timeout-per-shutdown-phase: ${SHUTDOWN_TIMEOUT:20s}
+
+  servlet:
+    multipart:
+      # Matches UploadService's own 10MB check — without this Spring Boot's default
+      # (1MB per file) rejects anything larger at the framework level, before
+      # UploadService ever runs, via an uncaught MaxUploadSizeExceededException.
+      max-file-size: 10MB
+      max-request-size: 11MB
+
+  datasource:
+    # NOTE: Prisma's DATABASE_URL is a "postgresql://" URL. JDBC needs "jdbc:postgresql://".
+    # Set JDBC_DATABASE_URL for this service, e.g.
+    #   jdbc:postgresql://<pooler-host>:6543/postgres?user=...&password=...&sslmode=require
+    # Use the Supabase POOLER host/port (6543) for the application connection.
+    url: ${JDBC_DATABASE_URL}
+    username: ${DB_USER:}
+    password: ${DB_PASSWORD:}
+    hikari:
+      # Sized for the Supabase FREE pooler, which is easily exhausted. This is the
+      # platform's hard concurrency ceiling: ~5 simultaneous database operations
+      # for every pharmacy combined. Fine for a handful of tenants, a wall at fifty.
+      #
+      # Raising it is a TWO-part change and the halves must move together:
+      #   1. Supabase Pro (Free also auto-pauses, which is its own blocker), and
+      #   2. DB_POOL_MAX raised here — 15-20 per API instance is a reasonable start.
+      # Raising this alone just moves the queue from the app into the pooler and
+      # turns "slow" into "connection refused".
+      maximum-pool-size: ${DB_POOL_MAX:5}
+      minimum-idle: ${DB_POOL_MIN_IDLE:2}
+      # Fail a starved request in 10s rather than letting it hang until the client
+      # gives up. A fast, clear error beats a request that occupies a Tomcat thread
+      # for 30s and deepens the very starvation that caused it.
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:10000}
+      # Recycle connections well before Supabase's pooler drops them server-side,
+      # which otherwise surfaces as random "connection closed" errors under load.
+      max-lifetime: ${DB_MAX_LIFETIME_MS:1200000}
+      idle-timeout: ${DB_IDLE_TIMEOUT_MS:300000}
+      # Log a stack trace when a connection is held longer than this. With a pool
+      # this small, one leaked connection is 20% of total capacity — worth being
+      # told about by name rather than diagnosing from timeouts.
+      leak-detection-threshold: ${DB_LEAK_DETECTION_MS:30000}
+      validation-timeout: 3000
+
+  jpa:
+    hibernate:
+      # CRITICAL: Prisma owns the schema. Hibernate must NEVER create/alter/validate it.
+      ddl-auto: none
+      naming:
+        # Prisma stored columns verbatim in camelCase ("pharmacyId", "tokenVersion").
+        # The default Spring strategy would snake_case them and break every query.
+        # PhysicalNamingStrategyStandardImpl uses our @Column names exactly as written.
+        physical-strategy: org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl
+    properties:
+      hibernate:
+        # Columns are mixed-case identifiers created by Prisma with quotes, so Postgres
+        # folding rules require us to quote them too. This quotes all identifiers.
+        globally_quoted_identifiers: true
+        jdbc:
+          time_zone: UTC
+    open-in-view: false
+
+  data:
+    redis:
+      # Backs rate limiting (A4) — see common/ratelimit/RateLimitService. Local dev
+      # defaults to the Docker Redis every dev already has running; production must
+      # set REDIS_URL to a real managed instance (Upstash, Redis Cloud, a Railway
+      # addon, …) — without it this falls back to localhost, which won't exist there.
+      url: ${REDIS_URL:redis://localhost:6379}
+
+  # Mail is not wired yet — its autoconfiguration is excluded until the mailer
+  # (D4) is built, so an empty SMTP_HOST can't fail startup. Re-enable by
+  # removing the exclude and adding spring.mail config back.
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.mail.MailSenderAutoConfiguration
+      - org.springframework.boot.autoconfigure.mail.MailSenderValidatorAutoConfiguration
+
+# ── App-specific config ───────────────────────────────────────────────────────
+app:
+  jwt:
+    # HS256 secret used to sign and verify access/refresh tokens (min 32 chars).
+    secret: ${JWT_SECRET}
+    # ISO-8601 durations. Access is short-lived; refresh matches the cookie max-age.
+    access-ttl: ${JWT_ACCESS_TTL:PT15M}
+    refresh-ttl: ${JWT_REFRESH_TTL:P7D}
+  cookie:
+    # Refresh-token cookie flags. Production MUST set secure=true.
+    #
+    # SameSite: prefer Lax. Earlier guidance here said to use None "because the
+    # frontend and API are on different origins" — that is no longer true. The web
+    # app calls /api/v1 SAME-ORIGIN and the platform rewrites it to the backend, so
+    # the browser sees one origin and Lax works. Lax is materially stronger: it
+    # stops the browser attaching this cookie to cross-site POSTs at all, which is
+    # the CSRF vector on /auth/refresh (a forged refresh rotates the token and
+    # silently logs the user out).
+    #
+    # Only set None if the frontend is ever served from a genuinely different
+    # origin than the API, and note that None REQUIRES secure=true. In that case
+    # CookieOriginValidationFilter becomes the primary defence rather than a
+    # backstop, so verify ALLOWED_ORIGINS is exactly right before doing it.
+    secure: ${COOKIE_SECURE:false}
+    same-site: ${COOKIE_SAME_SITE:Lax}
+  cors:
+    # Allowed frontend origin(s), comma-separated. apps/web's vite.config.ts
+    # hardcodes server.port: 3000, not Vite's own default of 5173 — both are
+    # listed so the default works whichever port a dev actually gets.
+    allowed-origins: ${ALLOWED_ORIGINS:http://localhost:3000,http://localhost:5173}
+  inventory:
+    # How long a billing-session stock reservation holds before it auto-expires.
+    reservation-ttl-minutes: ${RESERVATION_TTL_MINUTES:15}
+  ratelimit:
+    # Blanket per-IP ceiling across the whole API (common/ratelimit/GlobalRateLimitFilter),
+    # on top of the tighter per-endpoint limits on login/register/forgot-password. Deliberately
+    # generous — a pharmacy's whole staff often shares one NAT IP — sized to catch a scripted
+    # attacker, not a busy shift. Raise if a real location's legitimate traffic ever trips it.
+    global-per-ip-per-minute: ${GLOBAL_RATE_LIMIT_PER_MINUTE:400}
+
+  # ── Row-Level Security (database-enforced tenant isolation) ────────────────
+  # OFF by default. Turning this on makes every transaction set app.pharmacy_id,
+  # which the RLS policies from migration 20260719000001 key off.
+  #
+  # ORDER MATTERS. Apply the migration FIRST, verify on staging, then flip this.
+  # Enabling the flag without the migration is harmless (the GUCs are set and
+  # ignored). The migration without the flag is NOT: policies would be live while
+  # nothing sets the tenant, so every query fails closed and the app returns empty
+  # data everywhere. Roll back with RLS_ENABLED=false, or down.sql beside the
+  # migration.
+  rls:
+    enabled: ${RLS_ENABLED:false}
+
+  # ── Background jobs ────────────────────────────────────────────────────────
+  jobs:
+    # Master switch. Useful locally, where a second running stack would otherwise
+    # contend for the same ShedLock keys against shared Redis.
+    enabled: ${JOBS_ENABLED:true}
+    # 07:00 IST — alerts are waiting when the shop opens, not mid-shift.
+    stock-alerts-cron: ${STOCK_ALERTS_CRON:0 0 7 * * *}
+    # How far ahead to warn about expiring batches. 60 days is roughly the window
+    # in which a distributor will still accept a saleable return.
+    expiry-window-days: ${EXPIRY_WINDOW_DAYS:60}
+    reservation-cleanup-cron: ${RESERVATION_CLEANUP_CRON:0 */5 * * * *}
+
+  # ── Caching ────────────────────────────────────────────────────────────────
+  cache:
+    # Platform analytics recomputes 13 sections per request. At the Free tier's
+    # 5-connection ceiling, a couple of admins refreshing that page can starve
+    # billing of connections. TTL is short enough that the numbers still feel live.
+    analytics-ttl-seconds: ${ANALYTICS_CACHE_TTL_SECONDS:300}
+
+# Supabase Storage — file uploads (GRN/PO source PDFs, prescription scans). Uses the
+# project's Storage REST API directly (no SDK) via the service-role key, which bypasses
+# bucket RLS policies — never expose this key to the frontend.
+supabase:
+  url: ${SUPABASE_URL:}
+  service-role-key: ${SUPABASE_SERVICE_ROLE_KEY:}
+  storage-bucket: ${SUPABASE_STORAGE_BUCKET:pharmacy-docs}
+
+logging:
+  level:
+    org.hibernate.SQL: ${SQL_LOG:warn}

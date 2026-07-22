@@ -17,7 +17,10 @@ export type PurchaseOrder = {
   notes: string | null; orderedAt: string; expectedDate: string | null;
   sourceUploadId: string | null;
   supplier: { id: string; name: string };
-  _count: { items: number; grns: number };
+  // The backend sends a flat count here, not a Prisma-style `_count` wrapper
+  // (unlike Supplier/SupplierHistory, which do use `_count` — see GrnResponse
+  // and PurchaseOrderResponse on the Java side for the actual shapes).
+  itemCount: number;
 };
 
 export type GRN = {
@@ -27,14 +30,17 @@ export type GRN = {
   sourceUploadId: string | null;
   supplier: { id: string; name: string };
   purchaseOrder: { id: string; orderNumber: string } | null;
-  _count: { items: number };
+  // No count field at all on this one — the backend sends the full line
+  // items every time (see GrnResponse.items), so the item count is derived
+  // as items.length rather than read off a dedicated field.
+  items: unknown[];
 };
 
 export type SupplierReturn = {
   id: string; returnNumber: string; debitNoteNo: string | null;
   status: SRStatus; totalAmount: number; createdAt: string;
   supplier: { id: string; name: string };
-  _count: { items: number };
+  itemCount: number;
 };
 
 export type Supplier = { id: string; name: string; phone?: string };

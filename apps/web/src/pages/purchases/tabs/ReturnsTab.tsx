@@ -270,7 +270,7 @@ export function ReturnsTab({ suppliers }: { suppliers: Supplier[] }) {
                 </td>
                 <td className="px-4 py-3 text-[12px] text-slate-500">{sr.debitNoteNo ?? "—"}</td>
                 <td className="px-4 py-3"><StatusBadge status={sr.status} cfg={SR_STATUS} /></td>
-                <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{sr._count.items}</td>
+                <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{sr.itemCount}</td>
                 <td className="px-4 py-3 text-[13px] font-bold text-slate-900 tabular-nums">{currency(sr.totalAmount)}</td>
                 <td className="px-4 py-3 text-[12px] text-slate-500">{fmtDate(sr.createdAt)}</td>
                 <td className="px-4 py-3">

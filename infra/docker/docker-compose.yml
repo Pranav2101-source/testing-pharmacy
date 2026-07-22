@@ -1,6 +1,6 @@
 # Local dev infrastructure.
 # Run `docker compose up -d` to start Redis + Meilisearch for local development.
-# Run `docker compose --profile full up -d` to also run the API as a Docker container
+# Run `docker compose --profile full up -d` to also run the Java API container
 # (useful for testing the production image locally).
 # See .env.example for required env vars.
 
@@ -19,6 +19,37 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # Local Postgres for verifying things Supabase cannot safely be used to test —
+  # principally Row-Level Security, which needs a non-superuser role and a
+  # throwaway database (see apps/api-java/RLS_ROLLOUT.md).
+  #
+  # Opt-in: `docker compose --profile test up -d postgres`. Left out of the default
+  # set because day-to-day development still points at Supabase.
+  #
+  # Port 5433, not 5432, so it cannot collide with a Postgres already installed on
+  # the host.
+  postgres:
+    profiles: ["test"]
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pharmacy
+    volumes:
+      # Creates the non-superuser app_user role on first boot. RLS is bypassed
+      # entirely by superusers, so connecting as `postgres` would make every policy
+      # silently inert — the role is what makes this database useful for testing.
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pharmacy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
   meilisearch:
     image: getmeili/meilisearch:v1.10
     ports:
@@ -29,7 +60,15 @@ services:
     volumes:
       - meili_data:/meili_data
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:7700/health"]
+      # 127.0.0.1, not localhost: this image's /etc/hosts resolves localhost to
+      # ::1 first, but Meilisearch only binds the IPv4 wildcard (0.0.0.0) — a
+      # wget to "localhost" gets a real "connection refused" against ::1 even
+      # though the service is up and answering fine on IPv4. Confirmed via
+      # `docker exec ... wget http://localhost:7700/health` (fails) vs
+      # `wget http://127.0.0.1:7700/health` (succeeds) against the same
+      # running container — this container reported "unhealthy" for its
+      # entire uptime despite serving real requests correctly throughout.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7700/health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -39,37 +78,42 @@ services:
   api:
     profiles: ["full"]
     build:
-      context: ../..
+      context: ../../apps/api-java
       dockerfile: Dockerfile
     ports:
-      - "${API_PORT:-4000}:4000"
+      - "${API_PORT:-8080}:8080"
     environment:
-      NODE_ENV: production
-      DATABASE_URL: ${DATABASE_URL}
-      DIRECT_URL: ${DIRECT_URL}
+      PORT: 8080
+      JDBC_DATABASE_URL: ${JDBC_DATABASE_URL}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
       REDIS_URL: redis://redis:6379
-      MEILISEARCH_HOST: http://meilisearch:7700
-      MEILISEARCH_API_KEY: ${MEILISEARCH_API_KEY}
       JWT_SECRET: ${JWT_SECRET}
-      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
-      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
-      SUPABASE_URL: ${SUPABASE_URL}
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
-      SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-pharmacy-docs}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
     depends_on:
       redis:
         condition: service_healthy
-      meilisearch:
-        condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"]
+      # 127.0.0.1, not localhost — same fix as the meilisearch healthcheck
+      # above and for the identical reason: this image's localhost resolves
+      # to ::1 first, but Spring Boot's embedded Tomcat only binds the IPv4
+      # wildcard by default, so "localhost" gets refused even when the app
+      # is up and healthy on IPv4. Not directly reproduced against this
+      # specific service (the `full` profile wasn't running at the time),
+      # but confirmed against meilisearch's own container with the exact
+      # same base-image + wget + "localhost" combination.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/api/v1/health"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 30s
     restart: unless-stopped
 
 volumes:
   redis_data:
   meili_data:
+  postgres_data:

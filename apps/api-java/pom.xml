@@ -1,0 +1,208 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.5</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.checkup</groupId>
+    <artifactId>pharmacy-api</artifactId>
+    <version>0.0.1</version>
+    <name>checkup-pharmacy-api-java</name>
+    <description>Spring Boot backend for Checkup Care Pharmacy (strangler migration from Fastify/TS)</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <jjwt.version>0.12.6</jjwt.version>
+        <logstash-encoder.version>7.4</logstash-encoder.version>
+        <springdoc.version>2.6.0</springdoc.version>
+        <shedlock.version>5.16.0</shedlock.version>
+        <reflections.version>0.10.2</reflections.version>
+    </properties>
+
+    <dependencies>
+        <!-- Web (Spring MVC) — the closest 1:1 to Fastify's request/response model -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Data JPA (Hibernate) — replaces Prisma as a reader/writer over the SAME schema -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Security — replaces @fastify/jwt + role guards -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Bean Validation — replaces Zod on the request-DTO layer -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- AOP — needed by @CrossTenant, whose aspect must run BEFORE the
+             transaction interceptor (elevation has to be in place by the time
+             the transaction begins, not once it already has). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+
+        <!-- Redis — replaces ioredis (rate limiting / cache) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Mail — replaces nodemailer (used once the mailer module is ported) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
+
+        <!-- Postgres driver -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- JWT (jjwt) — HS256, interoperable with the Node @fastify/jwt tokens -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ShedLock — ensures a @Scheduled job runs on exactly ONE instance.
+             Railway can run more than one replica, and without this every replica
+             would fire the same nightly sweep, producing duplicate notifications
+             and duplicate stock writes. Backed by the Redis we already run. -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-provider-redis-spring</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
+
+        <!-- Structured JSON logging (A9) — request-id/tenant/user fields ride along via MDC -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-encoder.version}</version>
+        </dependency>
+
+        <!-- OpenAPI / Swagger UI (A8) -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
+        </dependency>
+
+        <!-- Testing. NOTE: `mvn verify` passed green for this entire project while
+             zero tests existed — a compile check wearing a test badge. These are
+             the first. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Classpath scanning for the tenant-isolation guard test, which inspects
+             every repository interface without booting a Spring context. -->
+        <dependency>
+            <groupId>org.reflections</groupId>
+            <artifactId>reflections</artifactId>
+            <version>${reflections.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- In-memory database so the context-load test can build the JPA entity
+             manager without a live Postgres. It never runs application queries —
+             it exists to prove the bean graph wires up. -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- NOTE: the *IT integration tests deliberately use NO Testcontainers.
+             H2 above cannot serve them (this schema is Prisma-owned and uses
+             Postgres-only features — enums, partial indexes, RLS policies), and
+             Testcontainers cannot reach Docker Desktop 29.5.3 on the current Windows
+             dev machine. They instead run against the Postgres in
+             infra/docker/docker-compose.yml (the "test" compose profile, port 5433)
+             and replay
+             the real Prisma migrations into a per-run database.
+             See AbstractPostgresIT for the full rationale and the override hook. -->
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- The whole point. `mvn verify` reported BUILD SUCCESS for this
+                         project's entire history while it contained zero tests, so CI
+                         was a compile check wearing a test badge. If the suite ever
+                         disappears again — a bad merge, a renamed source root — the
+                         build now fails instead of going quietly green. -->
+                    <failIfNoTests>true</failIfNoTests>
+                    <!-- Surefire owns UNIT tests only. Integration tests are named
+                         *IT and belong to Failsafe below, so `mvn test` stays fast
+                         and Docker-free while `mvn verify` runs the full suite. -->
+                    <excludes>
+                        <exclude>**/*IT.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+            <!-- Failsafe owns INTEGRATION tests (*IT). Separated from Surefire so a
+                 machine without Docker can still run `mvn test`, and so an integration
+                 failure is distinguishable from a unit failure in CI output. Failsafe
+                 also runs post-integration-test cleanup even when tests fail, which
+                 matters once containers are involved. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

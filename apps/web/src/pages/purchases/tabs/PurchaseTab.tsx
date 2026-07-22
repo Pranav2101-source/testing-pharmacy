@@ -97,7 +97,7 @@ export function PurchaseTab({ suppliers }: { suppliers: Supplier[] }) {
                       <span className="text-[13px] font-semibold text-slate-800 truncate">{grn.supplier.name}</span>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{grn._count.items}</td>
+                  <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{grn.items.length}</td>
                   <td className="px-4 py-3 text-[13px] font-bold text-slate-900 tabular-nums">{currency(grn.totalAmount)}</td>
                   <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{currency(grn.totalGst)}</td>
                   <td className="px-4 py-3">

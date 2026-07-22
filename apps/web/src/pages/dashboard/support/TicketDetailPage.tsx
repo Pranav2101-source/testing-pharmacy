@@ -9,7 +9,7 @@ import {
   Building2, Phone, Mail, MapPin, UserPlus, Hash, Globe,
   Calendar, Clock, Tag, ShieldCheck, ExternalLink, Activity
 } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, API_BASE_URL } from "@/lib/api-client";
 import { ListSkeleton } from "@/components/Skeleton";
 import { cn } from "@/lib/utils";
 import { isSupportStaff, isPlatformAdmin, getStoredUser } from "@/lib/auth";
@@ -66,10 +66,10 @@ function useAuthUrl(fileUrl: string) {
     let alive = true;
     let objectUrl = "";
     // Origin the API is served from. VITE_API_URL is either an absolute URL
-    // (local dev: http://localhost:4000/api/v1) or a same-origin path (prod:
+    // (local dev: http://localhost:8080/api/v1) or a same-origin path (prod:
     // /api/v1, proxied to the backend by vercel.json). Strip the /api/v1 suffix
     // to get the origin; for the relative form the origin is the current page.
-    const apiUrl = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api/v1";
+    const apiUrl = API_BASE_URL;
     const base   = apiUrl.startsWith("http")
       ? apiUrl.replace(/\/api\/v1$/, "")
       : window.location.origin;

@@ -226,7 +226,11 @@ function NewBillInner() {
     setTimeout(() => setDraftToast(null), 3000);
   }, [items, meta, loadedDraftId, clear]);
 
-  const totals   = useMemo(() => getTotals(), [getTotals]);
+  // getTotals reads items/meta.isInterstate off the store at call time via
+  // get(), but the function reference itself never changes (it's a stable
+  // Zustand action) — depending on it alone means this never recomputes
+  // after the first render. Depend on the actual inputs instead.
+  const totals   = useMemo(() => getTotals(), [getTotals, items, meta.isInterstate]);
   const totalQty = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
 
   // Net payable includes bill-level adjustments — kept consistent with InvoiceBreakdownModal

@@ -1,0 +1,57 @@
+# Integration-test profile — used by everything extending AbstractPostgresIT.
+#
+# Unlike application-test.yml (H2, context-load only, runs no queries), this profile
+# talks to a REAL Postgres container with the real Prisma schema, so application
+# queries actually execute and their results mean something.
+#
+# datasource url/username/password are intentionally absent: the database name is
+# computed per run and injected by AbstractPostgresIT.datasourceProperties().
+#
+# Prerequisite:
+#   docker compose -f infra/docker/docker-compose.yml --profile test up -d postgres
+
+spring:
+  data:
+    redis:
+      # The same Redis local development already uses. Real, not mocked: CacheConfig
+      # declares an unconditional RedisCacheManager, and Redis also backs rate
+      # limiting and ShedLock — a no-op cache would disable the tenant-prefixed cache
+      # keying that CacheConfig exists to enforce.
+      url: ${REDIS_URL:redis://localhost:6379}
+  jpa:
+    hibernate:
+      # Prisma owns the schema here exactly as in production. If this were ever set
+      # to create/update, Hibernate would silently "repair" any entity/schema drift
+      # and the suite would stop being able to detect the single most valuable class
+      # of bug an integration test catches.
+      ddl-auto: none
+    properties:
+      hibernate:
+        globally_quoted_identifiers: true
+        # Surfaces accidental N+1s during development of a test. Left as a warning
+        # rather than an exception because some legitimate batch paths trip it.
+        jdbc:
+          batch_size: 20
+
+app:
+  jwt:
+    secret: integration-test-secret-that-is-at-least-32-characters-long
+  cors:
+    allowed-origins: http://localhost:5173
+  rls:
+    # OFF. Tests connect as the `postgres` superuser, which Postgres exempts from RLS
+    # regardless of this flag, so turning it on would add GUC round-trips per
+    # transaction while changing nothing observable. RLS has its own coverage.
+    enabled: false
+  jobs:
+    # OFF, and this matters. The reservation sweep runs every 5 minutes and WRITES to
+    # inventory. With jobs enabled, a long suite could have stock mutated underneath
+    # it mid-assertion — a flake that reproduces roughly never and costs a day.
+    enabled: false
+
+logging:
+  level:
+    org.hibernate.SQL: warn
+    # Quiet the container lifecycle chatter; failures still print.
+    org.testcontainers: warn
+    com.github.dockerjava: warn

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Structured JSON logging (A9). Every log line includes level/logger/message/thread
+  plus whatever is in MDC at the time — requestId always (RequestIdFilter), userId/
+  pharmacyId when the request is authenticated (JwtAuthenticationFilter) — so a single
+  request's logs can be grepped/filtered by any of those fields in an aggregator
+  (or just `jq` against raw stdout locally).
+-->
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeContext>false</includeContext>
+            <fieldNames>
+                <timestamp>timestamp</timestamp>
+                <version>[ignore]</version>
+            </fieldNames>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

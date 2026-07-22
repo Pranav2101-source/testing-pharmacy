@@ -50,7 +50,7 @@ function InitModal({ onClose }: { onClose: () => void }) {
     e.preventDefault();
     setSaving(true);
     try {
-      await api.post("/cash-closure", form);
+      await api.post("/cash-closures", form);
       toast.success("Cash closure initialised");
       qc.invalidateQueries({ queryKey: ["cash-closure"] });
       onClose();
@@ -119,7 +119,7 @@ function CloseModal({ closure, onClose }: { closure: CashClosure; onClose: () =>
     e.preventDefault();
     setSaving(true);
     try {
-      await api.post(`/cash-closure/${closure.id}/close`, { actualCash, notes });
+      await api.post(`/cash-closures/${closure.id}/close`, { actualCash, notes });
       toast.success("Cash closure finalised");
       qc.invalidateQueries({ queryKey: ["cash-closure"] });
       onClose();
@@ -207,12 +207,12 @@ export default function CashClosurePage() {
   const params = new URLSearchParams({ page: String(page), limit: "20" });
   const { data, isLoading } = useQuery({
     queryKey: ["cash-closure", page],
-    queryFn:  () => api.get<{ success: boolean; data: CashClosure[]; total: number; pages: number }>(`/cash-closure?${params}`).then(r => r.data),
+    queryFn:  () => api.get<{ success: boolean; data: { items: CashClosure[]; total: number; page: number; limit: number; pages: number } }>(`/cash-closures?${params}`).then(r => r.data),
   });
 
   async function handleDispute(c: CashClosure) {
     try {
-      await api.post(`/cash-closure/${c.id}/dispute`);
+      await api.post(`/cash-closures/${c.id}/dispute`);
       toast.success("Marked as disputed");
       qc.invalidateQueries({ queryKey: ["cash-closure"] });
     } catch (err: any) {
@@ -220,8 +220,8 @@ export default function CashClosurePage() {
     }
   }
 
-  const closures = data?.data ?? [];
-  const pages    = data?.pages ?? 1;
+  const closures = data?.data.items ?? [];
+  const pages    = data?.data.pages ?? 1;
 
   return (
     <div className="p-6 space-y-5">

@@ -1,13 +1,11 @@
 // ─── Shared migration import core ────────────────────────────────────────────
 // CSV parsing, date normalisation, and row validation for the data-migration
-// wizard. Lives in @pharmacy/utils so BOTH the synchronous path
-// (apps/api/src/modules/migration) and the async pg-boss worker
-// (packages/jobs/src/processors/migration-import.ts) import the exact same
-// logic — previously these were copy-pasted and silently drifted apart
-// (the async path had weaker validation than the sync path).
+// wizard. Lives in @pharmacy/utils so the synchronous request path and the
+// async background job import the exact same logic — previously these were
+// copy-pasted and silently drifted apart (the async path had weaker validation).
 //
-// This module is intentionally framework- and DB-agnostic: no Prisma, no
-// Fastify. It turns raw CSV text into validated, typed rows plus a list of
+// This module is intentionally framework- and DB-agnostic. It turns raw CSV
+// text into validated, typed rows plus a list of
 // per-row issues. Persistence stays in each consumer.
 
 // ── Types ─────────────────────────────────────────────────────────────────────

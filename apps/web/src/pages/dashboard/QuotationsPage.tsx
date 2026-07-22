@@ -6,7 +6,8 @@ import {
   AlertTriangle, ChevronRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
+import { useToast } from "@/hooks/useToast";
 import { GridSkeletonRows } from "@/components/Skeleton";
 
 // ─── Types ────────────────────────────────────────────────────────
@@ -406,17 +407,28 @@ function QuotationDetailDrawer({ q, onClose, onAction, onEdit }: {
 }) {
   const [converting, setConverting]     = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const toast = useToast();
 
   const total = (q.items ?? []).reduce((s, i) => {
     const rate = i.quotedRate != null ? effectiveRate(i.quotedRate, i.discount) : 0;
     return s + rate * i.quantity;
   }, 0);
 
+  // Both of these are WRITES. They previously swallowed failures entirely (the
+  // `/* toast */` below was a note for a toast that was never wired), so a failed
+  // status change or PO conversion looked identical to a successful one: the
+  // spinner stopped and nothing else happened. The user's natural response is to
+  // click again, which is exactly how duplicates get created.
   async function doAction(action: "send" | "receive" | "expire") {
     setActionLoading(action);
-    try { await api.patch(`/quotations/${q.id}/${action}`); onAction(action); }
-    catch { /* toast */ }
-    finally { setActionLoading(null); }
+    try {
+      await api.patch(`/quotations/${q.id}/${action}`);
+      onAction(action);
+    } catch (e) {
+      toast.error(getErrorMessage(e, `Could not ${action} this quotation. Please try again.`));
+    } finally {
+      setActionLoading(null);
+    }
   }
 
   async function convertToPO() {
@@ -424,8 +436,11 @@ function QuotationDetailDrawer({ q, onClose, onAction, onEdit }: {
     try {
       await api.post(`/quotations/${q.id}/convert-to-po`, {});
       onAction("convert");
-    } catch { }
-    finally { setConverting(false); }
+    } catch (e) {
+      toast.error(getErrorMessage(e, "Could not convert this quotation to a purchase order. Please try again."));
+    } finally {
+      setConverting(false);
+    }
   }
 
   const canEdit    = ["DRAFT", "SENT"].includes(q.status);

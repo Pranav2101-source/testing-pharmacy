@@ -55,7 +55,7 @@ export function PendingApprovalsPanel({ onClose, onDone }: { onClose: () => void
                   <div>
                     <p className="text-[13px] font-bold text-blue-600">{po.orderNumber}</p>
                     <p className="text-[12px] font-semibold text-slate-700">{po.supplier.name}</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">{po._count.items} items · {fmtDate(po.orderedAt)}</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">{po.itemCount} items · {fmtDate(po.orderedAt)}</p>
                   </div>
                   <p className="text-[15px] font-black text-slate-800">{currency(po.totalAmount)}</p>
                 </div>

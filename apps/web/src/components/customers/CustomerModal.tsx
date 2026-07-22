@@ -20,6 +20,7 @@ export type CustomerRecord = {
   gender?:         string | null;
   dateOfBirth?:    string | null;
   address?:        string | null;
+  state?:          string | null;
   notes?:          string | null;
 };
 
@@ -36,6 +37,7 @@ type FormState = {
   defaultDiscount: string;
   creditLimit:     string;
   address:         string;
+  state:           string;
   notes:           string;
 };
 
@@ -58,7 +60,7 @@ function toFormState(c?: CustomerRecord): FormState {
       firstName: "", lastName: "", phone: "", email: "",
       gender: "", dateOfBirth: "", abhaNumber: "", cardNumber: "",
       customerType: "REGISTERED", defaultDiscount: "0",
-      creditLimit: "", address: "", notes: "",
+      creditLimit: "", address: "", state: "", notes: "",
     };
   }
   const [firstName, lastName] = splitName(c.name);
@@ -75,6 +77,7 @@ function toFormState(c?: CustomerRecord): FormState {
     defaultDiscount: String(c.defaultDiscount ?? 0),
     creditLimit:     c.creditLimit ? String(c.creditLimit) : "",
     address:         c.address ?? "",
+    state:           c.state   ?? "",
     notes:           c.notes   ?? "",
   };
 }
@@ -90,7 +93,7 @@ export function CustomerModal({
 }) {
   const isEdit = !!customer;
   const [form,        setForm]        = useState<FormState>(() => toFormState(customer));
-  const [showAddress, setShowAddress] = useState(!!(customer?.address));
+  const [showAddress, setShowAddress] = useState(!!(customer?.address || customer?.state));
   const [showNotes,   setShowNotes]   = useState(!!(customer?.notes));
   const [submitting,  setSubmitting]  = useState(false);
   const [error,       setError]       = useState<string | null>(null);
@@ -118,6 +121,7 @@ export function CustomerModal({
       defaultDiscount: parseFloat(form.defaultDiscount) || 0,
       creditLimit:     parseFloat(form.creditLimit)     || 0,
       address:         form.address.trim()     || undefined,
+      state:           form.state.trim()       || undefined,
       notes:           form.notes.trim()       || undefined,
     };
 
@@ -352,18 +356,32 @@ export function CustomerModal({
               + Add Address
             </button>
           ) : (
-            <div>
-              <label className="block text-[11px] font-bold text-blue-700 mb-1.5 uppercase tracking-wide">
-                Address
-              </label>
-              <input
-                type="text"
-                value={form.address}
-                onChange={field("address")}
-                placeholder="Full address"
-                autoFocus
-                className="w-full border-b border-slate-300 focus:border-blue-500 pb-1 text-[14px] text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none transition-colors"
-              />
+            <div className="grid grid-cols-3 gap-5">
+              <div className="col-span-2">
+                <label className="block text-[11px] font-bold text-blue-700 mb-1.5 uppercase tracking-wide">
+                  Address
+                </label>
+                <input
+                  type="text"
+                  value={form.address}
+                  onChange={field("address")}
+                  placeholder="Full address"
+                  autoFocus
+                  className="w-full border-b border-slate-300 focus:border-blue-500 pb-1 text-[14px] text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none transition-colors"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-blue-700 mb-1.5 uppercase tracking-wide">
+                  State
+                </label>
+                <input
+                  type="text"
+                  value={form.state}
+                  onChange={field("state")}
+                  placeholder="Maharashtra"
+                  className="w-full border-b border-slate-300 focus:border-blue-500 pb-1 text-[14px] text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none transition-colors"
+                />
+              </div>
             </div>
           )}
 

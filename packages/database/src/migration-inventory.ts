@@ -1,8 +1,7 @@
 // ─── Shared bulk inventory importer for the migration wizard ─────────────────
-// Used by BOTH the synchronous path (apps/api migration.service) and the async
-// pg-boss worker (packages/jobs migration-import) so the persistence behaviour
-// — skip-existing (no double-counting), within-file dedup, bulk insert, and
-// per-row fallback — lives in exactly one place.
+// Shared between the synchronous request path and the async background job so
+// the persistence behaviour — skip-existing (no double-counting), within-file
+// dedup, bulk insert, and per-row fallback — lives in exactly one place.
 //
 // Callers are responsible for parsing + validating rows and resolving each
 // row's medicineId (creating catalog entries as needed). This helper only

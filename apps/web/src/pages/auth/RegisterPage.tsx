@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { storeTokens, storeUser, type StoredUser } from "@/lib/auth";
+import { API_BASE_URL } from "@/lib/api-client";
 
 const step1Schema = z.object({
   pharmacyName: z.string().min(2, "Pharmacy name must be at least 2 characters"),
@@ -162,7 +163,7 @@ export default function RegisterPage() {
     setApiErr(null);
     setSubmitting(true);
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL ?? "http://localhost:4000/api/v1"}/auth/register`, {
+      const res = await fetch(`${API_BASE_URL}/auth/register`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         // credentials: include is required so the browser stores the httpOnly
         // refresh-token cookie from the Set-Cookie response header.

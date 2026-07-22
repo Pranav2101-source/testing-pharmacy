@@ -1,0 +1,55 @@
+# Test profile — used only by ApplicationContextLoadTest, to prove the bean graph
+# wires up without needing Docker, a live Postgres, or a live Redis.
+#
+# This deliberately does NOT try to be a functional test database. Hibernate is
+# still ddl-auto: none (Prisma owns the schema, in tests as in production), so no
+# application query would work here and none is run. The value is entirely in
+# "does the context start".
+
+spring:
+  datasource:
+    # H2 in Postgres-compatibility mode: close enough for Hibernate to pick a
+    # dialect and build the entity manager without a real server.
+    url: jdbc:h2:mem:contexttest;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+    hikari:
+      maximum-pool-size: 2
+      # H2 accepts the plain JDBC URL, so the pooler guard in
+      # DatasourceConfigValidator does not apply (it only fires on port 6543).
+      leak-detection-threshold: 0
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+    database-platform: org.hibernate.dialect.H2Dialect
+    properties:
+      hibernate:
+        globally_quoted_identifiers: true
+
+  data:
+    redis:
+      # Never connected to: Spring Data Redis creates the connection factory
+      # lazily, and this test issues no Redis command. Present so the factory
+      # bean (needed by the cache manager and the ShedLock provider) can be built.
+      url: redis://localhost:6379
+
+app:
+  jwt:
+    secret: test-secret-that-is-at-least-32-characters-long
+  cors:
+    allowed-origins: http://localhost:3000
+  rls:
+    # Exercised OFF here, matching the production default. The RLS transaction
+    # manager needs real Postgres GUCs, so it is verified against a live database
+    # on staging, not here.
+    enabled: false
+  jobs:
+    # Beans are created and asserted on; leaving this true would also let the
+    # 5-minute reservation sweep actually fire during the test run.
+    enabled: true
+
+logging:
+  level:
+    org.hibernate.SQL: warn

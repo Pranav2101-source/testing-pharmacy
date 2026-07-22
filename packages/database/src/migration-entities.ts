@@ -1,10 +1,9 @@
 // ─── Shared supplier / customer / doctor importers for the migration wizard ──
-// Used by BOTH the synchronous apps/api path and the async pg-boss worker so
-// the upsert + dedup behaviour lives in exactly one place (mirrors
+// Shared so the upsert + dedup behaviour lives in exactly one place (mirrors
 // migration-inventory.ts). Rows are upserted one at a time (independent commits)
 // to preserve per-row partial-success semantics and correct case-insensitive
-// natural-key matching; large files are kept off the HTTP request by the
-// caller dispatching to pg-boss, not by batching here.
+// natural-key matching; large files are kept off the request path by the
+// caller dispatching to a background job, not by batching here.
 
 import type { Db } from "./client.js";
 

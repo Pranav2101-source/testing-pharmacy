@@ -13,7 +13,8 @@ import {
 import { Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { ListSkeleton } from "@/components/Skeleton";
-import { api } from "@/lib/api-client";
+import { LoadErrorState } from "@/components/LoadErrorState";
+import { api, getErrorMessage } from "@/lib/api-client";
 
 // ─── Types ────────────────────────────────────────────────────────
 type ReportTab       = "sales" | "inventory" | "purchases" | "compliance" | "audit";
@@ -224,6 +225,7 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
   const [chartLoading, setChartLoading] = useState(true);
   const [fastItems, setFastItems]   = useState<FastMovingItem[]>([]);
   const [fastLoading, setFastLoading] = useState(false);
+  const [fastError, setFastError]   = useState<string | null>(null);
 
   const { from, to } = getPeriodDates(period, customFrom, customTo);
 
@@ -250,7 +252,14 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
         `/reports/analytics/fast-moving?from=${isoFrom(f)}&to=${isoTo(t)}&limit=20`
       );
       setFastItems(res.data.data.items ?? []);
-    } catch { setFastItems([]); }
+      setFastError(null);
+    } catch (e) {
+      // Lower stakes than the compliance registers, but the same misreading: an
+      // empty "Fast Moving" panel reads as "nothing is selling", which is a
+      // purchasing decision a pharmacist might actually act on.
+      setFastError(getErrorMessage(e, "Could not load fast-moving items."));
+      setFastItems([]);
+    }
     finally { setFastLoading(false); }
   }, []);
 
@@ -330,6 +339,13 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
         </div>
         {fastLoading ? (
           <ListSkeleton rows={5} />
+        ) : fastError ? (
+          <LoadErrorState
+            title="Fast-moving items could not be loaded"
+            message={fastError}
+            onRetry={() => loadFast(from, to)}
+            compact
+          />
         ) : topMedicines.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-slate-400">
             <Flame className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -373,6 +389,7 @@ function InventoryTab() {
   const [expiryLoading, setExpiryLoad]  = useState(true);
   const [deadItems, setDeadItems]       = useState<DeadStockItem[]>([]);
   const [deadLoading, setDeadLoad]      = useState(true);
+  const [deadError, setDeadError]       = useState<string | null>(null);
   const [valItems, setValItems]         = useState<ValuationItem[]>([]);
   const [valLoading, setValLoad]        = useState(true);
   const [deadDays, setDeadDays]         = useState(90);
@@ -394,7 +411,13 @@ function InventoryTab() {
     try {
       const r = await api.get<{ success: boolean; data: { items: DeadStockItem[]; totalCostAtRisk: number } }>(`/reports/analytics/dead-stock?days=${days}`);
       setDeadItems(r.data.data.items ?? []);
-    } catch { setDeadItems([]); }
+      setDeadError(null);
+    } catch (e) {
+      // An empty dead-stock panel reads as "no capital tied up in dead stock" —
+      // the opposite of the truth if the request simply failed.
+      setDeadError(getErrorMessage(e, "Could not load dead stock."));
+      setDeadItems([]);
+    }
     finally { setDeadLoad(false); }
   }, []);
 
@@ -517,6 +540,13 @@ function InventoryTab() {
       >
         {deadLoading ? (
           <ListSkeleton rows={5} />
+        ) : deadError ? (
+          <LoadErrorState
+            title="Dead stock could not be loaded"
+            message={deadError}
+            onRetry={() => loadDead(deadDays)}
+            compact
+          />
         ) : deadItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-slate-400">
             <CheckCircle2 className="w-8 h-8 text-emerald-200 mb-2" strokeWidth={1.4} />
@@ -764,13 +794,22 @@ function GstReportSection() {
   const [to,   setTo]     = useState(toInputDate(now));
   const [data, setData]   = useState<GstData | null>(null);
   const [loading, setLoading] = useState(false);
+  // Same reasoning as the Schedule H register: these figures are transcribed into
+  // a GSTR filing, so "failed to load" must never render as zeroes or an empty
+  // period. Filing a return from numbers that silently defaulted is far worse than
+  // seeing an error.
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
+    setError(null);
     try {
       const r = await api.get<{ success: boolean; data: GstData }>(`/reports/gst?from=${isoFrom(from)}&to=${isoTo(to)}`);
       setData(r.data.data);
-    } catch { setData(null); }
+    } catch (e) {
+      setError(getErrorMessage(e, "Could not load the GST summary. Please try again."));
+      setData(null);
+    }
     finally { setLoading(false); }
   }
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -819,6 +858,8 @@ function GstReportSection() {
     >
       {loading ? (
         <ListSkeleton rows={5} />
+      ) : error ? (
+        <LoadErrorState title="GST summary could not be loaded" message={error} onRetry={load} />
       ) : !data ? (
         <div className="flex flex-col items-center justify-center py-12 text-slate-400">
           <Receipt className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -872,15 +913,22 @@ function HsnSummarySection() {
   const [to,   setTo]       = useState(toInputDate(now));
   const [rows, setRows]     = useState<HsnRow[] | null>(null);
   const [loading, setLoading] = useState(false);
+  // HSN totals feed the same GSTR filing as the GST summary — a silent empty
+  // result would understate the return. See GstReportSection.
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
+    setError(null);
     try {
       const r = await api.get<{ success: boolean; data: { rows: HsnRow[] } }>(
         `/reports/gst/hsn-summary?from=${isoFrom(from)}&to=${isoTo(to)}`
       );
       setRows(r.data.data.rows);
-    } catch { setRows(null); }
+    } catch (e) {
+      setError(getErrorMessage(e, "Could not load the HSN summary. Please try again."));
+      setRows(null);
+    }
     finally { setLoading(false); }
   }
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -924,6 +972,8 @@ function HsnSummarySection() {
     >
       {loading ? (
         <ListSkeleton rows={5} />
+      ) : error ? (
+        <LoadErrorState title="HSN summary could not be loaded" message={error} onRetry={load} />
       ) : !rows ? (
         <div className="flex flex-col items-center justify-center py-12 text-slate-400">
           <BadgePercent className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -986,14 +1036,28 @@ function ScheduleHSection() {
   const [schedule, setSchedule] = useState("");
   const [items, setItems] = useState<ScheduleHItem[]>([]);
   const [loading, setLoading] = useState(false);
+  // A failed load must NOT look like an empty register. Swallowing the error and
+  // rendering [] made the page state "No controlled medicine dispensing records"
+  // — a definitive claim that nothing was dispensed — whenever the request failed
+  // for any reason. On a statutory register shown to a Drug Inspector that is the
+  // most dangerous possible way to fail, so load errors are tracked separately and
+  // rendered as an explicit failure.
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
+    setError(null);
     try {
       const params = `/reports/schedule-h?from=${isoFrom(from)}&to=${isoTo(to)}${schedule ? `&schedule=${schedule}` : ""}`;
       const r = await api.get<{ success: boolean; data: ScheduleHItem[] }>(params);
       setItems(r.data.data ?? []);
-    } catch { setItems([]); }
+    } catch (e) {
+      // The backend returns an actionable 400 when the date range exceeds the
+      // register's row cap ("narrow the range…"). getErrorMessage surfaces that
+      // text verbatim rather than replacing it with a generic failure string.
+      setError(getErrorMessage(e, "Could not load the Schedule H register. Please try again."));
+      setItems([]);
+    }
     finally { setLoading(false); }
   }
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1039,7 +1103,9 @@ function ScheduleHSection() {
             {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <BookOpen className="w-3.5 h-3.5" />}
             Load
           </button>
-          {items.length > 0 && (
+          {/* Export stays hidden while errored: a CSV built from a failed load
+              would be an incomplete register that looks authoritative on disk. */}
+          {items.length > 0 && !error && (
             <button onClick={handleExport} className="flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700 border border-slate-200 rounded-lg px-2 py-1.5 hover:bg-slate-50 transition-colors">
               <Download className="w-3 h-3" /> CSV
             </button>
@@ -1055,6 +1121,10 @@ function ScheduleHSection() {
 
       {loading ? (
         <ListSkeleton rows={5} />
+      ) : error ? (
+        /* Deliberately distinct from the empty state below: this says the register
+           could not be loaded, never that nothing was dispensed. */
+        <LoadErrorState title="Register could not be loaded" message={error} onRetry={load} />
       ) : items.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-12 text-slate-400">
           <BookOpen className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
