@@ -3,6 +3,7 @@ import { FileSpreadsheet, Download, X, Check, AlertTriangle, Loader2 } from "luc
 import { cn } from "@/lib/utils";
 import { GRN_CSV_TEMPLATE, PO_CSV_TEMPLATE, RETURN_CSV_TEMPLATE, downloadTemplate } from "../utils";
 import { extractPdfTableText, isPdfFile } from "../utils/pdfExtract";
+import { MAX_UPLOAD_MB } from "../utils";
 
 export function ImportPanel({ type, onImport, onClose, onPdfSelected, allowPdf }: {
   type:      "grn" | "po" | "return";
@@ -36,6 +37,15 @@ export function ImportPanel({ type, onImport, onClose, onPdfSelected, allowPdf }
   function readFile(file: File) {
     setFileError(null);
     setPdfNotice(null);
+
+    // Reject oversized files instantly, client-side — the server caps uploads at
+    // MAX_UPLOAD_MB and would reset the connection on a larger one, so without this
+    // the user waits for a doomed multi-MB upload (and the PDF parse) only to get a
+    // silent failure. Fail fast with the size and the limit.
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      setFileError(`That file is ${(file.size / 1024 / 1024).toFixed(1)} MB — the maximum is ${MAX_UPLOAD_MB} MB. Try a smaller file, or split it.`);
+      return;
+    }
 
     if (allowPdf && isPdfFile(file)) {
       onPdfSelected?.(file);

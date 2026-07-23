@@ -11,7 +11,8 @@ import {
   BadgeIndianRupee, CreditCard, X, Banknote, Smartphone, Clock3,
   Package, RefreshCw, Trash2, Play, Clock, IndianRupee,
 } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { istRangeParams } from "@pharmacy/utils";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { TableSkeletonRows } from "@/components/Skeleton";
 import { cn } from "@/lib/utils";
 import { listDrafts, deleteDraft, clearAllDrafts } from "@/lib/draftStorage";
@@ -24,17 +25,34 @@ type Tab = "bills" | "drafts" | "returns";
 
 // ─── Shared helpers ────────────────────────────────────────────────────────────
 
-function fmtCurrency(n: number) {
+// Both formatters tolerate missing/!valid input rather than throwing. A single bad row
+// otherwise takes down the entire table render (a thrown TypeError/RangeError inside a
+// .map() unmounts the whole page, not just that cell) — and the amount/date columns read
+// straight off API fields, which is exactly where a DTO-shape drift lands first.
+function fmtCurrency(n: number | null | undefined) {
+  if (typeof n !== "number" || !isFinite(n)) return "—";
   return "₹" + n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-function fmtDate(iso: string) {
-  return new Date(iso).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" });
+function fmtDate(iso: string | null | undefined) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" });
 }
 function getCurrentFY() {
   const now = new Date(), yr = now.getFullYear(), start = now.getMonth() >= 3 ? yr : yr - 1;
   return { from: `${start}-04-01`, to: `${start + 1}-03-31`, label: `01/04/${start} - 31/03/${start + 1}` };
 }
 const FY = getCurrentFY();
+
+/** Validates a picker range before it can become a request. Returns null when the range is usable. */
+function validateRange(from: string, to: string): string | null {
+  if (!from || !to) return "Pick both a start and an end date.";
+  const f = new Date(from), t = new Date(to);
+  if (isNaN(f.getTime()) || isNaN(t.getTime())) return "That date isn't valid — use the DD/MM/YYYY picker.";
+  if (f > t) return "The start date is after the end date.";
+  return null;
+}
 
 // Debounces a value — decouples input state from query key so keystrokes don't fire requests
 function useDebounce<T>(value: T, ms: number): T {
@@ -149,6 +167,9 @@ function DateRangePicker({
   const [dFrom, setDFrom] = useState(dateFrom);
   const [dTo,   setDTo]   = useState(dateTo);
   const ref = useRef<HTMLDivElement>(null);
+  // Shown inline under the inputs; also gates Apply, so an unusable range is caught
+  // here rather than becoming a request that comes back as a red table-wide error.
+  const rangeError = validateRange(dFrom, dTo);
 
   useEffect(() => {
     const fn = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
@@ -185,9 +206,18 @@ function DateRangePicker({
                 <input type="date" value={dTo} onChange={e => setDTo(e.target.value)} className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-[12px] focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-300" />
               </div>
             </div>
+            {rangeError && (
+              <p className="flex items-start gap-1.5 text-[11px] text-red-600 bg-red-50 border border-red-100 rounded-lg px-2.5 py-1.5 mb-3">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-px" />{rangeError}
+              </p>
+            )}
             <div className="flex gap-2 justify-end pt-1 border-t border-slate-100">
               <button onClick={() => { onReset(); setOpen(false); }} className="text-[12px] text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-lg hover:bg-slate-50 transition-colors">Reset to FY</button>
-              <button onClick={() => { onApply(dFrom, dTo); setOpen(false); }} className="text-[12px] bg-blue-600 hover:bg-blue-700 text-white font-semibold px-4 py-1.5 rounded-lg transition-colors">Apply</button>
+              <button
+                onClick={() => { if (!rangeError) { onApply(dFrom, dTo); setOpen(false); } }}
+                disabled={!!rangeError}
+                className="text-[12px] bg-blue-600 hover:bg-blue-700 disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed text-white font-semibold px-4 py-1.5 rounded-lg transition-colors"
+              >Apply</button>
             </div>
           </motion.div>
         )}
@@ -252,7 +282,7 @@ function BillsPanel({ onCount }: { onCount: (n: number) => void }) {
         params: {
           page, limit: 20,
           ...(search ? { search } : {}),
-          from: dateFrom, to: dateTo,
+          ...istRangeParams(dateFrom, dateTo),
           ...(modeFilter !== "all" ? { paymentMode: modeFilter } : {}),
           ...(statusFilter === "CANCELLED"
             ? { status: "CANCELLED" }
@@ -484,10 +514,10 @@ function BillsPanel({ onCount }: { onCount: (n: number) => void }) {
             ) : isError ? (
               <tr><td colSpan={9} className="py-24 text-center">
                 <AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-3" />
-                <p className="text-red-500 text-[13px] font-medium">Failed to load bills</p>
-                {(error as Error)?.message && (
-                  <p className="text-slate-400 text-[12px] mt-1">{(error as Error).message}</p>
-                )}
+                <p className="text-red-500 text-[13px] font-medium">Couldn't load bills</p>
+                <p className="text-slate-500 text-[12px] mt-1 max-w-[420px] mx-auto">
+                  {getErrorMessage(error, "Please check your connection and try again.")}
+                </p>
                 <button onClick={() => refetch()} className="mt-3 text-blue-600 text-[12px] hover:underline">Try again</button>
               </td></tr>
             ) : displayedInvoices.length === 0 ? (
@@ -502,11 +532,11 @@ function BillsPanel({ onCount }: { onCount: (n: number) => void }) {
                   className="border-b border-slate-100 hover:bg-blue-50/40 cursor-pointer transition-colors group">
                   <td className="px-4 py-3 text-[13px] font-semibold text-blue-600 whitespace-nowrap group-hover:text-blue-700">{inv.invoiceNumber}</td>
                   <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap">{fmtDate(inv.createdAt)}</td>
-                  <td className="px-4 py-3 text-[13px] text-slate-700 whitespace-nowrap">{inv.user.name}</td>
+                  <td className="px-4 py-3 text-[13px] text-slate-700 whitespace-nowrap">{inv.user?.name ?? <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-3 text-[13px] text-slate-700 max-w-[140px] truncate">{inv.customer?.name ?? <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap tabular-nums">{inv.customer?.phone ?? <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-3"><PaymentModeBadge mode={inv.paymentMode} /></td>
-                  <td className="px-4 py-3"><span className="inline-flex items-center gap-1 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-full px-2 py-0.5"><Package className="w-3 h-3" />{inv._count.items}</span></td>
+                  <td className="px-4 py-3"><span className="inline-flex items-center gap-1 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-full px-2 py-0.5"><Package className="w-3 h-3" />{inv._count?.items ?? 0}</span></td>
                   <td className="px-4 py-3 text-[13px] font-semibold text-slate-900 whitespace-nowrap tabular-nums">{fmtCurrency(inv.totalAmount)}</td>
                   <td className="px-4 py-3"><StatusBadge isCancelled={inv.isCancelled} paymentStatus={inv.paymentStatus} /></td>
                 </tr>
@@ -705,7 +735,7 @@ function ReturnsPanel({ onCount }: { onCount: (n: number) => void }) {
     queryKey: listKey,
     queryFn: async () => {
       const { data } = await api.get("/billing/returns", {
-        params: { page, limit: 20, search: dSearch || undefined, from: dateFrom, to: dateTo },
+        params: { page, limit: 20, search: dSearch || undefined, ...istRangeParams(dateFrom, dateTo) },
       });
       return data.data as { items: ReturnRow[]; total: number; totalPages: number };
     },
@@ -799,10 +829,10 @@ function ReturnsPanel({ onCount }: { onCount: (n: number) => void }) {
             ) : isError ? (
               <tr><td colSpan={9} className="py-24 text-center">
                 <AlertCircle className="w-8 h-8 text-red-300 mx-auto mb-3" />
-                <p className="text-red-500 text-[13px] font-medium">Failed to load returns</p>
-                {(error as Error)?.message && (
-                  <p className="text-slate-400 text-[12px] mt-1">{(error as Error).message}</p>
-                )}
+                <p className="text-red-500 text-[13px] font-medium">Couldn't load returns</p>
+                <p className="text-slate-500 text-[12px] mt-1 max-w-[420px] mx-auto">
+                  {getErrorMessage(error, "Please check your connection and try again.")}
+                </p>
                 <button onClick={() => refetch()} className="mt-3 text-blue-600 text-[12px] hover:underline">Try again</button>
               </td></tr>
             ) : displayed.length === 0 ? (
@@ -813,21 +843,23 @@ function ReturnsPanel({ onCount }: { onCount: (n: number) => void }) {
               </td></tr>
             ) : (
               displayed.map(row => {
-                const totalItems = row.items.reduce((s, it) => s + it.quantity, 0);
+                const totalItems = row.items?.reduce((s, it) => s + (it.quantity ?? 0), 0) ?? 0;
                 return (
-                  <tr key={row.id} onClick={() => navigate(`/dashboard/billing/${row.invoice.id}`)}
+                  <tr key={row.id} onClick={() => { if (row.invoice?.id) navigate(`/dashboard/billing/${row.invoice.id}`); }}
                     className="border-b border-slate-100 hover:bg-rose-50/30 cursor-pointer transition-colors group">
                     <td className="px-4 py-3 text-[13px] font-semibold text-rose-600 whitespace-nowrap">{row.returnNumber}</td>
                     <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap">{fmtDate(row.createdAt)}</td>
                     <td className="px-4 py-3 text-[13px] font-medium text-blue-600 whitespace-nowrap">
-                      <Link to={`/dashboard/billing/${row.invoice.id}`} onClick={e => e.stopPropagation()} className="hover:underline">{row.invoice.invoiceNumber}</Link>
+                      {row.invoice?.id
+                        ? <Link to={`/dashboard/billing/${row.invoice.id}`} onClick={e => e.stopPropagation()} className="hover:underline">{row.invoice.invoiceNumber}</Link>
+                        : <span className="text-slate-300">—</span>}
                     </td>
                     <td className="px-4 py-3 text-[13px] text-slate-700 max-w-[140px] truncate">{row.customer?.name ?? <span className="text-slate-300">—</span>}</td>
                     <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap tabular-nums">{row.customer?.phone ?? <span className="text-slate-300">—</span>}</td>
                     <td className="px-4 py-3 text-[13px] text-slate-600 tabular-nums text-center">{totalItems}</td>
                     <td className="px-4 py-3 text-[13px] font-semibold text-rose-600 whitespace-nowrap tabular-nums">− {fmtCurrency(row.totalAmount)}</td>
                     <td className="px-4 py-3 text-[12px] text-slate-500 max-w-[160px] truncate italic">{row.reason ?? <span className="text-slate-300 not-italic">—</span>}</td>
-                    <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap">{row.user.name}</td>
+                    <td className="px-4 py-3 text-[13px] text-slate-600 whitespace-nowrap">{row.user?.name ?? <span className="text-slate-300">—</span>}</td>
                   </tr>
                 );
               })
@@ -895,14 +927,14 @@ export default function SalesPage() {
     });
     queryClient.prefetchQuery({
       queryKey: ["billing", "list", { page: 1, dBill: "", dName: "", dateFrom: FY.from, dateTo: FY.to, modeFilter: "all", statusFilter: "all" }] as const,
-      queryFn:  () => api.get("/billing", { params: { page: 1, limit: 20, from: FY.from, to: FY.to, includeCancelled: true } }).then(r => r.data.data),
+      queryFn:  () => api.get("/billing", { params: { page: 1, limit: 20, ...istRangeParams(FY.from, FY.to), includeCancelled: true } }).then(r => r.data.data),
       staleTime: 60_000,
     });
   }
   function prefetchReturns() {
     queryClient.prefetchQuery({
       queryKey: ["billing", "returns", { page: 1, dSearch: "", dateFrom: FY.from, dateTo: FY.to }] as const,
-      queryFn:  () => api.get("/billing/returns", { params: { page: 1, limit: 20, from: FY.from, to: FY.to } }).then(r => r.data.data),
+      queryFn:  () => api.get("/billing/returns", { params: { page: 1, limit: 20, ...istRangeParams(FY.from, FY.to) } }).then(r => r.data.data),
       staleTime: 60_000,
     });
   }

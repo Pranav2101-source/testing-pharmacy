@@ -1,7 +1,101 @@
 import { api } from "@/lib/api-client";
-import type { GRNLineItem, POLineItem, SRLineItem } from "./types";
+import type { GRNLineItem, Medicine, POLineItem, SRLineItem } from "./types";
+
+/**
+ * Client-side upload size cap, in MB. MUST match the server's
+ * spring.servlet.multipart.max-file-size — the backend resets the connection on
+ * anything larger, so we reject it here first for instant, clear feedback.
+ */
+export const MAX_UPLOAD_MB = 10;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** The one canonical way an imported medicine name is compared to a catalogue name:
+ *  trimmed, lowercased, internal whitespace collapsed. Every comparison in the import
+ *  flow MUST go through this so the resolution map keys and the row lookups agree. */
+export function normalizeMedicineName(s: string): string {
+  return s.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export type MedicineMatch = {
+  /** Exact catalogue matches, keyed by normalized name. */
+  resolved: Map<string, Medicine>;
+  /** Searched successfully but no exact match exists — genuinely absent from the catalogue. */
+  notInCatalogue: string[];
+  /** The lookup request itself failed (offline / server error / rate-limited) — status unknown. */
+  lookupFailed: string[];
+};
+
+/**
+ * Match imported medicine NAMES against the catalogue.
+ *
+ * <p>CSV/PDF imports only ever carry a printed name — a distributor's invoice has no
+ * idea what our internal medicine ids are. Every line item still has to reference a
+ * catalogue entry, so without this step each imported row goes to the API with a blank
+ * medicineId and the whole document is rejected.
+ *
+ * <p>Matching is exact on name (via {@link normalizeMedicineName}). The search endpoint
+ * is fuzzy and will happily return "Paracetamol 650" for a query of "Paracetamol 500",
+ * so a loose match here would silently book stock against the wrong product — far worse
+ * than asking the user to pick.
+ *
+ * <p>The result deliberately separates "searched and not found" from "couldn't search":
+ * a failed request must NOT be reported to the user as "not in your catalogue" (which
+ * would send them to add a medicine that may already be there). The caller uses the two
+ * buckets to give accurate advice — add/pick vs. retry.
+ */
+export async function resolveMedicinesByName(names: string[]): Promise<MedicineMatch> {
+  const unique = [...new Set(names.map(normalizeMedicineName).filter(Boolean))];
+  const resolved = new Map<string, Medicine>();
+  const notInCatalogue: string[] = [];
+  const lookupFailed: string[] = [];
+
+  // Small concurrency cap — an imported invoice can carry 50+ lines and firing that
+  // many parallel requests at the search endpoint trips its rate limiter (which would
+  // itself land every remaining row in lookupFailed).
+  const BATCH = 5;
+  for (let i = 0; i < unique.length; i += BATCH) {
+    const slice = unique.slice(i, i + BATCH);
+    await Promise.all(slice.map(async (name) => {
+      try {
+        const { data } = await api.get("/medicines/search", { params: { q: name, limit: 8 } });
+        const list = Array.isArray(data?.data) ? (data.data as Medicine[]) : [];
+        const hit = list.find((m) => normalizeMedicineName(m.name) === name);
+        if (hit) resolved.set(name, hit);
+        else notInCatalogue.push(name);
+      } catch {
+        lookupFailed.push(name);
+      }
+    }));
+  }
+  return { resolved, notInCatalogue, lookupFailed };
+}
+
+/**
+ * Plain-language summary of an import that couldn't fully auto-link, written so the
+ * user knows exactly which problem they have and what to do about it. Keeps the two
+ * failure modes apart on purpose — telling someone to "add it to the catalogue" when
+ * the lookup merely failed sends them down the wrong path. Returns null when there is
+ * nothing to report (everything imported and matched).
+ */
+export function describeImportResolution(opts: {
+  imported?: number;
+  skipped?: number;
+  notInCatalogue: number;
+  lookupFailed: number;
+}): string | null {
+  const { imported, skipped = 0, notInCatalogue, lookupFailed } = opts;
+  const bits: string[] = [];
+  if (imported !== undefined) bits.push(`${imported} row${imported === 1 ? "" : "s"} imported.`);
+  if (skipped > 0) bits.push(`${skipped} row${skipped === 1 ? "" : "s"} skipped — the medicine name column was empty or unreadable.`);
+  if (lookupFailed > 0) {
+    bits.push(`${lookupFailed} ${lookupFailed === 1 ? "row" : "rows"} couldn't be checked against your catalogue — this is usually a connection problem, not missing data. Use "Retry matching", or pick each highlighted row manually.`);
+  }
+  if (notInCatalogue > 0) {
+    bits.push(`${notInCatalogue} ${notInCatalogue === 1 ? "row isn't" : "rows aren't"} in your catalogue — pick a match for each highlighted row, or add ${notInCatalogue === 1 ? "it" : "them"} on the Medicines page first.`);
+  }
+  return bits.length > 0 && (skipped || lookupFailed || notInCatalogue) ? bits.join(" ") : null;
+}
 
 /** Fetches a fresh signed URL for an uploaded PO/GRN source PDF and opens it
  * in a new tab. Fails silently (signed URLs expire; the file may also have

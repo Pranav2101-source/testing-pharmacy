@@ -167,9 +167,22 @@ api.interceptors.response.use(
  * straight to a generic fallback string that hides what actually went wrong.
  */
 export function getErrorMessage(err: unknown, fallback: string): string {
-  if (axios.isAxiosError(err)) {
-    const data = err.response?.data as { error?: string; message?: string } | undefined;
-    return data?.error ?? data?.message ?? err.message ?? fallback;
+  if (!axios.isAxiosError(err)) return fallback;
+
+  const status    = err.response?.status;
+  const data      = err.response?.data as { error?: string; message?: string } | undefined;
+  const serverMsg = data?.error ?? data?.message;
+
+  // The backend's catch-all and its AccessDeniedException handler return these two
+  // fixed strings by design (never leaking internals). They're correct as wire values
+  // but tell the person reading the screen nothing about what to do next, so they're
+  // the one case where a client-side message beats the server's.
+  if (status === 403) {
+    return "You don't have permission to do this. Ask an owner or manager for access.";
   }
-  return fallback;
+  if (status && status >= 500 && (!serverMsg || serverMsg === "Internal server error")) {
+    return "Something went wrong on our end. Please try again in a moment.";
+  }
+
+  return serverMsg ?? err.message ?? fallback;
 }

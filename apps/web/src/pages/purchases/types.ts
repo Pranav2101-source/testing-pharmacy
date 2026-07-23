@@ -30,10 +30,11 @@ export type GRN = {
   sourceUploadId: string | null;
   supplier: { id: string; name: string };
   purchaseOrder: { id: string; orderNumber: string } | null;
-  // No count field at all on this one — the backend sends the full line
-  // items every time (see GrnResponse.items), so the item count is derived
-  // as items.length rather than read off a dedicated field.
-  items: unknown[];
+  // The list endpoint sends `itemCount` and an EMPTY `items` array (it never needs
+  // the lines, only the count); the detail/create endpoints send both. Always read
+  // the count via `itemCount`, falling back to items.length for any older cached row.
+  itemCount: number;
+  items?: unknown[];
 };
 
 export type SupplierReturn = {

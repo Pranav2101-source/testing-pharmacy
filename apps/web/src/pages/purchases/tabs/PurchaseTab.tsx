@@ -2,6 +2,7 @@ import { useState } from "react";
 import { FileX, RefreshCw, AlertTriangle, Eye, Building2 } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import { istRangeParams } from "@pharmacy/utils";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/hooks/useDebounce";
@@ -31,8 +32,7 @@ export function PurchaseTab({ suppliers }: { suppliers: Supplier[] }) {
       const p: Record<string, any> = { page, limit: 20, status: "CONFIRMED" };
       if (dSearch)     p.search     = dSearch;
       if (supplierId)  p.supplierId = supplierId;
-      if (dateFrom)    p.from       = new Date(dateFrom).toISOString();
-      if (dateTo)      p.to         = new Date(dateTo + "T23:59:59").toISOString();
+      Object.assign(p, istRangeParams(dateFrom, dateTo));
       if (overdueOnly) p.overdue    = true;
       const { data } = await api.get("/purchases/grn", { params: p });
       return data.data as { items: GRN[]; total: number };
@@ -97,7 +97,7 @@ export function PurchaseTab({ suppliers }: { suppliers: Supplier[] }) {
                       <span className="text-[13px] font-semibold text-slate-800 truncate">{grn.supplier.name}</span>
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{grn.items.length}</td>
+                  <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{grn.itemCount ?? grn.items?.length ?? 0}</td>
                   <td className="px-4 py-3 text-[13px] font-bold text-slate-900 tabular-nums">{currency(grn.totalAmount)}</td>
                   <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{currency(grn.totalGst)}</td>
                   <td className="px-4 py-3">

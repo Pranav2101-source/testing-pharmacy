@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Plus, Loader2, RotateCcw, Trash2, FileSpreadsheet, RefreshCw, Package } from "lucide-react";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { AnimatePresence } from "framer-motion";
@@ -15,6 +15,15 @@ export function CreateReturnModal({ suppliers: initialSuppliers, onClose, onDone
   suppliers: Supplier[]; onClose: () => void; onDone: (newSupplier?: FullSupplier) => void;
 }) {
   const [suppliers,   setSuppliers]   = useState<Supplier[]>(initialSuppliers);
+  // See CreateGRNModal's identical effect for why this is needed — initialSuppliers
+  // can still be empty at mount if the parent's suppliers query hasn't resolved yet.
+  useEffect(() => {
+    setSuppliers((prev) => {
+      const known = new Set(prev.map((s) => s.id));
+      const added = initialSuppliers.filter((s) => !known.has(s.id));
+      return added.length ? [...prev, ...added] : prev;
+    });
+  }, [initialSuppliers]);
   const [supplierId,  setSupplierId]  = useState("");
   const [debitNoteNo, setDebitNoteNo] = useState("");
   const [notes,       setNotes]       = useState("");

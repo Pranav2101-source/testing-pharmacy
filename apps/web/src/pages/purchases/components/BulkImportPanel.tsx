@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   GRN_CSV_TEMPLATE, downloadTemplate,
-  parseRawRows, inferColumnMapping, parseWithMapping,
+  parseRawRows, inferColumnMapping, parseWithMapping, MAX_UPLOAD_MB,
 } from "../utils";
 import { extractPdfTableText, isPdfFile } from "../utils/pdfExtract";
 import type { GRNLineItem } from "../types";
@@ -82,6 +82,14 @@ export function BulkImportPanel({ initialRaw = "", onImport, onClose, onPdfSelec
   function readFile(file: File) {
     setFileError(null);
     setPdfNotice(null);
+
+    // Instant client-side size guard — see the identical check in ImportPanel: the
+    // server rejects (and resets the connection on) anything over MAX_UPLOAD_MB, so
+    // uploading a larger file just wastes the user's time for a silent failure.
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      setFileError(`That file is ${(file.size / 1024 / 1024).toFixed(1)} MB — the maximum is ${MAX_UPLOAD_MB} MB. Try a smaller file, or split it.`);
+      return;
+    }
 
     if (isPdfFile(file)) {
       onPdfSelected?.(file);

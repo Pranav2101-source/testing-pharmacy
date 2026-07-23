@@ -310,8 +310,12 @@ public class PurchasesService {
                 hasStatus ? statuses : List.of("__NONE__"), blankToNull(approvalStatus), blankToNull(supplierId),
                 DateRange.from(from), DateRange.to(to), blankToNull(search), PageRequest.of(safePage - 1, safeLimit));
 
+        // List rows carry neither GRN refs nor the line-item snapshots: the list view
+        // renders only a header + itemCount, so resolving GRN refs per row (N wasted
+        // queries) and serialising every PO's items JSON (wasted payload) both bought
+        // nothing. The detail endpoint still returns both.
         List<PurchaseOrderResponse> items = result.getContent().stream()
-                .map(po -> toResponse(po, findGrnRefs(po.getId()))).toList();
+                .map(this::toPoListResponse).toList();
         return new PurchaseOrderPageResponse(items, result.getTotalElements(), safePage, safeLimit);
     }
 
@@ -546,8 +550,31 @@ public class PurchasesService {
                 blankToNull(supplierId), overdue, Instant.now(), DateRange.from(from), DateRange.to(to),
                 PageRequest.of(safePage - 1, safeLimit));
 
-        List<GrnResponse> items = result.getContent().stream()
-                .map(grn -> toResponse(grn, grn.getSupplier(), grnItemRepository.findByGrnId(grn.getId()), null))
+        List<GoodsReceiptNote> grns = result.getContent();
+
+        // Two batched lookups for the whole page instead of two queries per row:
+        //  (1) line-item counts (the list shows a count, never the lines);
+        //  (2) linked-PO order numbers (only GRNs that reference a PO).
+        String pharmacyId = TenantContext.pharmacyId();
+        List<String> grnIds = grns.stream().map(GoodsReceiptNote::getId).toList();
+        Map<String, Long> itemCounts = new HashMap<>();
+        if (!grnIds.isEmpty()) {
+            for (var row : grnItemRepository.countByGrnIdIn(pharmacyId, grnIds)) {
+                itemCounts.put(row.getGrnId(), row.getCnt());
+            }
+        }
+        List<String> poIds = grns.stream().map(GoodsReceiptNote::getPurchaseOrderId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        Map<String, GrnResponse.PurchaseOrderRef> poRefs = new HashMap<>();
+        if (!poIds.isEmpty()) {
+            for (var row : purchaseOrderRepository.findRefsByIdIn(pharmacyId, poIds)) {
+                poRefs.put(row.getId(), new GrnResponse.PurchaseOrderRef(row.getId(), row.getOrderNumber()));
+            }
+        }
+
+        List<GrnResponse> items = grns.stream()
+                .map(grn -> toGrnListResponse(grn, itemCounts.getOrDefault(grn.getId(), 0L).intValue(),
+                        grn.getPurchaseOrderId() == null ? null : poRefs.get(grn.getPurchaseOrderId())))
                 .toList();
         return new GrnPageResponse(items, result.getTotalElements(), safePage, safeLimit);
     }
@@ -618,6 +645,22 @@ public class PurchasesService {
                 po.getSourceUploadId());
     }
 
+    /**
+     * List-row builder — supplier is fetch-joined by the list query, and the line-item
+     * snapshots and GRN refs are omitted (the list renders only a header + itemCount).
+     * itemCount comes off the denormalized column, so no items JSON is read or shipped.
+     */
+    private PurchaseOrderResponse toPoListResponse(PurchaseOrder po) {
+        Supplier s = po.getSupplier();
+        PurchaseOrderResponse.SupplierRef supplierRef = s == null ? null
+                : new PurchaseOrderResponse.SupplierRef(s.getId(), s.getName(), s.getPhone(), s.getEmail());
+        return new PurchaseOrderResponse(po.getId(), po.getOrderNumber(), supplierRef, po.getInvoiceNo(),
+                po.getStatus().name(), po.getApprovalStatus().name(), po.getApprovedBy(), po.getApprovedAt(),
+                po.getRejectionReason(), po.getSubtotal(), po.getTotalGst(), po.getTotalAmount(), po.getNotes(),
+                po.getExpectedDate(), po.getOrderedAt(), po.getReceivedAt(), List.of(), po.getItemCount(), List.of(),
+                po.getSourceUploadId());
+    }
+
     private GrnResponse toResponse(GoodsReceiptNote grn, Supplier supplier, List<GRNItem> items, String warning) {
         GrnResponse.SupplierRef supplierRef = supplier == null ? null
                 : new GrnResponse.SupplierRef(supplier.getId(), supplier.getName(), supplier.getPhone(), supplier.getCreditDays());
@@ -636,6 +679,23 @@ public class PurchasesService {
         return new GrnResponse(grn.getId(), grn.getGrnNumber(), supplierRef, poRef, grn.getSupplierInvoiceNo(),
                 grn.getSupplierInvoiceDate(), grn.getStatus().name(), grn.getNotes(), grn.getSubtotal(),
                 grn.getTotalGst(), grn.getTotalAmount(), grn.getConfirmedAt(), grn.getPaymentDueDate(),
-                itemResponses, warning, grn.getCreatedAt(), grn.getSourceUploadId());
+                itemResponses, itemResponses.size(), warning, grn.getCreatedAt(), grn.getSourceUploadId());
+    }
+
+    /**
+     * List-row builder — the counterpart to the full {@link #toResponse} above, but
+     * without loading or shipping line items. Both the item count and the linked PO's
+     * number are pre-resolved by the caller in one batched query each, so a page of
+     * GRNs costs a fixed number of queries instead of 2 per row. {@code supplier} is the
+     * fetch-joined association from the list query, so reading it triggers no lazy load.
+     */
+    private GrnResponse toGrnListResponse(GoodsReceiptNote grn, int itemCount, GrnResponse.PurchaseOrderRef poRef) {
+        Supplier supplier = grn.getSupplier();
+        GrnResponse.SupplierRef supplierRef = supplier == null ? null
+                : new GrnResponse.SupplierRef(supplier.getId(), supplier.getName(), supplier.getPhone(), supplier.getCreditDays());
+        return new GrnResponse(grn.getId(), grn.getGrnNumber(), supplierRef, poRef, grn.getSupplierInvoiceNo(),
+                grn.getSupplierInvoiceDate(), grn.getStatus().name(), grn.getNotes(), grn.getSubtotal(),
+                grn.getTotalGst(), grn.getTotalAmount(), grn.getConfirmedAt(), grn.getPaymentDueDate(),
+                List.of(), itemCount, null, grn.getCreatedAt(), grn.getSourceUploadId());
     }
 }

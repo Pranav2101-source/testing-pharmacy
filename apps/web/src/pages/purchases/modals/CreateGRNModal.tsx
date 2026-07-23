@@ -3,7 +3,8 @@ import { Plus, Loader2, Truck, Trash2, AlertTriangle, CheckCircle2, FileSpreadsh
 import { api, getErrorMessage } from "@/lib/api-client";
 import type { Supplier, Medicine, GRNLineItem, FullSupplier } from "../types";
 import { GST_RATES } from "../types";
-import { currency } from "../utils";
+import { currency, resolveMedicinesByName, normalizeMedicineName, describeImportResolution } from "../utils";
+import { cn } from "@/lib/utils";
 import { MedicineCombobox } from "../components/MedicineCombobox";
 import { BulkImportPanel } from "../components/BulkImportPanel";
 import { ModalShell, ErrorBanner, FieldLabel, FInput, SmartAddBar } from "./shared";
@@ -61,6 +62,19 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
   onDone: (newSupplier?: FullSupplier, createdGrn?: any) => void;
 }) {
   const [suppliers,      setSuppliers]     = useState<Supplier[]>(initialSuppliers);
+  // initialSuppliers snapshots whatever the parent's suppliers query had resolved to
+  // AT MOUNT — if this modal opens before that query finishes (page just loaded, or a
+  // slow/cold-starting API), it mounts with an empty list and this component would
+  // otherwise show "no distributors" forever, never picking up the real list once it
+  // arrives. Merge in anything that shows up later without dropping a supplier just
+  // added via QuickAddHint below (which isn't in the parent's list until this modal closes).
+  useEffect(() => {
+    setSuppliers((prev) => {
+      const known = new Set(prev.map((s) => s.id));
+      const added = initialSuppliers.filter((s) => !known.has(s.id));
+      return added.length ? [...prev, ...added] : prev;
+    });
+  }, [initialSuppliers]);
   const [supplierId,     setSupplierId]    = useState("");
   const [invNo,          setInvNo]         = useState("");
   const [invDate,        setInvDate]       = useState("");
@@ -69,6 +83,10 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
   const [items,          setItems]         = useState<GRNLineItem[]>([]);
   const [saving,         setSaving]        = useState(false);
   const [error,          setError]         = useState<string | null>(null);
+  const [importInfo,     setImportInfo]    = useState<{ msg: string; tone: "error" | "success" | "info" } | null>(null);
+  const [resolving,      setResolving]     = useState(false);
+  // Why each still-unlinked imported row is unlinked — see CreatePOModal for the full note.
+  const [matchIssues,    setMatchIssues]   = useState<Map<string, "not-found" | "failed">>(new Map());
   const [showBulkImport, setShowBulkImport]= useState(false);
   const [pasteRaw,       setPasteRaw]      = useState("");
   const [copyLoading,    setCopyLoading]   = useState(false);
@@ -130,29 +148,105 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
   // (even a scanned one we can't parse) is never just discarded.
   async function handlePdfSelected(file: File) {
     setPdfUploading(true);
+    setImportInfo(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
       const { data } = await api.post<{ data: { id: string } }>("/uploads/grn-pdf", fd);
       setSourceUploadId(data.data.id);
       setPdfFileName(file.name);
-    } catch {
-      // Non-fatal — GRN creation still works without the attachment.
+    } catch (err) {
+      // Non-fatal for GRN creation, but don't fail silently — a rejected file (e.g. a
+      // scan over the 10MB limit) otherwise just never attaches with no explanation.
+      setImportInfo({
+        msg: getErrorMessage(err, "Couldn't attach that file — you can still create the GRN without it."),
+        tone: "error",
+      });
     } finally {
       setPdfUploading(false);
     }
   }
 
-  function handleBulkImport(incoming: GRNLineItem[]) {
+  async function handleBulkImport(incoming: GRNLineItem[]) {
+    let fresh: GRNLineItem[] = [];
     setItems((prev) => {
-      const existing = new Set(prev.map((x) => `${x.medicineName.toLowerCase()}::${x.batchNumber}`));
-      const fresh = incoming.filter(
-        (i) => !existing.has(`${i.medicineName.toLowerCase()}::${i.batchNumber}`),
+      const existing = new Set(prev.map((x) => `${normalizeMedicineName(x.medicineName)}::${x.batchNumber}`));
+      fresh = incoming.filter(
+        (i) => !existing.has(`${normalizeMedicineName(i.medicineName)}::${i.batchNumber}`),
       );
       return [...prev, ...fresh];
     });
     setShowBulkImport(false);
     setPasteRaw("");
+
+    if (fresh.length === 0) {
+      setImportInfo({ msg: "Those medicines are already on this GRN.", tone: "info" });
+      return;
+    }
+
+    // Imported rows carry a printed name but no catalogue id — link them now, distinguishing
+    // "not in catalogue" from a failed lookup so the message is accurate. See resolveMedicinesByName.
+    const r = await linkImportedRows(fresh.map((i) => i.medicineName));
+    const hasProblem = r.notInCatalogue.length > 0 || r.lookupFailed.length > 0;
+    const msg = describeImportResolution({
+      imported: fresh.length,
+      notInCatalogue: r.notInCatalogue.length,
+      lookupFailed: r.lookupFailed.length,
+    });
+    if (hasProblem) setImportInfo({ msg: msg!, tone: "error" });
+    else setImportInfo({ msg: `All ${fresh.length} imported medicine${fresh.length === 1 ? "" : "s"} matched to your catalogue.`, tone: "success" });
+  }
+
+  /** Shared by bulk import and Retry — resolves names, links matches, records why the
+   *  rest stay unlinked. See the identical helper in CreatePOModal for rationale. */
+  async function linkImportedRows(names: string[]) {
+    setResolving(true);
+    try {
+      const result = await resolveMedicinesByName(names);
+      if (result.resolved.size > 0) {
+        setItems((prev) => prev.map((i) => {
+          if (i.medicineId) return i;
+          const m = result.resolved.get(normalizeMedicineName(i.medicineName));
+          return m ? { ...i, medicineId: m.id, gstRate: m.gstRate ?? i.gstRate } : i;
+        }));
+      }
+      setMatchIssues((prev) => {
+        const next = new Map(prev);
+        result.resolved.forEach((_, n) => next.delete(n));
+        result.notInCatalogue.forEach((n) => next.set(n, "not-found"));
+        result.lookupFailed.forEach((n) => next.set(n, "failed"));
+        return next;
+      });
+      return result;
+    } finally {
+      setResolving(false);
+    }
+  }
+
+  async function retryMatching() {
+    const names = items.filter((i) => !i.medicineId).map((i) => i.medicineName);
+    if (names.length === 0) return;
+    const r = await linkImportedRows(names);
+    setImportInfo(r.lookupFailed.length === 0 && r.notInCatalogue.length === 0
+      ? { msg: "All imported medicines are now matched to your catalogue.", tone: "success" }
+      : { msg: describeImportResolution({ notInCatalogue: r.notInCatalogue.length, lookupFailed: r.lookupFailed.length })!, tone: "error" });
+  }
+
+  function linkRow(idx: number, m: Medicine) {
+    const prevName = items[idx]?.medicineName ?? "";
+    setItems((p) => {
+      const n = [...p];
+      n[idx] = { ...n[idx]!, medicineId: m.id, medicineName: m.name, gstRate: m.gstRate ?? n[idx]!.gstRate };
+      return n;
+    });
+    setMatchIssues((prev) => {
+      const key = normalizeMedicineName(prevName);
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+    setError(null);
   }
 
   async function loadFromPO() {
@@ -236,6 +330,11 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     return { sub: a.sub + sub, gst: a.gst + (sub * i.gstRate) / 100 };
   }, { sub: 0, gst: 0 });
 
+  // Unlinked rows whose lookup FAILED (vs genuinely not-found) — only these merit a retry.
+  const lookupFailedCount = items.filter(
+    (i) => !i.medicineId && matchIssues.get(normalizeMedicineName(i.medicineName)) === "failed",
+  ).length;
+
   // ── Validation ────────────────────────────────────────────────────────────
 
   function validate(): string[] {
@@ -245,6 +344,15 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     for (let idx = 0; idx < items.length; idx++) {
       const i = items[idx]!;
       const row = `Row ${idx + 1} (${i.medicineName})`;
+      // Imported rows have a name but no catalogue link. Without this the API rejects the
+      // whole GRN with one "items[N].medicineId: must not be blank" per row, which says
+      // nothing about which medicine to fix.
+      if (!i.medicineId) {
+        const failed = matchIssues.get(normalizeMedicineName(i.medicineName)) === "failed";
+        errs.push(failed
+          ? `${row}: couldn't be checked against your catalogue — use "Retry matching" or pick it from the dropdown`
+          : `${row}: not linked to your medicine catalogue — pick it from the dropdown`);
+      }
       if (!i.batchNumber.trim()) errs.push(`${row}: Batch number is required`);
       if (!i.expiryDate)         errs.push(`${row}: Expiry date is required`);
       else if (isNaN(new Date(i.expiryDate).getTime())) errs.push(`${row}: Expiry date is invalid`);
@@ -381,6 +489,24 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
             </button>
           )}
 
+          {/* ── Import matching status ─────────────────────────────────── */}
+          {resolving && (
+            <p className="flex items-center gap-2 text-[12px] text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />Matching imported medicines to your catalogue…
+            </p>
+          )}
+          {importInfo && (
+            <div className="flex items-start gap-3">
+              <div className="flex-1"><ErrorBanner msg={importInfo.msg} tone={importInfo.tone} /></div>
+              {lookupFailedCount > 0 && !resolving && (
+                <button type="button" onClick={retryMatching}
+                  className="flex-shrink-0 mt-0.5 px-3 py-2 rounded-lg border border-orange-300 text-orange-700 text-[12px] font-semibold hover:bg-orange-50 whitespace-nowrap">
+                  Retry matching
+                </button>
+              )}
+            </div>
+          )}
+
           {/* ── Medicine search ────────────────────────────────────────── */}
           <div>
             <FieldLabel>Search &amp; Add Medicine (one by one)</FieldLabel>
@@ -412,8 +538,19 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
                         <td className="px-2 py-2 max-w-[110px]">
                           <div className="flex items-center gap-1.5">
                             {isNearExp && <AlertTriangle className="w-3 h-3 text-orange-500 flex-shrink-0" />}
-                            <p className="text-[11px] font-semibold text-slate-800 truncate">{item.medicineName}</p>
+                            <p className="text-[11px] font-semibold text-slate-800 truncate" title={item.medicineName}>{item.medicineName}</p>
                           </div>
+                          {!item.medicineId && (() => {
+                            const failed = matchIssues.get(normalizeMedicineName(item.medicineName)) === "failed";
+                            return (
+                              <div className="mt-1">
+                                <p className={cn("text-[10px] font-semibold mb-1", failed ? "text-orange-700" : "text-amber-700")}>
+                                  {failed ? "Couldn't check — pick or Retry" : "Not in catalogue"}
+                                </p>
+                                <MedicineCombobox onSelect={(m) => linkRow(idx, m)} />
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td className="px-1.5 py-2 w-20">
                           <input value={item.batchNumber} onChange={(e) => upd(idx, "batchNumber", e.target.value)}

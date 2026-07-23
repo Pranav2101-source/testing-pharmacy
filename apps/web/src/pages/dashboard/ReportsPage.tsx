@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
+import { istRangeStart, istRangeEnd } from "@pharmacy/utils";
 import { getStoredUser } from "@/lib/auth";
 import {
   BarChart3, Receipt, AlertTriangle, Calendar,
@@ -81,9 +82,11 @@ function daysUntil(d: string) {
   return Math.ceil((new Date(d).getTime() - Date.now()) / 86400000);
 }
 function toInputDate(d: Date) { return d.toISOString().slice(0, 10); }
-// IST-aware range helpers — server stores UTC, IST = UTC+5:30
-function isoFrom(dateStr: string): string { return new Date(dateStr + "T00:00:00+05:30").toISOString(); }
-function isoTo(dateStr: string): string   { return new Date(dateStr + "T23:59:59+05:30").toISOString(); }
+// IST-aware range helpers — server stores UTC, IST = UTC+5:30. The offset logic lives in
+// @pharmacy/utils so this page and the Sales/Purchases filters can't drift apart; these
+// wrappers keep the non-null string contract the interpolating call sites below rely on.
+function isoFrom(dateStr: string): string { return istRangeStart(dateStr) ?? ""; }
+function isoTo(dateStr: string): string   { return istRangeEnd(dateStr) ?? ""; }
 
 function getLastNDays(n: number): string[] {
   return Array.from({ length: n }, (_, i) => {

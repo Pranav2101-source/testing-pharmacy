@@ -86,6 +86,7 @@ export function GateInwardTab({ suppliers }: { suppliers: Supplier[] }) {
           sourceUploadId: createdGrn.sourceUploadId,
           supplier: createdGrn.supplier,
           purchaseOrder: createdGrn.purchaseOrder ?? null,
+          itemCount: createdGrn.itemCount ?? createdGrn.items?.length ?? 0,
           items: createdGrn.items ?? [],
         };
         return { ...old, items: [mapped, ...old.items].slice(0, 20), total: old.total + 1 };
@@ -167,7 +168,7 @@ export function GateInwardTab({ suppliers }: { suppliers: Supplier[] }) {
                     <span className="text-[13px] font-semibold text-slate-800 truncate">{grn.supplier.name}</span>
                   </div>
                 </td>
-                <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{grn.items.length}</td>
+                <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{grn.itemCount ?? grn.items?.length ?? 0}</td>
                 <td className="px-4 py-3 text-[13px] font-bold text-slate-900 tabular-nums">{currency(grn.totalAmount)}</td>
                 <td className="px-4 py-3 text-[12px] text-slate-500">{fmtDate(grn.createdAt)}</td>
                 <td className="px-4 py-3">

@@ -19,6 +19,8 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -38,12 +40,33 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(ex.getStatus()).body(ApiResponse.fail(ex.getMessage()));
     }
 
-    /** Bean Validation failures — the equivalent of a Zod parse error (400). */
+    /** How many DISTINCT validation complaints to report before truncating. */
+    private static final int MAX_REPORTED_ERRORS = 5;
+
+    /**
+     * Bean Validation failures — the equivalent of a Zod parse error (400).
+     *
+     * <p>Identical complaints across a collection are collapsed into one entry with a
+     * count. A 15-line purchase order where every row is missing the same field used to
+     * return fifteen near-identical messages ("items[4].medicineId: must not be blank,
+     * items[10].medicineId: ...") in nondeterministic order — an unreadable wall that
+     * buries the single fact worth knowing. The distinct-message list is capped too, so
+     * a large malformed payload can't return a multi-kilobyte error string.
+     */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiResponse<Void>> handleValidation(MethodArgumentNotValidException ex) {
-        String message = ex.getBindingResult().getFieldErrors().stream()
-                .map(GlobalExceptionHandler::formatFieldError)
+        Map<String, Long> grouped = ex.getBindingResult().getFieldErrors().stream()
+                .collect(Collectors.groupingBy(GlobalExceptionHandler::formatFieldError,
+                        LinkedHashMap::new, Collectors.counting()));
+
+        String message = grouped.entrySet().stream()
+                .limit(MAX_REPORTED_ERRORS)
+                .map(e -> e.getValue() > 1 ? e.getKey() + " (" + e.getValue() + " items)" : e.getKey())
                 .collect(Collectors.joining(", "));
+
+        if (grouped.size() > MAX_REPORTED_ERRORS) {
+            message += ", and " + (grouped.size() - MAX_REPORTED_ERRORS) + " more problem(s)";
+        }
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(ApiResponse.fail(message.isBlank() ? "Validation failed" : message));
     }
@@ -82,11 +105,33 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
     public ResponseEntity<ApiResponse<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
-        String expected = ex.getRequiredType() == null ? "a valid value"
-                : "a valid " + ex.getRequiredType().getSimpleName().toLowerCase();
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(ApiResponse.fail("Invalid value '" + ex.getValue() + "' for parameter '"
-                        + ex.getName() + "' — expected " + expected));
+                        + ex.getName() + "' — expected " + describeExpectedType(ex.getRequiredType())));
+    }
+
+    /**
+     * Turn the handler's parameter type into something the message can name.
+     *
+     * <p>Temporal types get an explicit format example rather than their class name: the raw
+     * {@code "expected a valid instant"} is meaningless to anyone who isn't holding the Java
+     * signature, and it reached real users verbatim when the Sales page sent a bare {@code
+     * 2026-04-01} to an {@code Instant} parameter. Whoever sees this — end user reporting it,
+     * or developer reading the report — needs to know what the endpoint actually wanted.
+     */
+    private static String describeExpectedType(Class<?> required) {
+        if (required == null) return "a valid value";
+        String name = required.getSimpleName();
+        return switch (name) {
+            case "Instant", "OffsetDateTime", "ZonedDateTime" ->
+                    "a full date and time in ISO-8601 format (e.g. 2026-04-01T00:00:00Z)";
+            case "LocalDateTime" -> "a date and time in ISO-8601 format (e.g. 2026-04-01T00:00:00)";
+            case "LocalDate" -> "a date in YYYY-MM-DD format (e.g. 2026-04-01)";
+            case "Integer", "int", "Long", "long" -> "a whole number";
+            case "BigDecimal", "Double", "double" -> "a number";
+            case "Boolean", "boolean" -> "true or false";
+            default -> "a valid " + name.toLowerCase();
+        };
     }
 
     /**
@@ -171,7 +216,14 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.fail("Internal server error"));
     }
 
+    /**
+     * Drops the collection index from the field path ({@code items[12].medicineId} ->
+     * {@code items.medicineId}) so every row failing the same rule groups into a single
+     * complaint. The path itself is kept — it's what tells the caller WHICH field is at
+     * fault — only the row number is discarded, and the count reported alongside covers
+     * how widespread it is.
+     */
     private static String formatFieldError(FieldError fe) {
-        return fe.getField() + ": " + fe.getDefaultMessage();
+        return fe.getField().replaceAll("\\[\\d+\\]", "") + ": " + fe.getDefaultMessage();
     }
 }

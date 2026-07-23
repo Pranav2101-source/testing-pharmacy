@@ -2,6 +2,7 @@ import { useState } from "react";
 import { RefreshCw, Plus, FileText, Check, X, Send, Building2, Paperclip } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
+import { istRangeParams } from "@pharmacy/utils";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/hooks/useDebounce";
@@ -42,8 +43,7 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
       if (dSearch)    p.search     = dSearch;
       if (supplierId) p.supplierId = supplierId;
       if (status)     p.status     = status;
-      if (dateFrom)   p.from       = new Date(dateFrom).toISOString();
-      if (dateTo)     p.to         = new Date(dateTo + "T23:59:59").toISOString();
+      Object.assign(p, istRangeParams(dateFrom, dateTo));
       const { data } = await api.get("/purchases/orders", { params: p });
       return data.data as { items: PurchaseOrder[]; total: number };
     },

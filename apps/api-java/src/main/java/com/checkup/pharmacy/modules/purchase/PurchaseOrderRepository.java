@@ -58,6 +58,21 @@ public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrder, St
         long getTotal();
     }
 
+    /**
+     * id + orderNumber for a set of POs, in ONE query — the GRN list only needs the
+     * linked order's number, so loading each full PurchaseOrder entity (with its JSON
+     * items) per GRN row was both an N+1 and needless payload. Projection stays off the
+     * heavy `items` column entirely.
+     */
+    @Query("SELECT po.id AS id, po.orderNumber AS orderNumber FROM PurchaseOrder po "
+            + "WHERE po.pharmacyId = :pharmacyId AND po.id IN :ids")
+    List<PoRefRow> findRefsByIdIn(@Param("pharmacyId") String pharmacyId, @Param("ids") List<String> ids);
+
+    interface PoRefRow {
+        String getId();
+        String getOrderNumber();
+    }
+
     /** Calendar auto-derived "PO delivery" events — orders not yet received/cancelled with an expected date in range. */
     @Query("""
             SELECT po FROM PurchaseOrder po LEFT JOIN FETCH po.supplier

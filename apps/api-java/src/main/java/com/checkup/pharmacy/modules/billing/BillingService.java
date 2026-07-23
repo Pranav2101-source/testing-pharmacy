@@ -536,6 +536,8 @@ public class BillingService {
                                             boolean includeCancelled, String paymentMode, String paymentStatus,
                                             String userId, String customerId, BigDecimal minAmount, BigDecimal maxAmount,
                                             int page, int limit) {
+        validateDateRange(from, to);
+        validateAmountRange(minAmount, maxAmount);
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), MAX_PAGE_LIMIT);
         boolean hasStatusFilter = status != null && !status.isBlank();
@@ -556,12 +558,25 @@ public class BillingService {
             }
         }
 
-        List<InvoicePageResponse.Summary> items = result.getContent().stream().map(inv ->
-                new InvoicePageResponse.Summary(inv.getId(), inv.getInvoiceNumber(), inv.getCustomerName(),
-                        inv.getCustomerPhone(), userNames.get(inv.getUserId()), inv.getPaymentMode().name(),
-                        inv.getPaymentStatus().name(), inv.getStatus().name(), inv.getTotalAmount(), inv.isCancelled(),
-                        itemCounts.getOrDefault(inv.getId(), 0L).intValue(), inv.getCreatedAt()))
-                .toList();
+        List<InvoicePageResponse.Summary> items = result.getContent().stream().map(inv -> {
+            // Null only for a bill with no customer identity at all — the frontend renders its
+            // "—"/"Walk-in" fallback for that case, so don't fabricate an empty object here.
+            boolean hasCustomer = inv.getCustomerName() != null || inv.getCustomerPhone() != null
+                    || inv.getCustomerId() != null;
+            InvoicePageResponse.CustomerRef customer = hasCustomer
+                    ? new InvoicePageResponse.CustomerRef(inv.getCustomerName(), inv.getCustomerPhone())
+                    : null;
+            // The frontend reads inv.user.name unguarded; a hard-deleted staff row would otherwise
+            // send null here and crash the row rather than just showing an unknown entry-by.
+            String userName = userNames.get(inv.getUserId());
+            InvoicePageResponse.UserRef user =
+                    new InvoicePageResponse.UserRef(userName != null ? userName : "Unknown");
+            return new InvoicePageResponse.Summary(inv.getId(), inv.getInvoiceNumber(), customer, user,
+                    inv.getDoctorName(), inv.getPaymentMode().name(), inv.getPaymentStatus().name(),
+                    inv.getStatus().name(), inv.getTotalAmount(), inv.isCancelled(),
+                    new InvoicePageResponse.CountRef(itemCounts.getOrDefault(inv.getId(), 0L).intValue()),
+                    inv.getCreatedAt());
+        }).toList();
 
         return new InvoicePageResponse(items, result.getTotalElements(), safePage, safeLimit, result.getTotalPages());
     }
@@ -792,6 +807,7 @@ public class BillingService {
 
     @Transactional(readOnly = true)
     public SalesReturnPageResponse listReturns(String search, Instant from, Instant to, String invoiceId, int page, int limit) {
+        validateDateRange(from, to);
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), MAX_PAGE_LIMIT);
         Page<SalesReturn> result = salesReturnRepository.search(TenantContext.pharmacyId(), blankToNull(invoiceId),
@@ -939,6 +955,32 @@ public class BillingService {
     private static String blankToNull(String s) {
         return (s == null || s.isBlank()) ? null : s.trim();
     }
+
+    /**
+     * A backwards range ({@code from} after {@code to}) is always a mistake — a mis-typed year in
+     * the date picker, or the two fields filled in the wrong order. Left unchecked it matches no
+     * rows and renders as an ordinary "No bills found" empty state, which reads as "this pharmacy
+     * made no sales" rather than "your filter is inverted" — the user then goes looking for missing
+     * data that was never missing. Fail loudly with the offending range instead.
+     */
+    private static void validateDateRange(Instant from, Instant to) {
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new BadRequestException("The 'from' date (" + DATE_FMT.format(from) + ") is after the 'to' date ("
+                    + DATE_FMT.format(to) + ") — check the date range and try again");
+        }
+    }
+
+    /** Same reasoning as {@link #validateDateRange}: an inverted amount filter silently matches nothing. */
+    private static void validateAmountRange(BigDecimal minAmount, BigDecimal maxAmount) {
+        if (minAmount != null && maxAmount != null && minAmount.compareTo(maxAmount) > 0) {
+            throw new BadRequestException("The minimum amount (" + minAmount.toPlainString()
+                    + ") is greater than the maximum amount (" + maxAmount.toPlainString()
+                    + ") — check the amount filter and try again");
+        }
+    }
+
+    private static final java.time.format.DateTimeFormatter DATE_FMT =
+            java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy").withZone(IST);
 
     // ── Response mapping ─────────────────────────────────────────────────────
 

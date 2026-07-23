@@ -46,10 +46,19 @@ export function ModalShell({ icon, iconBg, title, desc, onClose, children }: {
 
 // ─── ErrorBanner ───────────────────────────────────────────────────────────────
 
-export function ErrorBanner({ msg }: { msg: string }) {
+/**
+ * Inline banner. Defaults to the error tone (every existing caller relies on that);
+ * "success" (green) for positive confirmations and "info" (blue) for neutral notices,
+ * so a "nothing to do" or "all matched" message doesn't shout in red.
+ */
+export function ErrorBanner({ msg, tone = "error" }: { msg: string; tone?: "error" | "success" | "info" }) {
+  const styles = tone === "success" ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+    : tone === "info" ? "bg-blue-50 border-blue-200 text-blue-700"
+    : "bg-red-50 border-red-200 text-red-600";
+  const Icon = tone === "success" ? Check : tone === "info" ? Lightbulb : AlertTriangle;
   return (
-    <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-[13px] text-red-600">
-      <AlertTriangle className="w-4 h-4 flex-shrink-0" />{msg}
+    <div className={`flex items-start gap-2 border rounded-lg px-3 py-2.5 text-[13px] ${styles}`}>
+      <Icon className="w-4 h-4 flex-shrink-0 mt-px" />{msg}
     </div>
   );
 }

@@ -19,6 +19,10 @@ public record GrnResponse(
         Instant confirmedAt,
         Instant paymentDueDate,
         List<Item> items,
+        // Number of line items. Always populated, so the list view can show a count
+        // without the response having to ship every line (the list sends items empty
+        // and only this count); on detail/create it equals items.size().
+        int itemCount,
         String warning,
         Instant createdAt,
         String sourceUploadId
