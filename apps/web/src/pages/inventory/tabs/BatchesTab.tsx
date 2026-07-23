@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { queryKeys } from "@/lib/queryKeys";
 import { BarcodeLabelModal } from "@/components/BarcodeLabelModal";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
 import { getStoredUser } from "@/lib/auth";
@@ -92,7 +92,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   const items      = data?.items      ?? [];
   const total      = data?.total      ?? 0;
   const totalPages = Math.ceil(total / 20) || 1;
-  const error      = queryError ? "Failed to load inventory" : null;
+  const error      = queryError ? getErrorMessage(queryError, "Couldn't load inventory. Check your connection and try again.") : null;
 
   return (
     <div className="flex flex-col h-full">

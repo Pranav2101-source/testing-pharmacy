@@ -61,6 +61,9 @@ public interface UserRepository extends JpaRepository<User, String> {
     /** Tenant-scoped lookup — prevents one pharmacy from reaching another's user by id. */
     Optional<User> findByIdAndPharmacyId(String id, String pharmacyId);
 
+    /** Tenant-scoped batch lookup — e.g. resolving the acting-user names for a ledger page in one query. */
+    List<User> findByIdInAndPharmacyId(Collection<String> ids, String pharmacyId);
+
     long countByPharmacyIdAndRoleAndIsActive(String pharmacyId, Role role, boolean isActive);
 
     /** The tenant's owner (first, if somehow more than one) — used by platform tenant views. */

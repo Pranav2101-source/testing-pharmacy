@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { Loader2, AlertCircle, Clock, TrendingDown, Check, ShoppingCart } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { ListSkeleton } from "@/components/Skeleton";
 import { queryKeys } from "@/lib/queryKeys";
@@ -28,7 +28,7 @@ export function AlertsTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts)
 
   const expiryItems = data?.expiry   ?? [];
   const lowItems    = data?.lowStock ?? [];
-  const loadError   = queryError ? "Failed to load alerts. Check your connection and try again." : null;
+  const loadError   = queryError ? getErrorMessage(queryError, "Couldn't load alerts. Check your connection and try again.") : null;
 
   useEffect(() => {
     if (data) onCountsLoaded({ expiry: data.expiry.length, lowStock: data.lowStock.length });

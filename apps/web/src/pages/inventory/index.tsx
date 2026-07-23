@@ -1,6 +1,7 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Layers, BookOpen, Bell, AlertTriangle, ClipboardList, Package2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { StockAuditContent } from "@/pages/dashboard/StockAuditPage";
 import { TabBtn } from "./components/shared";
 import { BatchesTab } from "./tabs/BatchesTab";
@@ -15,6 +16,14 @@ export default function InventoryPage() {
   const pageTab: PageTab = VALID_TABS.includes(raw as PageTab) ? (raw as PageTab) : "batches";
 
   const [alertCounts, setAlertCounts] = useState<AlertCounts>({ expiry: 0, lowStock: 0 });
+
+  // Keep-alive: mount each tab the first time it's opened, then hide inactive ones
+  // via CSS instead of unmounting. Switching back is instant and preserves each tab's
+  // filters / page / scroll position, rather than remounting and resetting them.
+  const [mounted, setMounted] = useState<Set<PageTab>>(() => new Set([pageTab]));
+  useEffect(() => {
+    setMounted((prev) => (prev.has(pageTab) ? prev : new Set(prev).add(pageTab)));
+  }, [pageTab]);
 
   // Stable callback — BatchesTab and AlertsTab both call this whenever they
   // receive fresh data, so the header badge is always up-to-date regardless of
@@ -62,13 +71,25 @@ export default function InventoryPage() {
         />
       </div>
 
-      {/* ── Tab content ─────────────────────────────────────────────────────── */}
+      {/* ── Tab content — mounted once, then shown/hidden via CSS (see keep-alive) ── */}
       <div className="flex-1 overflow-hidden min-h-0">
-        {pageTab === "batches" && <BatchesTab onCountsLoaded={handleCountsLoaded} />}
-        {pageTab === "ledger"  && <LedgerTab />}
-        {pageTab === "alerts"  && <AlertsTab onCountsLoaded={handleCountsLoaded} />}
-        {pageTab === "audit"   && (
-          <div className="h-full overflow-auto">
+        {mounted.has("batches") && (
+          <div className={cn("h-full", pageTab !== "batches" && "hidden")}>
+            <BatchesTab onCountsLoaded={handleCountsLoaded} />
+          </div>
+        )}
+        {mounted.has("ledger") && (
+          <div className={cn("h-full", pageTab !== "ledger" && "hidden")}>
+            <LedgerTab />
+          </div>
+        )}
+        {mounted.has("alerts") && (
+          <div className={cn("h-full", pageTab !== "alerts" && "hidden")}>
+            <AlertsTab onCountsLoaded={handleCountsLoaded} />
+          </div>
+        )}
+        {mounted.has("audit") && (
+          <div className={cn("h-full overflow-auto", pageTab !== "audit" && "hidden")}>
             <StockAuditContent />
           </div>
         )}

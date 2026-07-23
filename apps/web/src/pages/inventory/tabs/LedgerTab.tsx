@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { Loader2, FileX, AlertCircle, ArrowUp, ArrowDown } from "lucide-react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { REFERENCE_TYPE_LABEL, MOVEMENT_TYPE_CFG } from "../types";
@@ -12,7 +12,9 @@ export function LedgerTab() {
   const [direction, setDirection] = useState<"" | "IN" | "OUT">("");
   const [type,      setType]      = useState("");
 
-  type LedgerResponse = { movements: LedgerEntry[]; total: number };
+  // Backend returns { items, total } (the app-wide list shape); each entry nests
+  // inventory.medicine + user, which the table below reads directly.
+  type LedgerResponse = { items: LedgerEntry[]; total: number };
   const queryParams = { page, direction, type };
   const { data, isFetching: loading, error: queryError, refetch: load } = useQuery({
     queryKey:        queryKeys.inventory.ledger(queryParams),
@@ -26,10 +28,10 @@ export function LedgerTab() {
     placeholderData: keepPreviousData,
   });
 
-  const entries    = data?.movements ?? [];
+  const entries    = data?.items ?? [];
   const total      = data?.total ?? 0;
   const totalPages = Math.ceil(total / 50) || 1;
-  const loadError  = queryError ? "Failed to load ledger. Check your connection and try again." : null;
+  const loadError  = queryError ? getErrorMessage(queryError, "Couldn't load the ledger. Check your connection and try again.") : null;
 
   const showSkeleton = loading && entries.length === 0 && !loadError;
 

@@ -19,8 +19,27 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
      * before calling this method — see that class's javadoc for why binding a
      * genuinely null Instant into a timestamp comparison breaks under Postgres.
      */
-    @Query("""
+    /**
+     * {@code LEFT JOIN FETCH m.inventory} so the ledger page can read each row's batch number
+     * (and, via inventory.medicineId, its medicine) without a lazy load per row — a 100-row
+     * page was firing up to 100 extra queries in the response mapper. inventory is a to-ONE
+     * relation, so the fetch join paginates safely; an explicit countQuery is still supplied
+     * because Hibernate can't derive one from a fetch-join select.
+     */
+    @Query(value = """
             SELECT m FROM InventoryMovement m
+            LEFT JOIN FETCH m.inventory inv
+            WHERE m.pharmacyId = :pharmacyId
+              AND (:inventoryId IS NULL OR m.inventoryId = :inventoryId)
+              AND (:medicineId IS NULL OR inv.medicineId = :medicineId)
+              AND (:userId IS NULL OR m.userId = :userId)
+              AND (:type IS NULL OR CAST(m.type AS string) = :type)
+              AND (:direction IS NULL OR CAST(m.direction AS string) = :direction)
+              AND m.createdAt >= :from AND m.createdAt <= :to
+            ORDER BY m.createdAt DESC
+            """,
+            countQuery = """
+            SELECT COUNT(m) FROM InventoryMovement m
             WHERE m.pharmacyId = :pharmacyId
               AND (:inventoryId IS NULL OR m.inventoryId = :inventoryId)
               AND (:medicineId IS NULL OR m.inventory.medicineId = :medicineId)
@@ -28,7 +47,6 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
               AND (:type IS NULL OR CAST(m.type AS string) = :type)
               AND (:direction IS NULL OR CAST(m.direction AS string) = :direction)
               AND m.createdAt >= :from AND m.createdAt <= :to
-            ORDER BY m.createdAt DESC
             """)
     Page<InventoryMovement> search(@Param("pharmacyId") String pharmacyId,
                                    @Param("inventoryId") String inventoryId,

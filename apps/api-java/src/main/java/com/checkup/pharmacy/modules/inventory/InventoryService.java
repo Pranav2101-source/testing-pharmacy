@@ -31,6 +31,8 @@ import com.checkup.pharmacy.modules.location.Shelf;
 import com.checkup.pharmacy.modules.location.ShelfRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
+import com.checkup.pharmacy.modules.user.User;
+import com.checkup.pharmacy.modules.user.UserRepository;
 import com.checkup.pharmacy.tenant.TenantContext;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.ConcurrencyFailureException;
@@ -90,6 +92,7 @@ public class InventoryService {
     private final MedicineRepository medicineRepository;
     private final ShelfRepository shelfRepository;
     private final RackRepository rackRepository;
+    private final UserRepository userRepository;
     private final long reservationTtlMinutes;
 
     public InventoryService(InventoryRepository inventoryRepository,
@@ -99,6 +102,7 @@ public class InventoryService {
                             MedicineRepository medicineRepository,
                             ShelfRepository shelfRepository,
                             RackRepository rackRepository,
+                            UserRepository userRepository,
                             @Value("${app.inventory.reservation-ttl-minutes:15}") long reservationTtlMinutes) {
         this.inventoryRepository = inventoryRepository;
         this.movementRepository = movementRepository;
@@ -107,6 +111,7 @@ public class InventoryService {
         this.medicineRepository = medicineRepository;
         this.shelfRepository = shelfRepository;
         this.rackRepository = rackRepository;
+        this.userRepository = userRepository;
         this.reservationTtlMinutes = reservationTtlMinutes;
     }
 
@@ -270,16 +275,53 @@ public class InventoryService {
                 blankToNull(medicineId), blankToNull(userId), blankToNull(type), blankToNull(direction),
                 DateRange.from(from), DateRange.to(to), PageRequest.of(safePage - 1, safeLimit));
 
-        List<LedgerPageResponse.Entry> entries = result.getContent().stream().map(this::toLedgerEntry).toList();
+        List<InventoryMovement> movements = result.getContent();
+
+        // Batch-resolve the two names the ledger row needs — medicine (via the fetch-joined
+        // inventory's medicineId) and the acting user — in one query each, instead of a lazy
+        // load per row. inventory itself is already fetch-joined by the search query.
+        List<String> medicineIds = movements.stream()
+                .map(m -> m.getInventory() == null ? null : m.getInventory().getMedicineId())
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        Map<String, Medicine> medById = new HashMap<>();
+        if (!medicineIds.isEmpty()) {
+            for (Medicine m : medicineRepository.findAllById(medicineIds)) {
+                medById.put(m.getId(), m);
+            }
+        }
+        List<String> userIds = movements.stream().map(InventoryMovement::getUserId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        Map<String, String> userNameById = new HashMap<>();
+        if (!userIds.isEmpty()) {
+            for (User u : userRepository.findByIdInAndPharmacyId(userIds, pharmacyId)) {
+                userNameById.put(u.getId(), u.getName());
+            }
+        }
+
+        List<LedgerPageResponse.Entry> entries = movements.stream()
+                .map(m -> toLedgerEntry(m, medById, userNameById)).toList();
         return new LedgerPageResponse(entries, result.getTotalElements(), safePage, safeLimit);
     }
 
-    private LedgerPageResponse.Entry toLedgerEntry(InventoryMovement m) {
+    private LedgerPageResponse.Entry toLedgerEntry(InventoryMovement m, Map<String, Medicine> medById,
+                                                   Map<String, String> userNameById) {
         Inventory inv = m.getInventory();
-        return new LedgerPageResponse.Entry(m.getId(), m.getInventoryId(),
-                inv == null ? null : inv.getBatchNumber(), m.getType().name(), m.getDirection().name(),
-                m.getQuantity(), m.getQuantityBefore(), m.getQuantityAfter(), m.getReferenceType(),
-                m.getReferenceId(), m.getNotes(), m.getUserId(), m.getCreatedAt());
+        LedgerPageResponse.InventoryRef invRef = null;
+        if (inv != null) {
+            Medicine med = medById.get(inv.getMedicineId());
+            LedgerPageResponse.MedicineRef medRef = med == null ? null
+                    : new LedgerPageResponse.MedicineRef(med.getName(), med.getGenericName());
+            invRef = new LedgerPageResponse.InventoryRef(inv.getBatchNumber(), medRef);
+        }
+        // Never null in practice (movements are always recorded by a user); fall back to "Unknown"
+        // rather than send null, which the frontend renders as an empty entry-by cell.
+        String userName = m.getUserId() == null ? null : userNameById.get(m.getUserId());
+        LedgerPageResponse.UserRef userRef = m.getUserId() == null ? null
+                : new LedgerPageResponse.UserRef(m.getUserId(), userName != null ? userName : "Unknown");
+
+        return new LedgerPageResponse.Entry(m.getId(), m.getInventoryId(), m.getType().name(),
+                m.getDirection().name(), m.getQuantity(), m.getQuantityBefore(), m.getQuantityAfter(),
+                m.getReferenceType(), m.getReferenceId(), m.getNotes(), invRef, userRef, m.getCreatedAt());
     }
 
     // ── Alerts ───────────────────────────────────────────────────────────────
