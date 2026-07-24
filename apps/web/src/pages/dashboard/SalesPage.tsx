@@ -85,7 +85,11 @@ type ReturnRow = {
   id: string; returnNumber: string; createdAt: string; totalAmount: number;
   reason: string | null; invoice: { id: string; invoiceNumber: string };
   customer: { name: string; phone: string | null } | null;
-  user: { name: string }; items: { quantity: number; amount: number }[];
+  user: { name: string };
+  // The list endpoint sends `totalQuantity` (units returned) and an EMPTY `items` array —
+  // it never needs the lines, only the figure. Detail/create send both.
+  totalQuantity: number;
+  items?: { quantity: number; amount: number }[];
 };
 type SortDir    = "asc" | "desc";
 type SortColB   = "invoiceNumber" | "createdAt" | "customerName" | "totalAmount" | "paymentStatus";
@@ -843,7 +847,7 @@ function ReturnsPanel({ onCount }: { onCount: (n: number) => void }) {
               </td></tr>
             ) : (
               displayed.map(row => {
-                const totalItems = row.items?.reduce((s, it) => s + (it.quantity ?? 0), 0) ?? 0;
+                const totalItems = row.totalQuantity ?? row.items?.reduce((s, it) => s + (it.quantity ?? 0), 0) ?? 0;
                 return (
                   <tr key={row.id} onClick={() => { if (row.invoice?.id) navigate(`/dashboard/billing/${row.invoice.id}`); }}
                     className="border-b border-slate-100 hover:bg-rose-50/30 cursor-pointer transition-colors group">

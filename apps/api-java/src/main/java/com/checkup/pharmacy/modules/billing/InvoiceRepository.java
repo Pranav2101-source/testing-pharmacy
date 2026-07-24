@@ -116,6 +116,20 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
     }
 
     /**
+     * id + invoiceNumber for a set of invoices, in ONE query — the sales-returns list only shows
+     * the originating bill's number, so loading each full Invoice entity per row was both an N+1
+     * and needless work. Tenant-scoped so it can't reach another pharmacy's bill.
+     */
+    @Query("SELECT i.id AS id, i.invoiceNumber AS invoiceNumber FROM Invoice i "
+            + "WHERE i.pharmacyId = :pharmacyId AND i.id IN :ids")
+    List<InvoiceRefRow> findRefsByIdIn(@Param("pharmacyId") String pharmacyId, @Param("ids") List<String> ids);
+
+    interface InvoiceRefRow {
+        String getId();
+        String getInvoiceNumber();
+    }
+
+    /**
      * Calendar auto-derived "credit due" events. Credit due date is modelled as
      * createdAt + 30 days (no dedicated due-date column), so the caller passes
      * an already-shifted [from - 30d, to - 30d] window to select invoices whose

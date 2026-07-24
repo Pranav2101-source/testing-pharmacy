@@ -18,7 +18,7 @@ import { useBillingStore } from "@/components/billing/useBillingStore";
 import { InvoiceBreakdownModal } from "@/components/billing/InvoiceBreakdownModal";
 import type { MedicineSearchResult } from "@pharmacy/types";
 import { useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { getStoredUser } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { saveDraft, getDraft, deleteDraft } from "@/lib/draftStorage";
@@ -335,10 +335,10 @@ function NewBillInner() {
         setShowPrint(true);
       }
     } catch (err) {
-      const msg = (err as { response?: { data?: { message?: string; error?: string } } })
-        ?.response?.data?.message
-        ?? (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      const errorMsg = msg ?? "Failed to save invoice. Please try again.";
+      // getErrorMessage keeps the server's specific reason (insufficient stock, credit limit,
+      // expired batch …) — which extractConflictIds below still parses — while also covering
+      // the cases hand-rolled extraction missed: offline/unreachable, 403, and opaque 5xx.
+      const errorMsg = getErrorMessage(err, "Couldn't save the bill. Please try again.");
       setError(errorMsg);
       // Highlight the specific cart item that caused the failure
       const conflicts = extractConflictIds(errorMsg, items);
@@ -362,10 +362,7 @@ function NewBillInner() {
       setCancelConfirm(false);
       setCancelReason("");
     } catch (err) {
-      const msg = (err as { response?: { data?: { message?: string; error?: string } } })
-        ?.response?.data?.message
-        ?? (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
-      setError(msg ?? "Failed to cancel invoice.");
+      setError(getErrorMessage(err, "Couldn't cancel the invoice. Please try again."));
     } finally {
       setCancelling(false);
     }

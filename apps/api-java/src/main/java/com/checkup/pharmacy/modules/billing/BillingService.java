@@ -813,8 +813,41 @@ public class BillingService {
         Page<SalesReturn> result = salesReturnRepository.search(TenantContext.pharmacyId(), blankToNull(invoiceId),
                 DateRange.from(from), DateRange.to(to), blankToNull(search), PageRequest.of(safePage - 1, safeLimit));
 
-        List<SalesReturnResponse> items = result.getContent().stream()
-                .map(sr -> toResponse(sr, salesReturnItemRepository.findByReturnId(sr.getId()))).toList();
+        String pharmacyId = TenantContext.pharmacyId();
+        List<SalesReturn> returns = result.getContent();
+
+        // Three batched lookups for the whole page, replacing three queries PER ROW (line items,
+        // the originating invoice loaded in full just for its number, and the acting user).
+        // customer is already fetch-joined by the search query.
+        List<String> returnIds = returns.stream().map(SalesReturn::getId).toList();
+        Map<String, Long> qtyByReturn = new HashMap<>();
+        if (!returnIds.isEmpty()) {
+            for (var row : salesReturnItemRepository.sumQuantityByReturnIdIn(pharmacyId, returnIds)) {
+                qtyByReturn.put(row.getReturnId(), row.getTotalQuantity());
+            }
+        }
+        List<String> invoiceIds = returns.stream().map(SalesReturn::getInvoiceId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        Map<String, SalesReturnResponse.InvoiceRef> invoiceRefs = new HashMap<>();
+        if (!invoiceIds.isEmpty()) {
+            for (var row : invoiceRepository.findRefsByIdIn(pharmacyId, invoiceIds)) {
+                invoiceRefs.put(row.getId(), new SalesReturnResponse.InvoiceRef(row.getId(), row.getInvoiceNumber()));
+            }
+        }
+        List<String> userIds = returns.stream().map(SalesReturn::getUserId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        Map<String, String> userNames = new HashMap<>();
+        if (!userIds.isEmpty()) {
+            for (User u : userRepository.findByIdInAndPharmacyId(userIds, pharmacyId)) {
+                userNames.put(u.getId(), u.getName());
+            }
+        }
+
+        List<SalesReturnResponse> items = returns.stream()
+                .map(sr -> toReturnListResponse(sr, qtyByReturn.getOrDefault(sr.getId(), 0L).intValue(),
+                        sr.getInvoiceId() == null ? null : invoiceRefs.get(sr.getInvoiceId()),
+                        userNames.get(sr.getUserId())))
+                .toList();
         return new SalesReturnPageResponse(items, result.getTotalElements(), safePage, safeLimit, result.getTotalPages());
     }
 
@@ -1057,8 +1090,30 @@ public class BillingService {
                         i.getAmount(), i.getDisposition().name()))
                 .toList();
 
+        int totalQuantity = items.stream().mapToInt(SalesReturnItem::getQuantity).sum();
         return new SalesReturnResponse(sr.getId(), sr.getReturnNumber(), invoiceRef, sr.getReason(), userRef, customerRef,
                 sr.getSubtotal(), sr.getDiscountAmount(), sr.getTaxableAmount(), sr.getCgst(), sr.getSgst(), sr.getIgst(),
-                sr.getTotalGst(), sr.getTotalAmount(), itemResponses, sr.getCreatedAt());
+                sr.getTotalGst(), sr.getTotalAmount(), itemResponses, totalQuantity, sr.getCreatedAt());
+    }
+
+    /**
+     * List-row builder — the counterpart to the full {@link #toResponse} above, but without
+     * loading or shipping line items. The units-returned figure, the originating invoice's
+     * number and the acting user's name are all pre-resolved by the caller in one batched
+     * query each, so a page of returns costs a fixed number of queries instead of three per row.
+     * {@code customer} is the fetch-joined association from the list query — no lazy load.
+     */
+    private SalesReturnResponse toReturnListResponse(SalesReturn sr, int totalQuantity,
+                                                     SalesReturnResponse.InvoiceRef invoiceRef, String userName) {
+        Customer customer = sr.getCustomer();
+        SalesReturnResponse.CustomerRef customerRef = customer == null ? null
+                : new SalesReturnResponse.CustomerRef(customer.getId(), customer.getName(), customer.getPhone());
+        // Never null in practice; "Unknown" beats an empty entry-by cell if the staff row is gone.
+        SalesReturnResponse.UserRef userRef = sr.getUserId() == null ? null
+                : new SalesReturnResponse.UserRef(sr.getUserId(), userName != null ? userName : "Unknown");
+
+        return new SalesReturnResponse(sr.getId(), sr.getReturnNumber(), invoiceRef, sr.getReason(), userRef, customerRef,
+                sr.getSubtotal(), sr.getDiscountAmount(), sr.getTaxableAmount(), sr.getCgst(), sr.getSgst(), sr.getIgst(),
+                sr.getTotalGst(), sr.getTotalAmount(), List.of(), totalQuantity, sr.getCreatedAt());
     }
 }

@@ -20,6 +20,10 @@ public record SalesReturnResponse(
         BigDecimal totalGst,
         BigDecimal totalAmount,
         List<Item> items,
+        // Units returned across all lines. Always populated, so the returns list can show its
+        // "Items" figure without shipping every line (the list sends items empty and only this);
+        // on detail/create it is summed from items.
+        int totalQuantity,
         Instant createdAt
 ) {
     public record InvoiceRef(String id, String invoiceNumber) {
