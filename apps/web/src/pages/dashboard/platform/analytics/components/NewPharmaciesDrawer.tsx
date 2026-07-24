@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { analyticsApi } from "../analytics.api";
+import { getDownloadErrorMessage } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";
 import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow, isToday, format } from "date-fns";
@@ -76,9 +77,11 @@ export function NewPharmaciesDrawer({ isOpen, onClose, days, onTenantClick }: Ne
         status: status || undefined,
         sort
       });
-      toast.success("Export started successfully.");
+      toast.success("Export downloaded.");
     } catch (e) {
-      toast.error("Failed to export data.");
+      // Downloads come back as blobs, so a JSON error body is unreadable to the plain
+      // extractor — this reads it back and surfaces the server's actual reason.
+      toast.error(await getDownloadErrorMessage(e, "Couldn't export the list. Please try again."));
     }
   };
 

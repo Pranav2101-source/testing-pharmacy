@@ -42,7 +42,9 @@ import com.checkup.pharmacy.modules.user.UserRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
 import com.checkup.pharmacy.config.CacheConfig;
+import org.springframework.cache.annotation.CachePut;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.cache.annotation.Caching;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -105,12 +107,30 @@ public class AnalyticsService {
      * <p>Keyed on the date range so different windows do not collide. Safe to cache
      * globally rather than per tenant: this is platform-scoped data behind a
      * PLATFORM_ADMIN-only route, not a per-pharmacy view.
+     *
+     * <p>The caller MUST pass a range already snapped to a stable bucket (see
+     * AnalyticsController.snapToCacheBucket). The window this page requests ends at
+     * "now", so an unsnapped range carries a millisecond-precision {@code to} and every
+     * single load produces a brand-new key — measured at ~5-6s per load with a 100% miss
+     * rate, while an identical repeated key answers in ~0.3s. The cache was doing nothing
+     * until the range was made stable.
+     *
+     * <p>{@code refresh} is the explicit "recompute now" path behind the header's refresh
+     * button: it skips the lookup and OVERWRITES the entry, so the admin gets fresh
+     * numbers and everyone after them benefits. (Plain {@code condition} would have
+     * bypassed the cache entirely and left the stale entry in place for the next reader.)
      */
-    @Cacheable(cacheNames = CacheConfig.ANALYTICS_DASHBOARD,
-               key = "#from + ':' + #to",
-               unless = "#result == null")
+    @Caching(
+            cacheable = @Cacheable(cacheNames = CacheConfig.ANALYTICS_DASHBOARD,
+                                   key = "#from + ':' + #to",
+                                   condition = "!#refresh",
+                                   unless = "#result == null"),
+            put = @CachePut(cacheNames = CacheConfig.ANALYTICS_DASHBOARD,
+                            key = "#from + ':' + #to",
+                            condition = "#refresh",
+                            unless = "#result == null"))
     @Transactional(readOnly = true)
-    public AnalyticsDashboardResponse getDashboard(Instant from, Instant to) {
+    public AnalyticsDashboardResponse getDashboard(Instant from, Instant to, boolean refresh) {
         return new AnalyticsDashboardResponse(
                 executiveKpis(from, to),
                 criticalAlerts(),

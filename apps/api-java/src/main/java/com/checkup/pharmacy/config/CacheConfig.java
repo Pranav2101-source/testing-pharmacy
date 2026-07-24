@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.PropertyAccessor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.checkup.pharmacy.modules.platform.analytics.dto.AnalyticsDashboardResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.CachingConfigurer;
 import org.springframework.cache.annotation.EnableCaching;
@@ -16,6 +17,7 @@ import org.springframework.data.redis.cache.RedisCacheConfiguration;
 import org.springframework.data.redis.cache.RedisCacheManager;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
+import org.springframework.data.redis.serializer.Jackson2JsonRedisSerializer;
 import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 
@@ -83,15 +85,46 @@ public class CacheConfig implements CachingConfigurer {
                 // otherwise be pinned for the whole TTL.
                 .disableCachingNullValues();
 
+        // The analytics dashboard gets a TYPE-BOUND serializer rather than the generic
+        // one above. Its payload is a record, and records are implicitly final: with
+        // DefaultTyping.NON_FINAL Jackson writes no "@class" for the root object, while
+        // GenericJackson2JsonRedisSerializer reads back into Object and requires one — so
+        // every read failed with "missing type id property '@class'" and the endpoint 500'd.
+        //
+        // That was invisible for as long as the cache key carried millisecond precision,
+        // because no entry was ever read back; it surfaced the moment the key was made
+        // stable enough to actually hit. Binding the value type removes the need for type
+        // ids entirely (and with them the polymorphic-deserialization surface).
+        RedisCacheConfiguration analytics = base
+                .entryTtl(Duration.ofSeconds(analyticsTtlSeconds))
+                .serializeValuesWith(RedisSerializationContext.SerializationPair.fromSerializer(
+                        new Jackson2JsonRedisSerializer<>(typedCacheObjectMapper(),
+                                AnalyticsDashboardResponse.class)));
+
         return RedisCacheManager.builder(connectionFactory)
                 .cacheDefaults(base)
-                .withCacheConfiguration(ANALYTICS_DASHBOARD,
-                        base.entryTtl(Duration.ofSeconds(analyticsTtlSeconds)))
+                .withCacheConfiguration(ANALYTICS_DASHBOARD, analytics)
                 // Redis being down must not take the dashboard down with it. Spring's
                 // default is to propagate cache errors; this degrades to hitting the
                 // database instead, which is exactly the pre-cache behaviour.
                 .transactionAware()
                 .build();
+    }
+
+    /**
+     * Mapper for caches whose value type is known statically. No default typing: the
+     * target class is supplied to the serializer, so nothing needs an embedded "@class"
+     * and final types (records) round-trip correctly.
+     *
+     * <p>Any NEW cache added here should follow this pattern — bind the value type — or
+     * be sure its payload is a non-final class, or it will hit the same read failure.
+     */
+    private ObjectMapper typedCacheObjectMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(new JavaTimeModule());
+        mapper.disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        mapper.setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY);
+        return mapper;
     }
 
     private ObjectMapper cacheObjectMapper() {

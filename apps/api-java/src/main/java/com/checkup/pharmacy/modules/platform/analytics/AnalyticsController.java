@@ -28,6 +28,9 @@ public class AnalyticsController {
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
     private static final long DAY_MS = 86_400_000L;
 
+    /** Cache-key granularity for the dashboard range — matches the 5-minute cache TTL. */
+    private static final long CACHE_BUCKET_SECONDS = 300L;
+
     private final AnalyticsService analyticsService;
 
     public AnalyticsController(AnalyticsService analyticsService) {
@@ -42,7 +45,20 @@ public class AnalyticsController {
         Instant toInstant = to != null ? parseFlexible(to, true) : Instant.now();
         Instant fromInstant = from != null ? parseFlexible(from, false)
                 : toInstant.minusMillis(30 * DAY_MS);
-        return ApiResponse.ok(analyticsService.getDashboard(fromInstant, toInstant));
+        // An inverted range matches nothing, and every widget would render a confident
+        // zero — which reads as "the platform did nothing this period" rather than
+        // "your dates are backwards". Say so instead.
+        requireOrderedRange(fromInstant, toInstant);
+
+        // Snap to a stable bucket BEFORE hitting the service. The page asks for a window
+        // ending "now", so the raw range carries millisecond precision and every load
+        // produced a unique cache key — a measured 100% miss rate (~5-6s per load) against
+        // ~0.3s once the key repeats. Snapping the computed range (not just the key) keeps
+        // the cached numbers matching the window they were computed for; the cost is up to
+        // one bucket of extra staleness, which the TTL already accepts.
+        Instant fromSnapped = snapToCacheBucket(fromInstant);
+        Instant toSnapped = snapToCacheBucket(toInstant);
+        return ApiResponse.ok(analyticsService.getDashboard(fromSnapped, toSnapped, "true".equals(refresh)));
     }
 
     @GetMapping("/activity")
@@ -103,9 +119,12 @@ public class AnalyticsController {
         } catch (DateTimeParseException e) {
             throw new BadRequestException("Invalid date format");
         }
+        // Order first: a backwards range yields a NEGATIVE span, which sails past the
+        // one-year ceiling below and exports an empty file that looks like real output.
+        requireOrderedRange(fromInstant, toInstant);
         double daysDiff = (toInstant.toEpochMilli() - fromInstant.toEpochMilli()) / (double) DAY_MS;
         if (daysDiff > 366) {
-            throw new BadRequestException("Export range cannot exceed 1 year");
+            throw new BadRequestException("Export range cannot exceed 1 year — narrow the dates and try again.");
         }
         return download(analyticsService.exportDashboardData(fromInstant, toInstant, fmt));
     }
@@ -134,5 +153,24 @@ public class AnalyticsController {
 
     private static int clamp(int v, int min, int max) {
         return Math.max(min, Math.min(max, v));
+    }
+
+    /**
+     * Rounds an instant down to a {@link #CACHE_BUCKET_SECONDS} boundary so that repeated
+     * dashboard loads share one cache entry instead of each minting a unique key.
+     * Aligned to the cache TTL: at most one full recompute per bucket.
+     */
+    private static Instant snapToCacheBucket(Instant t) {
+        long secs = t.getEpochSecond();
+        return Instant.ofEpochSecond(secs - Math.floorMod(secs, CACHE_BUCKET_SECONDS));
+    }
+
+    /** Rejects a backwards date range, naming both ends so the mistake is obvious. */
+    private static void requireOrderedRange(Instant from, Instant to) {
+        if (from.isAfter(to)) {
+            throw new BadRequestException("The start date (" + LocalDate.ofInstant(from, IST)
+                    + ") is after the end date (" + LocalDate.ofInstant(to, IST)
+                    + ") — check the range and try again.");
+        }
     }
 }

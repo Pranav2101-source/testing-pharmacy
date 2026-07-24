@@ -1,5 +1,6 @@
 import { useRef, useState, useMemo } from "react";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage, getDownloadErrorMessage } from "@/lib/api-client";
+import { useToast } from "@/hooks/useToast";
 import { useQuery } from "@tanstack/react-query";
 import { analyticsApi } from "./analytics.api";
 import { AnalyticsHeader } from "./components/AnalyticsHeader";
@@ -22,6 +23,7 @@ import type { AnalyticsDateRange } from "./analytics.types";
 import { AlertCircle } from "lucide-react";
 
 export default function PlatformAnalyticsPage() {
+  const toast = useToast();
   const [autoRefresh, setAutoRefresh] = useState<number>(0);
   const [isNewPharmaciesDrawerOpen, setIsNewPharmaciesDrawerOpen] = useState(false);
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
@@ -81,8 +83,13 @@ export default function PlatformAnalyticsPage() {
       document.body.appendChild(link);
       link.click();
       link.remove();
+      toast.success("Export downloaded.");
     } catch (err) {
-      console.error("Export failed:", err);
+      // This used to only console.error — the button appeared to do nothing at all,
+      // even for a reason the server states plainly ("Export range cannot exceed 1
+      // year"). That message arrives as a Blob because the request is a download, so
+      // it needs the blob-aware reader to be legible.
+      toast.error(await getDownloadErrorMessage(err, "Couldn't export the report. Please try again."));
     }
   };
 
@@ -113,8 +120,13 @@ export default function PlatformAnalyticsPage() {
       ) : error ? (
         <div className="p-6 bg-red-50 border border-red-200 rounded-2xl flex flex-col items-center justify-center text-center h-[400px]">
           <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
-          <h2 className="text-xl font-bold text-slate-900 mb-2">Failed to load analytics</h2>
-          <p className="text-slate-600 mb-6 max-w-md">There was a problem retrieving the analytics data from the server. Please try again.</p>
+          <h2 className="text-xl font-bold text-slate-900 mb-2">Couldn't load analytics</h2>
+          {/* Show the actual reason — a permissions problem, an unreachable server and a
+              bad date range are three different fixes, and "please try again" only helps
+              with one of them. */}
+          <p className="text-slate-600 mb-6 max-w-md">
+            {getErrorMessage(error, "There was a problem retrieving the analytics data. Please try again.")}
+          </p>
           <button 
             onClick={() => refetch()}
             className="px-6 py-2 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition-colors shadow-sm"

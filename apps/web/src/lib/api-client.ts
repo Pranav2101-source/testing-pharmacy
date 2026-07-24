@@ -186,3 +186,30 @@ export function getErrorMessage(err: unknown, fallback: string): string {
 
   return serverMsg ?? err.message ?? fallback;
 }
+
+/**
+ * Same as {@link getErrorMessage}, but also recovers the reason from a FAILED
+ * `responseType: "blob"` request.
+ *
+ * <p>A download sets responseType to blob, and axios applies that to the error
+ * response too — so a perfectly good JSON body like
+ * `{"error":"Export range cannot exceed 1 year"}` arrives as an unreadable Blob and
+ * getErrorMessage falls through to the generic fallback. Every export in the app
+ * therefore reported "Failed to export" no matter what the server actually said.
+ * Reading the blob back to text costs one await and restores the real reason.
+ *
+ * <p>Async because Blob.text() is; use this for downloads, getErrorMessage everywhere else.
+ */
+export async function getDownloadErrorMessage(err: unknown, fallback: string): Promise<string> {
+  if (axios.isAxiosError(err) && err.response?.data instanceof Blob) {
+    try {
+      const text = await err.response.data.text();
+      const parsed = JSON.parse(text) as { error?: string; message?: string };
+      const msg = parsed.error ?? parsed.message;
+      if (msg) return msg;
+    } catch {
+      // Not JSON (or unreadable) — fall through to the normal handling below.
+    }
+  }
+  return getErrorMessage(err, fallback);
+}
