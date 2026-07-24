@@ -36,6 +36,16 @@ public class ReportsController {
         return ApiResponse.ok(reportsService.dailySales(date));
     }
 
+    /**
+     * Per-day sales totals for a range (YYYY-MM-DD), one row per IST day including days with
+     * no sales. Exists so the trend chart is a single request instead of one per day.
+     */
+    @GetMapping("/sales/daily-series")
+    public ApiResponse<List<DailySalesResponse>> dailySalesSeries(@RequestParam(required = false) String from,
+                                                                  @RequestParam(required = false) String to) {
+        return ApiResponse.ok(reportsService.dailySalesSeries(from, to));
+    }
+
     @GetMapping("/gst")
     public ApiResponse<GstSummaryResponse> gst(@RequestParam(required = false) Instant from,
                                                @RequestParam(required = false) Instant to) {

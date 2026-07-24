@@ -64,6 +64,9 @@ public class ReportsService {
      */
     private static final int SCHEDULE_REGISTER_MAX_ROWS = 10_000;
 
+    /** Upper bound on the sales-trend range — see {@link #dailySalesSeries}. ~2 years. */
+    private static final int MAX_TREND_DAYS = 731;
+
     private final InvoiceRepository invoiceRepository;
     private final InvoiceItemRepository invoiceItemRepository;
     private final InventoryRepository inventoryRepository;
@@ -98,6 +101,47 @@ public class ReportsService {
         long invoiceCount = invoiceRepository.countActiveInRange(pharmacyId, from, to);
         var agg = invoiceRepository.gstAggregate(pharmacyId, from, to);
         return new DailySalesResponse(resolved.toString(), invoiceCount, agg.getTotalAmount(), agg.getTotalGst());
+    }
+
+    /**
+     * Sales totals per IST calendar day across a range — one query and one HTTP call for the
+     * whole trend chart, replacing the client's day-by-day fan-out (7 requests for a week).
+     * Days with no sales come back as explicit zero rows so the caller can plot a continuous
+     * axis without having to reconcile gaps itself.
+     */
+    @Transactional(readOnly = true)
+    public List<DailySalesResponse> dailySalesSeries(String fromStr, String toStr) {
+        LocalDate start = fromStr != null ? LocalDate.parse(fromStr) : LocalDate.now(IST).minusDays(6);
+        LocalDate end = toStr != null ? LocalDate.parse(toStr) : LocalDate.now(IST);
+        if (start.isAfter(end)) {
+            throw new BadRequestException("The start date (" + start + ") is after the end date (" + end
+                    + ") — check the range and try again.");
+        }
+        // Bound the fan-out: a multi-year range would build tens of thousands of zero rows.
+        long span = java.time.temporal.ChronoUnit.DAYS.between(start, end) + 1;
+        if (span > MAX_TREND_DAYS) {
+            throw new BadRequestException("That range covers " + span + " days — the sales trend supports up to "
+                    + MAX_TREND_DAYS + ". Narrow the range (for example one month at a time).");
+        }
+
+        Instant from = start.atStartOfDay(IST).toInstant();
+        Instant to = end.plusDays(1).atStartOfDay(IST).toInstant().minusMillis(1);
+
+        Map<String, InvoiceRepository.DailySalesRow> byDay = new LinkedHashMap<>();
+        for (var row : invoiceRepository.dailySalesSeries(TenantContext.pharmacyId(), from, to)) {
+            byDay.put(row.getDay(), row);
+        }
+
+        List<DailySalesResponse> series = new ArrayList<>();
+        for (LocalDate d = start; !d.isAfter(end); d = d.plusDays(1)) {
+            String key = d.toString();
+            var row = byDay.get(key);
+            series.add(row == null
+                    ? new DailySalesResponse(key, 0, BigDecimal.ZERO, BigDecimal.ZERO)
+                    : new DailySalesResponse(key, row.getInvoiceCount(), round2(row.getRevenue()),
+                            round2(row.getGstCollected())));
+        }
+        return series;
     }
 
     @Transactional(readOnly = true)
@@ -308,7 +352,10 @@ public class ReportsService {
             return List.of();
         }
         List<String> ids = groups.stream().map(InvoiceItemRepository.MovementGroupRow::getInventoryId).toList();
-        Map<String, Inventory> byId = inventoryRepository.findAllById(ids).stream()
+        // Fetch-joined + tenant-scoped: reading inv.getMedicine() below would otherwise lazy-load
+        // one medicine per row.
+        Map<String, Inventory> byId = inventoryRepository
+                .findByIdInWithMedicine(TenantContext.pharmacyId(), ids).stream()
                 .collect(java.util.stream.Collectors.toMap(Inventory::getId, i -> i));
         List<FastMovingResponse.Item> items = new ArrayList<>();
         for (var g : groups) {
@@ -410,7 +457,8 @@ public class ReportsService {
 
         List<String> ids = topGroups.stream().map(InvoiceItemRepository.MovementGroupRow::getInventoryId).toList();
         Map<String, Inventory> byId = ids.isEmpty() ? Map.of()
-                : inventoryRepository.findAllById(ids).stream().collect(java.util.stream.Collectors.toMap(Inventory::getId, i -> i));
+                : inventoryRepository.findByIdInWithMedicine(pharmacyId, ids).stream()
+                        .collect(java.util.stream.Collectors.toMap(Inventory::getId, i -> i));
 
         List<EodSummaryResponse.TopMedicine> topMedicines = new ArrayList<>();
         for (var g : topGroups) {

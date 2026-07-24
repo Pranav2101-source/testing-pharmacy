@@ -202,6 +202,17 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
     @Query("SELECT i FROM Inventory i LEFT JOIN FETCH i.medicine WHERE i.pharmacyId = :pharmacyId AND CAST(i.status AS string) = 'ACTIVE'")
     List<Inventory> findActiveWithMedicine(@Param("pharmacyId") String pharmacyId);
 
+    /**
+     * Batches by id WITH their medicine, tenant-scoped — for report rows that already know the
+     * ids they need (fast/slow-moving, EOD top sellers). Replaces {@code findAllById}, which
+     * left {@code medicine} lazy and so fired one extra query per row while the caller built
+     * its medicine refs, and carried no pharmacyId predicate.
+     */
+    @Query("SELECT i FROM Inventory i LEFT JOIN FETCH i.medicine "
+            + "WHERE i.pharmacyId = :pharmacyId AND i.id IN :ids")
+    List<Inventory> findByIdInWithMedicine(@Param("pharmacyId") String pharmacyId,
+                                           @Param("ids") java.util.Collection<String> ids);
+
     /** Active, in-stock batches — candidates for the dead-stock report (last-sale lookup happens separately). */
     @Query("""
             SELECT i FROM Inventory i LEFT JOIN FETCH i.medicine

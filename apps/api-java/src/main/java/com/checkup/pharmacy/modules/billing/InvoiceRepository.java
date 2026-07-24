@@ -167,6 +167,39 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
             """)
     GstAggregateRow gstAggregate(@Param("pharmacyId") String pharmacyId, @Param("from") Instant from, @Param("to") Instant to);
 
+    /**
+     * Per-day sales totals across a range, in ONE query — powers the Reports sales trend
+     * chart, which previously issued one HTTP request (and two DB queries) PER DAY: seven
+     * round trips to draw a seven-point line.
+     *
+     * <p>Native SQL because the grouping key is the IST calendar day, and only Postgres can
+     * do the {@code AT TIME ZONE} conversion inside a GROUP BY — bucketing by raw UTC would
+     * put an evening sale (after 18:30 UTC) on the following day's bar, which is exactly the
+     * kind of quiet off-by-one a pharmacist reconciling a day's takings would notice and not
+     * be able to explain. Days with no sales are simply absent; the caller fills the gaps so
+     * the chart keeps a continuous axis.
+     */
+    @Query(value = """
+            SELECT to_char((i."createdAt" AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS day,
+                   COUNT(*) AS invoiceCount,
+                   COALESCE(SUM(i."totalAmount"), 0) AS revenue,
+                   COALESCE(SUM(i."totalGst"), 0) AS gstCollected
+            FROM invoices i
+            WHERE i."pharmacyId" = :pharmacyId AND i."isCancelled" = false
+              AND i."createdAt" >= :from AND i."createdAt" <= :to
+            GROUP BY 1
+            ORDER BY 1
+            """, nativeQuery = true)
+    List<DailySalesRow> dailySalesSeries(@Param("pharmacyId") String pharmacyId,
+                                         @Param("from") Instant from, @Param("to") Instant to);
+
+    interface DailySalesRow {
+        String getDay();
+        long getInvoiceCount();
+        BigDecimal getRevenue();
+        BigDecimal getGstCollected();
+    }
+
     interface GstAggregateRow {
         BigDecimal getSubtotal();
         BigDecimal getDiscountAmount();

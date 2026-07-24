@@ -232,18 +232,24 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
 
   const { from, to } = getPeriodDates(period, customFrom, customTo);
 
-  // 7-day chart — always last 7 days
+  // 7-day chart — ONE request for the whole series. This used to fan out into seven
+  // parallel /reports/sales/daily calls (one per day, two DB queries each) to draw a
+  // seven-point line; the backend now groups by IST day and fills empty days itself.
+  const [chartError, setChartError] = useState<string | null>(null);
   useEffect(() => {
-    setChartLoading(true);
     const dates = getLastNDays(7);
-    Promise.all(
-      dates.map(d =>
-        api.get<{ success: boolean; data: DailySalesPoint }>(`/reports/sales/daily?date=${d}`)
-          .then(r => ({ ...r.data.data, date: d }))  // force YYYY-MM-DD so todayStr comparison works
-          .catch((): DailySalesPoint => ({ date: d, invoiceCount: 0, revenue: 0, gstCollected: 0 }))
-      )
+    const first = dates[0]!, last = dates[dates.length - 1]!;
+    setChartLoading(true);
+    api.get<{ success: boolean; data: DailySalesPoint[] }>(
+      `/reports/sales/daily-series?from=${first}&to=${last}`
     )
-      .then(results => setChartDays(results))
+      .then(r => { setChartDays(r.data.data ?? []); setChartError(null); })
+      .catch(e => {
+        // An empty chart reads as "no sales this week" — a conclusion a pharmacist might
+        // act on. Say it failed instead of silently drawing zeros.
+        setChartError(getErrorMessage(e, "Could not load the sales trend."));
+        setChartDays([]);
+      })
       .finally(() => setChartLoading(false));
   }, []);
 
@@ -317,7 +323,15 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
               </div>
             ))}
           </div>
-          <RevenueChart days={chartDays} loading={chartLoading} />
+          {chartError ? (
+            <div className="flex flex-col items-center justify-center py-10 gap-2 text-center">
+              <AlertTriangle className="w-6 h-6 text-red-300" />
+              <p className="text-[13px] text-red-500 font-medium">{chartError}</p>
+              <p className="text-[11px] text-slate-400">This is a loading problem — it does not mean there were no sales.</p>
+            </div>
+          ) : (
+            <RevenueChart days={chartDays} loading={chartLoading} />
+          )}
         </div>
       </Section>
 
@@ -390,22 +404,27 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
 function InventoryTab() {
   const [expiryItems, setExpiryItems]   = useState<ExpiryItem[]>([]);
   const [expiryLoading, setExpiryLoad]  = useState(true);
+  const [expiryError, setExpiryError]   = useState<string | null>(null);
   const [deadItems, setDeadItems]       = useState<DeadStockItem[]>([]);
   const [deadLoading, setDeadLoad]      = useState(true);
   const [deadError, setDeadError]       = useState<string | null>(null);
   const [valItems, setValItems]         = useState<ValuationItem[]>([]);
   const [valLoading, setValLoad]        = useState(true);
+  const [valError, setValError]         = useState<string | null>(null);
   const [deadDays, setDeadDays]         = useState(90);
 
   useEffect(() => {
+    // Both of these used to swallow their error. An empty expiry list reads as
+    // "nothing is expiring soon" and an empty valuation as "no stock on hand" —
+    // conclusions a pharmacist may act on. A failure has to look like a failure.
     api.get<{ success: boolean; data: ExpiryItem[] }>("/reports/expiry")
-      .then(r => setExpiryItems(r.data.data ?? []))
-      .catch(() => {})
+      .then(r => { setExpiryItems(r.data.data ?? []); setExpiryError(null); })
+      .catch(e => { setExpiryError(getErrorMessage(e, "Could not load expiring stock.")); setExpiryItems([]); })
       .finally(() => setExpiryLoad(false));
 
     api.get<{ success: boolean; data: { items: ValuationItem[]; totalCostValue: number; totalRetailValue: number } }>("/reports/inventory/valuation?groupBy=category")
-      .then(r => setValItems(r.data.data.items ?? []))
-      .catch(() => {})
+      .then(r => { setValItems(r.data.data.items ?? []); setValError(null); })
+      .catch(e => { setValError(getErrorMessage(e, "Could not load stock valuation.")); setValItems([]); })
       .finally(() => setValLoad(false));
   }, []);
 
@@ -466,6 +485,14 @@ function InventoryTab() {
       >
         {expiryLoading ? (
           <ListSkeleton rows={5} />
+        ) : expiryError ? (
+          // Never fall through to the reassuring "nothing expiring" empty state on a
+          // failure — that is the one message that must be earned by a real answer.
+          <LoadErrorState
+            title="Expiring stock could not be loaded"
+            message={expiryError}
+            compact
+          />
         ) : expiryItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-slate-400">
             <CheckCircle2 className="w-8 h-8 text-emerald-200 mb-2" strokeWidth={1.4} />
@@ -586,6 +613,12 @@ function InventoryTab() {
       <Section title="Stock Valuation" icon={Banknote} iconBg="bg-emerald-50" iconColor="text-emerald-600">
         {valLoading ? (
           <ListSkeleton rows={5} />
+        ) : valError ? (
+          <LoadErrorState
+            title="Stock valuation could not be loaded"
+            message={valError}
+            compact
+          />
         ) : (
           <div>
             {/* Summary bar */}
@@ -1334,6 +1367,16 @@ export default function ReportsPage() {
   const [tab, setTab] = useState<ReportTab>(initialTab);
   const active = (visibleTabs.find(t => t.id === tab) ?? visibleTabs[0])!;
 
+  // Keep-alive: each tab mounts the first time it's opened, then inactive ones are
+  // hidden with CSS rather than unmounted. These tabs fetch in useEffect on mount, so
+  // unmounting meant every switch re-ran every report request from scratch (the
+  // Inventory tab alone is three). Switching back is now instant and keeps each tab's
+  // filters, sort and scroll position.
+  const [mountedTabs, setMountedTabs] = useState<Set<ReportTab>>(() => new Set([initialTab]));
+  useEffect(() => {
+    setMountedTabs(prev => (prev.has(tab) ? prev : new Set(prev).add(tab)));
+  }, [tab]);
+
   // Shared period state — persists across tab switches
   const now = new Date();
   const [period,     setPeriod]     = useState<Period>("week");
@@ -1369,25 +1412,35 @@ export default function ReportsPage() {
           ))}
         </div>
 
-        {/* Tab content */}
+        {/* Tab content — mounted once, then shown/hidden via CSS (see keep-alive above) */}
         <div>
-          {tab === "sales"      && (
-            <SalesTab
-              period={period} setPeriod={setPeriod}
-              customFrom={customFrom} setCustomFrom={setCustomFrom}
-              customTo={customTo} setCustomTo={setCustomTo}
-            />
+          {mountedTabs.has("sales") && (
+            <div className={cn(tab !== "sales" && "hidden")}>
+              <SalesTab
+                period={period} setPeriod={setPeriod}
+                customFrom={customFrom} setCustomFrom={setCustomFrom}
+                customTo={customTo} setCustomTo={setCustomTo}
+              />
+            </div>
           )}
-          {tab === "inventory"  && <InventoryTab />}
-          {tab === "purchases"  && (
-            <PurchasesTab
-              period={period} setPeriod={setPeriod}
-              customFrom={customFrom} setCustomFrom={setCustomFrom}
-              customTo={customTo} setCustomTo={setCustomTo}
-            />
+          {mountedTabs.has("inventory") && (
+            <div className={cn(tab !== "inventory" && "hidden")}><InventoryTab /></div>
           )}
-          {tab === "compliance" && <ComplianceTab />}
-          {tab === "audit"      && <AuditTab />}
+          {mountedTabs.has("purchases") && (
+            <div className={cn(tab !== "purchases" && "hidden")}>
+              <PurchasesTab
+                period={period} setPeriod={setPeriod}
+                customFrom={customFrom} setCustomFrom={setCustomFrom}
+                customTo={customTo} setCustomTo={setCustomTo}
+              />
+            </div>
+          )}
+          {mountedTabs.has("compliance") && (
+            <div className={cn(tab !== "compliance" && "hidden")}><ComplianceTab /></div>
+          )}
+          {mountedTabs.has("audit") && (
+            <div className={cn(tab !== "audit" && "hidden")}><AuditTab /></div>
+          )}
         </div>
 
       </div>
