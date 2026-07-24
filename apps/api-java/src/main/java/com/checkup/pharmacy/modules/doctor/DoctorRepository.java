@@ -35,6 +35,20 @@ public interface DoctorRepository extends JpaRepository<Doctor, String> {
     @Query("SELECT d.pharmacyId, COUNT(d) FROM Doctor d WHERE d.pharmacyId IN :ids GROUP BY d.pharmacyId")
     java.util.List<Object[]> countByPharmacyIdIn(@Param("ids") java.util.Collection<String> ids);
 
+    /**
+     * Batched counterpart of {@link #findMatchingForImport} — see the supplier repository's
+     * note: the migration commit was issuing one SELECT per CSV row.
+     */
+    @Query("""
+            SELECT d FROM Doctor d
+            WHERE d.pharmacyId = :pharmacyId
+              AND (LOWER(d.name) IN :lowerNames
+                   OR (d.registrationNo IS NOT NULL AND d.registrationNo IN :registrationNos))
+            """)
+    java.util.List<Doctor> findMatchingForImportBatch(@Param("pharmacyId") String pharmacyId,
+                                                      @Param("lowerNames") java.util.Collection<String> lowerNames,
+                                                      @Param("registrationNos") java.util.Collection<String> registrationNos);
+
     /** Migration-import dedup: an existing doctor matches on EITHER registrationNo or name. */
     @Query("""
             SELECT d FROM Doctor d

@@ -100,6 +100,21 @@ spring:
         globally_quoted_identifiers: true
         jdbc:
           time_zone: UTC
+          # Group INSERTs/UPDATEs into multi-row JDBC batches instead of one network
+          # round trip per row. The migration wizard commits up to 50,000 rows in a
+          # single synchronous request and writes several entities per row (batch +
+          # movement + created-record), so unbatched that is hundreds of thousands of
+          # individual statements against a remote pooler. Also helps every other
+          # multi-row write (GRN confirm, multi-item invoices).
+          #
+          # Safe here because every entity's @Id is an application-assigned cuid string
+          # (see BaseEntity) — Hibernate cannot batch inserts for IDENTITY-generated ids,
+          # which is the usual reason this setting silently does nothing.
+          batch_size: 50
+        # Batching only pays off if same-table statements are adjacent, otherwise each
+        # change of table forces the batch to flush.
+        order_inserts: true
+        order_updates: true
     open-in-view: false
 
   data:

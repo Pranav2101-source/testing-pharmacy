@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -54,6 +55,21 @@ public interface SupplierRepository extends JpaRepository<Supplier, String> {
     /** Unpaginated, active-only — powers simple picker dropdowns (e.g. quotation creation). */
     @Query("SELECT s FROM Supplier s WHERE s.pharmacyId = :pharmacyId AND s.isActive = true ORDER BY s.name ASC")
     List<Supplier> findAllActiveByPharmacyId(@Param("pharmacyId") String pharmacyId);
+
+    /**
+     * Batched counterpart of {@link #findMatchingForImport} — every candidate the whole
+     * import file could match, in ONE query. The migration commit looped over rows calling
+     * the single-row version, so a 50,000-row supplier file issued 50,000 SELECTs; the
+     * caller now loads once and matches in memory using the same name/gstin rule.
+     */
+    @Query("""
+            SELECT s FROM Supplier s
+            WHERE s.pharmacyId = :pharmacyId
+              AND (LOWER(s.name) IN :lowerNames OR (s.gstin IS NOT NULL AND s.gstin IN :gstins))
+            """)
+    List<Supplier> findMatchingForImportBatch(@Param("pharmacyId") String pharmacyId,
+                                              @Param("lowerNames") Collection<String> lowerNames,
+                                              @Param("gstins") Collection<String> gstins);
 
     /** Migration-import dedup: an existing supplier matches on EITHER name or gstin, not just one. */
     @Query("""

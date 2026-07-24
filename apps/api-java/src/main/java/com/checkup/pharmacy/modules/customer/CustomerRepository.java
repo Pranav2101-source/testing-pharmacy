@@ -53,6 +53,19 @@ public interface CustomerRepository extends JpaRepository<Customer, String> {
 
     boolean existsByPharmacyIdAndCardNumberAndDeletedAtIsNullAndIdNot(String pharmacyId, String cardNumber, String id);
 
+    /**
+     * Batched counterpart of {@link #findMatchingForImport} — see the supplier repository's
+     * note: the migration commit was issuing one SELECT per CSV row.
+     */
+    @Query("""
+            SELECT c FROM Customer c
+            WHERE c.pharmacyId = :pharmacyId AND c.deletedAt IS NULL
+              AND (LOWER(c.name) IN :lowerNames OR (c.phone IS NOT NULL AND c.phone IN :phones))
+            """)
+    java.util.List<Customer> findMatchingForImportBatch(@Param("pharmacyId") String pharmacyId,
+                                                        @Param("lowerNames") java.util.Collection<String> lowerNames,
+                                                        @Param("phones") java.util.Collection<String> phones);
+
     /** Migration-import dedup: an existing customer matches on EITHER phone or name. */
     @Query("""
             SELECT c FROM Customer c

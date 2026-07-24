@@ -51,6 +51,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Collection;
 import java.util.Map;
 import java.util.Set;
 
@@ -429,6 +430,25 @@ public class MigrationService {
         Map<String, MedicineMapping> mappings = mappingRepository.findByPharmacyIdAndCsvValueIn(pharmacyId, uniqueLower)
                 .stream().collect(java.util.stream.Collectors.toMap(MedicineMapping::getCsvValue, m -> m));
 
+        // Pre-resolve every "new medicine" name against the catalogue in ONE query. The
+        // loop below used to call findActiveByLowerNameIn(List.of(lower)) per name — a
+        // batch-capable query invoked one element at a time, so a 5,000-medicine import
+        // issued 5,000 round trips to answer a question one query could answer.
+        Set<String> newMedicineNames = new LinkedHashSet<>();
+        for (String lower : uniqueLower) {
+            MedicineMapping m = mappings.get(lower);
+            if (m != null && m.getMedicineId() == null && m.isNewMedicine()) {
+                newMedicineNames.add(lower);
+            }
+        }
+        Map<String, Medicine> existingByLowerName = new LinkedHashMap<>();
+        if (!newMedicineNames.isEmpty()) {
+            for (Medicine m : medicineRepository.findActiveByLowerNameIn(List.copyOf(newMedicineNames))) {
+                // First wins — mirrors the previous findFirst() on a per-name lookup.
+                existingByLowerName.putIfAbsent(m.getName().trim().toLowerCase(Locale.ROOT), m);
+            }
+        }
+
         for (String lower : uniqueLower) {
             MedicineMapping mapping = mappings.get(lower);
             if (mapping == null) {
@@ -439,7 +459,7 @@ public class MigrationService {
             String medicineId = mapping.getMedicineId();
             if (medicineId == null && mapping.isNewMedicine()) {
                 String displayName = lower; // best effort; exact casing isn't preserved on the mapping row
-                Medicine existing = medicineRepository.findActiveByLowerNameIn(List.of(lower)).stream().findFirst().orElse(null);
+                Medicine existing = existingByLowerName.get(lower);
                 if (existing != null) {
                     medicineId = existing.getId();
                 } else {
@@ -447,6 +467,10 @@ public class MigrationService {
                     medicineRepository.save(created);
                     medicineId = created.getId();
                     createdRecordRepository.save(MigrationCreatedRecord.create(sessionId, MigrationEntityType.MEDICINE, medicineId));
+                    // Keep the pre-loaded index current, so a medicine created earlier in
+                    // this same commit is reused rather than inserted twice — the per-name
+                    // query it replaced would have seen it.
+                    existingByLowerName.put(lower, created);
                 }
                 mapping.setMedicineId(medicineId);
                 mappingRepository.save(mapping);
@@ -458,6 +482,15 @@ public class MigrationService {
             resolved.put(lower, medicineId);
         }
         return resolved;
+    }
+
+    /**
+     * An empty IN-list is invalid SQL, and a file can legitimately supply no gstins (or no
+     * phone numbers) at all. Substitute a sentinel that cannot match a real value so the
+     * query still runs and that half of the OR simply contributes nothing.
+     */
+    private static Collection<String> nonEmpty(Collection<String> values) {
+        return values.isEmpty() ? List.of("__migration_none__") : values;
     }
 
     private static String capitalize(String s) {
@@ -482,6 +515,11 @@ public class MigrationService {
         int updated = 0;
         int skipped = 0;
 
+        // Pass 1 — validate and de-duplicate within the file, collecting the keys the
+        // whole import could match on. Nothing is written yet.
+        List<ValidatedSupplierRow> toApply = new ArrayList<>();
+        Set<String> lowerNames = new LinkedHashSet<>();
+        Set<String> gstins = new LinkedHashSet<>();
         for (var row : parsed.rows()) {
             Map<String, String> fields = csvParser.applyColumnMapping(row, columnMappings);
             ValidatedSupplierRow v = rowValidator.validateSupplierRow(row.rowNumber(), fields, issues);
@@ -494,8 +532,38 @@ public class MigrationService {
                 skipped++;
                 continue;
             }
+            toApply.add(v);
+            lowerNames.add(v.name().trim().toLowerCase(Locale.ROOT));
+            if (v.gstin() != null) {
+                gstins.add(v.gstin());
+            }
+        }
 
-            List<Supplier> matches = supplierRepository.findMatchingForImport(pharmacyId, v.name(), v.gstin());
+        // ONE query for every existing supplier this file could match, instead of one
+        // SELECT per row (50,000 rows meant 50,000 round trips).
+        Map<String, Supplier> byLowerName = new LinkedHashMap<>();
+        Map<String, Supplier> byGstin = new LinkedHashMap<>();
+        if (!toApply.isEmpty()) {
+            for (Supplier s : supplierRepository.findMatchingForImportBatch(
+                    pharmacyId, nonEmpty(lowerNames), nonEmpty(gstins))) {
+                byLowerName.putIfAbsent(s.getName().trim().toLowerCase(Locale.ROOT), s);
+                if (s.getGstin() != null) {
+                    byGstin.putIfAbsent(s.getGstin(), s);
+                }
+            }
+        }
+
+        // Pass 2 — apply. Same match rule as the per-row query (name OR gstin), resolved
+        // in memory; gstin is checked first because it is the stronger identifier (the
+        // old query returned an unordered list and took the first, so a row matching one
+        // supplier by name and another by gstin picked arbitrarily).
+        for (ValidatedSupplierRow v : toApply) {
+            String lowerName = v.name().trim().toLowerCase(Locale.ROOT);
+            Supplier match = v.gstin() != null ? byGstin.get(v.gstin()) : null;
+            if (match == null) {
+                match = byLowerName.get(lowerName);
+            }
+            List<Supplier> matches = match == null ? List.of() : List.of(match);
             if (matches.isEmpty()) {
                 Supplier s = Supplier.create(pharmacyId, v.name());
                 s.applyFields(v.name(), v.gstin(), v.dlNumber(), v.phone(), v.email(), v.address(), v.city(), v.state(),
@@ -505,6 +573,12 @@ public class MigrationService {
                 }
                 supplierRepository.save(s);
                 createdRecordRepository.save(MigrationCreatedRecord.create(id, MigrationEntityType.SUPPLIERS, s.getId()));
+                // Index it so a later row that matches on the other key finds this one
+                // rather than inserting a second copy — the per-row query would have seen it.
+                byLowerName.putIfAbsent(lowerName, s);
+                if (s.getGstin() != null) {
+                    byGstin.putIfAbsent(s.getGstin(), s);
+                }
                 created++;
             } else {
                 // Never overwrite ledgerBalance here — it tracks real GRNs, payments and
@@ -546,6 +620,10 @@ public class MigrationService {
         int updated = 0;
         int skipped = 0;
 
+        // Pass 1 — validate + de-duplicate within the file (see commitSuppliers).
+        List<ValidatedCustomerRow> toApply = new ArrayList<>();
+        Set<String> lowerNames = new LinkedHashSet<>();
+        Set<String> phones = new LinkedHashSet<>();
         for (var row : parsed.rows()) {
             Map<String, String> fields = csvParser.applyColumnMapping(row, columnMappings);
             ValidatedCustomerRow v = rowValidator.validateCustomerRow(row.rowNumber(), fields, issues);
@@ -558,8 +636,35 @@ public class MigrationService {
                 skipped++;
                 continue;
             }
+            toApply.add(v);
+            lowerNames.add(v.name().trim().toLowerCase(Locale.ROOT));
+            if (v.phone() != null) {
+                phones.add(v.phone());
+            }
+        }
 
-            List<Customer> matches = customerRepository.findMatchingForImport(pharmacyId, v.name(), v.phone());
+        // ONE query instead of one per row.
+        Map<String, Customer> byLowerName = new LinkedHashMap<>();
+        Map<String, Customer> byPhone = new LinkedHashMap<>();
+        if (!toApply.isEmpty()) {
+            for (Customer c : customerRepository.findMatchingForImportBatch(
+                    pharmacyId, nonEmpty(lowerNames), nonEmpty(phones))) {
+                byLowerName.putIfAbsent(c.getName().trim().toLowerCase(Locale.ROOT), c);
+                if (c.getPhone() != null) {
+                    byPhone.putIfAbsent(c.getPhone(), c);
+                }
+            }
+        }
+
+        // Pass 2 — apply. Phone first: it is the stronger identifier (the old per-row
+        // query returned an unordered list and took the first).
+        for (ValidatedCustomerRow v : toApply) {
+            String lowerName = v.name().trim().toLowerCase(Locale.ROOT);
+            Customer match = v.phone() != null ? byPhone.get(v.phone()) : null;
+            if (match == null) {
+                match = byLowerName.get(lowerName);
+            }
+            List<Customer> matches = match == null ? List.of() : List.of(match);
             BigDecimal creditLimit = v.creditLimit() != null ? v.creditLimit() : BigDecimal.ZERO;
             if (matches.isEmpty()) {
                 Customer c = Customer.create(pharmacyId, v.name());
@@ -571,6 +676,11 @@ public class MigrationService {
                 }
                 customerRepository.save(c);
                 createdRecordRepository.save(MigrationCreatedRecord.create(id, MigrationEntityType.CUSTOMERS, c.getId()));
+                // Index it so a later row matching on the other key reuses it (see commitSuppliers).
+                byLowerName.putIfAbsent(lowerName, c);
+                if (c.getPhone() != null) {
+                    byPhone.putIfAbsent(c.getPhone(), c);
+                }
                 created++;
             } else {
                 // Never overwrite creditUsed here — it tracks real unpaid invoices, not the import.
@@ -603,6 +713,10 @@ public class MigrationService {
         int updated = 0;
         int skipped = 0;
 
+        // Pass 1 — validate + de-duplicate within the file (see commitSuppliers).
+        List<ValidatedDoctorRow> toApply = new ArrayList<>();
+        Set<String> lowerNames = new LinkedHashSet<>();
+        Set<String> registrationNos = new LinkedHashSet<>();
         for (var row : parsed.rows()) {
             Map<String, String> fields = csvParser.applyColumnMapping(row, columnMappings);
             ValidatedDoctorRow v = rowValidator.validateDoctorRow(row.rowNumber(), fields, issues);
@@ -615,13 +729,43 @@ public class MigrationService {
                 skipped++;
                 continue;
             }
+            toApply.add(v);
+            lowerNames.add(v.name().trim().toLowerCase(Locale.ROOT));
+            if (v.registrationNo() != null) {
+                registrationNos.add(v.registrationNo());
+            }
+        }
 
-            List<Doctor> matches = doctorRepository.findMatchingForImport(pharmacyId, v.name(), v.registrationNo());
+        // ONE query instead of one per row.
+        Map<String, Doctor> byLowerName = new LinkedHashMap<>();
+        Map<String, Doctor> byRegNo = new LinkedHashMap<>();
+        if (!toApply.isEmpty()) {
+            for (Doctor d : doctorRepository.findMatchingForImportBatch(
+                    pharmacyId, nonEmpty(lowerNames), nonEmpty(registrationNos))) {
+                byLowerName.putIfAbsent(d.getName().trim().toLowerCase(Locale.ROOT), d);
+                if (d.getRegistrationNo() != null) {
+                    byRegNo.putIfAbsent(d.getRegistrationNo(), d);
+                }
+            }
+        }
+
+        // Pass 2 — apply. Registration number first: the stronger identifier.
+        for (ValidatedDoctorRow v : toApply) {
+            String lowerName = v.name().trim().toLowerCase(Locale.ROOT);
+            Doctor match = v.registrationNo() != null ? byRegNo.get(v.registrationNo()) : null;
+            if (match == null) {
+                match = byLowerName.get(lowerName);
+            }
+            List<Doctor> matches = match == null ? List.of() : List.of(match);
             if (matches.isEmpty()) {
                 Doctor d = Doctor.create(pharmacyId, v.name());
                 d.applyFields(v.name(), v.registrationNo(), v.specialty(), v.clinic(), v.phone(), v.email(), null);
                 doctorRepository.save(d);
                 createdRecordRepository.save(MigrationCreatedRecord.create(id, MigrationEntityType.DOCTORS, d.getId()));
+                byLowerName.putIfAbsent(lowerName, d);
+                if (d.getRegistrationNo() != null) {
+                    byRegNo.putIfAbsent(d.getRegistrationNo(), d);
+                }
                 created++;
             } else {
                 Doctor d = matches.get(0);
