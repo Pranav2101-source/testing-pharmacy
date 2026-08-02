@@ -125,9 +125,11 @@ spring:
       # addon, …) — without it this falls back to localhost, which won't exist there.
       url: ${REDIS_URL:redis://localhost:6379}
 
-  # Mail is not wired yet — its autoconfiguration is excluded until the mailer
-  # (D4) is built, so an empty SMTP_HOST can't fail startup. Re-enable by
-  # removing the exclude and adding spring.mail config back.
+  # The mailer (D4) is built — see common/mail/EmailService — but it sends over
+  # Resend's HTTPS API, not SMTP, so Spring's JavaMailSender is still unused and
+  # its autoconfiguration stays excluded (an empty SMTP_HOST would fail startup).
+  # spring-boot-starter-mail is left in the pom so re-adding an SMTP path later is
+  # just deleting these two lines and setting spring.mail.*.
   autoconfigure:
     exclude:
       - org.springframework.boot.autoconfigure.mail.MailSenderAutoConfiguration
@@ -135,6 +137,18 @@ spring:
 
 # ── App-specific config ───────────────────────────────────────────────────────
 app:
+  # ── Transactional email (Resend) ───────────────────────────────────────────
+  # Both are optional: with either one blank the mailer logs a warning and skips
+  # the send rather than throwing, so dev and CI run without mail credentials.
+  #
+  # `from` MUST be on a domain verified in the Resend account (checkup.care) —
+  # Resend rejects anything else with a 403 that EmailService surfaces verbatim.
+  mail:
+    from: ${EMAIL_FROM:}
+    from-name: ${EMAIL_FROM_NAME:Checkup Pharmacy}
+    resend-api-key: ${RESEND_API_KEY:}
+    # Base URL the password-reset link points at.
+    app-url: ${APP_URL:http://localhost:3000}
   jwt:
     # HS256 secret used to sign and verify access/refresh tokens (min 32 chars).
     secret: ${JWT_SECRET}

@@ -23,6 +23,7 @@ const NotFoundPage      = lazy(() => import("./pages/NotFoundPage"));
 const LoginPage         = lazy(() => import("./pages/auth/LoginPage"));
 const RegisterPage      = lazy(() => import("./pages/auth/RegisterPage"));
 const ForgotPasswordPage = lazy(() => import("./pages/auth/ForgotPasswordPage"));
+const ResetPasswordPage  = lazy(() => import("./pages/auth/ResetPasswordPage"));
 
 // ─── Dashboard ────────────────────────────────────────────────
 const DashboardHomePage   = lazy(() => import("./pages/dashboard/HomePage"));
@@ -91,6 +92,9 @@ export function App() {
             <Route path="/login"           element={<LoginPage />} />
             <Route path="/register"        element={<RegisterPage />} />
             <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            {/* Landing page for the link AuthService emails out:
+                `${APP_URL}/reset-password?token=…` */}
+            <Route path="/reset-password"  element={<ResetPasswordPage />} />
           </Route>
 
           {/* Protected dashboard routes */}

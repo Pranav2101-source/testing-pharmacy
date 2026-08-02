@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Mail, ArrowLeft, ArrowRight, AlertCircle, Send, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { api, getErrorMessage } from "@/lib/api-client";
 
 type State = "idle" | "loading" | "sent" | "error";
 
@@ -24,10 +25,15 @@ export default function ForgotPasswordPage() {
     setErrMsg("");
 
     try {
-      await new Promise(r => setTimeout(r, 1200));
+      // The backend always returns 200 here — it never reveals whether the address
+      // is registered — so a resolved promise means "request accepted", not
+      // "an account exists". The success panel is worded to match.
+      await api.post("/auth/forgot-password", { email });
       setStatus("sent");
-    } catch {
-      setErrMsg("Something went wrong. Please try again.");
+    } catch (err) {
+      // Rate limiting (429) is the one failure a user hits in practice; the
+      // interceptor already turns it into a readable sentence.
+      setErrMsg(getErrorMessage(err, "Something went wrong. Please try again."));
       setStatus("error");
     }
   }

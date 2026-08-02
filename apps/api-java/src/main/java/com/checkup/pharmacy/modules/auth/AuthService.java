@@ -7,6 +7,9 @@ import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.exception.UnauthorizedException;
 import com.checkup.pharmacy.common.enums.AuditModule;
 import com.checkup.pharmacy.common.enums.AuditStatus;
+import com.checkup.pharmacy.common.mail.EmailPayload;
+import com.checkup.pharmacy.common.mail.EmailSendException;
+import com.checkup.pharmacy.common.mail.EmailService;
 import com.checkup.pharmacy.modules.audit.AuditEntry;
 import com.checkup.pharmacy.modules.audit.AuditService;
 import com.checkup.pharmacy.modules.auth.dto.AuthUser;
@@ -25,10 +28,14 @@ import com.checkup.pharmacy.security.JwtPayload;
 import com.checkup.pharmacy.security.TokenPair;
 import com.checkup.pharmacy.tenant.CrossTenant;
 import io.jsonwebtoken.JwtException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -46,6 +53,7 @@ import java.util.Locale;
 @Service
 public class AuthService {
 
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
     private static final Duration RESET_TOKEN_TTL = Duration.ofHours(1);
     private static final SecureRandom RNG = new SecureRandom();
     private static final java.util.Set<Role> PLATFORM_ROLES =
@@ -56,17 +64,23 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final AuditService auditService;
+    private final EmailService emailService;
+    private final String appUrl;
 
     public AuthService(UserRepository userRepository,
                        PharmacyRepository pharmacyRepository,
                        PasswordEncoder passwordEncoder,
                        JwtService jwtService,
-                       AuditService auditService) {
+                       AuditService auditService,
+                       EmailService emailService,
+                       @Value("${app.mail.app-url:http://localhost:3000}") String appUrl) {
         this.userRepository = userRepository;
         this.pharmacyRepository = pharmacyRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
         this.auditService = auditService;
+        this.emailService = emailService;
+        this.appUrl = appUrl;
     }
 
     /** Carries the user DTO plus freshly issued tokens back to the controller. */
@@ -217,8 +231,43 @@ public class AuthService {
         userRepository.findByEmail(req.email()).ifPresent(user -> {
             String rawToken = randomToken();
             user.setResetToken(sha256(rawToken), Instant.now().plus(RESET_TOKEN_TTL));
-            // TODO: email the raw token as a reset link once the mailer module exists.
+
+            String link = appUrl + "/reset-password?token=" +
+                    URLEncoder.encode(rawToken, StandardCharsets.UTF_8);
+            try {
+                emailService.send(new EmailPayload(
+                        user.getEmail(),
+                        "Reset your Checkup Pharmacy password",
+                        resetEmailHtml(link),
+                        resetEmailText(link),
+                        null));
+            } catch (EmailSendException e) {
+                // This endpoint must not reveal whether the address is registered, and a mail
+                // outage is not the caller's problem — log it and still return 200. The token
+                // is already persisted, so a retry from the user works once mail recovers.
+                log.error("Password-reset email failed for user {}", user.getId(), e);
+            }
         });
+    }
+
+    private String resetEmailHtml(String link) {
+        return """
+                <p>We received a request to reset your Checkup Pharmacy password.</p>
+                <p><a href="%s">Choose a new password</a></p>
+                <p>This link expires in one hour. If you didn't ask for it, you can ignore \
+                this email — your password stays unchanged.</p>
+                """.formatted(link);
+    }
+
+    private String resetEmailText(String link) {
+        return """
+                We received a request to reset your Checkup Pharmacy password.
+
+                Choose a new password: %s
+
+                This link expires in one hour. If you didn't ask for it, you can ignore this \
+                email — your password stays unchanged.
+                """.formatted(link);
     }
 
     @CrossTenant("Unauthenticated route; the user is found by reset-token hash, which carries no tenant.")
