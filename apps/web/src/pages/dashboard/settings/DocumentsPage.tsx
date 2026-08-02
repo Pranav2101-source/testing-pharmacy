@@ -7,7 +7,7 @@ import {
   Banknote, ShieldCheck, Save, Loader2, AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -20,7 +20,14 @@ interface StoredDoc {
   expiryDate:      string;
   fileName:        string | null;
   fileStoragePath: string | null;
-  fileSignedUrl?:  string | null;  // ephemeral — populated on load, not persisted
+  /**
+   * Upload row id — PERSISTED, and the thing that makes a saved document viewable
+   * again. Signed URLs live 10 minutes and are deliberately not stored, so without
+   * this id there is no way to mint a fresh link after a reload: the View action on
+   * every previously-saved document was dead.
+   */
+  uploadId?:       string | null;
+  fileSignedUrl?:  string | null;  // ephemeral — fetched on demand, never persisted
   status:          DocStatus;
   required?:       boolean;
 }
@@ -59,7 +66,8 @@ function mergeWithTemplates(stored: StoredDoc[]): DocEntry[] {
       expiryDate:      s?.expiryDate      ?? "",
       fileName:        s?.fileName        ?? null,
       fileStoragePath: s?.fileStoragePath ?? null,
-      fileSignedUrl:   s?.fileSignedUrl   ?? null,
+      uploadId:        s?.uploadId        ?? null,
+      fileSignedUrl:   null, // never stored; fetched on demand via uploadId
       status:          s?.status          ?? "pending",
     };
   });
@@ -100,12 +108,14 @@ function DocCard({
   onChangeField,
   onFileSelected,
   onRemoveFile,
+  onViewDoc,
   uploading,
 }: {
   doc:            DocEntry;
   onChangeField:  (id: string, field: "docNumber" | "expiryDate", value: string) => void;
   onFileSelected: (id: string, file: File) => void;
   onRemoveFile:   (id: string) => void;
+  onViewDoc:      (doc: DocEntry) => void;
   uploading:      boolean;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -201,9 +211,15 @@ function DocCard({
               aria-label="Remove file">
               <X className="w-3.5 h-3.5" />
             </button>
-            {displayUrl && (
+            {/* Shown whenever there is something to view — either a just-picked local
+                file or a saved one we can mint a fresh signed URL for. Previously it
+                required an in-memory signed URL, so it vanished for every document
+                after a reload. */}
+            {(displayUrl || doc.uploadId) && (
               <button
-                onClick={() => window.open(displayUrl, "_blank", "noopener,noreferrer")}
+                onClick={() => displayUrl
+                  ? window.open(displayUrl, "_blank", "noopener,noreferrer")
+                  : onViewDoc(doc)}
                 className={cn("transition-colors", doc.pendingFile ? "text-blue-400 hover:text-blue-700" : "text-emerald-500 hover:text-emerald-700")}
                 aria-label="View file">
                 <Eye className="w-3.5 h-3.5" />
@@ -276,6 +292,8 @@ export default function DocumentsPage() {
   const [saved,      setSaved]      = useState(false);
   const [saveError,  setSaveError]  = useState<string | null>(null);
   const [uploading,  setUploading]  = useState<string | null>(null); // docId being uploaded
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [loadError,  setLoadError]  = useState<string | null>(null);
 
   // ── Load from API ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -283,8 +301,17 @@ export default function DocumentsPage() {
       .then(({ data }) => {
         const stored: StoredDoc[] = Array.isArray(data.data?.documents) ? data.data.documents : [];
         setDocs(mergeWithTemplates(stored));
+        setLoadError(null);
       })
-      .catch(() => { /* keep default empty state */ })
+      .catch((err) => {
+        // NOT silent, and Save is blocked while it stands.
+        //
+        // This previously fell back to empty templates with no indication. Saving
+        // from that state PATCHes an empty document list over whatever was stored —
+        // so one failed GET, and a pharmacy's drug licence and GST certificate
+        // records are wiped by a user who thought they were filling in a blank form.
+        setLoadError(getErrorMessage(err, "Could not load your documents."));
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -298,27 +325,55 @@ export default function DocumentsPage() {
     // Optimistically store as pending
     setDocs((prev) => prev.map((d) => d.id !== id ? d : { ...d, pendingFile: file }));
     setUploading(id);
+    setUploadError(null);
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const { data } = await api.post<{ data: { fileUrl: string; signedUrl: string | null; fileName: string } }>(
-        "/uploads/pharmacy-document", fd,
-      );
+      const { data } = await api.post<{
+        data: { id: string; fileUrl: string; signedUrl: string | null; fileName: string };
+      }>("/uploads/pharmacy-document", fd);
       setDocs((prev) => prev.map((d) =>
         d.id !== id ? d : {
           ...d,
           pendingFile:     null,
           fileName:        data.data.fileName,
           fileStoragePath: data.data.fileUrl,
+          uploadId:        data.data.id,
           fileSignedUrl:   data.data.signedUrl,
           status:          "uploaded" as DocStatus,
         },
       ));
-    } catch {
-      // Revert optimistic update
+    } catch (err) {
+      // Revert the optimistic update AND say why. This used to fail completely
+      // silently: the row simply reverted, so a 10MB-limit or wrong-file-type
+      // rejection — both of which the API names precisely — looked like nothing
+      // had happened at all.
       setDocs((prev) => prev.map((d) => d.id !== id ? d : { ...d, pendingFile: null }));
+      setUploadError(getErrorMessage(err, "Could not upload that file. Please try again."));
     } finally {
       setUploading(null);
+    }
+  }
+
+  /**
+   * Mints a fresh signed URL for an already-saved document.
+   *
+   * Stored docs carry only an `uploadId`; the 10-minute signed URL is never
+   * persisted, so viewing one after a reload requires asking for a new link.
+   */
+  async function handleViewDoc(doc: DocEntry) {
+    if (doc.fileSignedUrl) { window.open(doc.fileSignedUrl, "_blank", "noopener"); return; }
+    if (!doc.uploadId) {
+      setUploadError("This document was saved before file links were tracked. Please re-upload it.");
+      return;
+    }
+    setUploadError(null);
+    try {
+      const { data } = await api.get<{ data: { signedUrl: string } }>(`/uploads/${doc.uploadId}/signed-url`);
+      setDocs((prev) => prev.map((d) => d.id !== doc.id ? d : { ...d, fileSignedUrl: data.data.signedUrl }));
+      window.open(data.data.signedUrl, "_blank", "noopener");
+    } catch (err) {
+      setUploadError(getErrorMessage(err, "Could not open that document. Please try again."));
     }
   }
 
@@ -359,13 +414,20 @@ export default function DocumentsPage() {
 
   // ── Save to API ───────────────────────────────────────────────────────────
   async function handleSave() {
+    // Refuse to save on top of a failed load — see the loadError comment above.
+    if (loadError) {
+      setSaveError("Can't save while your existing documents failed to load — reload the page first.");
+      return;
+    }
     setSaving(true); setSaveError(null);
     try {
       await api.patch("/pharmacy/documents", { documents: toStoredDocs(docs) });
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
-    } catch {
-      setSaveError("Failed to save. Please try again.");
+    } catch (err) {
+      // Surfaces the server's reason — notably 403 for a staff member without
+      // OWNER/MANAGER, which "Failed to save" gave no hint of.
+      setSaveError(getErrorMessage(err, "Failed to save. Please try again."));
     } finally {
       setSaving(false);
     }
@@ -412,6 +474,25 @@ export default function DocumentsPage() {
               <span className="text-xs font-semibold text-slate-600">{uploadedCount}/{docs.length} uploaded</span>
             </div>
 
+            {/* Load / upload failures. Both used to be invisible: a failed GET left an
+                empty form that could overwrite stored documents on save, and a rejected
+                file just quietly disappeared from its row. */}
+            {loadError && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-[12px] text-red-700">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>{loadError} Saving is disabled — reload the page to try again.</span>
+              </div>
+            )}
+            {uploadError && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-[12px] text-red-700">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>{uploadError}</span>
+                <button onClick={() => setUploadError(null)} className="ml-auto text-red-400 hover:text-red-600" aria-label="Dismiss">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {/* Save button */}
             <div className="flex items-center gap-2">
               <AnimatePresence mode="wait">
@@ -428,7 +509,8 @@ export default function DocumentsPage() {
                   </motion.span>
                 )}
               </AnimatePresence>
-              <button onClick={handleSave} disabled={saving}
+              <button onClick={handleSave} disabled={saving || !!loadError}
+                title={loadError ? "Reload the page before saving" : undefined}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-sm font-semibold text-white shadow-sm transition-all active:scale-[0.97]">
                 {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                 Save
@@ -454,6 +536,7 @@ export default function DocumentsPage() {
                   onChangeField={handleChangeField}
                   onFileSelected={handleFileSelected}
                   onRemoveFile={handleRemoveFile}
+                  onViewDoc={handleViewDoc}
                   uploading={uploading === doc.id}
                 />
               </motion.div>
@@ -477,6 +560,7 @@ export default function DocumentsPage() {
                       onChangeField={handleChangeField}
                       onFileSelected={handleFileSelected}
                       onRemoveFile={handleRemoveFile}
+                  onViewDoc={handleViewDoc}
                       uploading={uploading === doc.id}
                     />
                     <button

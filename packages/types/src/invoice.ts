@@ -104,7 +104,18 @@ export type InvoiceSettingsConfig = {
   // ── Numbering ──────────────────────────────────────────────────────────────
   numbering: {
     prefix:             string;   // "INV", "BILL", "RX", custom
-    financialYear:      string;   // "2025-26" — empty string = no FY in number
+    /**
+     * Default. The financial year is computed from the current IST date and rolls
+     * over automatically on 1 April, so a number issued in FY 2026-27 says so
+     * without anyone remembering to edit a setting.
+     *
+     * Set false to pin `financialYear` to a literal value — needed for data
+     * migration, backdated invoices, and testing, where the number has to carry a
+     * year other than today's.
+     */
+    autoFinancialYear:  boolean;
+    /** Literal FY, used only when `autoFinancialYear` is false. Empty = omit the year. */
+    financialYear:      string;
     separator:          string;   // "/" or "-"
     counterLength:      number;   // 4–8 digits
     currentSequence:    number;   // managed by Redis; not editable from UI
@@ -133,6 +144,49 @@ export const GST_LOCKED_FIELDS = {
   "totals.showIgst":        "IGST must be shown for interstate transactions",
   "totals.showGstBreakdown":"GST slab-wise breakup is required",
 } as const;
+
+// ─── Normalisation ────────────────────────────────────────────────────────────
+
+/**
+ * Fills a stored (possibly partial, possibly old) config out to a complete one and
+ * re-asserts the GST-mandatory fields.
+ *
+ * <p>THE SINGLE PLACE THIS HAPPENS. It previously existed as three near-copies —
+ * in the settings page, in the print-config hook, and inside InvoicePrintView —
+ * and the third had drifted: it merged defaults but did NOT force the
+ * {@link GST_LOCKED_FIELDS} back on. That copy is what renders the actual bill, so
+ * a stored config carrying `showHsn: false` (written before the lock existed, or
+ * hand-edited) would have printed a GST invoice with no HSN column while the
+ * settings screen showed the toggle as locked on.
+ *
+ * <p>Forcing the locked fields on read, not just on write, is deliberate: it means
+ * a non-compliant invoice cannot be produced regardless of what is in the database.
+ */
+export function normalizeInvoiceSettings(
+  partial: Partial<InvoiceSettingsConfig> | null | undefined,
+): InvoiceSettingsConfig {
+  const p = partial ?? {};
+  return {
+    ...defaultInvoiceSettings,
+    ...p,
+    branding:  { ...defaultInvoiceSettings.branding, ...p.branding },
+    header:    { ...defaultInvoiceSettings.header,   ...p.header,   showGstin: true },
+    patient:   { ...defaultInvoiceSettings.patient,  ...p.patient  },
+    columns:   {
+      ...defaultInvoiceSettings.columns, ...p.columns,
+      showHsn: true, showGstRate: true, showTaxable: true,
+    },
+    totals:    {
+      ...defaultInvoiceSettings.totals, ...p.totals,
+      showTaxable: true, showCgst: true, showSgst: true, showIgst: true, showGstBreakdown: true,
+    },
+    footer:    { ...defaultInvoiceSettings.footer,    ...p.footer    },
+    numbering: { ...defaultInvoiceSettings.numbering, ...p.numbering },
+    paper:     { ...defaultInvoiceSettings.paper,     ...p.paper     },
+    policy:    { ...defaultInvoiceSettings.policy,    ...p.policy    },
+    customFields: p.customFields ?? defaultInvoiceSettings.customFields,
+  };
+}
 
 // ─── Defaults ─────────────────────────────────────────────────────────────────
 
@@ -213,11 +267,14 @@ export const defaultInvoiceSettings: InvoiceSettingsConfig = {
   },
 
   numbering: {
-    prefix:          "INV",
-    financialYear:   "2025-26",
-    separator:       "/",
-    counterLength:   6,
-    currentSequence: 1,
+    prefix:            "INV",
+    autoFinancialYear: true,
+    // Ignored while autoFinancialYear is true; kept blank so switching the toggle
+    // off does not silently resurrect a hardcoded year from a previous release.
+    financialYear:     "",
+    separator:         "/",
+    counterLength:     6,
+    currentSequence:   1,
   },
 
   customFields: [],

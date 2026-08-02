@@ -76,3 +76,32 @@ export function isNearExpiry(
   threshold.setDate(threshold.getDate() + daysThreshold);
   return expiry <= threshold && expiry >= new Date();
 }
+
+/**
+ * The Indian financial year label used in document numbers, e.g. `"25-26"`.
+ *
+ * <p>Mirrors the backend's `DocumentSequenceService.fyShort()` exactly — same IST
+ * anchor, same April-1 rollover, same two-digit form. That equivalence is the whole
+ * point: this drives the live preview on the Invoice Settings screen while the
+ * backend drives the number actually stamped on the bill, and if the two ever
+ * disagreed the preview would once again be promising something the invoice does
+ * not deliver.
+ *
+ * <p>Anchored to IST rather than the browser's zone for the same reason as
+ * {@link istRangeStart}: the pharmacy's financial year is an Indian one no matter
+ * where the person looking at the screen is sitting, and a device in another
+ * timezone must not show a different year on 31 March / 1 April.
+ */
+export function financialYearShort(now: Date = new Date()): string {
+  // Shift the instant into IST, then read the date parts off the UTC accessors —
+  // this yields IST calendar values regardless of the host's own timezone.
+  const ist = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+  const year = ist.getUTCFullYear();
+  const month = ist.getUTCMonth() + 1; // 1-12
+
+  // The Indian FY runs April → March, so anything before April belongs to the
+  // year that started the previous calendar year.
+  const startYear = month >= 4 ? year : year - 1;
+  const two = (y: number) => String(y % 100).padStart(2, "0");
+  return `${two(startYear)}-${two(startYear + 1)}`;
+}

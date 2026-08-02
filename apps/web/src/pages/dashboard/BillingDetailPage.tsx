@@ -26,6 +26,8 @@ type InvoiceItem = {
   expiryDate: string;
   location: string | null;
   quantity: number;
+  /** Scheme quantity given free — not charged, but dispensed. */
+  freeQty?: number;
   mrp: number;
   rate: number;
   discount: number;
@@ -178,6 +180,7 @@ export default function BillDetailPage() {
       expiryDate:    i.expiryDate,
       mrp:           i.mrp,
       quantity:      i.quantity,
+      freeQty:       i.freeQty,
       discount:      i.discount,
       gstRate:       i.gstRate,
       rate:          i.rate,

@@ -171,7 +171,11 @@ export function getErrorMessage(err: unknown, fallback: string): string {
 
   const status    = err.response?.status;
   const data      = err.response?.data as { error?: string; message?: string } | undefined;
-  const serverMsg = data?.error ?? data?.message;
+  // Blank is treated as absent, not as a message. `ApiResponse.fail(ex.getMessage())`
+  // serialises an exception whose message is an empty string as `"error": ""`, and a
+  // present-but-empty string would otherwise win every `??` below and surface as an
+  // empty toast — a failure the user can see happened but not read.
+  const serverMsg = blankToUndefined(data?.error) ?? blankToUndefined(data?.message);
 
   // The backend's catch-all and its AccessDeniedException handler return these two
   // fixed strings by design (never leaking internals). They're correct as wire values
@@ -184,7 +188,32 @@ export function getErrorMessage(err: unknown, fallback: string): string {
     return "Something went wrong on our end. Please try again in a moment.";
   }
 
-  return serverMsg ?? err.message ?? fallback;
+  return serverMsg ?? usableAxiosMessage(err.message) ?? fallback;
+}
+
+function blankToUndefined(s: string | undefined): string | undefined {
+  return s && s.trim() ? s : undefined;
+}
+
+/**
+ * Axios's own auto-generated message for any failed status, e.g.
+ * "Request failed with status code 400".
+ *
+ * It carries no information the caller's `fallback` doesn't carry better, and it
+ * reads as jargon to the person at the till. It reaches users whenever a response
+ * has no `{ error }` envelope — a Tomcat-level 400 (see the encoded-slash barcode
+ * case), an HTML error page from a proxy, or a gateway timeout — so this is a real
+ * path, not a theoretical one.
+ *
+ * Matched narrowly on purpose: the response interceptor REPLACES err.message with a
+ * deliberately friendly sentence for offline/429/503, and those must keep winning
+ * over the caller's fallback.
+ */
+const AXIOS_DEFAULT_STATUS_MESSAGE = /^Request failed with status code \d+$/;
+
+function usableAxiosMessage(s: string | undefined): string | undefined {
+  const msg = blankToUndefined(s);
+  return msg && AXIOS_DEFAULT_STATUS_MESSAGE.test(msg) ? undefined : msg;
 }
 
 /**

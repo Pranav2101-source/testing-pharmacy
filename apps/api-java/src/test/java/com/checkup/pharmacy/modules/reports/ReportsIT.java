@@ -30,6 +30,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Reporting: daily sales, GST, dead stock, valuation, EOD summary.
@@ -88,7 +89,7 @@ class ReportsIT extends AbstractPostgresIT {
     private void cashSale(int units) {
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, units, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO))));
         flushAndClear();
     }
 
@@ -130,7 +131,7 @@ class ReportsIT extends AbstractPostgresIT {
         authenticateAs(otherUser.getId(), other.getId(), Role.OWNER);
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(otherBatch, 5, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(otherBatch, 5, null, BigDecimal.ZERO))));
         flushAndClear();
 
         var otherReport = reportsService.dailySales(null);
@@ -200,7 +201,7 @@ class ReportsIT extends AbstractPostgresIT {
 
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, prescription.getId(), "CASH", "PAID",
                 null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 1, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO))));
         flushAndClear();
 
         List<ScheduleHItemResponse> register =
@@ -208,5 +209,46 @@ class ReportsIT extends AbstractPostgresIT {
 
         assertThat(register).anySatisfy(item ->
                 assertThat(item.inventory().medicine().name()).isEqualTo("Amoxicillin 250"));
+    }
+
+    // ── Daily sales series ─────────────────────────────────────────────────────
+    //
+    // Added with the endpoint that replaced the chart's day-by-day fan-out (seven HTTP
+    // calls, two DB queries each) with one grouped query. The gap-filling matters: the
+    // chart needs a continuous axis, so quiet days must come back as explicit zeros.
+
+    @Test
+    @DisplayName("the daily series returns one row per day, filling days with no sales")
+    void dailySeriesFillsEmptyDays() {
+        cashSale(2); // Rs.200 today
+
+        java.time.LocalDate today = java.time.LocalDate.now(java.time.ZoneOffset.ofHoursMinutes(5, 30));
+        String from = today.minusDays(6).toString();
+        var series = reportsService.dailySalesSeries(from, today.toString());
+
+        assertThat(series).as("one row per day across the 7-day window").hasSize(7);
+        assertThat(series.get(0).date()).isEqualTo(from);
+        assertThat(series.get(6).date()).isEqualTo(today.toString());
+
+        var todayRow = series.get(6);
+        assertThat(todayRow.invoiceCount()).as("today's sale is counted").isEqualTo(1);
+        assertThat(todayRow.revenue()).isEqualByComparingTo(new BigDecimal("200"));
+
+        // A day with no sales must still be present, as a zero — not missing.
+        var quietDay = series.get(0);
+        assertThat(quietDay.invoiceCount()).isZero();
+        assertThat(quietDay.revenue()).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    @Test
+    @DisplayName("an inverted or oversized series range is refused with a clear reason")
+    void dailySeriesRejectsBadRanges() {
+        assertThatThrownBy(() -> reportsService.dailySalesSeries("2026-07-10", "2026-07-01"))
+                .isInstanceOf(com.checkup.pharmacy.common.exception.BadRequestException.class)
+                .hasMessageContaining("after the end date");
+
+        assertThatThrownBy(() -> reportsService.dailySalesSeries("2020-01-01", "2026-12-31"))
+                .isInstanceOf(com.checkup.pharmacy.common.exception.BadRequestException.class)
+                .hasMessageContaining("Narrow the range");
     }
 }

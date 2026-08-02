@@ -124,7 +124,7 @@ class BillingIT extends AbstractPostgresIT {
                                               String inventoryId, int quantity) {
         return new CreateInvoiceRequest(customerId, null, null, null, null, null, null, null, null,
                 null, null, null, idempotencyKey,
-                List.of(new InvoiceItemRequest(inventoryId, quantity, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(inventoryId, quantity, null, BigDecimal.ZERO)));
     }
 
     private long movementCountFor(String inventoryId) {
@@ -249,7 +249,7 @@ class BillingIT extends AbstractPostgresIT {
 
         var request = new CreateInvoiceRequest(walkInId, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 1, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
                 .isInstanceOf(UnprocessableEntityException.class)
@@ -264,7 +264,7 @@ class BillingIT extends AbstractPostgresIT {
         // 10 x Rs.20 MRP = Rs.200, well past the Rs.50 limit.
         var request = new CreateInvoiceRequest(creditId, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 10, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
                 .isInstanceOf(UnprocessableEntityException.class)
@@ -278,7 +278,7 @@ class BillingIT extends AbstractPostgresIT {
 
         var request = new CreateInvoiceRequest(creditId, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 10, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
 
         var response = billingService.createInvoice(request);
         flushAndClear();
@@ -305,7 +305,7 @@ class BillingIT extends AbstractPostgresIT {
 
         var request = new CreateInvoiceRequest(creditId, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 1, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
                 .isInstanceOf(UnprocessableEntityException.class)
@@ -349,7 +349,7 @@ class BillingIT extends AbstractPostgresIT {
         // 10 x Rs.20 = Rs.200 of goods, less a Rs.5000 "adjustment".
         var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 null, null, new BigDecimal("-5000"), null,
-                List.of(new InvoiceItemRequest(batchId, 10, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
                 .isInstanceOf(UnprocessableEntityException.class)
@@ -370,7 +370,7 @@ class BillingIT extends AbstractPostgresIT {
     void zeroValueInvoiceIsAllowed() {
         var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 new BigDecimal("100"), null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 10, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
 
         var response = billingService.createInvoice(request);
         flushAndClear();
@@ -379,6 +379,109 @@ class BillingIT extends AbstractPostgresIT {
         assertThat(batch().getQuantity())
                 .as("a 100%-discounted sale still dispenses the goods")
                 .isEqualTo(90);
+    }
+
+    // ── List endpoints: response shape + filter validation ────────────────────
+    //
+    // These exist because the whole module's business logic was covered while the two
+    // endpoints the Sales page actually calls were not — listInvoices/listReturns had
+    // no test at all, so a DTO that no frontend could read passed every check and
+    // shipped. The shape assertions below are deliberately about structure, not values.
+
+    @Test
+    @DisplayName("invoice list rows nest customer/user/_count the way the Sales page reads them")
+    void invoiceListRowsUseNestedShape() {
+        String customerId = createCreditCustomer(new BigDecimal("5000.00"));
+        billingService.createInvoice(build(customerId, null, batchId, 3));
+        flushAndClear();
+
+        var row = billingService.listInvoices(null, null, null, null, true, null, null,
+                null, null, null, null, 1, 20).items().getFirst();
+
+        // SalesPage.tsx reads inv.user.name and inv._count.items with no optional
+        // chaining — a flat userName/itemCount here is undefined in the browser and
+        // takes down the entire Bills table, not just the cell.
+        assertThat(row.user()).as("user must be an object, not a flat userName").isNotNull();
+        assertThat(row.user().name()).isEqualTo("Owner");
+        assertThat(row._count()).as("_count must be an object, not a flat itemCount").isNotNull();
+        assertThat(row._count().items()).isEqualTo(1);
+        assertThat(row.customer()).as("customer must be an object, not flat customerName/Phone").isNotNull();
+        assertThat(row.customer().name()).isEqualTo("Credit Co");
+    }
+
+    @Test
+    @DisplayName("a walk-in bill reports a null customer rather than an empty object")
+    void walkInInvoiceHasNullCustomer() {
+        billingService.createInvoice(invoiceFor(batchId, 1));
+        flushAndClear();
+
+        var row = billingService.listInvoices(null, null, null, null, true, null, null,
+                null, null, null, null, 1, 20).items().getFirst();
+
+        // The frontend renders its "—"/"Walk-in" fallback off exactly this null.
+        assertThat(row.customer()).isNull();
+        assertThat(row.user().name()).as("entry-by is still known for a walk-in").isEqualTo("Owner");
+    }
+
+    @Test
+    @DisplayName("an inverted date range is rejected instead of silently matching nothing")
+    void invertedDateRangeIsRejected() {
+        Instant from = Instant.now();
+        Instant to = from.minus(30, ChronoUnit.DAYS);
+
+        assertThatThrownBy(() -> billingService.listInvoices(null, from, to, null, true, null, null,
+                null, null, null, null, 1, 20))
+                .isInstanceOf(com.checkup.pharmacy.common.exception.BadRequestException.class)
+                .hasMessageContaining("is after the 'to' date");
+
+        assertThatThrownBy(() -> billingService.listReturns(null, from, to, null, 1, 20))
+                .isInstanceOf(com.checkup.pharmacy.common.exception.BadRequestException.class)
+                .hasMessageContaining("is after the 'to' date");
+    }
+
+    @Test
+    @DisplayName("an inverted amount filter is rejected instead of silently matching nothing")
+    void invertedAmountRangeIsRejected() {
+        assertThatThrownBy(() -> billingService.listInvoices(null, null, null, null, true, null, null,
+                null, null, new BigDecimal("5000"), new BigDecimal("100"), 1, 20))
+                .isInstanceOf(com.checkup.pharmacy.common.exception.BadRequestException.class)
+                .hasMessageContaining("greater than the maximum");
+    }
+
+    @Test
+    @DisplayName("the returns list reports units returned without shipping items, resolving invoice + user in batch")
+    void returnsListUsesBatchedRefsAndTotalQuantity() {
+        var invoice = billingService.createInvoice(invoiceFor(batchId, 10));
+        flushAndClear();
+        String invoiceItemId = billingService.getInvoice(invoice.id()).items().getFirst().id();
+        billingService.createReturn(invoice.id(), new com.checkup.pharmacy.modules.billing.dto.CreateReturnRequest(
+                "Damaged strip",
+                List.of(new com.checkup.pharmacy.modules.billing.dto.ReturnItemRequest(invoiceItemId, 4, null)),
+                null));
+        flushAndClear();
+
+        var page = billingService.listReturns(null, null, null, null, 1, 20);
+        assertThat(page.items()).hasSize(1);
+        var row = page.items().getFirst();
+
+        // Each of these was previously a separate query PER ROW (items, the full Invoice
+        // entity, and the user); the list now batches all three for the whole page.
+        assertThat(row.totalQuantity()).as("units returned are reported for the row").isEqualTo(4);
+        assertThat(row.items()).as("but the lines themselves are not shipped in the list").isEmpty();
+        assertThat(row.invoice()).as("originating invoice ref resolved in batch").isNotNull();
+        assertThat(row.invoice().invoiceNumber()).isEqualTo(invoice.invoiceNumber());
+        assertThat(row.user()).as("acting user resolved in batch").isNotNull();
+        assertThat(row.user().name()).isEqualTo("Owner");
+        assertThat(row.customer()).as("walk-in sale has no customer").isNull();
+    }
+
+    @Test
+    @DisplayName("an equal from/to range is allowed — a single-day filter is legitimate")
+    void equalDateBoundsAreAllowed() {
+        Instant sameMoment = Instant.now();
+
+        assertThat(billingService.listInvoices(null, sameMoment, sameMoment, null, true, null, null,
+                null, null, null, null, 1, 20)).isNotNull();
     }
 
     private String createCreditCustomer(BigDecimal creditLimit) {

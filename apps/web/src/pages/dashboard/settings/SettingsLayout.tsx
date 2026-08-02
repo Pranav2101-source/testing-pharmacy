@@ -1,17 +1,19 @@
 import { Suspense } from "react";
 import { Link, useLocation, Outlet } from "react-router-dom";
 import { motion } from "framer-motion";
-import { FileText, CreditCard, KeyRound, ArrowLeft, Users, Receipt, FileOutput, User, MapPin } from "lucide-react";
+import { FileText, KeyRound, ArrowLeft, Users, Receipt, FileOutput, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+// Locations and Plans were removed from this menu. Locations still exists as a
+// top-level dashboard page (/dashboard/locations) — only the settings duplicate
+// is gone. Both old settings URLs redirect to Profile in App.tsx so existing
+// bookmarks and links do not 404.
 const NAV = [
-  { href: "/dashboard/settings/profile",    label: "Profile",           icon: User       },
-  { href: "/dashboard/settings/documents",  label: "Documents & Legal", icon: FileText   },
+  { href: "/dashboard/settings/profile",          label: "Profile",           icon: User       },
+  { href: "/dashboard/settings/documents",        label: "Documents & Legal", icon: FileText   },
   { href: "/dashboard/settings/staff",            label: "Staff Management",  icon: Users      },
-  { href: "/dashboard/settings/locations",         label: "Locations",         icon: MapPin     },
   { href: "/dashboard/settings/billing",          label: "Billing",           icon: Receipt    },
   { href: "/dashboard/settings/invoice",          label: "Invoice",           icon: FileOutput },
-  { href: "/dashboard/settings/plans",            label: "Plans",             icon: CreditCard },
   { href: "/dashboard/settings/change-password",  label: "Change Password",   icon: KeyRound   },
 ];
 

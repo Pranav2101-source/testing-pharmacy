@@ -11,8 +11,9 @@ import { BatchPickerDialog, type InventoryBatch, expiryStatus, getLocationLabel 
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
-// Column grid — 11 cols: ItemName | Pack | Batch+Loc | Expiry | MRP | Qty | D% | Rate | GST% | Amount | Del
-const COL = "grid-cols-[minmax(200px,1fr)_80px_104px_72px_80px_72px_64px_90px_64px_104px_38px]";
+// Column grid — 12 cols: ItemName | Pack | Batch+Loc | Expiry | MRP | Qty | Free | D% | Rate | GST% | Amount | Del
+// "Free" is scheme quantity (10+1): not charged, but deducted from the same batch.
+const COL = "grid-cols-[minmax(200px,1fr)_80px_104px_72px_80px_72px_56px_64px_90px_64px_104px_38px]";
 
 const CONTROLLED_BADGE: Record<string, string> = {
   H:  "bg-amber-100 text-amber-700 border-amber-200",
@@ -32,6 +33,7 @@ export function CartTableHeader() {
       <span className={cn(TH, "py-2.5")}>Expiry</span>
       <span className={cn(TH, "py-2.5")}>MRP</span>
       <span className={cn(TH, "py-2.5")}>Qty</span>
+      <span className={cn(TH, "py-2.5")} title="Scheme quantity given free — not charged, but deducted from stock">Free</span>
       <span className={cn(TH, "py-2.5")}>Disc %</span>
       <span className={cn(TH, "py-2.5")}>Rate</span>
       <span className={cn(TH, "py-2.5")}>GST</span>
@@ -48,7 +50,7 @@ function SkeletonRow({ idx }: { idx: number }) {
       <div className="px-3 flex items-center gap-2">
         <div className="skeleton h-3.5 w-36 rounded" />
       </div>
-      {[80, 104, 72, 80, 72, 64, 90, 64, 104].map((w, i) => (
+      {[80, 104, 72, 80, 72, 56, 64, 90, 64, 104].map((w, i) => (
         <div key={i} className="px-2.5 flex justify-end">
           <div className="skeleton h-3 rounded" style={{ width: w * 0.44 }} />
         </div>
@@ -60,12 +62,13 @@ function SkeletonRow({ idx }: { idx: number }) {
 
 // ─── Cart Row ─────────────────────────────────────────────────────
 const CartRow = memo(function CartRow({
-  item, idx, hasConflict, onKeyNav, onRemove, onQtyChange, onDiscountChange, onSwapBatch,
+  item, idx, hasConflict, onKeyNav, onRemove, onQtyChange, onFreeQtyChange, onDiscountChange, onSwapBatch,
 }: {
   item: CartItem; idx: number; hasConflict: boolean;
   onKeyNav:         (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => void;
   onRemove:         (id: string) => void;
   onQtyChange:      (id: string, qty: number) => void;
+  onFreeQtyChange:  (id: string, freeQty: number) => void;
   onDiscountChange: (id: string, discount: number) => void;
   onSwapBatch:      (item: CartItem) => void;
 }) {
@@ -74,9 +77,15 @@ const CartRow = memo(function CartRow({
   const isExpired      = expiry < now;
   const isExpiringSoon = !isExpired && expiry < now + 90 * 86400_000;
 
-  const stockStatus: "ok" | "low" | "over" | null = (() => {
+  const stockStatus: "ok" | "low" | "max" | "over" | null = (() => {
     if (item.availableStock == null) return null;
+    // "over" survives the entry cap in useBillingStore: a draft parked before the
+    // stock moved, or another till selling the same batch, can both leave a line
+    // above what is now on the shelf.
     if (item.quantity > item.availableStock) return "over";
+    // The line is sitting exactly on the cap — say so, otherwise a cashier who
+    // typed 50 and got 3 has no explanation for the number that appeared.
+    if (item.quantity === item.availableStock) return "max";
     if (item.quantity >= item.availableStock * 0.8) return "low";
     return "ok";
   })();
@@ -122,10 +131,13 @@ const CartRow = memo(function CartRow({
             <p className={cn(
               "text-[10px] font-semibold",
               stockStatus === "over" ? "text-red-500" :
+              stockStatus === "max"  ? "text-amber-600" :
               stockStatus === "low"  ? "text-amber-500" : "text-slate-400"
             )}>
               {stockStatus === "over"
                 ? `⚠ Only ${item.availableStock} in stock`
+                : stockStatus === "max"
+                ? `⚠ Max — only ${item.availableStock} in stock`
                 : stockStatus === "low"
                 ? `${item.availableStock - item.quantity} left`
                 : null}
@@ -207,6 +219,29 @@ const CartRow = memo(function CartRow({
         />
       </div>
 
+      {/* Free (scheme qty) — zero shows as a muted placeholder rather than a hard
+          "0", so a row with no scheme reads as empty at a glance. */}
+      <div className="px-1.5 py-1.5">
+        <input
+          type="number"
+          min={0}
+          value={item.freeQty || ""}
+          placeholder="0"
+          title="Free / scheme quantity — not charged, deducted from stock"
+          data-row={idx}
+          data-col="free"
+          onChange={(e) => onFreeQtyChange(item.inventoryId, Number(e.target.value))}
+          onFocus={(e) => e.target.select()}
+          className={cn(
+            "w-full text-center text-[14px] tabnum",
+            item.freeQty > 0 ? "font-bold text-emerald-700" : "text-slate-400",
+            "border border-slate-200 rounded-md px-1 py-1.5",
+            "focus:outline-none focus:ring-2 focus:ring-emerald-500/25 focus:border-emerald-400",
+            "bg-white hover:border-emerald-300 transition-all duration-75"
+          )}
+        />
+      </div>
+
       {/* D% */}
       <div className="px-1.5 py-1.5">
         <input
@@ -273,6 +308,7 @@ export function CartTableRows({
   const items          = useBillingStore((s) => s.items);
   const removeItem     = useBillingStore((s) => s.removeItem);
   const updateQty      = useBillingStore((s) => s.updateQty);
+  const updateFreeQty  = useBillingStore((s) => s.updateFreeQty);
   const updateDiscount = useBillingStore((s) => s.updateDiscount);
   const replaceItem    = useBillingStore((s) => s.replaceItem);
 
@@ -374,6 +410,7 @@ export function CartTableRows({
                 onKeyNav={handleKeyNav}
                 onRemove={removeItem}
                 onQtyChange={updateQty}
+                onFreeQtyChange={updateFreeQty}
                 onDiscountChange={updateDiscount}
                 onSwapBatch={handleSwapBatch}
               />

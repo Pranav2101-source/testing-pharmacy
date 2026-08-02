@@ -1,4 +1,5 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+import { api, getErrorMessage } from "./api-client";
 import {
   Printer, FilePlus2, BookmarkCheck, MessageCircle, Mail,
   Clock3, Truck, Package, Copy, RotateCcw,
@@ -162,37 +163,119 @@ const DEFAULT_PREFS: BillingPreferences = {
   ],
 };
 
-function loadPrefs(): BillingPreferences {
+/**
+ * Normalises a stored blob into a complete, valid preference set.
+ *
+ * Applied to whatever comes back from the API as well as to the cache, because the
+ * database holds free-form JSON written by an older release: a config saved before
+ * a new action existed must gain that action rather than silently hide it from the
+ * bill screen.
+ */
+function normalise(raw: unknown): BillingPreferences {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_PREFS;
-    const parsed = JSON.parse(raw) as BillingPreferences;
-    if (parsed.version !== 1) return DEFAULT_PREFS;
-    // Merge in any newly-added action IDs so old stored prefs stay valid
-    const existingIds = new Set(parsed.actions.map((a) => a.id));
-    const missing = DEFAULT_PREFS.actions.filter((a) => !existingIds.has(a.id));
-    return { ...parsed, actions: [...parsed.actions, ...missing] };
+    const parsed = raw as BillingPreferences | null;
+    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.actions)) return DEFAULT_PREFS;
+    const known = new Set(DEFAULT_PREFS.actions.map((a) => a.id));
+    // Drop ids this build no longer knows about, then append any it has gained.
+    const kept    = parsed.actions.filter((a) => known.has(a.id));
+    const keptIds = new Set(kept.map((a) => a.id));
+    const missing = DEFAULT_PREFS.actions.filter((a) => !keptIds.has(a.id));
+    return { version: 1, actions: [...kept, ...missing] };
   } catch {
     return DEFAULT_PREFS;
   }
 }
 
-function persistPrefs(prefs: BillingPreferences) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs)); } catch { /* quota */ }
+// ─── localStorage: a CACHE, never the source of truth ─────────────────────────
+//
+// The database is authoritative. This exists only so the bill screen can paint its
+// action bar on the first frame instead of flashing defaults while a request is in
+// flight — a till reopened mid-shift should not visibly rearrange its buttons.
+//
+// Consequences of that ordering, both deliberate:
+//   · the cache is overwritten by whatever the server returns, even if it differs;
+//   · it is only written AFTER a save the server accepted, so a rejected change is
+//     never cached and cannot come back to life on the next load.
+
+function readCache(): BillingPreferences | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? normalise(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(prefs: BillingPreferences) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs)); } catch { /* quota — cache is optional */ }
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useBillingPreferences() {
-  const [prefs, setPrefsState] = useState<BillingPreferences>(loadPrefs);
+  // Seed from cache for an instant first paint; the server's copy replaces it below.
+  const [prefs, setPrefsState] = useState<BillingPreferences>(() => readCache() ?? DEFAULT_PREFS);
+  const [loading, setLoading]  = useState(true);
+  const [saving,  setSaving]   = useState(false);
+  const [error,   setError]    = useState<string | null>(null);
+  // Whether the server's copy actually arrived. Writes are refused until it has —
+  // otherwise a toggle made on top of a stale cache would PUT that cache over the
+  // real config, quietly reverting whatever another till had saved.
+  const [loaded,  setLoaded]   = useState(false);
 
+  // Load from the database — the source of truth.
+  useEffect(() => {
+    let cancelled = false;
+    api.get("/billing/preferences")
+      .then(({ data }) => {
+        if (cancelled) return;
+        // A pharmacy that never configured anything reads back null; defaults apply
+        // and are NOT written back, so "never set" stays distinguishable from "set".
+        const next = data.data ? normalise(data.data) : DEFAULT_PREFS;
+        setPrefsState(next);
+        if (data.data) writeCache(next);
+        setLoaded(true);
+        setError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        // Keep showing the cached copy — a cashier mid-shift should not lose their
+        // action bar over a failed request — but say so, and block writes below so a
+        // stale cache can never be saved back over the server's real config.
+        setError(getErrorMessage(err, "Could not load billing preferences."));
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  /**
+   * Applies a change locally, then persists it. The cache is only updated once the
+   * server has accepted the write, so a rejected change never survives a reload.
+   */
   const setPrefs = useCallback((updater: (prev: BillingPreferences) => BillingPreferences) => {
+    if (!loaded) {
+      setError("Still loading your saved preferences — please wait a moment and try again.");
+      return;
+    }
     setPrefsState((prev) => {
       const next = updater(prev);
-      persistPrefs(next);
+      void persist(next);
       return next;
     });
-  }, []);
+
+    async function persist(next: BillingPreferences) {
+      setSaving(true);
+      try {
+        await api.put("/billing/preferences", next);
+        writeCache(next);
+        setError(null);
+      } catch (err) {
+        setError(getErrorMessage(err, "Could not save billing preferences."));
+      } finally {
+        setSaving(false);
+      }
+    }
+  }, [loaded]);
 
   const toggleEnabled = useCallback((id: ActionId) => {
     setPrefs((prev) => ({
@@ -225,9 +308,8 @@ export function useBillingPreferences() {
   }, [setPrefs]);
 
   const resetToDefaults = useCallback(() => {
-    setPrefsState(DEFAULT_PREFS);
-    persistPrefs(DEFAULT_PREFS);
-  }, []);
+    setPrefs(() => DEFAULT_PREFS);
+  }, [setPrefs]);
 
   const sorted        = [...prefs.actions].sort((a, b) => a.order - b.order);
   const pinnedActions = sorted.filter((a) => a.enabled && a.pinned);
@@ -242,5 +324,11 @@ export function useBillingPreferences() {
     togglePinned,
     moveAction,
     resetToDefaults,
+    /** True until the server's copy has arrived (cached values are shown meanwhile). */
+    loading,
+    /** True while a change is being written to the database. */
+    saving,
+    /** Load or save failure, already made readable. Null when everything is fine. */
+    error,
   };
 }

@@ -108,7 +108,7 @@ class PrescriptionIT extends AbstractPostgresIT {
     private CreateInvoiceRequest saleAgainst(String prescriptionId, String inventoryId, int quantity) {
         return new CreateInvoiceRequest(null, null, null, prescriptionId, null, null, null, null, null,
                 null, null, null, null,
-                List.of(new InvoiceItemRequest(inventoryId, quantity, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(inventoryId, quantity, null, BigDecimal.ZERO)));
     }
 
     private PrescriptionStatus statusOf(String id) {
@@ -199,8 +199,8 @@ class PrescriptionIT extends AbstractPostgresIT {
 
         var bothItems = new CreateInvoiceRequest(null, null, null, rxId, null, null, null, null, null,
                 null, null, null, null,
-                List.of(new InvoiceItemRequest(amoxBatchId, 10, BigDecimal.ZERO),
-                        new InvoiceItemRequest(paraBatchId, 10, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO),
+                        new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO)));
 
         billingService.createInvoice(bothItems);
         flushAndClear();
@@ -215,8 +215,8 @@ class PrescriptionIT extends AbstractPostgresIT {
 
         var bothItems = new CreateInvoiceRequest(null, null, null, rxId, null, null, null, null, null,
                 null, null, null, null,
-                List.of(new InvoiceItemRequest(amoxBatchId, 10, BigDecimal.ZERO),
-                        new InvoiceItemRequest(paraBatchId, 10, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO),
+                        new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO)));
         billingService.createInvoice(bothItems);
         flushAndClear();
 

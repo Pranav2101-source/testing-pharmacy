@@ -89,6 +89,30 @@ public class BillingController {
         return ApiResponse.ok(billingService.saveInvoiceSettings(config));
     }
 
+    /**
+     * Billing-screen action preferences (which save actions exist, pinned, order).
+     *
+     * <p>Readable by any staff member — every till renders its action bar from this.
+     * Declared before {@code @GetMapping("/{id}")} so the literal path is unmistakable
+     * even though Spring already prefers it over a path variable.
+     */
+    @GetMapping("/preferences")
+    public ApiResponse<com.fasterxml.jackson.databind.JsonNode> getBillingPreferences() {
+        return ApiResponse.ok(billingService.getBillingPreferences());
+    }
+
+    /**
+     * Save billing preferences — OWNER/MANAGER. Shop-wide workflow config, so it sits
+     * with the other pharmacy-profile writes rather than being OWNER-only like invoice
+     * numbering, which carries legal weight.
+     */
+    @PutMapping("/preferences")
+    @PreAuthorize("hasAnyRole('OWNER','MANAGER')")
+    public ApiResponse<com.fasterxml.jackson.databind.JsonNode> saveBillingPreferences(
+            @RequestBody com.fasterxml.jackson.databind.JsonNode config) {
+        return ApiResponse.ok(billingService.saveBillingPreferences(config));
+    }
+
     @GetMapping("/{id}")
     public ApiResponse<InvoiceResponse> getInvoice(@PathVariable String id) {
         return ApiResponse.ok(billingService.getInvoice(id));

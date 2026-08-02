@@ -43,6 +43,27 @@ public class UploadController {
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(uploadService.upload(file, UploadType.GRN_PDF)));
     }
 
+    /**
+     * Pharmacy logo, set from Settings → Profile.
+     *
+     * <p>This route and {@link #uploadPharmacyDocument} were MISSING while the
+     * frontend called both — {@code UploadType.LOGO} and
+     * {@code UploadType.PHARMACY_DOCUMENT} existed in the enum and the Prisma
+     * schema, but nothing exposed them. Every logo upload and every compliance-
+     * document upload 404'd, which the settings screens then reported as a generic
+     * "Failed to save" (logo) or swallowed entirely (documents).
+     */
+    @PostMapping("/pharmacy-logo")
+    public ResponseEntity<ApiResponse<UploadResponse>> uploadPharmacyLogo(@RequestParam("file") MultipartFile file) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(uploadService.upload(file, UploadType.LOGO)));
+    }
+
+    /** Drug licence, GST certificate and the rest of Settings → Documents &amp; Legal. */
+    @PostMapping("/pharmacy-document")
+    public ResponseEntity<ApiResponse<UploadResponse>> uploadPharmacyDocument(@RequestParam("file") MultipartFile file) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(uploadService.upload(file, UploadType.PHARMACY_DOCUMENT)));
+    }
+
     @GetMapping("/{id}/signed-url")
     public ApiResponse<SignedUrlResponse> getSignedUrl(@PathVariable String id) {
         return ApiResponse.ok(uploadService.getSignedUrl(id));

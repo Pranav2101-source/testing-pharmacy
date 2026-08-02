@@ -1,5 +1,67 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { formatDate, isExpired, isNearExpiry } from "./date.js";
+import {
+  formatDate, isExpired, isNearExpiry,
+  istRangeStart, istRangeEnd, istRangeParams, financialYearShort,
+} from "./date.js";
+
+// ── IST range helpers ─────────────────────────────────────────────────────────
+
+describe("istRangeStart / istRangeEnd", () => {
+  it("anchors the start of the day to IST midnight, not UTC midnight", () => {
+    // 2026-04-01 00:00 IST is 2026-03-31 18:30 UTC. Getting this wrong (parsing the
+    // bare date as UTC midnight) pushes the lower bound to 05:30 IST and silently
+    // drops every row recorded in the first five and a half hours of the day.
+    expect(istRangeStart("2026-04-01")).toBe("2026-03-31T18:30:00.000Z");
+  });
+
+  it("anchors the end of the day to the last millisecond in IST", () => {
+    expect(istRangeEnd("2027-03-31")).toBe("2027-03-31T18:29:59.999Z");
+  });
+
+  it("covers a full 24 hours minus 1ms across the two bounds", () => {
+    const start = new Date(istRangeStart("2026-04-01")!).getTime();
+    const end = new Date(istRangeEnd("2026-04-01")!).getTime();
+    expect(end - start).toBe(86_400_000 - 1);
+  });
+
+  it("is independent of the host machine's timezone", () => {
+    // Same call, two very different host zones — the IST anchor must not move.
+    const original = process.env.TZ;
+    try {
+      process.env.TZ = "America/Los_Angeles";
+      const la = istRangeStart("2026-04-01");
+      process.env.TZ = "Asia/Kolkata";
+      const ist = istRangeStart("2026-04-01");
+      expect(la).toBe(ist);
+    } finally {
+      process.env.TZ = original;
+    }
+  });
+
+  it("returns null for empty or unparseable input instead of throwing", () => {
+    // new Date("").toISOString() raises RangeError — a cleared date field must not
+    // take down the query function that builds the request.
+    expect(istRangeStart("")).toBeNull();
+    expect(istRangeEnd("")).toBeNull();
+    expect(istRangeStart("not-a-date")).toBeNull();
+    expect(istRangeEnd("2026-13-45")).toBeNull();
+  });
+});
+
+describe("istRangeParams", () => {
+  it("returns both bounds when both dates are valid", () => {
+    expect(istRangeParams("2026-04-01", "2027-03-31")).toEqual({
+      from: "2026-03-31T18:30:00.000Z",
+      to: "2027-03-31T18:29:59.999Z",
+    });
+  });
+
+  it("omits a bound rather than sending an invalid value", () => {
+    expect(istRangeParams("", "2027-03-31")).toEqual({ to: "2027-03-31T18:29:59.999Z" });
+    expect(istRangeParams("2026-04-01", "")).toEqual({ from: "2026-03-31T18:30:00.000Z" });
+    expect(istRangeParams("", "")).toEqual({});
+  });
+});
 
 // ── formatDate ────────────────────────────────────────────────────────────────
 
@@ -103,5 +165,42 @@ describe("isNearExpiry", () => {
 
   it("expires tomorrow → near expiry for any positive threshold", () => {
     expect(isNearExpiry("2025-06-17", 1)).toBe(true);
+  });
+});
+
+describe("financialYearShort", () => {
+  // Must stay identical to DocumentSequenceService.fyShort() on the backend: this
+  // one renders the Invoice Settings preview, that one stamps the actual bill.
+  it("returns the FY that started in April for a date after April 1", () => {
+    expect(financialYearShort(new Date("2026-08-02T12:00:00+05:30"))).toBe("26-27");
+  });
+
+  it("returns the PREVIOUS April's FY for a date before April 1", () => {
+    expect(financialYearShort(new Date("2026-02-15T12:00:00+05:30"))).toBe("25-26");
+  });
+
+  it("rolls over exactly on April 1 IST, not a day early or late", () => {
+    // 31 March 23:59 IST is still the old year; 1 April 00:00 IST is the new one.
+    expect(financialYearShort(new Date("2026-03-31T23:59:59+05:30"))).toBe("25-26");
+    expect(financialYearShort(new Date("2026-04-01T00:00:00+05:30"))).toBe("26-27");
+  });
+
+  it("uses IST regardless of the host timezone", () => {
+    // 2026-03-31 21:00 UTC is 2026-04-01 02:30 IST — already the new financial
+    // year in India even though it is still March almost everywhere else.
+    expect(financialYearShort(new Date("2026-03-31T21:00:00Z"))).toBe("26-27");
+    // And the mirror case: 2026-04-01 00:30 UTC is 06:00 IST, same day, new FY.
+    expect(financialYearShort(new Date("2026-04-01T00:30:00Z"))).toBe("26-27");
+    // 2026-03-31 10:00 UTC is 15:30 IST — still the old FY.
+    expect(financialYearShort(new Date("2026-03-31T10:00:00Z"))).toBe("25-26");
+  });
+
+  it("zero-pads a century boundary", () => {
+    expect(financialYearShort(new Date("2099-06-01T12:00:00+05:30"))).toBe("99-00");
+    expect(financialYearShort(new Date("2100-06-01T12:00:00+05:30"))).toBe("00-01");
+  });
+
+  it("produces the two-digit hyphenated form the backend emits", () => {
+    expect(financialYearShort(new Date("2026-08-02T12:00:00+05:30"))).toMatch(/^\d{2}-\d{2}$/);
   });
 });

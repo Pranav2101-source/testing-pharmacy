@@ -6,7 +6,7 @@ import {
   Shield, AlertCircle, Pencil, BadgeCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { getStoredUser, storeUser } from "@/lib/auth";
 import { invalidateInvoicePrintConfigCache } from "@/lib/useInvoicePrintConfig";
 
@@ -178,12 +178,17 @@ export default function ProfilePage() {
   const [pharmaError,     setPharmaError]     = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
+  const [pharmaLoadError, setPharmaLoadError] = useState<string | null>(null);
 
   // ── Load ──────────────────────────────────────────────────────────────────
   useEffect(() => {
     Promise.all([
       api.get("/auth/me").catch(() => null),
-      api.get("/pharmacy").catch(() => null),
+      // Tracked, not swallowed. PUT /pharmacy replaces the WHOLE record — a null
+      // field clears that column — so if this GET fails and the form renders blank,
+      // pressing Save wipes the pharmacy's GSTIN and drug licence off every future
+      // invoice. `pharmaLoadFailed` blocks that below.
+      api.get("/pharmacy").catch((err) => { setPharmaLoadError(getErrorMessage(err, "Could not load your pharmacy profile.")); return null; }),
     ]).then(([userRes, pharmRes]) => {
       if (userRes) {
         const u = userRes.data?.data;
@@ -220,8 +225,8 @@ export default function ProfilePage() {
       if (current) storeUser({ ...current, name: data.data.name });
       setUserSaved(true);
       setTimeout(() => setUserSaved(false), 2500);
-    } catch {
-      setUserError("Failed to save. Please try again.");
+    } catch (err) {
+      setUserError(getErrorMessage(err, "Failed to save. Please try again."));
     } finally {
       setUserSaving(false);
     }
@@ -230,6 +235,10 @@ export default function ProfilePage() {
   // ── Save pharmacy profile (uploads logo first if pending) ─────────────────
   async function handleSavePharmacy() {
     if (!pharmacy.name.trim()) { setPharmaError("Pharmacy name is required."); return; }
+    if (pharmaLoadError) {
+      setPharmaError("Can't save while your existing profile failed to load — reload the page first.");
+      return;
+    }
     setPharmaSaving(true); setPharmaError(null);
     try {
       let newLogoUrl = pharmacy.logoUrl;
@@ -267,8 +276,11 @@ export default function ProfilePage() {
 
       setPharmaSaved(true);
       setTimeout(() => setPharmaSaved(false), 2500);
-    } catch {
-      setPharmaError("Failed to save. Please try again.");
+    } catch (err) {
+      // Names the real reason — a rejected logo ("File too large — maximum 10MB",
+      // wrong format) or a 403 for staff without OWNER/MANAGER. This generic string
+      // is what a friend setting up their profile saw when the logo upload 404d.
+      setPharmaError(getErrorMessage(err, "Failed to save. Please try again."));
     } finally {
       setPharmaSaving(false);
     }
@@ -513,9 +525,18 @@ export default function ProfilePage() {
               </div>
             </div>
 
+            {/* A failed load must be visible: saving from a blank form would replace
+                the stored record, clearing GSTIN and drug licence off future invoices. */}
+            {pharmaLoadError && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-[12px] text-red-700">
+                <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>{pharmaLoadError} Saving is disabled — reload the page to try again.</span>
+              </div>
+            )}
+
             <div className="flex justify-end pt-1 border-t border-slate-100">
               <SaveBtn
-                onClick={handleSavePharmacy} saving={pharmaSaving} saved={pharmaSaved}
+                onClick={handleSavePharmacy} saving={pharmaSaving || !!pharmaLoadError} saved={pharmaSaved}
                 error={pharmaError} label="Save Pharmacy" accent="blue"
               />
             </div>

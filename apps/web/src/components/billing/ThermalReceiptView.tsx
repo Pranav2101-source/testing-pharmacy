@@ -1,5 +1,6 @@
 import { format } from "date-fns";
-import { defaultInvoiceSettings } from "@pharmacy/types";
+import { normalizeInvoiceSettings } from "@pharmacy/types";
+import { formatAmountInWords } from "@pharmacy/utils";
 import type { InvoiceSettingsConfig } from "@pharmacy/types";
 import type { PrintInvoiceData, PharmacyProfile } from "./InvoicePrintView";
 
@@ -19,22 +20,23 @@ function row(left: string, right: string, width: number) {
   return left + " ".repeat(pad) + right;
 }
 
-function merge(config?: Partial<InvoiceSettingsConfig>): InvoiceSettingsConfig {
-  if (!config) return defaultInvoiceSettings;
-  return {
-    ...defaultInvoiceSettings,
-    ...config,
-    branding: { ...defaultInvoiceSettings.branding, ...config.branding },
-    header:   { ...defaultInvoiceSettings.header,   ...config.header   },
-    patient:  { ...defaultInvoiceSettings.patient,  ...config.patient  },
-    columns:  { ...defaultInvoiceSettings.columns,  ...config.columns  },
-    totals:   { ...defaultInvoiceSettings.totals,   ...config.totals   },
-    footer:   { ...defaultInvoiceSettings.footer,   ...config.footer   },
-    numbering:{ ...defaultInvoiceSettings.numbering,...config.numbering },
-    paper:    { ...defaultInvoiceSettings.paper,    ...config.paper    },
-    policy:   { ...defaultInvoiceSettings.policy,   ...config.policy   },
-  };
-}
+/**
+ * WHICH SETTINGS THIS VIEW HONOURS
+ *
+ * The intent is that a setting means the same thing on every print format, so a
+ * pharmacy does not have to learn which toggles happen to apply to which paper.
+ * This receipt therefore follows the A4/A5 invoice for content decisions: which
+ * columns to show, which totals to print, patient and header fields, terms,
+ * signature, amount in words.
+ *
+ * Deliberately NOT honoured, because they describe a page this paper does not have:
+ *   · branding.watermarkText   — a 58mm roll has no area to place one
+ *   · branding.logoPosition / logoSize / showLogo — thermal printers render a
+ *     monospace character stream; there is no image layout to position
+ *   · header.align             — every line is centred or column-aligned by design
+ *   · branding.primaryColor / pharmacyNameStyle — single-colour thermal head
+ *   · paper margins and A4/A5 sizing
+ */
 
 const PREVIEW_PHARMACY: PharmacyProfile = {
   name:        "Checkup Pharmacy",
@@ -51,7 +53,7 @@ type Props = {
 };
 
 export function ThermalReceiptView({ invoice, config: configProp, pharmacy: pharmacyProp }: Props) {
-  const cfg      = merge(configProp);
+  const cfg      = normalizeInvoiceSettings(configProp);
   const pharmacy = pharmacyProp ?? PREVIEW_PHARMACY;
   const hdr      = cfg.header;
   const pat      = cfg.patient;
@@ -67,6 +69,19 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
   const roundedTotal = Math.round(invoice.totalAmount);
   const roundOff     = roundedTotal - invoice.totalAmount;
   const isInterstate = invoice.isInterstate ?? false;
+
+  // Same slab aggregation as InvoicePrintView, so both formats report identical
+  // GST figures for the same bill.
+  const slabs = invoice.items.reduce<
+    Record<number, { taxable: number; cgst: number; sgst: number; igst: number }>
+  >((acc, item) => {
+    if (!acc[item.gstRate]) acc[item.gstRate] = { taxable: 0, cgst: 0, sgst: 0, igst: 0 };
+    acc[item.gstRate]!.taxable += item.taxableAmount;
+    acc[item.gstRate]!.cgst    += item.cgst;
+    acc[item.gstRate]!.sgst    += item.sgst;
+    acc[item.gstRate]!.igst    += item.igst;
+    return acc;
+  }, {});
 
   const center = (s: string) => {
     if (s.length >= W) return s;
@@ -103,11 +118,20 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
       {hdr.showPhone && pharmacy.phone && (
         <div style={{ textAlign: "center", fontSize: "9px" }}>Tel: {pharmacy.phone}</div>
       )}
+      {hdr.showEmail && pharmacy.email && (
+        <div style={{ textAlign: "center", fontSize: "9px" }}>{pharmacy.email}</div>
+      )}
+      {hdr.showWebsite && pharmacy.website && (
+        <div style={{ textAlign: "center", fontSize: "9px" }}>{pharmacy.website}</div>
+      )}
       {hdr.showGstin && pharmacy.gstin && (
         <div style={{ textAlign: "center", fontSize: "9px" }}>GSTIN: {pharmacy.gstin}</div>
       )}
       {hdr.showDrugLicense && pharmacy.drugLicense && (
         <div style={{ textAlign: "center", fontSize: "9px" }}>DL: {pharmacy.drugLicense}</div>
+      )}
+      {hdr.showFssai && pharmacy.fssai && (
+        <div style={{ textAlign: "center", fontSize: "9px" }}>FSSAI: {pharmacy.fssai}</div>
       )}
       {hdr.customText && (
         <div style={{ textAlign: "center", fontSize: "9px", marginTop: "2px" }}>{hdr.customText}</div>
@@ -144,25 +168,52 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
           <div style={{ fontWeight: 600, fontSize: "10px" }}>
             {i + 1}. {item.medicineName}
           </div>
-          {/* Batch/expiry line */}
-          {(col.showBatch || col.showExpiry) && (
+          {/* Batch/expiry/HSN line */}
+          {(col.showBatch || col.showExpiry || (col.showHsn && item.hsnCode)) && (
             <div style={{ fontSize: "9px", color: "#444" }}>
               {col.showBatch  && `Batch:${item.batchNumber} `}
               {col.showExpiry && `Exp:${format(new Date(item.expiryDate), "MM/yy")} `}
               {col.showHsn && item.hsnCode && `HSN:${item.hsnCode}`}
             </div>
           )}
-          {/* Qty × Rate = Amount line */}
+          {/* MRP line — only worth its own row when it differs from the sale rate,
+              i.e. when a discount was applied. Printing "MRP 15.00 / Rate 15.00" on
+              every line of a 58mm roll is noise and paper. */}
+          {col.showMrp && item.mrp > item.rate && (
+            <div style={{ fontSize: "9px", color: "#444" }}>
+              {`  MRP:${item.mrp.toFixed(2)}`}
+            </div>
+          )}
+          {/* Qty × Rate = Amount line. Rate and the discount badge are each
+              individually suppressible, matching the A4 column toggles; the
+              quantity and the line amount always print — a receipt without them
+              is not a receipt. */}
           <div style={mono}>
             {row(
-              `  ${item.quantity} x ${item.rate.toFixed(2)}${item.discount > 0 ? ` (-${item.discount}%)` : ""}`,
+              `  ${item.quantity}${col.showRate ? ` x ${item.rate.toFixed(2)}` : ""}`
+                + (col.showDiscount && item.discount > 0 ? ` (-${item.discount}%)` : ""),
               `${item.amount.toFixed(2)}`,
               W,
             )}
           </div>
+          {/* Scheme quantity — printed only when the line actually has one, so
+              ordinary rows do not each gain a "Free: 0" line of wasted paper. */}
+          {col.showFreeQty && (item.freeQty ?? 0) > 0 && (
+            <div style={{ fontSize: "9px", color: "#444" }}>
+              {`  + ${item.freeQty} FREE`}
+            </div>
+          )}
+          {/* Taxable value per line — GST-mandated, so this toggle is locked on.
+              Wraps rather than being column-aligned; at 26 characters it will not
+              share a row with the GST figures. */}
+          {col.showTaxable && (
+            <div style={{ fontSize: "9px", color: "#555", whiteSpace: "normal" }}>
+              {`  Taxable:${item.taxableAmount.toFixed(2)}`}
+            </div>
+          )}
           {/* GST line */}
           {col.showGstRate && (
-            <div style={{ fontSize: "9px", color: "#555" }}>
+            <div style={{ fontSize: "9px", color: "#555", whiteSpace: "normal" }}>
               {"  "}
               {isInterstate
                 ? `IGST ${item.gstRate}%: ${(item.igst || item.cgst + item.sgst).toFixed(2)}`
@@ -175,10 +226,35 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
 
       <div style={mono}>{line("=", W)}</div>
 
+      {/* Slab-wise GST summary — required on a GST tax invoice, hence locked on.
+          Rendered as aligned monospace rows rather than the A4 table, which is the
+          same information in the form this paper can carry. */}
+      {tot.showGstBreakdown && Object.keys(slabs).length > 0 && (
+        <>
+          <div style={{ ...mono, fontWeight: 600 }}>GST Summary</div>
+          {Object.entries(slabs)
+            .sort(([a], [b]) => Number(a) - Number(b))
+            .map(([rate, v]) => (
+              <div key={rate} style={{ ...mono, fontSize: "9px" }}>
+                {row(
+                  `${rate}% on ${v.taxable.toFixed(2)}`,
+                  isInterstate
+                    ? v.igst.toFixed(2)
+                    : (v.cgst + v.sgst).toFixed(2),
+                  W,
+                )}
+              </div>
+            ))}
+          <div style={mono}>{line("-", W)}</div>
+        </>
+      )}
+
       {/* Totals */}
       {tot.showSubtotal  && <div style={mono}>{row("Subtotal:",      invoice.subtotal.toFixed(2),          W)}</div>}
       {tot.showDiscount  && invoice.discountAmount > 0 &&
                            <div style={mono}>{row("Discount:",       `-${invoice.discountAmount.toFixed(2)}`, W)}</div>}
+      {tot.showSavings   && invoice.discountAmount > 0 &&
+                           <div style={mono}>{row("You Save:",      invoice.discountAmount.toFixed(2),      W)}</div>}
       {tot.showTaxable   && <div style={mono}>{row("Taxable:",       invoice.taxableAmount.toFixed(2),      W)}</div>}
       {!isInterstate && tot.showCgst && <div style={mono}>{row("CGST:", invoice.cgst.toFixed(2), W)}</div>}
       {!isInterstate && tot.showSgst && <div style={mono}>{row("SGST:", invoice.sgst.toFixed(2), W)}</div>}
@@ -191,6 +267,14 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
         {row("NET PAYABLE:", `${roundedTotal.toFixed(2)}`, W)}
       </div>
       <div style={{ ...mono, fontWeight: 700 }}>{line("=", W)}</div>
+
+      {/* Amount in words — wraps rather than pre-formatted, since it is prose and
+          routinely exceeds the 26/38-character line width. */}
+      {tot.showAmountWords && (
+        <div style={{ marginTop: "4px", fontSize: "8.5px", color: "#333", whiteSpace: "normal" }}>
+          <strong>In Words: </strong>{formatAmountInWords(roundedTotal)}
+        </div>
+      )}
 
       {/* Footer */}
       {ftr.showQrCode && ftr.upiId && (
@@ -211,6 +295,22 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
           {ftr.terms.split("\n").map((line, i) => (
             <div key={i}>* {line}</div>
           ))}
+        </div>
+      )}
+
+      {ftr.contactInfo && (
+        <div style={{ textAlign: "center", marginTop: "4px", fontSize: "8.5px", color: "#555", whiteSpace: "normal" }}>
+          {ftr.contactInfo}
+        </div>
+      )}
+
+      {/* Signature block — blank space to sign, then the label. Cheap in paper
+          (three short lines) so the A4 setting carries over rather than being
+          silently dropped on thermal. */}
+      {ftr.showSignature && (
+        <div style={{ marginTop: "10px", fontSize: "9px", textAlign: "right" }}>
+          <div style={{ marginTop: "16px" }}>{line("_", Math.min(W, 18))}</div>
+          <div>{ftr.signatureLabel}</div>
         </div>
       )}
 

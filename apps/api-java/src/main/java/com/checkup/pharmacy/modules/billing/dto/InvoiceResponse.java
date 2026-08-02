@@ -51,8 +51,10 @@ public record InvoiceResponse(
     public record ReturnRef(String id, String returnNumber, BigDecimal totalAmount, Instant createdAt) {
     }
 
+    /** {@code freeQty} is scheme quantity given free — not charged, but dispensed. */
     public record Item(String id, String inventoryId, String medicineName, String hsnCode, String batchNumber,
-                       Instant expiryDate, int quantity, BigDecimal mrp, BigDecimal rate, BigDecimal purchaseRate,
+                       Instant expiryDate, int quantity, int freeQty, BigDecimal mrp, BigDecimal rate,
+                       BigDecimal purchaseRate,
                        BigDecimal discount, BigDecimal gstRate, BigDecimal cgst, BigDecimal sgst, BigDecimal igst,
                        BigDecimal taxableAmount, BigDecimal amount, String location) {
     }

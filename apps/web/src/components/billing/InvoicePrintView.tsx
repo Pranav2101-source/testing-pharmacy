@@ -2,7 +2,7 @@
 import { forwardRef } from "react";
 import { format } from "date-fns";
 import { formatCurrency, formatAmountInWords } from "@pharmacy/utils";
-import { defaultInvoiceSettings } from "@pharmacy/types";
+import { defaultInvoiceSettings, normalizeInvoiceSettings } from "@pharmacy/types";
 import type { InvoiceSettingsConfig } from "@pharmacy/types";
 
 // ─── Data shape ───────────────────────────────────────────────────────────────
@@ -29,6 +29,8 @@ export type PrintInvoiceData = {
     expiryDate:    string;
     mrp:           number;
     quantity:      number;
+    /** Scheme quantity given free (10+1). Not charged; still dispensed. 0/absent when none. */
+    freeQty?:      number;
     discount:      number;
     gstRate:       number;
     rate:          number;
@@ -80,28 +82,17 @@ const PREVIEW_PHARMACY: PharmacyProfile = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function merge(config?: Partial<InvoiceSettingsConfig>): InvoiceSettingsConfig {
-  if (!config) return defaultInvoiceSettings;
-  return {
-    ...defaultInvoiceSettings,
-    ...config,
-    branding: { ...defaultInvoiceSettings.branding, ...config.branding },
-    header:   { ...defaultInvoiceSettings.header,   ...config.header   },
-    patient:  { ...defaultInvoiceSettings.patient,  ...config.patient  },
-    columns:  { ...defaultInvoiceSettings.columns,  ...config.columns  },
-    totals:   { ...defaultInvoiceSettings.totals,   ...config.totals   },
-    footer:   { ...defaultInvoiceSettings.footer,   ...config.footer   },
-    numbering:{ ...defaultInvoiceSettings.numbering,...config.numbering },
-    paper:    { ...defaultInvoiceSettings.paper,    ...config.paper    },
-    policy:   { ...defaultInvoiceSettings.policy,   ...config.policy   },
-  };
-}
+// Normalisation lives in @pharmacy/types. This file used to carry its own copy
+// which merged defaults but did NOT re-assert the GST-mandatory fields — and this
+// is the component that renders the actual bill, so a stored config with
+// `showHsn: false` would have printed a non-compliant invoice while the settings
+// screen showed that toggle locked on.
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
   function InvoicePrintView({ invoice, config: configProp, pharmacy: pharmacyProp }, ref) {
-    const cfg      = merge(configProp);
+    const cfg      = normalizeInvoiceSettings(configProp);
     const pharmacy = pharmacyProp ?? PREVIEW_PHARMACY;
     const col      = cfg.columns;
     const tot      = cfg.totals;
@@ -191,6 +182,12 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
                   height: br.logoSize === "small" ? "36px" : br.logoSize === "large" ? "72px" : "52px",
                   marginBottom: "6px",
                   objectFit: "contain",
+                  // The logo has its own Position control, separate from the header's
+                  // alignment. Without alignSelf it inherited the parent's alignItems
+                  // (i.e. header.align) and the Position setting did nothing at all.
+                  alignSelf: br.logoPosition === "center" ? "center"
+                           : br.logoPosition === "right"  ? "flex-end"
+                           : "flex-start",
                 }}
               />
             )}
@@ -290,7 +287,9 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
                   {col.showExpiry   && <td style={{ ...tdStyle(), whiteSpace: "nowrap" }}>{format(new Date(item.expiryDate), "MM/yy")}</td>}
                   {col.showMrp      && <td style={tdStyle(true)}>₹{item.mrp.toFixed(2)}</td>}
                   <td style={{ ...tdStyle(), textAlign: "center" }}>{item.quantity}</td>
-                  {col.showFreeQty  && <td style={{ ...tdStyle(), textAlign: "center" }}>—</td>}
+                  {/* Real scheme quantity. Blank-dashed when the line has none, so a
+                      10+1 row stands out against ordinary ones. */}
+                  {col.showFreeQty  && <td style={{ ...tdStyle(), textAlign: "center" }}>{item.freeQty ? item.freeQty : "—"}</td>}
                   {col.showDiscount && <td style={tdStyle(true)}>{item.discount > 0 ? `${item.discount}%` : "—"}</td>}
                   {col.showRate     && <td style={tdStyle(true)}>₹{item.rate.toFixed(2)}</td>}
                   {col.showTaxable  && <td style={tdStyle(true)}>₹{item.taxableAmount.toFixed(2)}</td>}

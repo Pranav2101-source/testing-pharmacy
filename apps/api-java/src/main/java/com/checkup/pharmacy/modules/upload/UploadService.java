@@ -81,7 +81,8 @@ public class UploadService {
         uploadRepository.save(upload);
 
         String signedUrl = storageClient.createSignedUrl(path, SIGNED_URL_TTL_SECONDS);
-        return new UploadResponse(upload.getId(), upload.getFileName(), signedUrl, upload.getMimeType());
+        return new UploadResponse(upload.getId(), upload.getFileName(), upload.getFileUrl(), signedUrl,
+                upload.getMimeType());
     }
 
     @Transactional(readOnly = true)

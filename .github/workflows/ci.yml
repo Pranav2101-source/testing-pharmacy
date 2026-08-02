@@ -9,7 +9,7 @@ on:
 jobs:
   # ── Web + shared TS packages: type-check, build, audit ─────────────────────
   web:
-    name: Web · type-check & build
+    name: Web · type-check, test & build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +26,15 @@ jobs:
       - run: pnpm --filter @pharmacy/database db:generate
 
       - run: pnpm type-check
+
+      # Unit tests for the web app and the shared TS packages.
+      #
+      # This job used to type-check and build only, so NOTHING in TypeScript was
+      # actually executed in CI — packages/utils' GST, currency and migration suites
+      # had been green locally and unenforced for their whole life, and the web app
+      # had no suite at all. A compile is not a test: none of the arithmetic or
+      # error-mapping bugs these cover produce a type error.
+      - run: pnpm test
 
       - run: pnpm build
 

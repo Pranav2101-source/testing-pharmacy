@@ -35,6 +35,7 @@ class UploadIT extends AbstractPostgresIT {
 
     @Autowired private UploadService uploadService;
     @Autowired private UploadRepository uploadRepository;
+    @Autowired private org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping handlerMapping;
     @Autowired private PharmacyRepository pharmacyRepository;
     @Autowired private UserRepository userRepository;
 
@@ -68,6 +69,77 @@ class UploadIT extends AbstractPostgresIT {
 
         assertThat(response.signedUrl()).isNotBlank();
         assertThat(uploadRepository.findByIdAndPharmacyId(response.id(), pharmacyId)).isPresent();
+    }
+
+    /**
+     * Guards the defect that broke both settings screens: {@code UploadType.LOGO} and
+     * {@code PHARMACY_DOCUMENT} existed in the enum and the Prisma schema, the service
+     * handled them fine, and the frontend called them — but {@code UploadController}
+     * exposed no route for either, so every logo and compliance-document upload 404'd.
+     *
+     * <p>Asserted against the registered handler mappings rather than by calling the
+     * service, because a service-level test passes happily while the HTTP route is
+     * absent — which is exactly how this survived.
+     */
+    @Test
+    @DisplayName("every upload route the frontend calls is actually registered")
+    void frontendUploadRoutesAreRegistered() {
+        var patterns = handlerMapping.getHandlerMethods().keySet().stream()
+                .flatMap(info -> info.getPatternValues().stream())
+                .collect(java.util.stream.Collectors.toSet());
+
+        assertThat(patterns).contains(
+                "/api/v1/uploads/pharmacy-logo",      // Settings → Profile
+                "/api/v1/uploads/pharmacy-document",  // Settings → Documents & Legal
+                "/api/v1/uploads/prescription",
+                "/api/v1/uploads/po-pdf",
+                "/api/v1/uploads/grn-pdf");
+    }
+
+    @Test
+    @DisplayName("a pharmacy logo upload is accepted and stored under the LOGO type")
+    void pharmacyLogoIsAccepted() {
+        var file = new MockMultipartFile("file", "logo.png", "image/png", PNG_BYTES);
+
+        var response = uploadService.upload(file, UploadType.LOGO);
+
+        assertThat(response.signedUrl()).isNotBlank();
+        assertThat(uploadRepository.findByIdAndPharmacyId(response.id(), pharmacyId)).isPresent();
+    }
+
+    @Test
+    @DisplayName("a compliance document upload is accepted and stored under PHARMACY_DOCUMENT")
+    void pharmacyDocumentIsAccepted() {
+        var file = new MockMultipartFile("file", "drug-licence.pdf", "application/pdf", PDF_BYTES);
+
+        var response = uploadService.upload(file, UploadType.PHARMACY_DOCUMENT);
+
+        assertThat(response.signedUrl()).isNotBlank();
+        assertThat(uploadRepository.findByIdAndPharmacyId(response.id(), pharmacyId)).isPresent();
+    }
+
+    /**
+     * The settings screens persist {@code fileUrl} as the document's stored path and
+     * {@code id} so a fresh signed URL can be minted later. Both were absent from the
+     * response DTO, so a saved document recorded {@code undefined} as its path and had
+     * no way to be viewed again once its 10-minute signed URL expired.
+     */
+    @Test
+    @DisplayName("the response carries a durable fileUrl and id, not just an expiring signed URL")
+    void responseCarriesDurableReferences() {
+        var file = new MockMultipartFile("file", "drug-licence.pdf", "application/pdf", PDF_BYTES);
+
+        var response = uploadService.upload(file, UploadType.PHARMACY_DOCUMENT);
+
+        assertThat(response.id()).isNotBlank();
+        assertThat(response.fileUrl()).isNotBlank();
+        // The durable path is the storage key, distinct from the temporary signed URL.
+        assertThat(response.fileUrl()).isNotEqualTo(response.signedUrl());
+        assertThat(response.fileUrl()).contains(pharmacyId);
+        assertThat(response.fileName()).isEqualTo("drug-licence.pdf");
+
+        // And that id is exactly what mints a fresh link later.
+        assertThat(uploadService.getSignedUrl(response.id()).signedUrl()).isNotBlank();
     }
 
     /**

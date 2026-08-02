@@ -43,7 +43,7 @@ class CreateInvoiceRequestValidationTest {
     private static CreateInvoiceRequest withBillDiscount(BigDecimal pct) {
         return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 pct, null, null, null,
-                List.of(new InvoiceItemRequest("inv-1", 1, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest("inv-1", 1, null, BigDecimal.ZERO)));
     }
 
     private static boolean violates(CreateInvoiceRequest request, String field) {
@@ -81,7 +81,7 @@ class CreateInvoiceRequestValidationTest {
     void rejectsNegativeExtraCharges() {
         var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 null, new BigDecimal("-500"), null, null,
-                List.of(new InvoiceItemRequest("inv-1", 1, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest("inv-1", 1, null, BigDecimal.ZERO)));
 
         assertThat(violates(request, "extraCharges")).isTrue();
     }
@@ -96,7 +96,7 @@ class CreateInvoiceRequestValidationTest {
     void allowsNegativeAdjustmentAmount() {
         var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 null, null, new BigDecimal("-5"), null,
-                List.of(new InvoiceItemRequest("inv-1", 1, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest("inv-1", 1, null, BigDecimal.ZERO)));
 
         assertThat(violates(request, "adjustmentAmount")).isFalse();
     }
@@ -116,7 +116,7 @@ class CreateInvoiceRequestValidationTest {
         var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 null, null, null, null,
                 // quantity 0 violates @Positive; discount 101 violates @Max(100).
-                List.of(new InvoiceItemRequest("inv-1", 0, new BigDecimal("101"))));
+                List.of(new InvoiceItemRequest("inv-1", 0, null, new BigDecimal("101"))));
 
         var violations = validator.validate(request);
         assertThat(violations).hasSizeGreaterThanOrEqualTo(2);

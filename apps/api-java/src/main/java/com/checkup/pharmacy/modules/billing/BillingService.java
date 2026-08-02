@@ -73,17 +73,18 @@ import java.util.Set;
  * {@code InventoryService.reserve} and {@code StockAuditService.approveSession},
  * since every one of these mutates shared Inventory rows.
  *
- * Deferred vs. the Node original: invoice-settings-driven print customization
- * and numbering (fixed "INV/{fy}/{seq}" format used instead), dashboard stats,
- * repeat-last-bill, and the async post-invoice notification queue (all D4/D5
- * infra or read-only analytics, not core money/stock movement). The return
- * window is a fixed 30 days rather than pharmacy-configurable, for the same
- * reason.
+ * Invoice numbering and the sales-return window now both read the pharmacy's
+ * saved invoice settings (see {@link PharmacyInvoiceSettings}); they were
+ * previously hardcoded to "INV/{fy}/{seq}" and 30 days while the settings screen
+ * presented them as configurable. Print customisation is applied client-side
+ * from the same stored config. Still deferred vs. the Node original: dashboard
+ * stats, repeat-last-bill, and the async post-invoice notification queue.
  */
 @Service
 public class BillingService {
 
-    private static final int DEFAULT_RETURN_WINDOW_DAYS = 30;
+    // The 30-day default now lives on PharmacyInvoiceSettings, which is what
+    // resolves it against the pharmacy's saved settings.
     private static final Set<String> CONTROLLED_SCHEDULES = Set.of("H", "H1", "X");
     private static final int MAX_PAGE_LIMIT = 100;
 
@@ -178,13 +179,71 @@ public class BillingService {
         String pharmacyId = TenantContext.pharmacyId();
         Pharmacy p = pharmacyRepository.findById(pharmacyId)
                 .orElseThrow(() -> new com.checkup.pharmacy.common.exception.NotFoundException("Pharmacy not found"));
-        String json = config == null || config.isNull() ? null : config.toString();
+
+        // Must be a JSON OBJECT (or null to clear). Two reasons this is checked rather
+        // than stored as-is:
+        //
+        //  1. The audit-log line below converts the body to a Map, and Jackson throws
+        //     IllegalArgumentException on an array/string/number — which escaped as an
+        //     opaque 500 rather than telling the caller what was wrong with their body.
+        //  2. Anything that is not an object is meaningless as invoice settings. Storing
+        //     it would "succeed", then make every subsequent read silently fall back to
+        //     defaults — a setting that appears saved and does nothing.
+        boolean clearing = config == null || config.isNull();
+        if (!clearing && !config.isObject()) {
+            throw new BadRequestException("Invoice settings must be a JSON object, received "
+                    + config.getNodeType().toString().toLowerCase() + ".");
+        }
+
+        String json = clearing ? null : config.toString();
         p.setInvoiceSettings(json);
 
-        java.util.Map<String, Object> newData = config == null || config.isNull() ? null
+        java.util.Map<String, Object> newData = clearing ? null
                 : objectMapper.convertValue(config, new com.fasterxml.jackson.core.type.TypeReference<>() { });
         auditService.log(com.checkup.pharmacy.modules.audit.AuditEntry
                 .of(com.checkup.pharmacy.common.enums.AuditModule.SETTINGS, "UPDATE", "InvoiceSettings")
+                .pharmacyId(pharmacyId).userId(TenantContext.userId()).entityId(pharmacyId).newData(newData));
+        return parseJson(json);
+    }
+
+    // ── Billing-screen action preferences ────────────────────────────────────
+    //
+    // Which save actions exist on the bill screen, which are pinned to the Save
+    // dropdown, and their order. Lived in browser localStorage until now, so it was
+    // lost on a browser clear and did not follow staff to another till. Stored
+    // pharmacy-wide alongside invoiceSettings — it is shop policy, not a personal
+    // preference, and every till must show the same actions.
+
+    @Transactional(readOnly = true)
+    public com.fasterxml.jackson.databind.JsonNode getBillingPreferences() {
+        Pharmacy p = pharmacyRepository.findById(TenantContext.pharmacyId())
+                .orElseThrow(() -> new NotFoundException("Pharmacy not found"));
+        return parseJson(p.getBillingPreferences());
+    }
+
+    @Transactional
+    public com.fasterxml.jackson.databind.JsonNode saveBillingPreferences(
+            com.fasterxml.jackson.databind.JsonNode config) {
+        String pharmacyId = TenantContext.pharmacyId();
+        Pharmacy p = pharmacyRepository.findById(pharmacyId)
+                .orElseThrow(() -> new NotFoundException("Pharmacy not found"));
+
+        // Same guard as saveInvoiceSettings: anything that is not a JSON object is
+        // meaningless here and would "save" successfully while every later read fell
+        // back to defaults — a setting that appears stored and does nothing.
+        boolean clearing = config == null || config.isNull();
+        if (!clearing && !config.isObject()) {
+            throw new BadRequestException("Billing preferences must be a JSON object, received "
+                    + config.getNodeType().toString().toLowerCase() + ".");
+        }
+
+        String json = clearing ? null : config.toString();
+        p.setBillingPreferences(json);
+
+        java.util.Map<String, Object> newData = clearing ? null
+                : objectMapper.convertValue(config, new com.fasterxml.jackson.core.type.TypeReference<>() { });
+        auditService.log(com.checkup.pharmacy.modules.audit.AuditEntry
+                .of(com.checkup.pharmacy.common.enums.AuditModule.SETTINGS, "UPDATE", "BillingPreferences")
                 .pharmacyId(pharmacyId).userId(TenantContext.userId()).entityId(pharmacyId).newData(newData));
         return parseJson(json);
     }
@@ -428,8 +487,15 @@ public class BillingService {
             customer.adjustCreditUsed(finalTotal);
         }
 
+        // Number format comes from the pharmacy's saved invoice settings so the
+        // preview on the settings screen matches the bill that gets issued. The
+        // sequence itself is unchanged, so numbers stay unique and monotonic even if
+        // the format is edited mid-year. Falls back to the built-in format when
+        // nothing is configured — see PharmacyInvoiceSettings.
         int seq = sequenceService.next(pharmacyId, DocumentSequenceService.INVOICE);
-        String invoiceNumber = DocumentNumberFormat.invoice(seq);
+        String invoiceNumber = PharmacyInvoiceSettings
+                .parse(pharmacy.getInvoiceSettings(), objectMapper)
+                .formatInvoiceNumber(seq);
 
         String combinedNotes = (req.notes() == null ? "" : req.notes())
                 + (req.deliveryNotes() != null && !req.deliveryNotes().isBlank() ? "\n[Delivery] " + req.deliveryNotes() : "");
@@ -448,25 +514,36 @@ public class BillingService {
         for (ResolvedLine line : lines) {
             Inventory batch = line.batch();
             int quantity = line.req().quantity();
+            int freeQty = line.req().freeQtyOrZero();
+            // Scheme goods are not charged but they DO leave the shelf, so both the
+            // availability check and the decrement work on the total. Checking only
+            // the paid quantity would let a 100+10 sale drive a 105-unit batch to -5.
+            int dispensed = quantity + freeQty;
             int quantityBefore = batch.getQuantity();
             int available = quantityBefore - batch.getReservedQuantity();
-            if (quantity > available) {
+            if (dispensed > available) {
                 String reservedNote = batch.getReservedQuantity() > 0
                         ? " (" + batch.getReservedQuantity() + " reserved by another billing session)" : "";
+                String freeNote = freeQty > 0 ? " (" + quantity + " + " + freeQty + " free)" : "";
                 throw new ConflictException("Insufficient stock for \"" + batch.getMedicine().getName() + "\": "
-                        + Math.max(0, available) + " available" + reservedNote + ", " + quantity + " requested");
+                        + Math.max(0, available) + " available" + reservedNote + ", " + dispensed + " requested" + freeNote);
             }
-            batch.setQuantity(quantityBefore - quantity);
+            batch.setQuantity(quantityBefore - dispensed);
 
             InvoiceItem item = InvoiceItem.create(pharmacyId, invoice.getId(), batch.getId(), batch.getMedicine().getName(),
-                    batch.getMedicine().getHsnCode(), batch.getBatchNumber(), batch.getExpiryDate(), quantity, batch.getMrp(),
+                    batch.getMedicine().getHsnCode(), batch.getBatchNumber(), batch.getExpiryDate(), quantity, freeQty,
+                    batch.getMrp(),
                     line.rate(), batch.getPurchaseRate(), line.req().discountOrZero(), line.gstRate(), line.gst().cgst(),
                     line.gst().sgst(), line.gst().igst(), line.gst().taxableAmount(), line.gst().amount(), line.location());
             invoiceItemRepository.save(item);
             savedItems.add(item);
 
+            // Records the DISPENSED total, not the charged quantity — the ledger has to
+            // reconcile against the batch decrement above, and a physical stock count
+            // reflects goods handed over regardless of what was billed for them.
             movementRepository.save(InventoryMovement.record(pharmacyId, batch.getId(), userId, MovementType.SALE,
-                    MovementDirection.OUT, quantity, quantityBefore, quantityBefore - quantity, "INVOICE", invoice.getId(), null));
+                    MovementDirection.OUT, dispensed, quantityBefore, quantityBefore - dispensed, "INVOICE", invoice.getId(),
+                    freeQty > 0 ? quantity + " sold + " + freeQty + " free" : null));
         }
 
         if (prescription != null) {
@@ -678,10 +755,17 @@ public class BillingService {
         if (invoice.getStatus() == InvoiceStatus.CANCELLED) throw new ConflictException("Cannot return a cancelled invoice");
         if (invoice.getStatus() == InvoiceStatus.RETURNED) throw new ConflictException("Invoice is already fully returned");
 
+        // Window length comes from the pharmacy's saved settings, not a fixed 30 days.
+        // A pharmacy that configured 15 (or switched the limit off with 0) was
+        // previously still held to 30 — the setting saved and did nothing.
+        PharmacyInvoiceSettings settings = PharmacyInvoiceSettings.parse(
+                pharmacyRepository.findById(pharmacyId).map(Pharmacy::getInvoiceSettings).orElse(null),
+                objectMapper);
         long ageDays = ChronoUnit.DAYS.between(invoice.getCreatedAt(), Instant.now());
-        if (ageDays > DEFAULT_RETURN_WINDOW_DAYS) {
+        if (!settings.isReturnWindowUnlimited() && ageDays > settings.returnWindowDaysOrDefault()) {
             throw new UnprocessableEntityException("Return window expired. Invoice " + invoice.getInvoiceNumber() + " is "
-                    + ageDays + " day(s) old; returns are only accepted within " + DEFAULT_RETURN_WINDOW_DAYS + " day(s) of purchase.");
+                    + ageDays + " day(s) old; returns are only accepted within "
+                    + settings.returnWindowDaysOrDefault() + " day(s) of purchase.");
         }
 
         List<InvoiceItem> invoiceItems = invoiceItemRepository.findByInvoiceId(invoiceId);
@@ -1046,7 +1130,8 @@ public class BillingService {
 
         List<InvoiceResponse.Item> itemResponses = items.stream()
                 .map(i -> new InvoiceResponse.Item(i.getId(), i.getInventoryId(), i.getMedicineName(), i.getHsnCode(),
-                        i.getBatchNumber(), i.getExpiryDate(), i.getQuantity(), i.getMrp(), i.getRate(), i.getPurchaseRate(),
+                        i.getBatchNumber(), i.getExpiryDate(), i.getQuantity(), i.getFreeQty(),
+                        i.getMrp(), i.getRate(), i.getPurchaseRate(),
                         i.getDiscount(), i.getGstRate(), i.getCgst(), i.getSgst(), i.getIgst(), i.getTaxableAmount(),
                         i.getAmount(), i.getLocation()))
                 .toList();

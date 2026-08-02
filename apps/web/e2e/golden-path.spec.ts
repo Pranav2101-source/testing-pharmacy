@@ -1,6 +1,18 @@
 import { test, expect } from "@playwright/test";
 
 /**
+ * Where this spec's own direct API calls go (the browser reads VITE_API_URL itself).
+ *
+ * Read from the environment rather than hardcoded. Both URLs were literal
+ * "http://localhost:8080" strings, so the spec could only ever run against that one
+ * port — pointing the app at an API anywhere else (a second local instance, a
+ * different port in CI) made these two calls fail with ECONNREFUSED midway through
+ * the run, after the browser steps had already passed against the right backend.
+ * Kept on the same env var the app uses so there is one place to set it.
+ */
+const API_BASE_URL = process.env.VITE_API_URL ?? "http://localhost:8080/api/v1";
+
+/**
  * The core POS golden path, end-to-end through a real browser: register a new
  * pharmacy, add a medicine to the catalog, receive stock via a GRN, confirm
  * it, then sell it through billing. Each step depends on the previous one's
@@ -55,12 +67,12 @@ test.describe.serial("golden path: register → add medicine → receive stock �
     // Seed a supplier via a direct API call — a fresh pharmacy has none yet,
     // and this spec is about the GRN/confirm flow, not the (separately owned)
     // Distributors tab's own add-supplier form.
-    const loginRes = await request.post("http://localhost:8080/api/v1/auth/login", {
+    const loginRes = await request.post(`${API_BASE_URL}/auth/login`, {
       data: { email: ownerEmail, password },
     });
     const { data } = await loginRes.json();
     const token = data.tokens.accessToken;
-    await request.post("http://localhost:8080/api/v1/suppliers", {
+    await request.post(`${API_BASE_URL}/suppliers`, {
       headers: { Authorization: `Bearer ${token}` },
       data: { name: `E2E Supplier ${unique}` },
     });

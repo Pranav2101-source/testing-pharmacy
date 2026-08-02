@@ -6,8 +6,9 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ListSkeleton } from "@/components/Skeleton";
-import { api } from "@/lib/api-client";
-import { defaultInvoiceSettings } from "@pharmacy/types";
+import { financialYearShort } from "@pharmacy/utils";
+import { api, getErrorMessage } from "@/lib/api-client";
+import { defaultInvoiceSettings, normalizeInvoiceSettings } from "@pharmacy/types";
 import type { InvoiceSettingsConfig, PaperSize, InvoiceTheme, CustomField } from "@pharmacy/types";
 import { InvoicePrintView } from "@/components/billing/InvoicePrintView";
 import { ThermalReceiptView } from "@/components/billing/ThermalReceiptView";
@@ -55,25 +56,6 @@ const MOCK_INVOICE: PrintInvoiceData = {
   taxableAmount: 221.21, cgst: 10.78, sgst: 10.78, igst: 0,
   totalGst: 21.56, totalAmount: 242.75,
 };
-
-// ─── Deep merge helper ────────────────────────────────────────────────────────
-
-function mergeDefaults(partial: Partial<InvoiceSettingsConfig>): InvoiceSettingsConfig {
-  return {
-    ...defaultInvoiceSettings,
-    ...partial,
-    branding:     { ...defaultInvoiceSettings.branding,     ...partial.branding     },
-    header:       { ...defaultInvoiceSettings.header,       ...partial.header,       showGstin: true },
-    patient:      { ...defaultInvoiceSettings.patient,      ...partial.patient      },
-    columns:      { ...defaultInvoiceSettings.columns,      ...partial.columns,      showHsn: true, showGstRate: true, showTaxable: true },
-    totals:       { ...defaultInvoiceSettings.totals,       ...partial.totals,       showTaxable: true, showCgst: true, showSgst: true, showIgst: true, showGstBreakdown: true },
-    footer:       { ...defaultInvoiceSettings.footer,       ...partial.footer       },
-    numbering:    { ...defaultInvoiceSettings.numbering,    ...partial.numbering    },
-    paper:        { ...defaultInvoiceSettings.paper,        ...partial.paper        },
-    policy:       { ...defaultInvoiceSettings.policy,       ...partial.policy       },
-    customFields: partial.customFields ?? defaultInvoiceSettings.customFields,
-  };
-}
 
 // ─── Section names ────────────────────────────────────────────────────────────
 
@@ -247,7 +229,7 @@ export default function InvoiceSettingsPage() {
   useEffect(() => {
     api.get("/billing/settings")
       .then(({ data }) => {
-        if (data.data) setConfig(mergeDefaults(data.data));
+        if (data.data) setConfig(normalizeInvoiceSettings(data.data));
       })
       .catch(() => {/* no settings yet — use defaults */})
       .finally(() => setLoading(false));
@@ -281,8 +263,11 @@ export default function InvoiceSettingsPage() {
       invalidateInvoicePrintConfigCache();
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
-    } catch {
-      setError("Failed to save settings. Please try again.");
+    } catch (err) {
+      // Surface what the server actually said — it names the offending field for a
+      // validation failure. The previous fixed string discarded that and left the
+      // user with no idea which section to correct.
+      setError(getErrorMessage(err, "Failed to save settings. Please try again."));
     } finally {
       setSaving(false);
     }
@@ -308,10 +293,14 @@ export default function InvoiceSettingsPage() {
   }
 
   // ── Numbering preview ──────────────────────────────────────────
-  const { prefix, financialYear, separator, counterLength } = config.numbering;
+  // Must reproduce PharmacyInvoiceSettings.formatInvoiceNumber on the server
+  // exactly — that is what stamps the real bill. `financialYearShort` is the
+  // shared IST/April-rollover helper the backend's fyShort() mirrors.
+  const { prefix, autoFinancialYear, financialYear, separator, counterLength } = config.numbering;
   const sampleSeq = "1".padStart(counterLength, "0");
-  const numberPreview = financialYear
-    ? `${prefix}${separator}${financialYear}${separator}${sampleSeq}`
+  const effectiveFy = autoFinancialYear ? financialYearShort() : financialYear;
+  const numberPreview = effectiveFy
+    ? `${prefix}${separator}${effectiveFy}${separator}${sampleSeq}`
     : `${prefix}${separator}${sampleSeq}`;
 
   // ─── Section content renderers ──────────────────────────────────
@@ -512,7 +501,26 @@ export default function InvoiceSettingsPage() {
 
           <SectionCard title="Format Settings">
             <InputRow label="Prefix" value={config.numbering.prefix} onChange={v => setSection("numbering", { prefix: v })} placeholder="INV / BILL / RX" />
-            <InputRow label="Financial Year (empty = skip)" value={config.numbering.financialYear} onChange={v => setSection("numbering", { financialYear: v })} placeholder="2025-26" />
+            <ToggleRow
+              label="Auto financial year"
+              sub={`Uses the current Indian financial year (${financialYearShort()}) and rolls over automatically on 1 April.`}
+              value={config.numbering.autoFinancialYear}
+              onChange={v => setSection("numbering", { autoFinancialYear: v })}
+            />
+            {!config.numbering.autoFinancialYear && (
+              <InputRow
+                label="Financial Year (empty = skip)"
+                value={config.numbering.financialYear}
+                onChange={v => setSection("numbering", { financialYear: v })}
+                placeholder={financialYearShort()}
+              />
+            )}
+            {!config.numbering.autoFinancialYear && (
+              <p className="text-[11px] text-amber-600 pb-2">
+                Manual year set — this will not roll over on 1 April. Intended for migration,
+                backdated invoices and testing.
+              </p>
+            )}
             <SegmentRow label="Separator" value={config.numbering.separator as "/" | "-"} onChange={v => setSection("numbering", { separator: v })}
               options={[{ value: "/", label: "/ Slash" }, { value: "-", label: "- Hyphen" }]} />
             <NumberRow label="Counter Length (digits)" value={config.numbering.counterLength} onChange={v => setSection("numbering", { counterLength: Math.min(8, Math.max(4, v)) })} min={4} max={8} />
@@ -609,7 +617,7 @@ export default function InvoiceSettingsPage() {
           <button
             onClick={() => {
               if (!window.confirm("Reset all invoice settings to defaults? This cannot be undone.")) return;
-              setConfig(mergeDefaults({}));
+              setConfig(normalizeInvoiceSettings({}));
             }}
             className="flex items-center gap-1.5 text-[12px] font-medium text-slate-500 border border-slate-200 hover:bg-slate-50 rounded-lg px-3 py-1.5 transition-colors"
           >

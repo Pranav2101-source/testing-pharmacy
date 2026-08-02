@@ -24,11 +24,18 @@ public class SupabaseStorageClient {
     private final RestClient restClient;
     private final String storageBaseUrl;
     private final String bucket;
+    private final boolean configured;
 
     public SupabaseStorageClient(@Value("${supabase.url}") String baseUrl,
                                  @Value("${supabase.service-role-key}") String serviceRoleKey,
                                  @Value("${supabase.storage-bucket}") String bucket) {
         this.bucket = bucket;
+        // Both default to empty (see application.yml), so an environment that never
+        // set them starts fine and then fails on the first upload with an opaque
+        // connection error against the URL "/storage/v1". Recording it here lets the
+        // guard below name the two variables instead.
+        this.configured = baseUrl != null && !baseUrl.isBlank()
+                && serviceRoleKey != null && !serviceRoleKey.isBlank();
         this.storageBaseUrl = baseUrl + "/storage/v1";
         this.restClient = RestClient.builder()
                 .baseUrl(storageBaseUrl)
@@ -37,8 +44,25 @@ public class SupabaseStorageClient {
                 .build();
     }
 
+    /**
+     * Fails with an actionable message when file storage was never configured.
+     *
+     * <p>Without this the first upload attempt dies inside RestClient against a
+     * malformed base URL, and the settings screen reports a generic server error —
+     * giving whoever is setting the pharmacy up no way to know that two environment
+     * variables are simply missing.
+     */
+    private void requireConfigured() {
+        if (!configured) {
+            throw new com.checkup.pharmacy.common.exception.ServiceUnavailableException(
+                    "File storage is not configured on the server — set SUPABASE_URL and "
+                    + "SUPABASE_SERVICE_ROLE_KEY, then try again.");
+        }
+    }
+
     /** Uploads bytes to {@code {bucket}/{path}}, overwriting if the path already exists. */
     public void upload(String path, byte[] bytes, String contentType) {
+        requireConfigured();
         restClient.post()
                 .uri("/object/" + bucket + "/" + path)
                 .header(HttpHeaders.CONTENT_TYPE, contentType)
@@ -50,6 +74,7 @@ public class SupabaseStorageClient {
 
     /** Downloads the raw bytes of a previously uploaded object — used to proxy a file back through our own API. */
     public byte[] download(String path) {
+        requireConfigured();
         return restClient.get()
                 .uri("/object/" + bucket + "/" + path)
                 .retrieve()
@@ -58,6 +83,7 @@ public class SupabaseStorageClient {
 
     /** A short-lived signed URL for viewing/downloading a previously uploaded object. */
     public String createSignedUrl(String path, int expiresInSeconds) {
+        requireConfigured();
         SignedUrlResponse resp = restClient.post()
                 .uri("/object/sign/" + bucket + "/" + path)
                 .contentType(MediaType.APPLICATION_JSON)

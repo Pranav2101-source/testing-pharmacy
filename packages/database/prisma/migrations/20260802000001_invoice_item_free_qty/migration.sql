@@ -1,0 +1,11 @@
+-- Scheme/free quantity on a sales line (10+1, buy-100-get-10, supplier promos).
+--
+-- GRN items have carried `freeQty` since the beginning; invoice items never did,
+-- which left the Invoice Settings "Show Free Qty" column toggle rendering an
+-- always-empty column. This is the missing half.
+--
+-- NOT charged: taxableAmount/amount stay derived from `quantity`. It IS deducted
+-- from stock, since the goods physically leave the shelf.
+--
+-- DEFAULT 0 so every existing row is valid and the column is backfill-free.
+ALTER TABLE "invoice_items" ADD COLUMN "freeQty" INTEGER NOT NULL DEFAULT 0;

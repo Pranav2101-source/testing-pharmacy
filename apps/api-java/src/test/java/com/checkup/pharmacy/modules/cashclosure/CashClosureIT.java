@@ -99,7 +99,7 @@ class CashClosureIT extends AbstractPostgresIT {
     private void cashSale(int units) {
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, units, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO))));
         flushAndClear();
     }
 
@@ -165,7 +165,7 @@ class CashClosureIT extends AbstractPostgresIT {
 
         var creditInvoice = billingService.createInvoice(new CreateInvoiceRequest(creditCustomerId, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 4, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 4, null, BigDecimal.ZERO))));
         flushAndClear();
 
         // The customer comes back and settles Rs.400 in cash.
@@ -192,7 +192,7 @@ class CashClosureIT extends AbstractPostgresIT {
 
         billingService.createInvoice(new CreateInvoiceRequest(creditCustomerId, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 4, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 4, null, BigDecimal.ZERO))));
         flushAndClear();
 
         var closure = cashClosureService.initForDate(
@@ -227,7 +227,7 @@ class CashClosureIT extends AbstractPostgresIT {
     void cancelledInvoicesDoNotCount() {
         var invoice = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PENDING",
                 null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 2, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO))));
         flushAndClear();
         billingService.cancelInvoice(invoice.id(), "entered by mistake");
         flushAndClear();

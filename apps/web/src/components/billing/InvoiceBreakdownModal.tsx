@@ -8,6 +8,7 @@ import {
   Tag, ReceiptText, Percent, IndianRupee,
 } from "lucide-react";
 import { useBillingStore } from "./useBillingStore";
+import { computeNetPayable } from "@/lib/billTotals";
 import { cn } from "@/lib/utils";
 
 // ── Calculation engine ────────────────────────────────────────────────────────
@@ -23,6 +24,8 @@ export type BreakdownResult = {
   roundOff:         number;
   netPayable:       number;
   gst:              number;
+  /** >0 when adjustments exceed the bill; the backend will refuse to save it. */
+  shortfall:        number;
 };
 
 export function calcBreakdown(params: {
@@ -41,15 +44,15 @@ export function calcBreakdown(params: {
   const billAmount      = itemsTotal - billDiscountAmt;
   const gst             = items.reduce((s, i) => s + i.cgst + i.sgst, 0);
 
-  // Clamp to 0 — adjustmentAmount can be negative but a pharmacy invoice
-  // must never go below zero (no negative-invoice write-offs via this path).
-  const preRound   = Math.max(0, billAmount + extraCharges + adjustmentAmount);
-  const roundOff   = Math.round(preRound) - preRound;
-  const netPayable = preRound + roundOff;
+  // Shared with BillingNewPage so the breakdown and the header total can never
+  // disagree, and deliberately NOT clamped to zero — see lib/billTotals.ts.
+  const { roundOff, netPayable, shortfall } = computeNetPayable({
+    itemsTotal, billDiscountPct, extraCharges, adjustmentAmount,
+  });
 
   return {
     mrpTotal, itemDiscountAmt, billDiscountAmt, totalDiscount,
-    billAmount, extraCharges, adjustmentAmount, roundOff, netPayable, gst,
+    billAmount, extraCharges, adjustmentAmount, roundOff, netPayable, gst, shortfall,
   };
 }
 

@@ -19,6 +19,7 @@ import { InvoiceBreakdownModal } from "@/components/billing/InvoiceBreakdownModa
 import type { MedicineSearchResult } from "@pharmacy/types";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, getErrorMessage } from "@/lib/api-client";
+import { computeNetPayable, shortfallMessage } from "@/lib/billTotals";
 import { getStoredUser } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { saveDraft, getDraft, deleteDraft } from "@/lib/draftStorage";
@@ -162,7 +163,9 @@ function NewBillInner() {
     reservationTimer.current = setTimeout(() => {
       api.post("/inventory/reserve", {
         sessionId: idempotencyKeyRef.current,
-        items: items.map((i) => ({ inventoryId: i.inventoryId, quantity: i.quantity })),
+        // Reserve the full dispensed amount: free units come off the same batch, so
+        // reserving only the paid quantity would under-hold stock against another till.
+        items: items.map((i) => ({ inventoryId: i.inventoryId, quantity: i.quantity + (i.freeQty || 0) })),
       }).catch(() => { /* best-effort; authoritative check is at bill save */ });
     }, 500);
     return () => { if (reservationTimer.current) clearTimeout(reservationTimer.current); };
@@ -233,12 +236,17 @@ function NewBillInner() {
   const totals   = useMemo(() => getTotals(), [getTotals, items, meta.isInterstate]);
   const totalQty = useMemo(() => items.reduce((s, i) => s + i.quantity, 0), [items]);
 
-  // Net payable includes bill-level adjustments — kept consistent with InvoiceBreakdownModal
-  const netPayable = useMemo(() => {
-    const billDiscAmt = (meta.billDiscountPct / 100) * totals.totalAmount;
-    const preRound    = Math.max(0, totals.totalAmount - billDiscAmt + meta.extraCharges + meta.adjustmentAmount);
-    return preRound + (Math.round(preRound) - preRound);
-  }, [totals.totalAmount, meta.billDiscountPct, meta.extraCharges, meta.adjustmentAmount]);
+  // Net payable includes bill-level adjustments. Shares one helper with
+  // InvoiceBreakdownModal so the header figure and the breakdown cannot drift.
+  const { netPayable, shortfall } = useMemo(
+    () => computeNetPayable({
+      itemsTotal:       totals.totalAmount,
+      billDiscountPct:  meta.billDiscountPct,
+      extraCharges:     meta.extraCharges,
+      adjustmentAmount: meta.adjustmentAmount,
+    }),
+    [totals.totalAmount, meta.billDiscountPct, meta.extraCharges, meta.adjustmentAmount],
+  );
 
   const roundedTotal = Math.round(netPayable);
 
@@ -254,6 +262,15 @@ function NewBillInner() {
     if (comingSoon.includes(action)) {
       setActionToast({ msg: `${ACTION_DEF_MAP[action].label} — coming soon`, type: "info" });
       setTimeout(() => setActionToast(null), 3000);
+      return;
+    }
+
+    // Stop here rather than at the server. The backend refuses a negative bill with
+    // a 422, but until this check existed the screen showed a clamped ₹0.00 — which
+    // reads as a legitimate free-of-charge sale — so the cashier had no way to know
+    // anything was wrong until the save bounced with figures never shown to them.
+    if (shortfall > 0) {
+      setError(shortfallMessage(shortfall));
       return;
     }
 
@@ -278,6 +295,7 @@ function NewBillInner() {
         items: items.map((i) => ({
           inventoryId: i.inventoryId,
           quantity:    i.quantity,
+          freeQty:     i.freeQty || undefined,
           discount:    i.discount,
         })),
       });
@@ -346,7 +364,7 @@ function NewBillInner() {
     } finally {
       setSubmitting(false);
     }
-  }, [items, meta, totals, roundedTotal, loadedDraftId, clear, submitting]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [items, meta, totals, roundedTotal, shortfall, loadedDraftId, clear, submitting]); // eslint-disable-line react-hooks/exhaustive-deps
   // Keep the ref current after every render so the keydown handler always dispatches
   // to the latest handleSave (which closes over the correct loadedDraftId et al.).
   useEffect(() => { handleSaveRef.current = handleSave; });

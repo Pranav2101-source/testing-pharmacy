@@ -42,6 +42,16 @@ public class InvoiceItem extends IdOnlyEntity {
     @Column(name = "quantity")
     private int quantity;
 
+    /**
+     * Scheme quantity given free with this line (10+1, buy-100-get-10).
+     *
+     * <p>Not charged — {@code taxableAmount} and {@code amount} are derived from
+     * {@link #quantity} alone. It IS deducted from stock: the goods physically leave
+     * the shelf, so the batch is decremented by {@code quantity + freeQty}.
+     */
+    @Column(name = "freeQty")
+    private int freeQty;
+
     @Column(name = "mrp")
     private BigDecimal mrp;
 
@@ -89,6 +99,7 @@ public class InvoiceItem extends IdOnlyEntity {
 
     public static InvoiceItem create(String pharmacyId, String invoiceId, String inventoryId, String medicineName,
                                      String hsnCode, String batchNumber, Instant expiryDate, int quantity,
+                                     int freeQty,
                                      BigDecimal mrp, BigDecimal rate, BigDecimal purchaseRate, BigDecimal discount,
                                      BigDecimal gstRate, BigDecimal cgst, BigDecimal sgst, BigDecimal igst,
                                      BigDecimal taxableAmount, BigDecimal amount, String location) {
@@ -102,6 +113,7 @@ public class InvoiceItem extends IdOnlyEntity {
         item.batchNumber = batchNumber;
         item.expiryDate = expiryDate;
         item.quantity = quantity;
+        item.freeQty = freeQty;
         item.mrp = mrp;
         item.rate = rate;
         item.purchaseRate = purchaseRate;
@@ -131,6 +143,8 @@ public class InvoiceItem extends IdOnlyEntity {
     public Instant getExpiryDate() { return expiryDate; }
 
     public int getQuantity() { return quantity; }
+
+    public int getFreeQty() { return freeQty; }
 
     public BigDecimal getMrp() { return mrp; }
 

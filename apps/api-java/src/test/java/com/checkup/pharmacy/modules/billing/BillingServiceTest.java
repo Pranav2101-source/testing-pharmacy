@@ -100,7 +100,7 @@ class BillingServiceTest {
     }
 
     private static InvoiceItemRequest item(String inventoryId, int quantity) {
-        return new InvoiceItemRequest(inventoryId, quantity, BigDecimal.ZERO);
+        return new InvoiceItemRequest(inventoryId, quantity, null, BigDecimal.ZERO);
     }
 
     @Test

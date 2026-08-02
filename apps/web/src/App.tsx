@@ -64,11 +64,9 @@ const AgentsPage           = lazy(() => import("./pages/dashboard/support/Agents
 const ProfilePage            = lazy(() => import("./pages/dashboard/settings/ProfilePage"));
 const DocumentsPage          = lazy(() => import("./pages/dashboard/settings/DocumentsPage"));
 const StaffSettingsPage      = lazy(() => import("./pages/dashboard/settings/StaffSettingsPage"));
-const PlansPage              = lazy(() => import("./pages/dashboard/settings/PlansPage"));
 const ChangePasswordPage     = lazy(() => import("./pages/dashboard/settings/ChangePasswordPage"));
 const InvoiceSettingsPage    = lazy(() => import("./pages/dashboard/settings/InvoiceSettingsPage"));
 const BillingPreferencesPage  = lazy(() => import("./pages/dashboard/settings/BillingPreferencesPage"));
-const LocationsSettingsPage   = lazy(() => import("./pages/dashboard/settings/LocationsSettingsPage"));
 
 function PageLoader() {
   return (
@@ -168,15 +166,18 @@ export function App() {
                 {/* Redirects for any bookmarked old URLs */}
                 <Route path="/dashboard/settings/my-profile"       element={<Navigate to="/dashboard/settings/profile" replace />} />
                 <Route path="/dashboard/settings/pharmacy-profile" element={<Navigate to="/dashboard/settings/profile" replace />} />
+                {/* Removed from the settings menu. Redirected rather than deleted so
+                    existing bookmarks land somewhere sensible instead of a 404.
+                    Locations lives on as the top-level /dashboard/locations page. */}
+                <Route path="/dashboard/settings/locations"       element={<Navigate to="/dashboard/locations" replace />} />
+                <Route path="/dashboard/settings/plans"           element={<Navigate to="/dashboard/settings/profile" replace />} />
                 <Route path="/dashboard/settings/profile"          element={<ProfilePage />} />
                 <Route path="/dashboard/settings/change-password"  element={<ChangePasswordPage />} />
 
                 <Route element={<RoleGuard allow={["OWNER", "MANAGER"]} redirectTo="/dashboard/settings/profile" />}>
                   <Route path="/dashboard/settings/documents" element={<DocumentsPage />} />
                   <Route path="/dashboard/settings/staff"     element={<StaffSettingsPage />} />
-                  <Route path="/dashboard/settings/plans"     element={<PlansPage />} />
                   <Route path="/dashboard/settings/invoice"   element={<InvoiceSettingsPage />} />
-                  <Route path="/dashboard/settings/locations" element={<LocationsSettingsPage />} />
                   <Route path="/dashboard/settings/billing"   element={<BillingPreferencesPage />} />
                 </Route>
               </Route>

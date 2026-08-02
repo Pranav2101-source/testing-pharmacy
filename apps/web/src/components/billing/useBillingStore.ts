@@ -13,6 +13,8 @@ export type CartItem = {
   expiryDate:     string;
   mrp:            number;
   quantity:       number;
+  /** Scheme quantity given free (10+1). Not charged; still leaves the shelf. */
+  freeQty:        number;
   discount:       number;
   gstRate:        number;
   availableStock?: number;
@@ -46,13 +48,23 @@ export type BillingMeta = {
   adjustmentAmount:        number;  // manual ± adjustment (rounding, goodwill, etc.)
 };
 
+/**
+ * What a caller supplies when adding a line. Computed money fields are derived,
+ * and freeQty is optional because most sales have no scheme — recompute() fills
+ * in 0. The stored CartItem always carries a concrete freeQty.
+ */
+type NewCartItem =
+  Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "igst" | "amount" | "freeQty">
+  & { freeQty?: number };
+
 type BillingStore = {
   items: CartItem[];
   meta: BillingMeta;
-  addItem: (base: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "igst" | "amount">) => void;
+  addItem: (base: NewCartItem) => void;
   removeItem: (inventoryId: string) => void;
-  replaceItem: (oldInventoryId: string, base: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "igst" | "amount">) => void;
+  replaceItem: (oldInventoryId: string, base: NewCartItem) => void;
   updateQty: (inventoryId: string, qty: number) => void;
+  updateFreeQty: (inventoryId: string, freeQty: number) => void;
   updateDiscount: (inventoryId: string, discount: number) => void;
   setMeta: (patch: Partial<BillingMeta>) => void;
   clear: () => void;
@@ -81,11 +93,56 @@ const DEFAULT_META: BillingMeta = {
   adjustmentAmount:        0,
 };
 
-function recompute(item: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "igst" | "amount"> & Partial<CartItem>): CartItem {
+/**
+ * Quantity a cart line is allowed to carry.
+ *
+ * Capped at the batch's available stock so the cashier cannot enter a quantity the
+ * sale will be rejected for. The backend still re-checks under Serializable
+ * isolation and remains the authority — it has to, because another till can sell
+ * the same batch between this keystroke and Save — but the common case (one person
+ * typing 50 when 3 are on the shelf) is now stopped at entry instead of after a
+ * round trip.
+ *
+ * Two deliberate non-caps:
+ *  - `availableStock` undefined means the caller never resolved it (some entry
+ *    paths don't), and inventing a limit of 0 there would block legitimate sales.
+ *  - `availableStock <= 0` still yields 1, because a cart line cannot represent
+ *    zero. The backend rejects it by name ("Insufficient stock for X"), which is a
+ *    clearer explanation than a row that silently refuses to accept input.
+ */
+function clampQuantity(quantity: number, availableStock?: number): number {
+  const atLeastOne = Math.max(1, quantity);
+  if (availableStock == null) return atLeastOne;
+  if (availableStock <= 0) return 1;
+  return Math.min(atLeastOne, availableStock);
+}
+
+/**
+ * Paid quantity and free quantity share one batch, so the CAP APPLIES TO THEIR SUM.
+ *
+ * A 100-unit batch cannot support 95 sold + 10 free; checking each against the
+ * batch separately would pass and then be rejected at save. The paid quantity wins
+ * the remaining stock — a cashier who over-reaches on the scheme should lose the
+ * free units, not the sale.
+ */
+function clampLine(quantity: number, freeQty: number, availableStock?: number): { quantity: number; freeQty: number } {
+  const paid = clampQuantity(quantity, availableStock);
+  const free = Math.max(0, Math.floor(freeQty || 0));
+  if (availableStock == null || availableStock <= 0) return { quantity: paid, freeQty: free };
+  return { quantity: paid, freeQty: Math.min(free, Math.max(0, availableStock - paid)) };
+}
+
+function recompute(item: NewCartItem & Partial<CartItem>): CartItem {
   const isInterstate = false; // item-level calc is always intra-state; IGST toggled at invoice level
+  // Clamped here rather than at each call site: addItem, the addItem merge branch,
+  // updateQty and replaceItem all funnel through this function, so a future entry
+  // path cannot accidentally skip the cap.
+  const { quantity, freeQty } = clampLine(item.quantity, item.freeQty ?? 0, item.availableStock);
+  // Free units are NOT charged: every money figure below is derived from the paid
+  // quantity alone. Only the stock cap above and the backend's decrement see the sum.
   const { taxableAmount, cgst, sgst, igst, totalAmount } = calcGstFromMrp(
     item.mrp,
-    item.quantity,
+    quantity,
     item.discount,
     item.gstRate,
     isInterstate,
@@ -100,7 +157,8 @@ function recompute(item: Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgs
     batchNumber:    item.batchNumber,
     expiryDate:     item.expiryDate,
     mrp:            item.mrp,
-    quantity:       item.quantity,
+    quantity,
+    freeQty,
     discount:       item.discount,
     gstRate:        item.gstRate,
     availableStock: item.availableStock,
@@ -124,7 +182,13 @@ export const useBillingStore = create<BillingStore>((set, get) => ({
         return {
           items: s.items.map((i) =>
             i.inventoryId === base.inventoryId
-              ? recompute({ ...i, quantity: i.quantity + base.quantity })
+              // Free units accumulate alongside paid ones: scanning a 10+1 pack twice
+              // is 20 sold and 2 free, not 20 sold and 1 free.
+              ? recompute({
+                  ...i,
+                  quantity: i.quantity + base.quantity,
+                  freeQty:  (i.freeQty ?? 0) + (base.freeQty ?? 0),
+                })
               : i
           ),
         };
@@ -146,9 +210,21 @@ export const useBillingStore = create<BillingStore>((set, get) => ({
   },
 
   updateQty(inventoryId, qty) {
+    // No clamping here — recompute() owns it, so the floor of 1 and the
+    // available-stock ceiling are applied identically on every path.
     set((s) => ({
       items: s.items.map((i) =>
-        i.inventoryId === inventoryId ? recompute({ ...i, quantity: Math.max(1, qty) }) : i
+        i.inventoryId === inventoryId ? recompute({ ...i, quantity: qty }) : i
+      ),
+    }));
+  },
+
+  updateFreeQty(inventoryId, freeQty) {
+    // Clamping lives in recompute() so the paid+free total is checked against one
+    // batch, same as every other edit path.
+    set((s) => ({
+      items: s.items.map((i) =>
+        i.inventoryId === inventoryId ? recompute({ ...i, freeQty }) : i
       ),
     }));
   },

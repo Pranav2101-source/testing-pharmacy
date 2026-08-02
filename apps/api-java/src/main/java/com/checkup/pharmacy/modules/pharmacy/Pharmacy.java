@@ -68,6 +68,13 @@ public class Pharmacy extends BaseEntity {
     @Column(name = "invoiceSettings")
     private String invoiceSettings;
 
+    // Billing-screen action config (which save actions exist, pinned state, order).
+    // Pharmacy-level: it is shop policy, not a per-cashier preference, and must look
+    // the same on every till. Same raw-JSON-text pattern as the two columns above.
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "billingPreferences")
+    private String billingPreferences;
+
     @Column(name = "isActive")
     private boolean isActive = true;
 
@@ -121,6 +128,10 @@ public class Pharmacy extends BaseEntity {
     public String getInvoiceSettings() { return invoiceSettings; }
 
     public void setInvoiceSettings(String invoiceSettings) { this.invoiceSettings = invoiceSettings; }
+
+    public String getBillingPreferences() { return billingPreferences; }
+
+    public void setBillingPreferences(String billingPreferences) { this.billingPreferences = billingPreferences; }
 
     public void setName(String name) { this.name = name; }
 

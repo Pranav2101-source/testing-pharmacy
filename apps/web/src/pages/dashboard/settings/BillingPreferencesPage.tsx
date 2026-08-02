@@ -1,7 +1,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Pin, PinOff, ChevronUp, ChevronDown, RotateCcw, Info,
-  CheckCircle2,
+  CheckCircle2, AlertTriangle, Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -242,6 +242,8 @@ export default function BillingPreferencesPage() {
     togglePinned,
     moveAction,
     resetToDefaults,
+    saving: prefsSaving,
+    error:  prefsError,
   } = useBillingPreferences();
 
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -295,15 +297,34 @@ export default function BillingPreferencesPage() {
 
           <div className="flex items-center gap-2">
             <AnimatePresence>
-              {saved && (
-                <motion.span
+              {/* These now write to the database, so the indicator has to distinguish
+                  "in flight" from "stored" — and a failure has to be visible rather
+                  than leaving a green "Saved" over a change the server rejected. */}
+              {prefsError ? (
+                <motion.span key="err"
+                  initial={{ opacity: 0, x: 4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}
+                  className="flex items-center gap-1.5 text-[12px] font-medium text-red-600"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  {prefsError}
+                </motion.span>
+              ) : prefsSaving ? (
+                <motion.span key="saving"
+                  initial={{ opacity: 0, x: 4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}
+                  className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-500"
+                >
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  Saving
+                </motion.span>
+              ) : saved ? (
+                <motion.span key="saved"
                   initial={{ opacity: 0, x: 4 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}
                   className="flex items-center gap-1.5 text-[12px] font-semibold text-emerald-600"
                 >
                   <CheckCircle2 className="w-3.5 h-3.5" />
                   Saved
                 </motion.span>
-              )}
+              ) : null}
             </AnimatePresence>
 
             {!showResetConfirm ? (
