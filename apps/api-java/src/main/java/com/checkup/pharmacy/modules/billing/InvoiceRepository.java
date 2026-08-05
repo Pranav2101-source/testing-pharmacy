@@ -178,9 +178,24 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
      * kind of quiet off-by-one a pharmacist reconciling a day's takings would notice and not
      * be able to explain. Days with no sales are simply absent; the caller fills the gaps so
      * the chart keeps a continuous axis.
+     *
+     * <p><b>{@code AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'} — both halves are required,
+     * and one alone is worse than neither.</b> {@code createdAt} is {@code TIMESTAMP(3)}
+     * WITHOUT time zone, holding UTC by convention rather than by type. On a naive column the
+     * single-argument form does not mean "convert to IST": it means "this value IS IST, give
+     * me the UTC instant", so it SUBTRACTS 5:30 from a value that needed 5:30 added — an
+     * 11-hour error in the wrong direction. The first conversion supplies the zone the column
+     * does not carry; the second does the intended shift.
+     *
+     * <p>What that cost: every sale before 11:00 IST was billed to the previous day's bar.
+     * A morning's takings landed on yesterday, and the chart still totalled correctly across
+     * the week, so it looked plausible from every angle except the one that mattered. It also
+     * hid from the test suite — the test asserts "today's sale is counted", and until the
+     * clock passes midnight IST the wrong answer and the right one are the same date.
      */
     @Query(value = """
-            SELECT to_char((i."createdAt" AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM-DD') AS day,
+            SELECT to_char((i."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date,
+                           'YYYY-MM-DD') AS day,
                    COUNT(*) AS invoiceCount,
                    COALESCE(SUM(i."totalAmount"), 0) AS revenue,
                    COALESCE(SUM(i."totalGst"), 0) AS gstCollected

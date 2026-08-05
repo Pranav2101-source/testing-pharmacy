@@ -240,6 +240,72 @@ class ReportsIT extends AbstractPostgresIT {
         assertThat(quietDay.revenue()).isEqualByComparingTo(BigDecimal.ZERO);
     }
 
+    /**
+     * Pins the IST day boundary against a sale whose timestamp we choose, rather than "now".
+     *
+     * <p>The test above could not catch the bug this one exists for. It creates a sale at the
+     * current instant and asks whether it lands on today, so the wrong grouping and the right
+     * one agree for most of the day and disagree only once the clock passes midnight IST —
+     * a suite that is green until roughly 00:00 and red until 05:30, which reads as flakiness
+     * and gets re-run rather than investigated. Choosing the timestamp removes the clock from
+     * the assertion entirely.
+     *
+     * <p>Two instants, either side of an IST midnight, both written directly because no API
+     * lets a caller backdate an invoice:
+     *
+     * <ul>
+     *   <li>18:29:59Z — 23:59:59 IST, the last second of the earlier IST day</li>
+     *   <li>18:30:01Z — 00:00:01 IST, the first second of the next one</li>
+     * </ul>
+     *
+     * <p>They are 2 seconds apart and must land on DIFFERENT bars. Under the old
+     * single-argument conversion both fell on the earlier date, because it shifted -5:30
+     * instead of +5:30 — so a pharmacy's whole morning was billed to the previous day.
+     */
+    @Test
+    @DisplayName("the day boundary is IST midnight, not UTC midnight")
+    void dailySeriesBucketsByIstMidnight() {
+        cashSale(1);
+        String invoiceId = (String) entityManager
+                .createNativeQuery("SELECT id FROM invoices WHERE \"pharmacyId\" = :p LIMIT 1")
+                .setParameter("p", pharmacyId)
+                .getSingleResult();
+        flushAndClear();
+
+        // 2026-03-10T18:29:59Z = 23:59:59 IST on the 10th; one second later is the 11th.
+        java.time.Instant lateOnTheTenth = java.time.Instant.parse("2026-03-10T18:29:59Z");
+        java.time.Instant earlyOnTheEleventh = java.time.Instant.parse("2026-03-10T18:30:01Z");
+
+        setCreatedAt(invoiceId, lateOnTheTenth);
+        assertThat(dayOf(invoiceId, "2026-03-09", "2026-03-12"))
+                .as("23:59:59 IST belongs to that IST day, not the next")
+                .isEqualTo("2026-03-10");
+
+        setCreatedAt(invoiceId, earlyOnTheEleventh);
+        assertThat(dayOf(invoiceId, "2026-03-09", "2026-03-12"))
+                .as("00:00:01 IST belongs to the new IST day — two seconds later, a different bar")
+                .isEqualTo("2026-03-11");
+    }
+
+    /** Backdates an invoice. Native, because no API may rewrite when a sale happened. */
+    private void setCreatedAt(String invoiceId, java.time.Instant at) {
+        entityManager.createNativeQuery(
+                        "UPDATE invoices SET \"createdAt\" = :at WHERE id = :id")
+                .setParameter("at", java.sql.Timestamp.from(at))
+                .setParameter("id", invoiceId)
+                .executeUpdate();
+        flushAndClear();
+    }
+
+    /** The single populated bar in the window — which IST day the series put the sale on. */
+    private String dayOf(String invoiceId, String from, String to) {
+        return reportsService.dailySalesSeries(from, to).stream()
+                .filter(d -> d.invoiceCount() > 0)
+                .map(d -> d.date())
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("the sale fell outside the queried window"));
+    }
+
     @Test
     @DisplayName("an inverted or oversized series range is refused with a clear reason")
     void dailySeriesRejectsBadRanges() {
