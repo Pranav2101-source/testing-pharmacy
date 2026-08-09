@@ -78,6 +78,21 @@ public class MigrationImportJob extends BaseEntity {
         return j;
     }
 
+    /**
+     * The import crashed rather than finishing with row-level errors.
+     *
+     * <p>Distinct from {@link #complete} reaching FAILED because every row was bad:
+     * that is a data problem the pharmacist can fix and retry, this is the job itself
+     * dying. Without this, a background import that threw would sit at PROCESSING
+     * forever — the wizard would poll it indefinitely, and rollback would stay blocked
+     * on "an import is still running" for a job that stopped running long ago.
+     */
+    public void fail(String reason) {
+        this.status = ImportJobStatus.FAILED;
+        this.errors = List.of(RowIssue.error(0, null, reason));
+        this.completedAt = Instant.now();
+    }
+
     public void complete(int processedRows, int successRows, int failedRows, List<RowIssue> errors) {
         this.processedRows = processedRows;
         this.successRows = successRows;

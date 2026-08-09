@@ -151,10 +151,14 @@ public class PurchasesService {
         for (com.checkup.pharmacy.modules.medicine.Medicine m : medicineRepository.findAllById(medicineIds)) {
             medicinesById.put(m.getId(), m);
         }
+        // Scoped to the medicines in this suggestion set — the unbounded variant read
+        // every override the pharmacy had, to use a handful.
         Map<String, BigDecimal> gstOverrideByMedicineId = new HashMap<>();
-        for (var o : overrideRepository.findByIdPharmacyId(pharmacyId)) {
-            if (o.getGstRate() != null) {
-                gstOverrideByMedicineId.put(o.getMedicineId(), o.getGstRate());
+        if (!medicineIds.isEmpty()) {
+            for (var o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, medicineIds)) {
+                if (o.getGstRate() != null) {
+                    gstOverrideByMedicineId.put(o.getMedicineId(), o.getGstRate());
+                }
             }
         }
 

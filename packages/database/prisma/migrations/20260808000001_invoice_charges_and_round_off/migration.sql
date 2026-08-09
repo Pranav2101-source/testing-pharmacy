@@ -1,0 +1,39 @@
+-- Make a tax invoice reconcilable from its own stored fields.
+--
+-- WHAT WAS MISSING
+-- `totalAmount` is computed as (items after discount) + extraCharges + adjustmentAmount,
+-- then rounded to the nearest rupee — but none of those last three were ever stored.
+-- So for any bill that used them, the difference between `taxableAmount + totalGst`
+-- and `totalAmount` was an unexplained lump that nobody could reproduce after the fact:
+-- not the pharmacist reading the bill back, not an auditor, not this codebase.
+--
+-- A tax invoice whose own arithmetic cannot be re-derived is the thing a GST audit
+-- objects to, and the pharmacy had no way to answer the question.
+--
+-- WITH THESE THREE
+--   taxableAmount + totalGst + extraCharges + adjustmentAmount + roundOff = totalAmount
+-- holds exactly, for every invoice, and every term is a stored number.
+--
+-- roundOff is signed: the rupee rounding goes either way (+0.40 or -0.35), and Indian
+-- invoices print it as its own line. It is derived, but storing it means the printed
+-- invoice and any later reconciliation agree on the figure rather than each
+-- recomputing it from values that have since been rounded.
+--
+-- DEFAULT 0 on all three, so every existing row satisfies the identity above without
+-- a backfill: bills issued before this had no extra charges or adjustment (there was
+-- nowhere to put them), and their round-off is recoverable as
+-- totalAmount - (taxableAmount + totalGst), which for those rows is what 0 means
+-- plus the historic rounding — see the note in BillingService.
+--
+-- Adding a defaulted column takes no table-rewrite lock on Postgres 11+, so this is
+-- safe to run against a live pharmacy mid-day.
+--
+-- IF NOT EXISTS because this migration is applied to Supabase BY HAND — Railway never
+-- runs `prisma migrate deploy` here. A hand-run can stop half way (connection drop,
+-- statement timeout, a closed browser tab in the SQL editor), and the natural reaction
+-- is to run it again. Without this, re-running fails on the first column and leaves
+-- the remaining two unapplied, which is a worse state than either finishing or doing
+-- nothing. Re-running is now a clean no-op.
+ALTER TABLE "invoices" ADD COLUMN IF NOT EXISTS "extraCharges" DECIMAL(12, 2) NOT NULL DEFAULT 0;
+ALTER TABLE "invoices" ADD COLUMN IF NOT EXISTS "adjustmentAmount" DECIMAL(12, 2) NOT NULL DEFAULT 0;
+ALTER TABLE "invoices" ADD COLUMN IF NOT EXISTS "roundOff" DECIMAL(12, 2) NOT NULL DEFAULT 0;

@@ -40,16 +40,21 @@ export type NetPayable = {
 };
 
 export function computeNetPayable(params: {
-  /** Item total after item-level discounts and GST. */
+  /**
+   * Item total after item-level discounts, the BILL-LEVEL discount, and GST.
+   *
+   * The bill discount used to be subtracted here, after tax. It now reduces the
+   * taxable value inside `calcInvoiceTotals` instead, because a discount recorded on
+   * the invoice is excluded from the value of the supply (s.15(3) CGST Act) — so it
+   * is already inside this figure and must not be applied a second time.
+   */
   itemsTotal: number;
-  billDiscountPct: number;
   extraCharges: number;
   adjustmentAmount: number;
 }): NetPayable {
-  const { itemsTotal, billDiscountPct, extraCharges, adjustmentAmount } = params;
+  const { itemsTotal, extraCharges, adjustmentAmount } = params;
 
-  const billDiscountAmt = (billDiscountPct / 100) * itemsTotal;
-  const preRound = itemsTotal - billDiscountAmt + extraCharges + adjustmentAmount;
+  const preRound = itemsTotal + extraCharges + adjustmentAmount;
 
   // A bill that is exactly zero is legitimate (100% discount, free-of-charge
   // dispensing) and the backend allows it. Only a genuinely negative one is not.

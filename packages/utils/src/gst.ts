@@ -66,10 +66,24 @@ export function calcGstFromMrp(
   };
 }
 
+/**
+ * Invoice totals, with an optional bill-level discount applied to every line BEFORE
+ * tax is derived.
+ *
+ * Mirrors `GstCalculator.calcInvoiceTotals` in the Java API exactly — the cart preview
+ * and the figure the server commits must be the same number, or the cashier is shown
+ * one total and the customer is charged another.
+ *
+ * The discount reduces the taxable value because s.15(3) of the CGST Act excludes a
+ * discount recorded on the invoice from the value of the supply. Deducting it after
+ * the tax, as this used to, charged GST on money the pharmacy never collected.
+ */
 export function calcInvoiceTotals(
   items:          InvoiceItemInput[],
   isInterstate =  false,
+  billDiscountPct = 0,
 ): Omit<GstBreakdown, "totalAmount"> & { subtotal: number; totalAmount: number; discountAmount: number } {
+  const billFactor   = billDiscountPct > 0 ? 1 - Math.min(billDiscountPct, 100) / 100 : 1;
   let subtotal       = 0;
   let discountAmount = 0;
   let taxableAmount  = 0;
@@ -78,12 +92,14 @@ export function calcInvoiceTotals(
   for (const item of items) {
     const lineTotal    = item.mrp * item.quantity;
     const lineDiscount = (lineTotal * item.discount) / 100;
-    const afterDiscount = lineTotal - lineDiscount;
+    const afterLineDiscount = lineTotal - lineDiscount;
+    const afterDiscount = afterLineDiscount * billFactor;
     const taxable      = afterDiscount / (1 + item.gstRate / 100);
     const gst          = afterDiscount - taxable;
 
     subtotal       += lineTotal;
-    discountAmount += lineDiscount;
+    // Both kinds of discount in the single figure the customer reads.
+    discountAmount += lineDiscount + (afterLineDiscount - afterDiscount);
     taxableAmount  += taxable;
     halfGstTotal   += gst / 2;
   }

@@ -15,6 +15,12 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
 
     long countByPharmacyId(String pharmacyId);
 
+    /** Rollback guard: how many bills name one of these customers. */
+    long countByPharmacyIdAndCustomerIdIn(String pharmacyId, java.util.Collection<String> customerIds);
+
+    /** Rollback guard: how many bills name one of these doctors. */
+    long countByPharmacyIdAndDoctorIdIn(String pharmacyId, java.util.Collection<String> doctorIds);
+
     @Query("SELECT i FROM Invoice i LEFT JOIN FETCH i.customer LEFT JOIN FETCH i.doctor WHERE i.id = :id AND i.pharmacyId = :pharmacyId")
     Optional<Invoice> findByIdAndPharmacyId(@Param("id") String id, @Param("pharmacyId") String pharmacyId);
 
@@ -159,7 +165,8 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
     @Query("""
             SELECT COALESCE(SUM(i.subtotal), 0) AS subtotal, COALESCE(SUM(i.discountAmount), 0) AS discountAmount,
                    COALESCE(SUM(i.taxableAmount), 0) AS taxableAmount, COALESCE(SUM(i.cgst), 0) AS cgst,
-                   COALESCE(SUM(i.sgst), 0) AS sgst, COALESCE(SUM(i.totalGst), 0) AS totalGst,
+                   COALESCE(SUM(i.sgst), 0) AS sgst, COALESCE(SUM(i.igst), 0) AS igst,
+                   COALESCE(SUM(i.totalGst), 0) AS totalGst,
                    COALESCE(SUM(i.totalAmount), 0) AS totalAmount, COUNT(i) AS cnt
             FROM Invoice i
             WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false
@@ -221,6 +228,9 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
         BigDecimal getTaxableAmount();
         BigDecimal getCgst();
         BigDecimal getSgst();
+        /** Interstate tax. Omitted originally, so an interstate sale showed CGST 0 + SGST 0
+         *  against a non-zero total — figures that could not be reconciled or filed. */
+        BigDecimal getIgst();
         BigDecimal getTotalGst();
         BigDecimal getTotalAmount();
         long getCnt();
@@ -242,9 +252,32 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
     @Query("SELECT COUNT(i) FROM Invoice i WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = true AND i.createdAt >= :since")
     long countCancelledSince(@Param("pharmacyId") String pharmacyId, @Param("since") Instant since);
 
+    /**
+     * Money still to be collected, across every uncancelled invoice.
+     *
+     * <p>Was {@code SUM(totalAmount) WHERE paymentStatus = 'PENDING'}, which was wrong
+     * in both directions at once:
+     * <ul>
+     *   <li><b>Understated</b> — a PARTIAL invoice carries a real unpaid balance and was
+     *       excluded entirely. Take one rupee against a Rs.5,000 bill and the whole
+     *       Rs.5,000 dropped off the figure.</li>
+     *   <li><b>Overstated</b> — it summed the full invoice value, ignoring goods that
+     *       had since been returned.</li>
+     * </ul>
+     *
+     * <p>Now the actual arithmetic: billed, less returned, less collected. Payments are
+     * capped at the outstanding balance when they are recorded, so a line cannot go
+     * negative and drag the total down.
+     */
     @Query("""
-            SELECT COALESCE(SUM(i.totalAmount), 0) FROM Invoice i
-            WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false AND CAST(i.paymentStatus AS string) = 'PENDING'
+            SELECT COALESCE(SUM(
+                       i.totalAmount - i.returnedAmount
+                       - COALESCE((SELECT SUM(p.amount) FROM InvoicePayment p WHERE p.invoiceId = i.id), 0)
+                   ), 0)
+            FROM Invoice i
+            WHERE i.pharmacyId = :pharmacyId
+              AND i.isCancelled = false
+              AND CAST(i.paymentStatus AS string) IN ('PENDING', 'PARTIAL')
             """)
     BigDecimal sumPendingCredit(@Param("pharmacyId") String pharmacyId);
 

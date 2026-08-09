@@ -10,6 +10,9 @@ public interface SalesReturnItemRepository extends JpaRepository<SalesReturnItem
 
     List<SalesReturnItem> findByReturnId(String returnId);
 
+    /** Rollback guard: how many of these batches appear on a sales return. */
+    long countByInventoryIdIn(java.util.Collection<String> inventoryIds);
+
     /**
      * Returned-unit totals for a page of returns in ONE query. The returns list shows only a
      * units-returned figure per row, so loading every line of every return (an N+1) just to sum

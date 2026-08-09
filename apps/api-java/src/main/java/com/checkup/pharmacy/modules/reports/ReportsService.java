@@ -64,6 +64,30 @@ public class ReportsService {
      */
     private static final int SCHEDULE_REGISTER_MAX_ROWS = 10_000;
 
+    /** Schedules the register can be filtered to — the same set the UI offers. */
+    private static final List<String> REGISTER_SCHEDULES = List.of("H", "H1", "X", "G");
+
+    private static final java.time.format.DateTimeFormatter REPORT_DATE_FMT =
+            java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy")
+                    .withZone(java.time.ZoneOffset.ofHoursMinutes(5, 30));
+
+    /**
+     * Rejects a backwards date range instead of quietly reporting nothing.
+     *
+     * <p>An inverted range matches no rows, so every report on this screen rendered as
+     * a legitimate-looking nil result: zero sales, zero tax, an empty drug register.
+     * BillingService has refused this for its own lists for exactly that reason; the
+     * reports had no such check, and it matters more here — a GST summary showing zero
+     * for a period is a number somebody files.
+     */
+    private static void validateRange(Instant from, Instant to) {
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new BadRequestException("The 'from' date (" + REPORT_DATE_FMT.format(from)
+                    + ") is after the 'to' date (" + REPORT_DATE_FMT.format(to)
+                    + ") — check the date range and try again.");
+        }
+    }
+
     /** Upper bound on the sales-trend range — see {@link #dailySalesSeries}. ~2 years. */
     private static final int MAX_TREND_DAYS = 731;
 
@@ -146,9 +170,11 @@ public class ReportsService {
 
     @Transactional(readOnly = true)
     public GstSummaryResponse gstSummary(Instant from, Instant to) {
+        validateRange(from, to);
         var agg = invoiceRepository.gstAggregate(TenantContext.pharmacyId(), DateRange.from(from), DateRange.to(to));
         return new GstSummaryResponse(new GstSummaryResponse.Sum(agg.getSubtotal(), agg.getDiscountAmount(),
-                agg.getTaxableAmount(), agg.getCgst(), agg.getSgst(), agg.getTotalGst(), agg.getTotalAmount()),
+                agg.getTaxableAmount(), agg.getCgst(), agg.getSgst(), agg.getIgst(), agg.getTotalGst(),
+                agg.getTotalAmount()),
                 agg.getCnt());
     }
 
@@ -174,6 +200,7 @@ public class ReportsService {
 
     @Transactional(readOnly = true)
     public PurchaseSummaryResponse purchaseSummary(Instant from, Instant to) {
+        validateRange(from, to);
         String pharmacyId = TenantContext.pharmacyId();
         var grnAgg = grnRepository.sumConfirmedInRange(pharmacyId, DateRange.from(from), DateRange.to(to));
         long overduePayments = grnRepository.countOverdue(pharmacyId, Instant.now());
@@ -188,6 +215,7 @@ public class ReportsService {
 
     @Transactional(readOnly = true)
     public CostAnalysisResponse costAnalysis(Instant from, Instant to, Integer limitParam) {
+        validateRange(from, to);
         int limit = clamp(limitParam, 50, 1, 100);
         String pharmacyId = TenantContext.pharmacyId();
         List<String> grnIds = grnRepository.findConfirmedIdsInRange(pharmacyId, DateRange.from(from), DateRange.to(to));
@@ -240,9 +268,23 @@ public class ReportsService {
 
     @Transactional(readOnly = true)
     public List<ScheduleHItemResponse> scheduleRegister(Instant from, Instant to, String schedule) {
-        List<String> schedules = schedule != null && !schedule.isBlank()
-                ? List.of(schedule.toUpperCase())
-                : List.of("H", "H1", "X", "G");
+        validateRange(from, to);
+
+        // An unrecognised schedule used to fall through as a filter that matches nothing,
+        // and the register then rendered "no controlled medicine dispensing records" —
+        // a definitive statement that nothing was dispensed, produced by a typo. On a
+        // statutory register that is the one failure mode that must never be silent.
+        List<String> schedules;
+        if (schedule != null && !schedule.isBlank()) {
+            String requested = schedule.trim().toUpperCase(java.util.Locale.ROOT);
+            if (!REGISTER_SCHEDULES.contains(requested)) {
+                throw new BadRequestException("\"" + schedule + "\" is not a drug schedule this register covers. "
+                        + "Choose one of " + String.join(", ", REGISTER_SCHEDULES) + ", or leave it blank for all.");
+            }
+            schedules = List.of(requested);
+        } else {
+            schedules = REGISTER_SCHEDULES;
+        }
 
         // Fetch one row beyond the cap so an over-large range is detectable.
         List<InvoiceItem> items = invoiceItemRepository.scheduleRegisterItems(
@@ -286,45 +328,28 @@ public class ReportsService {
 
     @Transactional(readOnly = true)
     public HsnSummaryResponse hsnSummary(Instant from, Instant to) {
-        List<InvoiceItemRepository.HsnRawRow> rows = invoiceItemRepository.hsnSummaryItems(
-                TenantContext.pharmacyId(), DateRange.from(from), DateRange.to(to));
-
-        record Agg(BigDecimal gstRate, long qty, BigDecimal taxable, BigDecimal cgst, BigDecimal sgst, BigDecimal igst,
-                  BigDecimal total) {
-        }
-        Map<String, Agg> byKey = new LinkedHashMap<>();
-        for (var r : rows) {
-            String hsn = r.getHsnCode() != null ? r.getHsnCode() : "UNCLASSIFIED";
-            BigDecimal rate = r.getGstRate() != null ? r.getGstRate() : BigDecimal.ZERO;
-            String key = hsn + "__" + rate;
-            long qty = r.getQuantity() != null ? r.getQuantity() : 0;
-            Agg existing = byKey.get(key);
-            BigDecimal taxable = nz(r.getTaxableAmount());
-            BigDecimal cgst = nz(r.getCgst());
-            BigDecimal sgst = nz(r.getSgst());
-            BigDecimal igst = nz(r.getIgst());
-            BigDecimal total = nz(r.getAmount());
-            if (existing == null) {
-                byKey.put(key, new Agg(rate, qty, taxable, cgst, sgst, igst, total));
-            } else {
-                byKey.put(key, new Agg(rate, existing.qty() + qty, existing.taxable().add(taxable),
-                        existing.cgst().add(cgst), existing.sgst().add(sgst), existing.igst().add(igst),
-                        existing.total().add(total)));
-            }
-        }
-
-        List<HsnSummaryResponse.Row> hsnRows = new ArrayList<>();
-        for (var entry : byKey.entrySet()) {
-            String hsnCode = entry.getKey().substring(0, entry.getKey().lastIndexOf("__"));
-            Agg a = entry.getValue();
-            BigDecimal totalGst = a.cgst().add(a.sgst()).add(a.igst());
-            hsnRows.add(new HsnSummaryResponse.Row(hsnCode, a.gstRate(), a.qty(), round2(a.taxable()), round2(a.cgst()),
-                    round2(a.sgst()), round2(a.igst()), round2(totalGst), round2(a.total())));
-        }
-        hsnRows.sort((x, y) -> {
-            int cmp = x.hsnCode().compareTo(y.hsnCode());
-            return cmp != 0 ? cmp : x.gstRate().compareTo(y.gstRate());
-        });
+        validateRange(from, to);
+        // Already one row per (HSN, rate) and already ordered — the query groups and
+        // sorts in SQL. The hand-rolled accumulate-into-a-map that used to live here
+        // was summing hundreds of thousands of line items in application memory to
+        // produce the dozen rows below.
+        List<HsnSummaryResponse.Row> hsnRows = invoiceItemRepository.hsnSummaryItems(
+                        TenantContext.pharmacyId(), DateRange.from(from), DateRange.to(to)).stream()
+                .map(r -> {
+                    BigDecimal cgst = nz(r.getCgst());
+                    BigDecimal sgst = nz(r.getSgst());
+                    BigDecimal igst = nz(r.getIgst());
+                    return new HsnSummaryResponse.Row(
+                            // A line with no HSN still has to appear: GSTR-1 needs every
+                            // rupee accounted for, and dropping it would make the summary
+                            // silently disagree with the GST totals beside it.
+                            r.getHsnCode() != null ? r.getHsnCode() : "UNCLASSIFIED",
+                            r.getGstRate() != null ? r.getGstRate() : BigDecimal.ZERO,
+                            r.getQuantity() != null ? r.getQuantity() : 0L,
+                            round2(nz(r.getTaxableAmount())), round2(cgst), round2(sgst), round2(igst),
+                            round2(cgst.add(sgst).add(igst)), round2(nz(r.getAmount())));
+                })
+                .toList();
         return new HsnSummaryResponse(hsnRows);
     }
 
@@ -332,6 +357,7 @@ public class ReportsService {
 
     @Transactional(readOnly = true)
     public FastMovingResponse fastMoving(Instant from, Instant to, Integer limitParam) {
+        validateRange(from, to);
         int limit = clamp(limitParam, 20, 1, 50);
         var grouped = invoiceItemRepository.fastMovingInRange(TenantContext.pharmacyId(), DateRange.from(from),
                 DateRange.to(to), Limit.of(limit));

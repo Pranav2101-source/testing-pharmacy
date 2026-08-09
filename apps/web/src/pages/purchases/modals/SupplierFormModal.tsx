@@ -2,27 +2,59 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Check, Loader2, Building2, CreditCard, AlertCircle, AlertTriangle } from "lucide-react";
+import { isClean, normalizeIndianMobile, validateEmail, validateIndianMobile } from "@pharmacy/utils";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import type { FullSupplier, SupplierFormState, Supplier } from "../types";
 import { SUPPLIER_BLANK } from "../types";
 
+type SupplierFieldErrors = Partial<Record<"name" | "phone" | "email", string | null>>;
+
+/**
+ * A distributor is a business, so the name is NOT held to the person-name rule —
+ * "A-1 Pharma 24x7 Pvt Ltd" is a real distributor. Phone and email are checked; both
+ * are optional, because some distributors are reachable only one way, but a value
+ * that is present has to be usable.
+ */
+function validateSupplier(f: SupplierFormState): SupplierFieldErrors {
+  return {
+    name:  f.name.trim() ? null : "Distributor name is required",
+    phone: validateIndianMobile(f.phone, { label: "Phone number", required: false }),
+    email: validateEmail(f.email),
+  };
+}
+
 // ─── Supplier Field ────────────────────────────────────────────────────────────
 
-function SupplierField({ label, value, onChange, placeholder, type = "text" }: {
+function SupplierField({ label, value, onChange, onBlur, placeholder, type = "text", error, inputMode }: {
   label: string; value: string; onChange: (v: string) => void;
-  placeholder?: string; type?: string;
+  onBlur?: () => void;
+  placeholder?: string; type?: string; error?: string | null;
+  inputMode?: "numeric" | "text";
 }) {
   return (
     <div>
       <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">{label}</label>
       <input
         type={type}
+        inputMode={inputMode}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onBlur={onBlur}
         placeholder={placeholder}
-        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-colors"
+        aria-invalid={!!error}
+        className={cn(
+          "w-full border rounded-lg px-3 py-2 text-[13px] placeholder-slate-400 focus:outline-none focus:ring-2 transition-colors",
+          error
+            ? "border-red-300 focus:ring-red-100 focus:border-red-400"
+            : "border-slate-200 focus:ring-blue-100 focus:border-blue-400",
+        )}
       />
+      {error && (
+        <p className="flex items-center gap-1 text-[11px] text-red-600 font-medium mt-1">
+          <AlertCircle className="w-3 h-3 flex-shrink-0" />{error}
+        </p>
+      )}
     </div>
   );
 }
@@ -38,7 +70,10 @@ export function SupplierFormModal({ supplier, onClose, onSaved }: {
     name:         supplier.name,
     gstin:        supplier.gstin        ?? "",
     dlNumber:     supplier.dlNumber     ?? "",
-    phone:        supplier.phone        ?? "",
+    // Distributors saved before this rule existed may hold "+91 98765 43210".
+    // Normalising on open lets those records be edited instead of being held
+    // hostage by a number the user never typed.
+    phone:        normalizeIndianMobile(supplier.phone ?? ""),
     email:        supplier.email        ?? "",
     address:      supplier.address      ?? "",
     city:         supplier.city         ?? "",
@@ -49,20 +84,37 @@ export function SupplierFormModal({ supplier, onClose, onSaved }: {
   } : SUPPLIER_BLANK);
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState<string | null>(null);
+  const [errors, setErrors] = useState<SupplierFieldErrors>({});
 
-  const set = (k: keyof SupplierFormState) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
+  const set = (k: keyof SupplierFormState) => (v: string) => {
+    setForm((f) => ({ ...f, [k]: v }));
+    // Clear a field's complaint as soon as it is being corrected, rather than
+    // leaving it on screen until the next submit.
+    setErrors((e) => (e[k as keyof SupplierFieldErrors] ? { ...e, [k]: null } : e));
+  };
+
+  const blur = (k: keyof SupplierFieldErrors) => () =>
+    setErrors((e) => ({ ...e, [k]: validateSupplier(form)[k] }));
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     e.stopPropagation();
-    if (!form.name.trim()) { setError("Distributor name is required"); return; }
+
+    const found = validateSupplier(form);
+    setErrors(found);
+    if (!isClean(found)) {
+      setError("Please correct the highlighted fields below.");
+      return;
+    }
+
     setSaving(true); setError(null);
     try {
       const body = {
         name:         form.name.trim(),
         gstin:        form.gstin.trim()        || undefined,
         dlNumber:     form.dlNumber.trim()     || undefined,
-        phone:        form.phone.trim()        || undefined,
+        // Bare digits, so the same distributor cannot be stored under two spellings.
+        phone:        normalizeIndianMobile(form.phone) || undefined,
         email:        form.email.trim()        || undefined,
         address:      form.address.trim()      || undefined,
         city:         form.city.trim()         || undefined,
@@ -112,12 +164,19 @@ export function SupplierFormModal({ supplier, onClose, onSaved }: {
               <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-3">Basic Information</p>
               <div className="grid grid-cols-2 gap-4">
                 <div className="col-span-2">
-                  <SupplierField label="Distributor / Company Name *" value={form.name}     onChange={set("name")}     placeholder="e.g. Sun Pharma Distributors Pvt Ltd" />
+                  <SupplierField label="Distributor / Company Name *" value={form.name} onChange={set("name")}
+                    onBlur={blur("name")} error={errors.name} placeholder="e.g. Sun Pharma Distributors Pvt Ltd" />
                 </div>
                 <SupplierField label="GSTIN"        value={form.gstin}    onChange={set("gstin")}    placeholder="22AAAAA0000A1Z5" />
                 <SupplierField label="Drug License" value={form.dlNumber} onChange={set("dlNumber")} placeholder="DL No." />
-                <SupplierField label="Phone"        value={form.phone}    onChange={set("phone")}    placeholder="+91 98765 43210" />
-                <SupplierField label="Email"        value={form.email}    onChange={set("email")}    placeholder="contact@distributor.com" type="email" />
+                {/* Letters are dropped on the way in and a pasted "+91 …" is reduced to
+                    the number, so the field matches the email beside it instead of
+                    accepting anything at all. */}
+                <SupplierField label="Phone" value={form.phone} type="tel" inputMode="numeric"
+                  onChange={(v) => set("phone")(normalizeIndianMobile(v))}
+                  onBlur={blur("phone")} error={errors.phone} placeholder="98765 43210" />
+                <SupplierField label="Email" value={form.email} onChange={set("email")} type="email"
+                  onBlur={blur("email")} error={errors.email} placeholder="contact@distributor.com" />
               </div>
             </div>
 

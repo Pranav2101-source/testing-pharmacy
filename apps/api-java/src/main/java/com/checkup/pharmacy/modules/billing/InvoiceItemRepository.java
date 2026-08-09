@@ -13,6 +13,9 @@ public interface InvoiceItemRepository extends JpaRepository<InvoiceItem, String
 
     List<InvoiceItem> findByInvoiceId(String invoiceId);
 
+    /** Rollback guard: how many of these batches have been billed. */
+    long countByInventoryIdIn(java.util.Collection<String> inventoryIds);
+
     @Query("SELECT i.invoiceId AS invoiceId, COUNT(i) AS cnt FROM InvoiceItem i WHERE i.invoiceId IN :invoiceIds GROUP BY i.invoiceId")
     List<InvoiceCountRow> countByInvoiceIdIn(@Param("invoiceIds") List<String> invoiceIds);
 
@@ -72,15 +75,36 @@ public interface InvoiceItemRepository extends JpaRepository<InvoiceItem, String
         BigDecimal getSgst();
         BigDecimal getIgst();
         BigDecimal getAmount();
-        Integer getQuantity();
+        /** Long, not Integer: this is now a SUM, and Hibernate widens an integer sum. */
+        Long getQuantity();
     }
 
+    /**
+     * GSTR-1 HSN summary, aggregated BY THE DATABASE.
+     *
+     * <p>This previously selected one row per invoice line and summed them in Java,
+     * with no bound of any kind. A GSTR-1 return is filed per month, but nothing stops
+     * a pharmacist asking for a quarter or a year — and at that size the query returns
+     * every line item the pharmacy has sold, transfers them all, materialises them all,
+     * and throws almost all of them away to produce the dozen rows the screen shows.
+     * On a busy pharmacy that is the difference between a report and a timeout.
+     *
+     * <p>GROUP BY collapses it in SQL, so the row count is bounded by the number of
+     * distinct (HSN, rate) pairs the pharmacy actually sells — tens, not hundreds of
+     * thousands. Grouping also treats NULL hsnCode as a single group, which is what
+     * the caller's "UNCLASSIFIED" bucket wants.
+     */
     @Query("""
-            SELECT i.hsnCode AS hsnCode, i.gstRate AS gstRate, i.taxableAmount AS taxableAmount,
-                   i.cgst AS cgst, i.sgst AS sgst, i.igst AS igst, i.amount AS amount, i.quantity AS quantity
+            SELECT i.hsnCode AS hsnCode, i.gstRate AS gstRate,
+                   COALESCE(SUM(i.taxableAmount), 0) AS taxableAmount,
+                   COALESCE(SUM(i.cgst), 0) AS cgst, COALESCE(SUM(i.sgst), 0) AS sgst,
+                   COALESCE(SUM(i.igst), 0) AS igst, COALESCE(SUM(i.amount), 0) AS amount,
+                   COALESCE(SUM(i.quantity), 0) AS quantity
             FROM InvoiceItem i
             WHERE i.invoice.pharmacyId = :pharmacyId AND i.invoice.isCancelled = false
               AND i.invoice.createdAt >= :from AND i.invoice.createdAt <= :to
+            GROUP BY i.hsnCode, i.gstRate
+            ORDER BY i.hsnCode, i.gstRate
             """)
     List<HsnRawRow> hsnSummaryItems(@Param("pharmacyId") String pharmacyId,
                                     @Param("from") Instant from, @Param("to") Instant to);

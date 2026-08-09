@@ -1,14 +1,33 @@
 package com.checkup.pharmacy.modules.customer;
 
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.Optional;
 
 public interface CustomerRepository extends JpaRepository<Customer, String> {
+
+    /**
+     * Loads a customer for a credit-balance change, holding a write lock on the row.
+     *
+     * <p>{@code creditUsed} is adjusted as a read-modify-write in Java, and there is no
+     * {@code @Version} on this entity, so two tills selling on credit to the same
+     * customer could both read the old balance, both pass the limit check, and the
+     * second write would overwrite the first. The customer ends up under-billed and
+     * over their limit, with nothing to show it happened. Sales of DIFFERENT medicines
+     * do not share a batch lock, so nothing else serialised them.
+     *
+     * <p>Only for paths that will actually mutate the balance — an ordinary sale must
+     * not queue behind a lock it never needs.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT c FROM Customer c WHERE c.id = :id AND c.pharmacyId = :pharmacyId AND c.deletedAt IS NULL")
+    Optional<Customer> lockByIdAndPharmacyId(@Param("id") String id, @Param("pharmacyId") String pharmacyId);
 
     /**
      * customerType is compared as text (CAST ... AS string), not the enum type

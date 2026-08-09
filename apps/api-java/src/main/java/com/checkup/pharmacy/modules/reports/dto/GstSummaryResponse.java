@@ -6,6 +6,6 @@ import java.math.BigDecimal;
 public record GstSummaryResponse(Sum _sum, long _count) {
 
     public record Sum(BigDecimal subtotal, BigDecimal discountAmount, BigDecimal taxableAmount, BigDecimal cgst,
-                      BigDecimal sgst, BigDecimal totalGst, BigDecimal totalAmount) {
+                      BigDecimal sgst, BigDecimal igst, BigDecimal totalGst, BigDecimal totalAmount) {
     }
 }

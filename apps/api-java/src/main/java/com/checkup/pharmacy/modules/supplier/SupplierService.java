@@ -2,6 +2,7 @@ package com.checkup.pharmacy.modules.supplier;
 
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.util.DateRange;
+import com.checkup.pharmacy.common.validation.ValidationPatterns;
 import com.checkup.pharmacy.modules.purchase.GoodsReceiptNote;
 import com.checkup.pharmacy.modules.purchase.GoodsReceiptNoteRepository;
 import com.checkup.pharmacy.modules.purchase.PurchaseOrder;
@@ -125,7 +126,9 @@ public class SupplierService {
                 req.name().trim(),
                 blankToNull(req.gstin()),
                 blankToNull(req.dlNumber()),
-                blankToNull(req.phone()),
+                // @IndianMobile accepts a pasted "+91 98765 43210"; the column stores the
+                // bare 10 digits so one distributor cannot exist under two spellings.
+                blankToNull(ValidationPatterns.normalizeMobile(req.phone())),
                 blankToNull(req.email()),
                 blankToNull(req.address()),
                 blankToNull(req.city()),

@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { normalizeIndianMobile, validateAccountName, validateEmail, validateIndianMobile } from "@pharmacy/utils";
 import {
   Users,
   Plus,
@@ -312,7 +313,7 @@ function StaffDrawer({ member, onClose, onSave, saving, isLastOwner }: {
   const isEdit = member !== null;
   const [name,     setName]     = useState(member?.name  ?? "");
   const [email,    setEmail]    = useState(member?.email ?? "");
-  const [phone,    setPhone]    = useState(member?.phone ?? "");
+  const [phone,    setPhone]    = useState(normalizeIndianMobile(member?.phone ?? ""));
   const [role,     setRole]     = useState<Role>(member?.role ?? "PHARMACIST");
   const [password, setPassword] = useState("");
   const [showPw,   setShowPw]   = useState(false);
@@ -326,11 +327,20 @@ function StaffDrawer({ member, onClose, onSave, saving, isLastOwner }: {
 
   function validate() {
     const e: Record<string, string> = {};
-    if (!name.trim())                               e.name     = "Name is required";
-    if (!email.trim())                              e.email    = "Email is required";
-    else if (!/\S+@\S+\.\S+/.test(email))          e.email    = "Enter a valid email";
-    if (!isEdit && password.length < 8)             e.password = "Minimum 8 characters";
-    if (phone && !/^[6-9]\d{9}$/.test(phone))      e.phone    = "Enter a valid 10-digit number";
+    // Account rule, not the person rule: "Billing Counter 2" is how pharmacies name
+    // logins, so digits are allowed — what is rejected is a value with no letters at all.
+    const nameProblem = validateAccountName(name);
+    if (nameProblem) e.name = nameProblem;
+    if (!isEdit && password.length < 8) e.password = "Minimum 8 characters";
+
+    // Shared with the API's @Email and @IndianMobile, so the form and the server
+    // agree — the inline regexes here used to be a third, slightly different copy.
+    const emailProblem = validateEmail(email, { required: true });
+    if (emailProblem) e.email = emailProblem;
+
+    const phoneProblem = validateIndianMobile(phone, { required: false });
+    if (phoneProblem) e.phone = phoneProblem;
+
     setErrors(e);
     return Object.keys(e).length === 0;
   }
@@ -340,7 +350,7 @@ function StaffDrawer({ member, onClose, onSave, saving, isLastOwner }: {
     if (!validate() || saving) return;
     await onSave({
       name: name.trim(), email: email.trim().toLowerCase(),
-      phone: phone.trim(), role, isActive: member?.isActive ?? true,
+      phone: normalizeIndianMobile(phone), role, isActive: member?.isActive ?? true,
       ...(password ? { password } : {}),
     });
   }
@@ -393,7 +403,7 @@ function StaffDrawer({ member, onClose, onSave, saving, isLastOwner }: {
 
           <FormField label="Full Name" required icon={Users} placeholder="e.g. Anjali Singh" value={name} onChange={setName} error={errors.name} />
           <FormField label="Email Address" required={!isEdit} icon={Mail} placeholder="staff@pharmacy.com" value={email} onChange={setEmail} type="email" disabled={isEdit} hint={isEdit ? "Email cannot be changed after creation" : undefined} error={errors.email} />
-          <FormField label="Phone Number" icon={Phone} placeholder="98765 43210" value={phone} onChange={setPhone} type="tel" hint="10-digit Indian mobile number" error={errors.phone} />
+          <FormField label="Phone Number" icon={Phone} placeholder="98765 43210" value={phone} onChange={(v) => setPhone(normalizeIndianMobile(v))} type="tel" hint="10-digit Indian mobile number" error={errors.phone} />
 
           {/* Role selector */}
           <div className="flex flex-col gap-1.5">

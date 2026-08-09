@@ -5,6 +5,7 @@ import {
   X, ChevronDown, Loader2, Monitor, Square, Upload, Trash2,
   CheckCircle2, AlertTriangle, File as FileIcon, Clock, ArrowRight, Image as ImageIcon,
 } from "lucide-react";
+import { normalizeIndianMobile, validateIndianMobile } from "@pharmacy/utils";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
@@ -281,7 +282,13 @@ export function NewTicketModal({ onClose, onSaved }: Props) {
     if (!categoryId)                       e.categoryId  = "Please select a category";
     if (isOtherCategory && !customTitle.trim()) e.customTitle = "Please describe the issue";
     if (description.trim().length < 10)    e.description = "At least 10 characters required";
-    if (mobile.length !== 10)              e.mobile      = "Enter a valid 10-digit mobile";
+    // Shared with @IndianMobile on CreateTicketRequest. The old length-only check
+    // passed "1234567890", which the API then rejected for its leading digit — the
+    // form said fine, the server said no.
+    const mobileProblem = validateIndianMobile(mobile);
+    if (mobileProblem) e.mobile = mobileProblem;
+    const altProblem = validateIndianMobile(altMobile, { label: "Alt. mobile", required: false });
+    if (altProblem) e.altMobile = altProblem;
     setErrors(e);
 
     if (Object.keys(e).length > 0) {
@@ -491,12 +498,14 @@ export function NewTicketModal({ onClose, onSaved }: Props) {
                       type="text"
                       value={mobile}
                       onChange={(e) => {
-                        const val = e.target.value.replace(/\D/g, '');
+                        // No maxLength: the browser applies it to pasted text before
+                        // this runs, so "+91 98765 43210" would arrive already chopped.
+                        const val = normalizeIndianMobile(e.target.value);
                         setMobile(val);
                         if (val.length === 10) setErrors((p) => ({ ...p, mobile: "" }));
                       }}
-                      placeholder="10-digit number"
-                      maxLength={10}
+                      placeholder="98765 43210"
+                      inputMode="numeric"
                       className={cn(
                         "w-full border rounded-xl px-3 py-2.5 text-[14px] focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all",
                         errors.mobile ? "border-red-300 ring-4 ring-red-50" : "border-slate-200",
@@ -511,9 +520,9 @@ export function NewTicketModal({ onClose, onSaved }: Props) {
                     <input
                       type="text"
                       value={altMobile}
-                      onChange={(e) => setAltMobile(e.target.value.replace(/\D/g, ''))}
+                      onChange={(e) => setAltMobile(normalizeIndianMobile(e.target.value))}
                       placeholder="Optional"
-                      maxLength={10}
+                      inputMode="numeric"
                       className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-[14px] focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all"
                     />
                     <p className="text-[10px] text-slate-400 mt-1">If primary unreachable</p>

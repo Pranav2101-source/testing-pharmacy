@@ -5,6 +5,7 @@ import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.exception.UnprocessableEntityException;
 import com.checkup.pharmacy.common.sequence.DocumentNumberFormat;
+import com.checkup.pharmacy.common.validation.ValidationPatterns;
 import com.checkup.pharmacy.common.sequence.DocumentSequenceService;
 import com.checkup.pharmacy.common.util.DateRange;
 import com.checkup.pharmacy.modules.doctor.Doctor;
@@ -22,7 +23,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * Structured prescriptions, scoped to the caller's pharmacy — required before
@@ -68,7 +73,8 @@ public class PrescriptionService {
         int seq = sequenceService.next(pharmacyId, DocumentSequenceService.PRESCRIPTION, DocumentSequenceService.PERIOD_ALL);
         Prescription rx = Prescription.create(pharmacyId, DocumentNumberFormat.prescription(seq),
                 doctor == null ? null : doctor.getId(), req.doctorName(), req.doctorRegNo(), req.doctorPhone(),
-                req.patientName(), req.patientAge(), req.patientPhone(), req.patientGender(), req.prescribedDate(),
+                ValidationPatterns.normalizeName(req.patientName()), req.patientAge(),
+                ValidationPatterns.normalizeMobile(req.patientPhone()), req.patientGender(), req.prescribedDate(),
                 req.validUntil(), req.notes(), uploadId);
         prescriptionRepository.save(rx);
 
@@ -96,8 +102,31 @@ public class PrescriptionService {
                 blankToNull(doctorId), DateRange.from(from), DateRange.to(to), blankToNull(search),
                 PageRequest.of(safePage - 1, safeLimit));
 
-        List<PrescriptionResponse> items = result.getContent().stream()
-                .map(rx -> toResponse(rx, rx.getDoctor(), itemRepository.findByPrescriptionId(rx.getId())))
+        // Three batched lookups instead of three per row. This page was 1 + 3N queries:
+        // the items, the upload, and a lazy doctor load for every prescription on it —
+        // roughly 300 round trips at a 100-row page. The doctor is now fetch-joined by
+        // the query above; the other two are collected here.
+        List<Prescription> rows = result.getContent();
+        List<String> prescriptionIds = rows.stream().map(Prescription::getId).toList();
+
+        String pharmacyId = TenantContext.pharmacyId();
+        Map<String, List<PrescriptionItem>> itemsByPrescriptionId = prescriptionIds.isEmpty()
+                ? Map.of()
+                : itemRepository.findByPharmacyIdAndPrescriptionIdIn(pharmacyId, prescriptionIds).stream()
+                        .collect(Collectors.groupingBy(PrescriptionItem::getPrescriptionId));
+
+        List<String> uploadIds = rows.stream()
+                .map(Prescription::getUploadId).filter(Objects::nonNull).distinct().toList();
+        Map<String, PrescriptionResponse.UploadRef> uploadsById = new HashMap<>();
+        if (!uploadIds.isEmpty()) {
+            uploadRepository.findByIdInAndPharmacyId(uploadIds, pharmacyId).forEach(u -> uploadsById.put(u.getId(),
+                    new PrescriptionResponse.UploadRef(u.getId(), u.getFileName(), u.getMimeType(), u.getFileUrl())));
+        }
+
+        List<PrescriptionResponse> items = rows.stream()
+                .map(rx -> toResponse(rx, rx.getDoctor(),
+                        itemsByPrescriptionId.getOrDefault(rx.getId(), List.of()),
+                        rx.getUploadId() == null ? null : uploadsById.get(rx.getUploadId())))
                 .toList();
         return new PrescriptionPageResponse(items, result.getTotalElements(), safePage, safeLimit);
     }
@@ -119,8 +148,11 @@ public class PrescriptionService {
                     .orElseThrow(() -> new NotFoundException("Doctor not found or inactive"));
         }
 
-        rx.applyFields(doctor == null ? null : doctor.getId(), req.doctorName(), req.doctorRegNo(), req.patientName(),
-                req.patientAge(), req.patientPhone(), req.patientGender(), req.prescribedDate(), req.validUntil(), req.notes());
+        // normalize* preserve null, which PATCH relies on to mean "leave unchanged".
+        rx.applyFields(doctor == null ? null : doctor.getId(), req.doctorName(), req.doctorRegNo(),
+                ValidationPatterns.normalizeName(req.patientName()), req.patientAge(),
+                ValidationPatterns.normalizeMobile(req.patientPhone()), req.patientGender(),
+                req.prescribedDate(), req.validUntil(), req.notes());
 
         List<PrescriptionItem> items;
         if (req.items() != null) {
@@ -159,17 +191,24 @@ public class PrescriptionService {
         return (s == null || s.isBlank()) ? null : s.trim();
     }
 
+    /** Single-row path: resolves the upload itself. */
     private PrescriptionResponse toResponse(Prescription rx, Doctor doctor, List<PrescriptionItem> items) {
+        PrescriptionResponse.UploadRef uploadRef = rx.getUploadId() == null ? null
+                : uploadRepository.findById(rx.getUploadId())
+                        .map(u -> new PrescriptionResponse.UploadRef(u.getId(), u.getFileName(), u.getMimeType(), u.getFileUrl()))
+                        .orElse(null);
+        return toResponse(rx, doctor, items, uploadRef);
+    }
+
+    /** List path: the caller has already resolved items and upload in bulk. */
+    private PrescriptionResponse toResponse(Prescription rx, Doctor doctor, List<PrescriptionItem> items,
+                                            PrescriptionResponse.UploadRef uploadRef) {
         PrescriptionResponse.DoctorRef doctorRef = doctor == null ? null
                 : new PrescriptionResponse.DoctorRef(doctor.getId(), doctor.getName(), doctor.getRegistrationNo());
         List<PrescriptionResponse.Item> itemResponses = items.stream()
                 .map(i -> new PrescriptionResponse.Item(i.getId(), i.getMedicineName(), i.getMedicineId(), i.getSchedule(),
                         i.getQuantity(), i.getDispensedQty(), i.getDosage(), i.getDuration(), i.getNotes()))
                 .toList();
-        PrescriptionResponse.UploadRef uploadRef = rx.getUploadId() == null ? null
-                : uploadRepository.findById(rx.getUploadId())
-                        .map(u -> new PrescriptionResponse.UploadRef(u.getId(), u.getFileName(), u.getMimeType(), u.getFileUrl()))
-                        .orElse(null);
         return new PrescriptionResponse(rx.getId(), rx.getPrescriptionNumber(), doctorRef, rx.getDoctorName(),
                 rx.getDoctorRegNo(), rx.getDoctorPhone(), rx.getPatientName(), rx.getPatientAge(), rx.getPatientPhone(),
                 rx.getPatientGender(), rx.getPrescribedDate(), rx.getValidUntil(), rx.getStatus().name(), rx.getNotes(),

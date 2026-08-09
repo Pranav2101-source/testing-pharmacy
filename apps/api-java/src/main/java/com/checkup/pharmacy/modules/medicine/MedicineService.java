@@ -332,8 +332,11 @@ public class MedicineService {
                         .stream().collect(Collectors.groupingBy(
                                 com.checkup.pharmacy.modules.inventory.Inventory::getMedicineId));
 
+        // Scoped to the alternatives on screen. This drawer opens from the billing
+        // cart, and the unbounded variant read every override the pharmacy had set to
+        // use at most a handful.
         java.util.Map<String, BigDecimal> overrideGst = new java.util.HashMap<>();
-        for (PharmacyMedicineOverride o : overrideRepository.findByIdPharmacyId(pharmacyId)) {
+        for (PharmacyMedicineOverride o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, medicineIds)) {
             if (o.getGstRate() != null) {
                 overrideGst.put(o.getMedicineId(), o.getGstRate());
             }

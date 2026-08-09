@@ -1,5 +1,8 @@
 package com.checkup.pharmacy.modules.prescription.dto;
 
+import com.checkup.pharmacy.common.validation.IndianMobile;
+import com.checkup.pharmacy.common.validation.PersonName;
+import com.checkup.pharmacy.common.validation.ProfessionalName;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Size;
 
@@ -9,11 +12,11 @@ import java.util.List;
 /** All fields optional (PATCH semantics) — a field left out means "leave unchanged". */
 public record UpdatePrescriptionRequest(
         String doctorId,
-        @Size(max = 200) String doctorName,
+        @ProfessionalName String doctorName,
         @Size(max = 50) String doctorRegNo,
-        @Size(max = 200) String patientName,
+        @ProfessionalName String patientName,
         Integer patientAge,
-        @Size(max = 20) String patientPhone,
+        @IndianMobile String patientPhone,
         String patientGender,
         Instant prescribedDate,
         Instant validUntil,

@@ -9,6 +9,7 @@ import { EmptyBillState } from "./EmptyBillState";
 import { RecentItemsCard } from "./RecentItemsCard";
 import { BatchPickerDialog, type InventoryBatch, expiryStatus, getLocationLabel } from "./BatchPickerDialog";
 import { api } from "@/lib/api-client";
+import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
 
 // Column grid — 12 cols: ItemName | Pack | Batch+Loc | Expiry | MRP | Qty | Free | D% | Rate | GST% | Amount | Del
@@ -22,6 +23,90 @@ const CONTROLLED_BADGE: Record<string, string> = {
 };
 
 const TH = "text-[11px] font-bold text-slate-500 uppercase tracking-wider text-right px-2.5 select-none whitespace-nowrap";
+
+// ─── Numeric cell ─────────────────────────────────────────────────
+/**
+ * A number cell that can be empty while you are typing in it.
+ *
+ * The cells here used to be `<input type="number" value={item.quantity}>` committing
+ * `Number(e.target.value)` straight to the store. Backspacing to clear one produced
+ * `Number("") === 0`, the store's floor of 1 turned that into 1, and React repainted
+ * the 1 the cashier had just deleted — so replacing "1" with "25" left "125" in the
+ * box and ₹3,750 on a ₹750 bill. The field has to be allowed to be empty *for as long
+ * as a hand is in it*, which a value bound straight to a clamped number can never be.
+ *
+ * So: `draft` holds the raw text while focused and the store holds the truth. Each
+ * keystroke that parses is still committed immediately, so the running total is never
+ * stale; blur drops the draft and the cell snaps to whatever the store settled on.
+ *
+ * `type="text"` with `inputMode="numeric"`, not `type="number"`, for two reasons: a
+ * number input hands back "" for anything it considers half-typed ("1e", "1..2"),
+ * which is indistinguishable from a cleared field; and its up/down arrows never
+ * worked here anyway, because ArrowUp/ArrowDown are bound to row navigation.
+ */
+export function NumericCell({
+  value, onCommit, onSettle, decimals = false, blankWhenZero = false,
+  placeholder, title, className, dataRow, dataCol, onKeyDown,
+}: {
+  value:        number;
+  onCommit:     (n: number) => void;
+  /** Fired on blur with the last number typed, so the caller can report a clamp. */
+  onSettle?:    (typed: number) => void;
+  decimals?:    boolean;
+  /** Show an empty box instead of "0", so a row with no scheme reads as blank. */
+  blankWhenZero?: boolean;
+  placeholder?: string;
+  title?:       string;
+  className?:   string;
+  dataRow:      number;
+  dataCol:      string;
+  onKeyDown?:   (e: React.KeyboardEvent<HTMLInputElement>) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+
+  function handleChange(raw: string) {
+    // Keep only what this cell accepts. Quantities are whole numbers; a discount may
+    // carry one decimal point, and every dot after the first is dropped rather than
+    // making the value unparseable.
+    let cleaned = decimals ? raw.replace(/[^\d.]/g, "") : raw.replace(/\D/g, "");
+    if (decimals) {
+      const firstDot = cleaned.indexOf(".");
+      if (firstDot !== -1) {
+        cleaned = cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "");
+      }
+    }
+    setDraft(cleaned);
+
+    // An empty (or bare ".") cell commits nothing: the last good number stands until
+    // a new one is typed. Committing 0 here is what caused the snap-back.
+    const parsed = Number(cleaned);
+    if (cleaned === "" || cleaned === "." || Number.isNaN(parsed)) return;
+    onCommit(parsed);
+  }
+
+  function handleBlur() {
+    const typed = draft;
+    setDraft(null); // fall back to the store's value, clamped and settled
+    if (typed && typed !== "." && !Number.isNaN(Number(typed))) onSettle?.(Number(typed));
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode={decimals ? "decimal" : "numeric"}
+      value={draft ?? (blankWhenZero && value === 0 ? "" : String(value))}
+      placeholder={placeholder}
+      title={title}
+      data-row={dataRow}
+      data-col={dataCol}
+      onChange={(e) => handleChange(e.target.value)}
+      onFocus={(e) => e.target.select()}
+      onBlur={handleBlur}
+      onKeyDown={onKeyDown}
+      className={className}
+    />
+  );
+}
 
 // ─── Table header ─────────────────────────────────────────────────
 export function CartTableHeader() {
@@ -63,6 +148,7 @@ function SkeletonRow({ idx }: { idx: number }) {
 // ─── Cart Row ─────────────────────────────────────────────────────
 const CartRow = memo(function CartRow({
   item, idx, hasConflict, onKeyNav, onRemove, onQtyChange, onFreeQtyChange, onDiscountChange, onSwapBatch,
+  onQtySettled, onFreeSettled,
 }: {
   item: CartItem; idx: number; hasConflict: boolean;
   onKeyNav:         (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => void;
@@ -71,6 +157,9 @@ const CartRow = memo(function CartRow({
   onFreeQtyChange:  (id: string, freeQty: number) => void;
   onDiscountChange: (id: string, discount: number) => void;
   onSwapBatch:      (item: CartItem) => void;
+  /** Called when a quantity cell is left, with the number that was typed into it. */
+  onQtySettled:     (item: CartItem, typed: number) => void;
+  onFreeSettled:    (item: CartItem, typed: number) => void;
 }) {
   const now  = Date.now();
   const expiry = new Date(item.expiryDate).getTime();
@@ -201,14 +290,12 @@ const CartRow = memo(function CartRow({
 
       {/* Qty */}
       <div className="px-1.5 py-1.5">
-        <input
-          type="number"
-          min={1}
+        <NumericCell
           value={item.quantity}
-          data-row={idx}
-          data-col="qty"
-          onChange={(e) => onQtyChange(item.inventoryId, Number(e.target.value))}
-          onFocus={(e) => e.target.select()}
+          onCommit={(n) => onQtyChange(item.inventoryId, n)}
+          onSettle={(typed) => onQtySettled(item, typed)}
+          dataRow={idx}
+          dataCol="qty"
           onKeyDown={(e) => onKeyNav(e, idx, "qty")}
           className={cn(
             "w-full text-center text-[14px] font-bold tabnum",
@@ -222,16 +309,15 @@ const CartRow = memo(function CartRow({
       {/* Free (scheme qty) — zero shows as a muted placeholder rather than a hard
           "0", so a row with no scheme reads as empty at a glance. */}
       <div className="px-1.5 py-1.5">
-        <input
-          type="number"
-          min={0}
-          value={item.freeQty || ""}
+        <NumericCell
+          value={item.freeQty}
+          onCommit={(n) => onFreeQtyChange(item.inventoryId, n)}
+          onSettle={(typed) => onFreeSettled(item, typed)}
+          blankWhenZero
           placeholder="0"
           title="Free / scheme quantity — not charged, deducted from stock"
-          data-row={idx}
-          data-col="free"
-          onChange={(e) => onFreeQtyChange(item.inventoryId, Number(e.target.value))}
-          onFocus={(e) => e.target.select()}
+          dataRow={idx}
+          dataCol="free"
           className={cn(
             "w-full text-center text-[14px] tabnum",
             item.freeQty > 0 ? "font-bold text-emerald-700" : "text-slate-400",
@@ -242,18 +328,14 @@ const CartRow = memo(function CartRow({
         />
       </div>
 
-      {/* D% */}
+      {/* D% — decimals allowed (half-percent schemes are common) */}
       <div className="px-1.5 py-1.5">
-        <input
-          type="number"
-          min={0}
-          max={100}
-          step={0.5}
+        <NumericCell
           value={item.discount}
-          data-row={idx}
-          data-col="dis"
-          onChange={(e) => onDiscountChange(item.inventoryId, Number(e.target.value))}
-          onFocus={(e) => e.target.select()}
+          onCommit={(n) => onDiscountChange(item.inventoryId, n)}
+          decimals
+          dataRow={idx}
+          dataCol="dis"
           onKeyDown={(e) => onKeyNav(e, idx, "dis")}
           className={cn(
             "w-full text-center text-[13px] tabnum",
@@ -314,6 +396,39 @@ export function CartTableRows({
 
   const [swapTarget,  setSwapTarget]  = useState<CartItem | null>(null);
   const [swapBatches, setSwapBatches] = useState<InventoryBatch[]>([]);
+  const toast = useToast();
+
+  /**
+   * Say so when a typed quantity was not the quantity kept.
+   *
+   * The cap itself is right — the sale would be rejected at save otherwise — but it
+   * used to be applied in silence: type 25 against 3 in stock and the cell simply
+   * read 3, with nothing to distinguish that from a mistyped key. A cashier reading
+   * back a bill has no way to notice a number they never entered.
+   *
+   * Read from the store rather than the `item` prop: the commit happened on the
+   * keystroke before this blur, so the prop can be one render behind.
+   */
+  const reportClamp = useCallback((item: CartItem, typed: number, field: "quantity" | "freeQty") => {
+    const settled = useBillingStore.getState().items.find(i => i.inventoryId === item.inventoryId)?.[field];
+    if (settled == null || settled === typed) return;
+
+    // Most specific reason first. The stock cap is checked last because it also
+    // matches by coincidence — typing 0 against a single unit in stock settles on 1,
+    // which equals availableStock, and "only 1 in stock" is not why it changed.
+    if (field === "quantity" && typed < 1) {
+      toast.warning(`${item.medicineName}: quantity cannot be below 1.`);
+    } else if (!Number.isInteger(typed)) {
+      toast.warning(`${item.medicineName}: quantity must be a whole number — set to ${settled}.`);
+    } else if (field === "quantity" && item.availableStock != null && settled === item.availableStock) {
+      toast.warning(`Only ${settled} of ${item.medicineName} in stock — quantity set to ${settled}.`);
+    } else if (field === "freeQty" && settled < typed) {
+      toast.warning(`${item.medicineName}: not enough stock for ${typed} free — set to ${settled}.`);
+    }
+  }, [toast]);
+
+  const handleQtySettled  = useCallback((item: CartItem, typed: number) => reportClamp(item, typed, "quantity"), [reportClamp]);
+  const handleFreeSettled = useCallback((item: CartItem, typed: number) => reportClamp(item, typed, "freeQty"), [reportClamp]);
 
   const handleSwapBatch = useCallback(async (item: CartItem) => {
     setSwapTarget(item);
@@ -413,6 +528,8 @@ export function CartTableRows({
                 onFreeQtyChange={updateFreeQty}
                 onDiscountChange={updateDiscount}
                 onSwapBatch={handleSwapBatch}
+                onQtySettled={handleQtySettled}
+                onFreeSettled={handleFreeSettled}
               />
             ))}
           </AnimatePresence>

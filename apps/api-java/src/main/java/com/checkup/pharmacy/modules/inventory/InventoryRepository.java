@@ -66,6 +66,16 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
 
     List<Inventory> findByPharmacyIdAndMedicineIdIn(String pharmacyId, java.util.Collection<String> medicineIds);
 
+    /**
+     * Which of these catalogue medicines any pharmacy still holds stock for.
+     *
+     * <p>Deliberately NOT tenant-scoped: the question is whether some OTHER pharmacy
+     * is using a global catalogue entry before a migration rollback deactivates it.
+     * Scoping this to the caller would defeat its entire purpose.
+     */
+    @Query("SELECT DISTINCT i.medicineId FROM Inventory i WHERE i.medicineId IN :medicineIds")
+    List<String> findMedicineIdsInUse(@Param("medicineIds") java.util.Collection<String> medicineIds);
+
     List<Inventory> findByPharmacyIdAndStatus(String pharmacyId, com.checkup.pharmacy.common.enums.BatchStatus status);
 
     /**
@@ -173,6 +183,31 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
                                        @Param("now") Instant now,
                                        @Param("quantity") int quantity,
                                        org.springframework.data.domain.Pageable limit);
+
+    /**
+     * FEFO candidates for SEVERAL medicines at once, earliest expiry first.
+     *
+     * <p>The caller takes the first row it sees per medicineId, which the ordering
+     * makes equivalent to running {@link #findFefoCandidates} once per medicine — but
+     * in one round trip. "Repeat last bill" was doing the per-medicine version inside
+     * a loop, so a 15-line bill cost 15 of these plus 15 batch lookups.
+     *
+     * <p>Not paginated: a LIMIT here would cut across medicines, so one fast-moving
+     * item with many batches could starve every other line of the bill. The ACTIVE +
+     * unexpired + has-stock filters keep the row count to live batches.
+     */
+    @Query("""
+            SELECT i FROM Inventory i
+            WHERE i.pharmacyId = :pharmacyId AND i.medicineId IN :medicineIds
+              AND CAST(i.status AS string) = 'ACTIVE'
+              AND i.expiryDate > :now
+              AND (i.quantity - i.reservedQuantity) >= :quantity
+            ORDER BY i.medicineId ASC, i.expiryDate ASC
+            """)
+    List<Inventory> findFefoCandidatesForMedicines(@Param("pharmacyId") String pharmacyId,
+                                                   @Param("medicineIds") java.util.Collection<String> medicineIds,
+                                                   @Param("now") Instant now,
+                                                   @Param("quantity") int quantity);
 
     List<Inventory> findByPharmacyIdAndBatchNumberAndStatus(String pharmacyId, String batchNumber,
                                                             com.checkup.pharmacy.common.enums.BatchStatus status);

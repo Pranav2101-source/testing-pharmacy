@@ -3,7 +3,14 @@
 import { useState } from "react";
 import { X, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { api } from "@/lib/api-client";
+import {
+  normalizeIndianMobile,
+  sanitizeProfessionalName,
+  validateEmail,
+  validateIndianMobile,
+  validateProfessionalName,
+} from "@pharmacy/utils";
+import { api, getErrorMessage } from "@/lib/api-client";
 
 export interface DoctorRecord {
   id:             string;
@@ -51,7 +58,15 @@ export function DoctorQuickAddModal({
   }
 
   async function handleSubmit() {
-    if (!form.name.trim()) { setError("Doctor name is required"); return; }
+    // Doctors get the wider professional rule: "Dr. Sharma (Ortho)" is a normal entry.
+    // Phone and email are optional but must be usable when supplied — same contract
+    // as DoctorRequest on the API.
+    const problem =
+      validateProfessionalName(form.name, { label: "Doctor name" }) ??
+      validateIndianMobile(form.phone, { label: "Phone", required: false }) ??
+      validateEmail(form.email);
+    if (problem) { setError(problem); return; }
+
     setSubmitting(true);
     setError(null);
     try {
@@ -60,15 +75,14 @@ export function DoctorQuickAddModal({
         registrationNo: form.registrationNo.trim() || undefined,
         specialty:      form.specialty.trim()      || undefined,
         clinic:         form.clinic.trim()         || undefined,
-        phone:          form.phone.trim()          || undefined,
+        phone:          normalizeIndianMobile(form.phone) || undefined,
         email:          form.email.trim()          || undefined,
         address:        form.address.trim()        || undefined,
       };
       const res = await api.post<{ data: DoctorRecord }>("/doctors", body);
       onSaved(res.data.data);
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { message?: string; error?: string } } };
-      setError(e?.response?.data?.message ?? e?.response?.data?.error ?? "Failed to save doctor");
+      setError(getErrorMessage(err, "Failed to save doctor"));
     } finally {
       setSubmitting(false);
     }
@@ -131,7 +145,7 @@ export function DoctorQuickAddModal({
               <input
                 type="text"
                 value={form.name}
-                onChange={field("name")}
+                onChange={(e) => setForm((f) => ({ ...f, name: sanitizeProfessionalName(e.target.value) }))}
                 placeholder="Dr. Full Name"
                 autoFocus
                 className="w-full border-b border-slate-300 focus:border-blue-500 pb-1 text-[14px] text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none transition-colors"
@@ -188,7 +202,7 @@ export function DoctorQuickAddModal({
               <input
                 type="tel"
                 value={form.phone}
-                onChange={field("phone")}
+                onChange={(e) => setForm((f) => ({ ...f, phone: normalizeIndianMobile(e.target.value) }))}
                 placeholder="Contact number"
                 className="w-full border-b border-slate-300 focus:border-blue-500 pb-1 text-[14px] text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none transition-colors"
               />
