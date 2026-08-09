@@ -429,3 +429,62 @@ describe("calcPurchaseLineGST", () => {
     });
   });
 });
+
+describe("bill-level discount reduces the taxable value (s.15(3) CGST Act)", () => {
+  const line = { mrp: 1000, quantity: 1, discount: 0, gstRate: 12 };
+
+  it("scales taxable and GST, not just the total", () => {
+    const full = calcInvoiceTotals([line], false);
+    const discounted = calcInvoiceTotals([line], false, 10);
+
+    // Deducting the discount after the tax left these two identical, so the pharmacy
+    // remitted GST on Rs.100 it never collected.
+    expect(discounted.taxableAmount).toBeLessThan(full.taxableAmount);
+    expect(discounted.totalGst).toBeLessThan(full.totalGst);
+    // Within a paisa: intra-state rounds the HALF (CGST must equal SGST), so the
+    // total can legitimately land 0.01 off the gross — see
+    // intraStateMayDifferByOnePaisaBecauseCgstMustEqualSgst above.
+    expect(discounted.totalAmount).toBeCloseTo(full.totalAmount * 0.9, 1);
+  });
+
+  it("leaves the invoice adding up: taxable + GST === total", () => {
+    const t = calcInvoiceTotals([line], false, 10);
+    expect(t.taxableAmount + t.totalGst).toBeCloseTo(t.totalAmount, 2);
+  });
+
+  it("reports line and bill discounts as one figure", () => {
+    // 10% off the line, then 5% off the bill: 1000 -> 900 -> 855.
+    const t = calcInvoiceTotals([{ ...line, discount: 10 }], false, 5);
+    expect(t.discountAmount).toBeCloseTo(145, 2);
+    expect(t.totalAmount).toBeCloseTo(855, 1); // paisa tolerance, as above
+  });
+
+  it("compounds with the line discount rather than adding to it", () => {
+    // 0.90 x 0.95 = 0.855, not 1 - 0.15.
+    const compounded = calcInvoiceTotals([{ ...line, discount: 10 }], false, 5);
+    const added = calcInvoiceTotals([{ ...line, discount: 15 }], false, 0);
+    expect(compounded.totalAmount).toBeCloseTo(855, 1);
+    expect(added.totalAmount).toBeCloseTo(850, 1);
+    // The point of the test: compounding and adding are genuinely different amounts.
+    expect(compounded.totalAmount).toBeGreaterThan(added.totalAmount);
+  });
+
+  it("holds for interstate invoices too", () => {
+    const t = calcInvoiceTotals([line], true, 10);
+    expect(t.cgst).toBe(0);
+    expect(t.sgst).toBe(0);
+    expect(t.igst).toBeGreaterThan(0);
+    expect(t.taxableAmount + t.igst).toBeCloseTo(t.totalAmount, 2);
+  });
+
+  it("zero and absent behave identically", () => {
+    expect(calcInvoiceTotals([line], false, 0)).toEqual(calcInvoiceTotals([line], false));
+  });
+
+  it("a 100% bill discount zeroes the tax as well as the total", () => {
+    const t = calcInvoiceTotals([line], false, 100);
+    expect(t.totalAmount).toBe(0);
+    expect(t.totalGst).toBe(0);
+    expect(t.taxableAmount).toBe(0);
+  });
+});

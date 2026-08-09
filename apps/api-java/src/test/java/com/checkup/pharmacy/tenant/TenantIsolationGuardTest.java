@@ -86,6 +86,12 @@ class TenantIsolationGuardTest {
             "GoodsReceiptNoteRepository#findByPurchaseOrderId",
             "GoodsReceiptNoteRepository#findByPurchaseOrderIdAndStatus",
             "InventoryMovementRepository#findByInventoryIdInAndReferenceType",
+            // Migration rollback guard. The inventoryIds come from this session's own
+            // MigrationCreatedRecord rows, which were loaded tenant-scoped; these only ask
+            // "is anything referencing them" and return a COUNT, never a row.
+            "InventoryMovementRepository#countByInventoryIdInAndReferenceTypeNot",
+            "InvoiceItemRepository#countByInventoryIdIn",
+            "SalesReturnItemRepository#countByInventoryIdIn",
             "InvoiceItemRepository#countByInvoiceIdIn",
             "InvoiceItemRepository#findByInvoiceId",
             "InvoicePaymentRepository#findByInvoiceIdOrderByPaidAtAsc",
@@ -114,6 +120,14 @@ class TenantIsolationGuardTest {
             "TicketAttachmentRepository#findByMessageId",
             "TicketAttachmentRepository#findByTicketId",
             "TicketMessageRepository#findByTicketIdOrderByCreatedAtAsc",
+
+            // ── 2b. The SHARED medicine catalogue: cross-tenant is the question ──
+            // Medicine has no pharmacyId — every pharmacy shares the catalogue. Before a
+            // migration rollback deactivates an entry it created, it has to ask whether
+            // ANY other pharmacy is still stocking it; scoping that to the caller would
+            // answer the wrong question and let one rollback disable another pharmacy's
+            // medicine. Returns medicine ids only — no tenant-owned row crosses the call.
+            "InventoryRepository#findMedicineIdsInUse",
 
             // ── 3. Platform-admin aggregates: cross-tenant BY DESIGN ─────────────
             // Reachable only from routes annotated @PreAuthorize("hasRole('PLATFORM_ADMIN')")

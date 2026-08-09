@@ -98,7 +98,7 @@ class CashClosureIT extends AbstractPostgresIT {
     /** One cash sale of `units` x Rs.100. */
     private void cashSale(int units) {
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
-                null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO))));
         flushAndClear();
     }
@@ -164,7 +164,7 @@ class CashClosureIT extends AbstractPostgresIT {
         String creditCustomerId = creditCustomer();
 
         var creditInvoice = billingService.createInvoice(new CreateInvoiceRequest(creditCustomerId, null, null, null,
-                "CREDIT", "PENDING", null, null, null, null, null, null, null,
+                "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 4, null, BigDecimal.ZERO))));
         flushAndClear();
 
@@ -191,7 +191,7 @@ class CashClosureIT extends AbstractPostgresIT {
         String creditCustomerId = creditCustomer();
 
         billingService.createInvoice(new CreateInvoiceRequest(creditCustomerId, null, null, null,
-                "CREDIT", "PENDING", null, null, null, null, null, null, null,
+                "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 4, null, BigDecimal.ZERO))));
         flushAndClear();
 
@@ -226,7 +226,7 @@ class CashClosureIT extends AbstractPostgresIT {
     @DisplayName("a cancelled invoice is excluded from the day's takings")
     void cancelledInvoicesDoNotCount() {
         var invoice = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PENDING",
-                null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO))));
         flushAndClear();
         billingService.cancelInvoice(invoice.id(), "entered by mistake");

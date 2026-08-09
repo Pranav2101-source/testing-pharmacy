@@ -263,4 +263,82 @@ class GstCalculatorTest {
             assertThat(GstCalculator.round2(bd(input))).isEqualByComparingTo(bd(expected));
         }
     }
+    @Nested
+    @DisplayName("bill-level discount (s.15(3) CGST Act)")
+    class BillDiscount {
+
+        private final List<GstCalculator.MrpLineInput> oneLine =
+                List.of(new GstCalculator.MrpLineInput(new BigDecimal("1000"), 1, BigDecimal.ZERO, new BigDecimal("12")));
+
+        @Test
+        @DisplayName("reduces the taxable value and the tax, not just the total")
+        void reducesTaxableValue() {
+            var full = GstCalculator.calcInvoiceTotals(oneLine, false);
+            var discounted = GstCalculator.calcInvoiceTotals(oneLine, false, new BigDecimal("10"));
+
+            // Deducting the discount after the tax left these identical, so the pharmacy
+            // remitted GST on Rs.100 it never collected.
+            assertThat(discounted.taxableAmount()).isLessThan(full.taxableAmount());
+            assertThat(discounted.totalGst()).isLessThan(full.totalGst());
+        }
+
+        @Test
+        @DisplayName("leaves the invoice adding up: taxable + GST == total")
+        void invoiceReconciles() {
+            var t = GstCalculator.calcInvoiceTotals(oneLine, false, new BigDecimal("10"));
+            assertThat(t.taxableAmount().add(t.totalGst())).isEqualByComparingTo(t.totalAmount());
+        }
+
+        @Test
+        @DisplayName("the line and the invoice agree on the same discount")
+        void lineMatchesInvoice() {
+            // The HSN summary sums the stored LINES; the GST summary reads the header.
+            // If these drifted, the two compliance reports would contradict each other.
+            var line = GstCalculator.calcGstFromMrp(new BigDecimal("1000"), 1, BigDecimal.ZERO,
+                    new BigDecimal("12"), false, new BigDecimal("10"));
+            var invoice = GstCalculator.calcInvoiceTotals(oneLine, false, new BigDecimal("10"));
+
+            assertThat(line.taxableAmount()).isEqualByComparingTo(invoice.taxableAmount());
+            assertThat(line.totalGst()).isEqualByComparingTo(invoice.totalGst());
+        }
+
+        @Test
+        @DisplayName("compounds with a line discount rather than adding to it")
+        void compoundsWithLineDiscount() {
+            var withBoth = GstCalculator.calcInvoiceTotals(
+                    List.of(new GstCalculator.MrpLineInput(new BigDecimal("1000"), 1, new BigDecimal("10"), new BigDecimal("12"))),
+                    false, new BigDecimal("5"));
+            var addedTogether = GstCalculator.calcInvoiceTotals(
+                    List.of(new GstCalculator.MrpLineInput(new BigDecimal("1000"), 1, new BigDecimal("15"), new BigDecimal("12"))),
+                    false, BigDecimal.ZERO);
+
+            // 0.90 x 0.95 = 0.855, not 1 - 0.15. "5% off this bill" means off what is left.
+            assertThat(withBoth.totalAmount()).isGreaterThan(addedTogether.totalAmount());
+            assertThat(withBoth.discountAmount()).isEqualByComparingTo(new BigDecimal("145.00"));
+        }
+
+        @Test
+        @DisplayName("zero and absent are the same calculation")
+        void zeroMatchesAbsent() {
+            assertThat(GstCalculator.calcInvoiceTotals(oneLine, false, BigDecimal.ZERO))
+                    .isEqualTo(GstCalculator.calcInvoiceTotals(oneLine, false));
+        }
+
+        @Test
+        @DisplayName("a null percentage is treated as no discount, never as an error")
+        void nullIsNoDiscount() {
+            assertThat(GstCalculator.calcInvoiceTotals(oneLine, false, null))
+                    .isEqualTo(GstCalculator.calcInvoiceTotals(oneLine, false));
+        }
+
+        @Test
+        @DisplayName("100% zeroes the tax as well as the total")
+        void hundredPercentZeroesTax() {
+            var t = GstCalculator.calcInvoiceTotals(oneLine, false, new BigDecimal("100"));
+            assertThat(t.totalAmount()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(t.totalGst()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(t.taxableAmount()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
+    }
+
 }

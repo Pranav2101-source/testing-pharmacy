@@ -8,7 +8,7 @@ import { computeNetPayable, shortfallMessage } from "./billTotals";
  * screen, not silently shown as ₹0.00.
  */
 
-const base = { itemsTotal: 0, billDiscountPct: 0, extraCharges: 0, adjustmentAmount: 0 };
+const base = { itemsTotal: 0, extraCharges: 0, adjustmentAmount: 0 };
 
 describe("computeNetPayable", () => {
   describe("everyday arithmetic", () => {
@@ -19,8 +19,11 @@ describe("computeNetPayable", () => {
       expect(r.shortfall).toBe(0);
     });
 
-    it("applies a bill-level discount percentage", () => {
-      const r = computeNetPayable({ ...base, itemsTotal: 1000, billDiscountPct: 10 });
+    it("does NOT apply the bill discount — that now happens upstream, in the tax", () => {
+      // The discount reduces the taxable value inside calcInvoiceTotals (s.15(3) CGST
+      // Act), so itemsTotal arrives already net. Subtracting it here too would apply
+      // it twice. Coverage for the discount itself lives in @pharmacy/utils gst.test.
+      const r = computeNetPayable({ ...base, itemsTotal: 900 });
       expect(r.preRound).toBeCloseTo(900, 2);
       expect(r.netPayable).toBe(900);
     });
@@ -41,10 +44,10 @@ describe("computeNetPayable", () => {
       expect(r.netPayable).toBe(525);
     });
 
-    it("combines discount, charges and adjustment in the backend's order", () => {
-      // itemsTotal 1000 − 10% (100) + 50 − 20 = 930
+    it("combines charges and adjustment in the backend's order", () => {
+      // itemsTotal 900 (already net of the bill discount) + 50 − 20 = 930
       const r = computeNetPayable({
-        itemsTotal: 1000, billDiscountPct: 10, extraCharges: 50, adjustmentAmount: -20,
+        itemsTotal: 900, extraCharges: 50, adjustmentAmount: -20,
       });
       expect(r.preRound).toBeCloseTo(930, 2);
       expect(r.netPayable).toBe(930);
@@ -81,7 +84,8 @@ describe("computeNetPayable", () => {
 
   describe("zero is legitimate, negative is not", () => {
     it("allows an exactly-zero bill (100% discount / free-of-charge dispensing)", () => {
-      const r = computeNetPayable({ ...base, itemsTotal: 500, billDiscountPct: 100 });
+      // A 100% discount leaves an items total of exactly zero.
+      const r = computeNetPayable({ ...base, itemsTotal: 0 });
       expect(r.netPayable).toBe(0);
       expect(r.shortfall).toBe(0);
     });
@@ -107,9 +111,11 @@ describe("computeNetPayable", () => {
       expect(r.netPayable).not.toBe(0);
     });
 
-    it("reports a shortfall when a bill discount over-runs the goods", () => {
-      // 100 − 150% of 100 = −50
-      const r = computeNetPayable({ ...base, itemsTotal: 100, billDiscountPct: 150 });
+    it("reports a shortfall when adjustments over-run the goods", () => {
+      // The bill discount is bounded to 0-100 upstream and now reduces the taxable
+      // value, so it can no longer drive the total negative on its own — a negative
+      // adjustment still can, which is the case this guards.
+      const r = computeNetPayable({ ...base, itemsTotal: 100, adjustmentAmount: -150 });
       expect(r.shortfall).toBeCloseTo(50, 2);
     });
 

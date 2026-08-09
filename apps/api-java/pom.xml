@@ -134,6 +134,16 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Lets a MockMvc test authenticate as a real principal (see BillEndToEndIT).
+             Every other integration test calls services directly and sets the
+             SecurityContext by hand, which skips the filter chain — and therefore skips
+             request/response JSON binding, where a DTO field that silently fails to
+             bind looks exactly like a caller passing null. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- Classpath scanning for the tenant-isolation guard test, which inspects
              every repository interface without booting a Spring context. -->
         <dependency>

@@ -523,3 +523,73 @@ describe("schedule-H awareness", () => {
     expect(line().hsnCode).toBe("3004");
   });
 });
+
+/**
+ * The QA report behind this block: "selecting the quantity of medicine via keyboard
+ * not getting populated properly in the UI, hence calculating final price is
+ * reflected incorrect."
+ *
+ * The cell used to be bound straight to the clamped number, so an empty field became
+ * Number("") === 0, the floor of 1 turned that back into 1, and the digit the cashier
+ * had just deleted reappeared under the caret. These lock down the arithmetic the
+ * cell now relies on; CartTable's NumericCell owns the "may be empty while focused"
+ * half.
+ */
+describe("quantity entry", () => {
+  it("never lets a non-number reach the total", () => {
+    // Number("") is 0 and Number("1e999") is Infinity — both arrive from an input
+    // that is midway through being edited.
+    store().addItem(item({ quantity: 4 }));
+
+    store().updateQty("inv-1", Number(""));
+    expect(line().quantity).toBe(1);
+
+    store().updateQty("inv-1", Number.NaN);
+    expect(line().quantity).toBe(1);
+
+    store().updateQty("inv-1", Number.POSITIVE_INFINITY);
+    expect(line().quantity).toBe(1);
+    expect(Number.isFinite(store().getTotals().totalAmount)).toBe(true);
+  });
+
+  it("floors a fractional quantity instead of pricing half a strip", () => {
+    // calcGstFromMrp multiplies mrp by this number directly: 1.5 x Rs.30 would bill
+    // Rs.45 for one and a half strips of tablets, which cannot be dispensed.
+    store().addItem(item({ mrp: 30, quantity: 1, gstRate: 0, availableStock: 100 }));
+    store().updateQty("inv-1", 1.5);
+
+    expect(line().quantity).toBe(1);
+    expect(line().amount).toBe(30);
+    expect(Number.isInteger(line().quantity)).toBe(true);
+  });
+
+  it("floors free quantity the same way", () => {
+    store().addItem(item({ quantity: 1, availableStock: 100 }));
+    store().updateFreeQty("inv-1", 2.9);
+    expect(line().freeQty).toBe(2);
+
+    store().updateFreeQty("inv-1", Number.NaN);
+    expect(line().freeQty).toBe(0);
+  });
+
+  it("still caps at available stock, and the cap is reportable", () => {
+    // The cap is correct — the sale would be rejected at save otherwise. What the UI
+    // now does with it is tell the cashier, which needs the settled value to differ
+    // from the typed one in an observable way.
+    store().addItem(item({ quantity: 1, availableStock: 3 }));
+    store().updateQty("inv-1", 25);
+
+    expect(line().quantity).toBe(3);
+    expect(line().quantity).not.toBe(25);
+  });
+
+  it("prices exactly the quantity typed when stock allows", () => {
+    // The end of the reported bug: intending 25 and being charged for 125.
+    store().addItem(item({ mrp: 30, quantity: 1, gstRate: 0, availableStock: 1000 }));
+    store().updateQty("inv-1", 25);
+
+    expect(line().quantity).toBe(25);
+    expect(line().amount).toBe(750);
+    expect(store().getTotals().totalAmount).toBe(750);
+  });
+});
