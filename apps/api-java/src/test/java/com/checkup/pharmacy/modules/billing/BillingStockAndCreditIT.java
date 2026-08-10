@@ -11,6 +11,7 @@ import com.checkup.pharmacy.modules.customer.CustomerRepository;
 import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.inventory.InventoryService;
+import com.checkup.pharmacy.modules.inventory.StockReservation;
 import com.checkup.pharmacy.modules.inventory.StockReservationRepository;
 import com.checkup.pharmacy.modules.inventory.dto.ReserveStockRequest;
 import com.checkup.pharmacy.modules.medicine.Medicine;
@@ -160,9 +161,75 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
 
             assertThatThrownBy(() -> billingService.createInvoice(saleOf(60, "session-abc")))
                     .hasMessageContaining("Insufficient stock")
-                    .hasMessageContaining("60 reserved by another billing session");
+                    .hasMessageContaining("60 reserved by another open billing session");
 
             assertThat(batch().getQuantity()).isEqualTo(100);
+        }
+    }
+
+    /**
+     * A hold whose TTL has passed is not a hold.
+     *
+     * <p>{@code Inventory.reservedQuantity} is denormalised and keeps counting an
+     * expired reservation until something sweeps it, and the sweeper is a cron. Deciding
+     * availability from that counter refused sales against stock that was already free —
+     * for up to a sweep interval, with a message blaming a session that had ended.
+     */
+    @Nested
+    @DisplayName("a hold that has already expired")
+    class ExpiredReservation {
+
+        @Test
+        @DisplayName("does not block another till's sale")
+        void expiredHoldDoesNotBlockAnotherTill() {
+            expiredHoldFor("abandoned-till", 100);
+
+            billingService.createInvoice(saleOf(10, "session-abc"));
+            flushAndClear();
+
+            assertThat(batch().getQuantity()).isEqualTo(90);
+        }
+
+        @Test
+        @DisplayName("does not block the SAME till coming back to its own interrupted cart")
+        void expiredHoldDoesNotBlockItsOwnTill() {
+            // The counter case: build a cart, get pulled away past the TTL, come back
+            // and press Save. The till's own dead row no longer matches its live set,
+            // so it used to be counted as somebody else's and blocked its own sale.
+            expiredHoldFor("session-abc", 100);
+
+            billingService.createInvoice(saleOf(10, "session-abc"));
+            flushAndClear();
+
+            assertThat(batch().getQuantity()).isEqualTo(90);
+        }
+
+        @Test
+        @DisplayName("still leaves a LIVE hold on the same batch in force")
+        void aLiveHoldAlongsideAnExpiredOneStillCounts() {
+            // Guards the obvious over-correction: ignoring expiry entirely.
+            expiredHoldFor("abandoned-till", 50);
+            reserveForSession("other-till", 60);
+
+            assertThatThrownBy(() -> billingService.createInvoice(saleOf(60, "session-abc")))
+                    .hasMessageContaining("60 reserved by another open billing session");
+
+            assertThat(batch().getQuantity()).isEqualTo(100);
+        }
+
+        /**
+         * Writes the state a lapsed hold actually leaves behind: a reservation row dated
+         * in the past AND the denormalised counter still including it, which is what the
+         * sweeper would later undo.
+         */
+        private void expiredHoldFor(String sessionId, int quantity) {
+            reservationRepository.save(StockReservation.create(pharmacyId, batchId, sessionId,
+                    quantity, Instant.now().minus(1, ChronoUnit.HOURS)));
+            batch().reserve(quantity);
+            flushAndClear();
+            assertThat(batch().getReservedQuantity())
+                    .as("the stale counter is the precondition this test exists for")
+                    .isGreaterThanOrEqualTo(quantity);
         }
     }
 

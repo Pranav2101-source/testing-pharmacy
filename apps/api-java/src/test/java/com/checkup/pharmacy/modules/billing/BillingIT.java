@@ -11,6 +11,8 @@ import com.checkup.pharmacy.modules.customer.Customer;
 import com.checkup.pharmacy.modules.customer.CustomerRepository;
 import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
+import com.checkup.pharmacy.modules.inventory.InventoryService;
+import com.checkup.pharmacy.modules.inventory.dto.ReserveStockRequest;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
 import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
@@ -55,6 +57,7 @@ class BillingIT extends AbstractPostgresIT {
     @Autowired private PharmacyRepository pharmacyRepository;
     @Autowired private MedicineRepository medicineRepository;
     @Autowired private InventoryRepository inventoryRepository;
+    @Autowired private InventoryService inventoryService;
     @Autowired private CustomerRepository customerRepository;
     @Autowired private UserRepository userRepository;
     @Autowired private EntityManager entityManager;
@@ -165,11 +168,17 @@ class BillingIT extends AbstractPostgresIT {
     @DisplayName("reserved stock is not available to another till")
     void reservedStockIsNotSellable() {
         // 100 on hand, 95 reserved by another billing session -> only 5 sellable.
-        Inventory reserved = batch();
-        ReflectionTestUtils.setField(reserved, "reservedQuantity", 95);
-        inventoryRepository.save(reserved);
+        //
+        // Reserved through the service rather than by setting reservedQuantity
+        // reflectively. That counter is denormalised: the application only ever raises
+        // it alongside a StockReservation row, so a counter of 95 with no row behind it
+        // is a state that cannot occur — and availability is now decided from the rows,
+        // because the counter keeps counting holds whose TTL has passed.
+        inventoryService.reserve(new ReserveStockRequest("another-till",
+                List.of(new ReserveStockRequest.Item(batchId, 95))));
         flushAndClear();
 
+        assertThat(batch().getReservedQuantity()).isEqualTo(95);
         assertThatThrownBy(() -> billingService.createInvoice(invoiceFor(batchId, 10)))
                 .isInstanceOf(ConflictException.class)
                 .hasMessageContaining("reserved");

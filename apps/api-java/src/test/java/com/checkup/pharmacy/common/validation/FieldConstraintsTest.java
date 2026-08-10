@@ -56,6 +56,68 @@ class FieldConstraintsTest {
                 .findFirst().map(v -> v.getMessage()).orElse(null);
     }
 
+    private record EmailHolder(@ValidEmail String email) {
+    }
+
+    private String emailError(String value) {
+        return validator.validate(new EmailHolder(value)).stream()
+                .findFirst().map(v -> v.getMessage()).orElse(null);
+    }
+
+    @Nested
+    @DisplayName("@ValidEmail")
+    class Emails {
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "asha@gmail.com",
+                "asha@yahoo.co.in",
+                "contact@distributor.com",
+                "a.b+c@sub.domain.co.in",
+                "first.last@my-pharmacy.in",
+                "TILL2@Gmail.COM",
+        })
+        @DisplayName("accepts the addresses people actually use")
+        void acceptsOrdinaryAddresses(String email) {
+            assertThat(emailError(email)).isNull();
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "asha@gmail",     // the reported case: no TLD
+                "asha@gmail.",
+                "asha@.com",
+                "asha@a.b",       // 1-char TLD
+                "asha@-gmail.com",
+                "asha@gmail-.com",
+                "asha",
+                "@gmail.com",
+                ".asha@gmail.com",
+                "asha.@gmail.com",
+                "as..ha@gmail.com",
+        })
+        @DisplayName("rejects what Jakarta's @Email let through")
+        void rejectsIncompleteAddresses(String email) {
+            assertThat(emailError(email)).isNotNull();
+        }
+
+        @Test
+        @DisplayName("names the half that is wrong")
+        void messagesPointAtTheProblem() {
+            assertThat(emailError("asha@gmail")).isEqualTo("needs a complete domain after @, e.g. gmail.com");
+            assertThat(emailError("as ha@gmail.com")).isEqualTo("cannot contain spaces");
+            assertThat(emailError("a".repeat(65) + "@gmail.com")).isEqualTo("the part before @ is too long");
+        }
+
+        @Test
+        @DisplayName("says nothing about presence — that is @NotBlank's job")
+        void blankIsSomeoneElsesProblem() {
+            assertThat(emailError(null)).isNull();
+            assertThat(emailError("")).isNull();
+            assertThat(emailError("   ")).isNull();
+        }
+    }
+
     @Nested
     @DisplayName("@PersonName")
     class PersonNames {

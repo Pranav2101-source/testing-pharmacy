@@ -2,7 +2,9 @@ package com.checkup.pharmacy.common.validation;
 
 import com.checkup.pharmacy.common.enums.Role;
 import com.checkup.pharmacy.modules.auth.dto.RegisterRequest;
+import com.checkup.pharmacy.modules.auth.dto.UpdateProfileRequest;
 import com.checkup.pharmacy.modules.customer.dto.CustomerRequest;
+import com.checkup.pharmacy.modules.pharmacy.dto.UpdatePharmacyRequest;
 import com.checkup.pharmacy.modules.prescription.dto.CreatePrescriptionRequest;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionItemRequest;
 import com.checkup.pharmacy.modules.staff.dto.CreateStaffRequest;
@@ -259,5 +261,82 @@ class RequestConstraintWiringTest {
     private CreateTicketRequest ticket(String mobile, String altMobile) {
         return new CreateTicketRequest("cat-1", null, null, null, null, null, null, null, null,
                 "The billing screen will not open after the update.", mobile, altMobile);
+    }
+
+    // ── Second QA round: staff names, staff email, and the profile screen ─────
+
+    private CreateStaffRequest staff(String name, String email) {
+        return new CreateStaffRequest(name, email, "9876543210", Role.CASHIER, "correct horse battery");
+    }
+
+    @Test
+    @DisplayName("QA — a staff member's name cannot contain digits")
+    void staffNameRejectsDigits() {
+        // This DTO used to carry @AccountName, which permits digits so a pharmacy could
+        // name a login "Billing Counter 2". QA ruled a staff member is a person, so the
+        // field now takes the person rule and "Anjali2" is rejected.
+        assertThat(fieldsInError(staff("Anjali2", "anjali@gmail.com"))).contains("name");
+        assertThat(fieldsInError(staff("Billing Counter 2", "counter@gmail.com"))).contains("name");
+        assertThat(fieldsInError(staff("Anjali Singh", "anjali@gmail.com"))).isEmpty();
+        assertThat(fieldsInError(new UpdateStaffRequest("Anjali2", null, null, null))).contains("name");
+    }
+
+    @Test
+    @DisplayName("...but a real name written in an Indian script still passes")
+    void staffNameAcceptsIndianScripts() {
+        // The narrow rule must not become "ASCII letters only": Devanagari and Tamil
+        // compose vowels from combining marks.
+        assertThat(fieldsInError(staff("प्रणव राज", "pranav@gmail.com"))).isEmpty();
+        assertThat(fieldsInError(staff("K.S. O'Brien-Rao", "ks@gmail.com"))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("QA — a staff email must have a real domain, not just an @")
+    void staffEmailRequiresACompleteDomain() {
+        // Jakarta's @Email, which this field used to carry, accepts every one of these.
+        // A staff account on an address that cannot receive mail is an account whose
+        // password reset goes nowhere.
+        for (String bad : new String[]{"asha@gmail", "asha", "asha@", "asha@.com", "asha@a.b", "as ha@gmail.com"}) {
+            assertThat(fieldsInError(staff("Asha Menon", bad))).as(bad).contains("email");
+        }
+        for (String good : new String[]{"asha@gmail.com", "asha@yahoo.co.in", "a.b+c@my-pharmacy.in"}) {
+            assertThat(fieldsInError(staff("Asha Menon", good))).as(good).isEmpty();
+        }
+    }
+
+    @Test
+    @DisplayName("QA — renaming yourself on the profile screen cannot introduce digits")
+    void profileNameRejectsDigits() {
+        // RegisterRequest.ownerName has always been @PersonName; the edit path was not,
+        // so a name the register form would refuse could be saved over it later.
+        assertThat(fieldsInError(new UpdateProfileRequest("Pranav 2"))).contains("name");
+        assertThat(fieldsInError(new UpdateProfileRequest("Pranav Raj"))).isEmpty();
+    }
+
+    private UpdatePharmacyRequest pharmacy(String name, String phone, String email) {
+        return new UpdatePharmacyRequest(name, phone, email, null, null, null, null, null, null, null);
+    }
+
+    @Test
+    @DisplayName("QA — the pharmacy's own phone and email are checked on save")
+    void pharmacyContactDetailsAreChecked() {
+        // Both print on every invoice, and neither was validated on this endpoint.
+        assertThat(fieldsInError(pharmacy("Gita Medical Hall", "98765abc", null))).contains("phone");
+        assertThat(fieldsInError(pharmacy("Gita Medical Hall", "98765432101", null))).contains("phone");
+        assertThat(fieldsInError(pharmacy("Gita Medical Hall", "9876543210", "shop@gmail"))).contains("email");
+        assertThat(fieldsInError(pharmacy("Gita Medical Hall", "+91 98765 43210", "shop@gmail.com"))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("...and both stay optional, since a profile can be half-filled")
+    void pharmacyContactDetailsStayOptional() {
+        assertThat(fieldsInError(pharmacy("Gita Medical Hall", null, null))).isEmpty();
+        assertThat(fieldsInError(pharmacy("Gita Medical Hall", "", ""))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a pharmacy is still a business, so its own name may carry digits")
+    void pharmacyNameStillAcceptsDigitsOnUpdate() {
+        assertThat(fieldsInError(pharmacy("24x7 Medicos", "9876543210", null))).isEmpty();
     }
 }

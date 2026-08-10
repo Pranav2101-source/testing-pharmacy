@@ -148,6 +148,22 @@ describe("validateIndianMobile", () => {
     expect(validateIndianMobile("98765 43210")).toBeNull();
     expect(validateIndianMobile("(98765) 43210")).toBeNull();
   });
+
+  it("accepts a country code or trunk zero, matching IndianMobileValidator", () => {
+    // The Java side normalises before it measures. This copy used to strip non-digits
+    // only, so "+91 98765 43210" was rejected here as 12 digits while the API accepted
+    // it — a number saved through the API could then block its own form on save.
+    expect(validateIndianMobile("+91 98765 43210")).toBeNull();
+    expect(validateIndianMobile("919876543210")).toBeNull();
+    expect(validateIndianMobile("098765 43210")).toBeNull();
+  });
+
+  it("still counts an over-long number as over-long after normalising", () => {
+    // The trap in normalising first: normalizeIndianMobile truncates to 10, so reusing
+    // it here would have let an 11-digit number through as valid.
+    expect(validateIndianMobile("98765432101")).toBe("Mobile number must be exactly 10 digits");
+    expect(validateIndianMobile("9876543210999")).toBe("Mobile number must be exactly 10 digits");
+  });
 });
 
 describe("normalizeIndianMobile", () => {
@@ -203,16 +219,47 @@ describe("sanitizePersonName", () => {
 });
 
 describe("validateEmail", () => {
-  it("accepts ordinary addresses and rejects malformed ones", () => {
-    expect(validateEmail("contact@distributor.com")).toBeNull();
-    expect(validateEmail("a.b+c@sub.domain.co.in")).toBeNull();
+  it("accepts the addresses people actually use", () => {
+    for (const email of [
+      "asha@gmail.com",
+      "asha@yahoo.co.in",
+      "contact@distributor.com",
+      "a.b+c@sub.domain.co.in",
+      "first.last@my-pharmacy.in",
+      "TILL2@Gmail.COM",
+    ]) {
+      expect(validateEmail(email), email).toBeNull();
+    }
+  });
+
+  it("rejects a domain with no real ending — the reported defect", () => {
+    // The old rule ("one @, a dot, no spaces") passed all of these, which is what
+    // "validation is there but accepts anything" meant.
+    expect(validateEmail("asha@gmail")).toBe("Enter a complete domain after @, e.g. gmail.com");
+    expect(validateEmail("asha@gmail.")).not.toBeNull();
+    expect(validateEmail("asha@.com")).not.toBeNull();
+    expect(validateEmail("asha@a.b")).not.toBeNull();       // 1-char TLD
+    expect(validateEmail("asha@-gmail.com")).not.toBeNull(); // label edge hyphen
+    expect(validateEmail("asha@gmail-.com")).not.toBeNull();
+  });
+
+  it("rejects a malformed local part", () => {
     expect(validateEmail("not-an-email")).not.toBeNull();
-    expect(validateEmail("missing@domain")).not.toBeNull();
-    expect(validateEmail("two spaces@domain.com")).not.toBeNull();
+    expect(validateEmail("@gmail.com")).not.toBeNull();
+    expect(validateEmail(".asha@gmail.com")).not.toBeNull();
+    expect(validateEmail("asha.@gmail.com")).not.toBeNull();
+    expect(validateEmail("as..ha@gmail.com")).not.toBeNull();
+    expect(validateEmail("as,ha@gmail.com")).not.toBeNull();
+  });
+
+  it("names the part that is wrong instead of one catch-all", () => {
+    expect(validateEmail("two spaces@gmail.com")).toBe("Email cannot contain spaces");
+    expect(validateEmail(`${"a".repeat(65)}@gmail.com`)).toBe("The part before @ is too long");
   });
 
   it("is optional by default", () => {
     expect(validateEmail("")).toBeNull();
+    expect(validateEmail("  ")).toBeNull();
     expect(validateEmail("", { required: true })).toBe("Email is required");
   });
 });
