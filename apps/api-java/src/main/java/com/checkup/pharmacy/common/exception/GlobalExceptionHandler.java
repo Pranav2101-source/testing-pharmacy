@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.MultipartException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -205,9 +206,38 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * A URL that matches no controller is a 404, not a 500.
+     *
+     * <p>Without this, {@code NoResourceFoundException} falls into the catch-all below
+     * and every typo'd or retired endpoint reports "Internal server error" — which
+     * says the server is broken when the truth is the path does not exist. That
+     * misdirects whoever is debugging: a wrong client URL looks identical to a real
+     * outage, and it hides genuine 500s in the same noise.
+     *
+     * <p>Exactly the same trap {@code AccessDeniedException} fell into (see above):
+     * the catch-all sees these before Spring's own default handling can, because
+     * {@code @RestControllerAdvice} resolves them first.
+     *
+     * <p>Logged at DEBUG, not ERROR — a 404 is routine traffic (scanners, stale
+     * bookmarks) and logging it as an error trains people to ignore real errors.
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNoResource(NoResourceFoundException ex) {
+        log.debug("No handler for {}", ex.getResourcePath());
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(ApiResponse.fail("No such endpoint: /" + ex.getResourcePath()));
+    }
+
+    /**
      * Last-resort catch-all: never leak stack traces or internals to the client,
      * but DO log the full exception server-side — otherwise a genuine bug is
      * invisible to everyone except whoever happens to be tailing the console.
+     *
+     * <p>The client message stays deliberately opaque, but the response still carries
+     * the {@code X-Request-Id} header set by {@code RequestIdFilter}, and that same id
+     * is on this log line via MDC. That pairing is what makes a report of "it said
+     * something went wrong" traceable to the actual exception — see getErrorMessage in
+     * api-client.ts, which surfaces the id to the user so they can quote it.
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnexpected(Exception ex) {

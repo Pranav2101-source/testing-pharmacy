@@ -46,6 +46,26 @@ public final class ValidationPatterns {
     public static final Pattern INDIAN_MOBILE = Pattern.compile("^[6-9]\\d{9}$");
 
     /**
+     * Email, split into its two halves so a bad local part can be reported separately
+     * from a bad domain.
+     *
+     * <p>Jakarta's own {@code @Email} is deliberately permissive — it accepts
+     * {@code name@gmail} and {@code a@b} — which QA reported as "validation is there
+     * but accepts anything". EMAIL_DOMAIN is the half that fixes it: one or more
+     * labels that start and end alphanumeric, then a TLD of 2-24 letters.
+     *
+     * <p>Mirrors EMAIL_LOCAL_RE / EMAIL_DOMAIN_RE in {@code packages/utils/src/validation.ts}.
+     */
+    public static final Pattern EMAIL_LOCAL =
+            Pattern.compile("^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*$");
+    public static final Pattern EMAIL_DOMAIN =
+            Pattern.compile("^(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\\.)+[A-Za-z]{2,24}$");
+
+    /** RFC 5321 limits: 64 octets for the local part, 254 for the whole address. */
+    public static final int MAX_EMAIL_LOCAL_LENGTH = 64;
+    public static final int MAX_EMAIL_LENGTH = 254;
+
+    /**
      * An account label — a staff login, a till, a desk. The widest name rule: digits
      * are allowed because "Billing Counter 2" is how pharmacies name logins.
      */

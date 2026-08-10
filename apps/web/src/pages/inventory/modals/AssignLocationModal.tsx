@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Loader2, X, Check, AlertCircle, MapPin, Tag, Trash2, Plus } from "lucide-react";
-import { api, getErrorMessage } from "@/lib/api-client";
+import { api, getErrorMessage, unwrapList } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import type { InventoryItem, ShelfOption } from "../types";
 
@@ -11,6 +11,8 @@ interface CreateForm {
   shelfCode:  string;
   level:      string;
 }
+
+type RackOption = { id: string; code: string; name: string };
 
 const EMPTY_CREATE: CreateForm = { rackCode: "", rackName: "", shelfCode: "", level: "1" };
 
@@ -23,8 +25,9 @@ export function AssignLocationModal({ item, onClose, onDone, onToast }: {
   const [shelfId,    setShelfId]    = useState(item.shelfId ?? "");
   const [freeText,   setFreeText]   = useState(item.location ?? "");
   const [shelves,    setShelves]    = useState<ShelfOption[]>([]);
+  const [racks,      setRacks]      = useState<RackOption[]>([]);
   const [loading,    setLoading]    = useState(true);
-  const [shelfErr,   setShelfErr]   = useState(false);
+  const [shelfErr,   setShelfErr]   = useState<string | null>(null);
   const [saving,     setSaving]     = useState(false);
   const [clearing,   setClearing]   = useState(false);
   const [error,      setError]      = useState<string | null>(null);
@@ -33,22 +36,47 @@ export function AssignLocationModal({ item, onClose, onDone, onToast }: {
   const [createErr,  setCreateErr]  = useState<string | null>(null);
   const [form,       setForm]       = useState<CreateForm>(EMPTY_CREATE);
 
-  function loadShelves() {
+  async function loadShelves() {
     setLoading(true);
-    return api.get("/locations/shelves", { params: { dropdown: true } })
-      .then((r) => { setShelves(r.data.data ?? []); setShelfErr(false); })
-      .catch(() => setShelfErr(true))
-      .finally(() => setLoading(false));
+    try {
+      // limit, not the old `dropdown: true`: the API has no such parameter and quietly
+      // ignored it, so this picker only ever saw the default first page of 50 shelves.
+      const [shelfRes, rackRes] = await Promise.all([
+        api.get("/locations/shelves", { params: { limit: 500 } }),
+        // Racks are needed as well as shelves so "Add new shelf" can attach to a rack
+        // that exists but has no shelves yet — deriving racks from the shelf list alone
+        // would make that rack invisible and the create always collide on its code.
+        api.get("/locations/racks", { params: { limit: 500 } }),
+      ]);
+      setShelves(unwrapList<ShelfOption>(shelfRes.data?.data));
+      setRacks(unwrapList<RackOption>(rackRes.data?.data));
+      setShelfErr(null);
+    } catch (err) {
+      setShelfErr(getErrorMessage(err, "Failed to load shelves"));
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => { loadShelves(); }, []);
 
+  // A shelf whose rack could not be resolved is skipped rather than grouped: the API
+  // returns `rack: null` in that case, and reading `.code` off it threw during render,
+  // taking the whole modal down with it.
   const byRack = shelves.reduce<Record<string, { rackName: string; shelves: ShelfOption[] }>>((acc, s) => {
+    if (!s?.rack?.code) return acc;
     const key = s.rack.code;
     if (!acc[key]) acc[key] = { rackName: `${s.rack.code} — ${s.rack.name}`, shelves: [] };
     acc[key].shelves.push(s);
     return acc;
   }, {});
+
+  // Racks known from the racks list, plus any rack referenced by a shelf — the two
+  // can differ if a rack was created between the two requests.
+  const typedRackCode = form.rackCode.trim().toUpperCase();
+  const existingRack  = !typedRackCode ? undefined
+    : racks.find((r) => r.code?.toUpperCase() === typedRackCode)
+      ?? shelves.find((s) => s.rack?.code?.toUpperCase() === typedRackCode)?.rack;
 
   async function patch(payload: object, successMsg: string) {
     try {
@@ -79,30 +107,47 @@ export function AssignLocationModal({ item, onClose, onDone, onToast }: {
   async function createAndSelect(e: React.FormEvent) {
     e.preventDefault();
     setCreateErr(null);
-    const { rackCode, rackName, shelfCode, level } = form;
-    if (!rackCode.trim()) { setCreateErr("Rack code is required"); return; }
-    if (!rackName.trim()) { setCreateErr("Rack name is required"); return; }
-    if (!shelfCode.trim()) { setCreateErr("Shelf code is required"); return; }
-    if (!level || Number(level) < 1) { setCreateErr("Level must be ≥ 1"); return; }
+    const code      = form.rackCode.trim().toUpperCase();
+    const shelfCode = form.shelfCode.trim().toUpperCase();
+    const level     = Number(form.level);
+
+    if (!code)      { setCreateErr("Rack code is required"); return; }
+    if (!shelfCode) { setCreateErr("Shelf code is required"); return; }
+    if (!form.level || !Number.isInteger(level) || level < 1) { setCreateErr("Level must be a whole number, 1 or more"); return; }
+
+    // The rack only needs a name when it is actually being created. Requiring one for
+    // an existing rack — and then POSTing it anyway — is what made every second shelf
+    // fail with "A rack with this code already exists".
+    if (!existingRack && !form.rackName.trim()) { setCreateErr("Rack name is required for a new rack"); return; }
+
+    // Caught here rather than at the API: the server's message ("A shelf with this
+    // code already exists") is true but doesn't say the shelf is already in the list
+    // right above the form.
+    const duplicate = shelves.find((s) => s.code?.toUpperCase() === shelfCode);
+    if (duplicate) {
+      setCreateErr(`Shelf ${shelfCode} already exists — pick it from the list above.`);
+      return;
+    }
+
     setCreating(true);
     try {
-      const rackRes = await api.post("/locations/racks", {
-        code: rackCode.trim().toUpperCase(),
-        name: rackName.trim(),
-      });
-      const rackId = rackRes.data.data.id as string;
-      const shelfRes = await api.post("/locations/shelves", {
-        rackId,
-        code:  shelfCode.trim().toUpperCase(),
-        level: Number(level),
-      });
-      const newShelfId = shelfRes.data.data.id as string;
+      let rackId = existingRack?.id;
+      if (!rackId) {
+        const rackRes = await api.post("/locations/racks", { code, name: form.rackName.trim() });
+        rackId = rackRes.data?.data?.id as string;
+      }
+      const shelfRes = await api.post("/locations/shelves", { rackId, code: shelfCode, level });
+      const newShelfId = shelfRes.data?.data?.id as string | undefined;
+
       await loadShelves();
-      setShelfId(newShelfId);
+      // Only select what the server actually confirmed. Assigning an undefined id
+      // would submit `{ shelfId: undefined }` and silently clear the location instead.
+      if (newShelfId) setShelfId(newShelfId);
       setShowCreate(false);
       setForm(EMPTY_CREATE);
       setMode("shelf");
-    } catch (err: any) {
+      setError(null);
+    } catch (err) {
       setCreateErr(getErrorMessage(err, "Failed to create rack/shelf"));
     } finally {
       setCreating(false);
@@ -168,8 +213,19 @@ export function AssignLocationModal({ item, onClose, onDone, onToast }: {
                   <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading shelves…
                 </div>
               ) : shelfErr ? (
-                <div className="flex items-center gap-2 text-[13px] text-red-500 py-2.5 px-3 rounded-lg bg-red-50 border border-red-100">
-                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> Failed to load shelves.
+                <div className="flex items-start gap-2 text-[13px] text-red-600 py-2.5 px-3 rounded-lg bg-red-50 border border-red-100">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p>{shelfErr}</p>
+                    <div className="flex items-center gap-3 mt-1">
+                      <button type="button" onClick={loadShelves} className="text-[12px] font-semibold text-red-700 hover:underline">
+                        Retry
+                      </button>
+                      <button type="button" onClick={() => { setMode("text"); setError(null); }} className="text-[12px] font-semibold text-slate-500 hover:underline">
+                        Use a free-text label instead
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ) : shelves.length === 0 && !showCreate ? (
                 <div className="text-[13px] text-slate-500 py-3 px-3 rounded-lg bg-slate-50 border border-slate-100 text-center leading-relaxed">
@@ -225,12 +281,15 @@ export function AssignLocationModal({ item, onClose, onDone, onToast }: {
                           />
                         </div>
                         <div>
-                          <label className="block text-[10px] font-semibold text-slate-500 mb-1">Rack Name *</label>
+                          <label className="block text-[10px] font-semibold text-slate-500 mb-1">
+                            Rack Name {existingRack ? "" : "*"}
+                          </label>
                           <input
                             type="text" placeholder="Front Rack" maxLength={100}
-                            value={form.rackName}
+                            value={existingRack ? existingRack.name : form.rackName}
+                            disabled={!!existingRack}
                             onChange={(e) => setForm((f) => ({ ...f, rackName: e.target.value }))}
-                            className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-[13px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 bg-white"
+                            className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-[13px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 bg-white disabled:bg-slate-100 disabled:text-slate-500"
                           />
                         </div>
                         <div>
@@ -252,6 +311,13 @@ export function AssignLocationModal({ item, onClose, onDone, onToast }: {
                           />
                         </div>
                       </div>
+
+                      {existingRack && (
+                        <p className="text-[11px] text-blue-700 bg-white/70 border border-blue-200 rounded-lg px-2.5 py-1.5">
+                          Rack <span className="font-bold">{existingRack.code}</span> already exists — the new shelf
+                          will be added to it.
+                        </p>
+                      )}
 
                       {createErr && (
                         <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-[12px] text-red-600">

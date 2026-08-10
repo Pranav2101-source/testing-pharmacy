@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { MapPin, Plus, ChevronDown, ChevronRight, Loader2, AlertCircle, Check, Pencil, X } from "lucide-react";
-import { api, getErrorMessage } from "@/lib/api-client";
+import { api, getErrorMessage, unwrapList } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -261,14 +261,18 @@ export default function LocationsSettingsPage() {
     setLoading(true); setError(null);
     try {
       const [racksRes, shelvesRes] = await Promise.all([
-        api.get("/locations/racks"),
-        api.get("/locations/shelves"),
+        // Both endpoints return the paginated envelope and default to 50 per page, so
+        // an unpaged read silently truncated a pharmacy with more racks than that.
+        api.get("/locations/racks",   { params: { limit: 500 } }),
+        api.get("/locations/shelves", { params: { limit: 500 } }),
       ]);
-      const allShelves = (shelvesRes.data.data ?? []) as (Shelf & { rack: { id: string } })[];
-      const rackList   = (racksRes.data.data?.items ?? racksRes.data.data ?? []) as Rack[];
+      // unwrapList, not `data.data ?? []`: this endpoint returns { items, total, … },
+      // so the raw value is an object and `.filter` on it threw during render.
+      const allShelves = unwrapList<Shelf & { rack: { id: string } | null }>(shelvesRes.data?.data);
+      const rackList   = unwrapList<Rack>(racksRes.data?.data);
       setRacks(rackList.map((r) => ({
         ...r,
-        shelves: allShelves.filter((s) => s.rack.id === r.id),
+        shelves: allShelves.filter((s) => s.rack?.id === r.id),
       })));
     } catch (err: any) {
       setError(getErrorMessage(err, "Failed to load locations"));

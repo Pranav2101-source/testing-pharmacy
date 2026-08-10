@@ -9,17 +9,30 @@ import { cn } from "@/lib/utils";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { getStoredUser, storeUser } from "@/lib/auth";
 import { invalidateInvoicePrintConfigCache } from "@/lib/useInvoicePrintConfig";
+import { useToast } from "@/hooks/useToast";
+import {
+  digitsOnly,
+  normalizeIndianMobile,
+  sanitizePersonName,
+  validateEmail,
+  validateIndianMobile,
+  validatePersonName,
+} from "@pharmacy/utils";
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
 function Field({
   label, icon: Icon, placeholder, value, onChange,
   type = "text", hint, readOnly, accent = "blue",
+  error, inputMode, maxLength,
 }: {
   label: string; icon: React.ElementType; placeholder: string;
   value: string; onChange?: (v: string) => void;
   type?: string; hint?: string; readOnly?: boolean;
   accent?: "blue" | "violet";
+  error?: string | null;
+  inputMode?: "text" | "numeric" | "tel" | "email";
+  maxLength?: number;
 }) {
   const [focused, setFocused] = useState(false);
   const ringCls = accent === "violet"
@@ -33,14 +46,21 @@ function Field({
       <div className={cn(
         "flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border bg-white transition-all duration-150",
         readOnly ? "bg-slate-50 border-slate-100 cursor-not-allowed"
+                 : error   ? "border-red-400 ring-1 ring-red-200 shadow-sm"
                  : focused ? ringCls : "border-slate-200 hover:border-slate-300",
       )}>
-        <Icon className={cn("w-3.5 h-3.5 flex-shrink-0 transition-colors", focused && !readOnly ? iconCls : "text-slate-400")} strokeWidth={1.8} />
+        <Icon className={cn(
+          "w-3.5 h-3.5 flex-shrink-0 transition-colors",
+          error ? "text-red-500" : focused && !readOnly ? iconCls : "text-slate-400",
+        )} strokeWidth={1.8} />
         <input
           type={type}
+          inputMode={inputMode}
+          maxLength={maxLength}
           placeholder={placeholder}
           value={value}
           readOnly={readOnly}
+          aria-invalid={!!error}
           onChange={(e) => onChange?.(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
@@ -50,7 +70,9 @@ function Field({
           )}
         />
       </div>
-      {hint && <p className="text-[10px] text-slate-400 leading-relaxed">{hint}</p>}
+      {error
+        ? <p className="text-[10px] text-red-500 font-medium leading-relaxed">{error}</p>
+        : hint && <p className="text-[10px] text-slate-400 leading-relaxed">{hint}</p>}
     </div>
   );
 }
@@ -157,9 +179,13 @@ const EMPTY: PharmacyData = {
   address: "", city: "", state: "", pincode: "", logoUrl: null, logoSignedUrl: null,
 };
 
+/** Per-field messages, keyed by the field they belong under. */
+type FieldErrors = Partial<Record<"userName" | "phone" | "email", string>>;
+
 export default function ProfilePage() {
   const stored      = getStoredUser();
   const logoFileRef = useRef<HTMLInputElement>(null);
+  const toast       = useToast();
 
   // ── User state ────────────────────────────────────────────────────────────
   const [userName,    setUserName]    = useState(stored?.name    ?? "");
@@ -179,6 +205,7 @@ export default function ProfilePage() {
 
   const [loading, setLoading] = useState(true);
   const [pharmaLoadError, setPharmaLoadError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
 
   // ── Load ──────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -199,7 +226,10 @@ export default function ProfilePage() {
         if (p) {
           setPharmacy({
             name:         p.name         ?? "",
-            phone:        p.phone        ?? "",
+            // Normalised on the way in as well as on every keystroke: a record saved
+            // before this form validated could hold "+91 98765 43210", and showing it
+            // raw would make the field look wrong the moment it is validated.
+            phone:        normalizeIndianMobile(p.phone ?? ""),
             email:        p.email        ?? "",
             gstin:        p.gstin        ?? "",
             drugLicense:  p.drugLicense  ?? "",
@@ -217,16 +247,31 @@ export default function ProfilePage() {
 
   // ── Save user profile ─────────────────────────────────────────────────────
   async function handleSaveUser() {
-    if (!userName.trim()) { setUserError("Name is required."); return; }
+    // Digits never reach the field (sanitizePersonName runs on every keystroke), but
+    // a paste that is punctuation-only — or a value restored from storage — still has
+    // to be caught before it is sent.
+    const nameProblem = validatePersonName(userName, { label: "Name" });
+    if (nameProblem) {
+      setFieldErrors((e) => ({ ...e, userName: nameProblem }));
+      setUserError(nameProblem);
+      toast.error(nameProblem);
+      return;
+    }
+    setFieldErrors((e) => ({ ...e, userName: undefined }));
     setUserSaving(true); setUserError(null);
     try {
       const { data } = await api.patch("/auth/me", { name: userName.trim() });
       const current = getStoredUser();
       if (current) storeUser({ ...current, name: data.data.name });
       setUserSaved(true);
+      // The inline "Saved" chip is easy to miss when the button sits at the bottom of
+      // a scrolled card, so the toast is what actually confirms the save.
+      toast.success("Your account details have been saved");
       setTimeout(() => setUserSaved(false), 2500);
     } catch (err) {
-      setUserError(getErrorMessage(err, "Failed to save. Please try again."));
+      const msg = getErrorMessage(err, "Failed to save. Please try again.");
+      setUserError(msg);
+      toast.error(msg);
     } finally {
       setUserSaving(false);
     }
@@ -234,11 +279,33 @@ export default function ProfilePage() {
 
   // ── Save pharmacy profile (uploads logo first if pending) ─────────────────
   async function handleSavePharmacy() {
-    if (!pharmacy.name.trim()) { setPharmaError("Pharmacy name is required."); return; }
-    if (pharmaLoadError) {
-      setPharmaError("Can't save while your existing profile failed to load — reload the page first.");
+    if (!pharmacy.name.trim()) {
+      setPharmaError("Pharmacy name is required.");
+      toast.error("Pharmacy name is required.");
       return;
     }
+    if (pharmaLoadError) {
+      const msg = "Can't save while your existing profile failed to load — reload the page first.";
+      setPharmaError(msg);
+      toast.error(msg);
+      return;
+    }
+
+    // Both are optional — a pharmacy may simply not have filled them in — but if a
+    // value IS present it has to be a real one: this phone and email are printed on
+    // every invoice, and a customer who cannot call the shop back is the actual cost
+    // of accepting "98765abc".
+    const phoneProblem = validateIndianMobile(pharmacy.phone, { label: "Phone number", required: false });
+    const emailProblem = validateEmail(pharmacy.email);
+    if (phoneProblem || emailProblem) {
+      setFieldErrors((e) => ({ ...e, phone: phoneProblem ?? undefined, email: emailProblem ?? undefined }));
+      const msg = phoneProblem ?? emailProblem!;
+      setPharmaError(msg);
+      toast.error(msg);
+      return;
+    }
+    setFieldErrors((e) => ({ ...e, phone: undefined, email: undefined }));
+
     setPharmaSaving(true); setPharmaError(null);
     try {
       let newLogoUrl = pharmacy.logoUrl;
@@ -275,12 +342,15 @@ export default function ProfilePage() {
       }
 
       setPharmaSaved(true);
+      toast.success("Pharmacy profile saved — invoices will use these details");
       setTimeout(() => setPharmaSaved(false), 2500);
     } catch (err) {
       // Names the real reason — a rejected logo ("File too large — maximum 10MB",
       // wrong format) or a 403 for staff without OWNER/MANAGER. This generic string
       // is what a friend setting up their profile saw when the logo upload 404d.
-      setPharmaError(getErrorMessage(err, "Failed to save. Please try again."));
+      const msg = getErrorMessage(err, "Failed to save. Please try again.");
+      setPharmaError(msg);
+      toast.error(msg);
     } finally {
       setPharmaSaving(false);
     }
@@ -411,7 +481,16 @@ export default function ProfilePage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Field
                 label="Full Name" icon={User} placeholder="Your full name"
-                value={userName} onChange={setUserName} accent="violet"
+                value={userName}
+                // Sanitised as it is typed, so a digit simply never appears in the
+                // field — the same treatment the phone fields give a letter. Showing
+                // an error only on save would let someone type a whole name first and
+                // be told about it afterwards.
+                onChange={(v) => { setUserName(sanitizePersonName(v)); setFieldErrors((e) => ({ ...e, userName: undefined })); }}
+                error={fieldErrors.userName}
+                hint="Letters, spaces and . ' - only"
+                maxLength={100}
+                accent="violet"
               />
               <Field
                 label="Email Address" icon={Mail} placeholder=""
@@ -503,8 +582,26 @@ export default function ProfilePage() {
                   value={pharmacy.name} onChange={setP("name")} accent="blue"
                 />
               </div>
-              <Field label="Phone Number"    icon={Phone}    placeholder="+91 98765 43210"  value={pharmacy.phone}       onChange={setP("phone")}       accent="blue" />
-              <Field label="Email Address"   icon={Mail}     placeholder="pharmacy@email.com" value={pharmacy.email}       onChange={setP("email")}       type="email" accent="blue" />
+              <Field
+                label="Phone Number" icon={Phone} placeholder="98765 43210"
+                value={pharmacy.phone}
+                // normalizeIndianMobile drops every non-digit and caps at 10, so
+                // letters cannot be typed and an 11th digit is not accepted. It also
+                // absorbs a pasted "+91 98765 43210" instead of rejecting it.
+                onChange={(v) => { setP("phone")(normalizeIndianMobile(v)); setFieldErrors((e) => ({ ...e, phone: undefined })); }}
+                error={fieldErrors.phone}
+                hint="10-digit Indian mobile number"
+                type="tel" inputMode="numeric" maxLength={10}
+                accent="blue"
+              />
+              <Field
+                label="Email Address" icon={Mail} placeholder="pharmacy@gmail.com"
+                value={pharmacy.email}
+                onChange={(v) => { setP("email")(v); setFieldErrors((e) => ({ ...e, email: undefined })); }}
+                error={fieldErrors.email}
+                type="email" inputMode="email" maxLength={254}
+                accent="blue"
+              />
               <Field label="GSTIN"           icon={Hash}     placeholder="22AAAAA0000A1Z5"  value={pharmacy.gstin}       onChange={setP("gstin")}       hint="15-digit GST Identification Number" accent="blue" />
               <Field label="Drug License No" icon={FileText} placeholder="DL-MH-123456"     value={pharmacy.drugLicense} onChange={setP("drugLicense")} hint="As per State Pharmacy Council" accent="blue" />
             </div>
@@ -521,7 +618,13 @@ export default function ProfilePage() {
                 </div>
                 <Field label="City"    icon={MapPin} placeholder="Mumbai"      value={pharmacy.city}    onChange={setP("city")}    accent="blue" />
                 <Field label="State"   icon={MapPin} placeholder="Maharashtra" value={pharmacy.state}   onChange={setP("state")}   accent="blue" />
-                <Field label="Pincode" icon={MapPin} placeholder="400001"      value={pharmacy.pincode} onChange={setP("pincode")} accent="blue" />
+                <Field
+                  label="Pincode" icon={MapPin} placeholder="400001"
+                  value={pharmacy.pincode}
+                  onChange={(v) => setP("pincode")(digitsOnly(v, 6))}
+                  type="tel" inputMode="numeric" maxLength={6}
+                  accent="blue"
+                />
               </div>
             </div>
 

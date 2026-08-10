@@ -14,17 +14,20 @@ import static java.lang.annotation.ElementType.RECORD_COMPONENT;
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
 /**
- * The value must look like an account label — a staff member, a till, a desk.
+ * The value must look like a generic account label — a till, a desk, a shared login.
  *
- * <p>The widest of the three name rules. A pharmacy names its logins "Billing Counter
- * 2" and "Till 3", so unlike {@link PersonName} and {@link ProfessionalName} this one
- * cannot ban digits: doing so would reject the naming convention rather than the bad
- * data. What it does catch is the defect worth catching — a value with no letters in
- * it at all ("123456", "---"), which is never a name, only something typed to get
+ * <p>The widest of the three name rules: unlike {@link PersonName} and
+ * {@link ProfessionalName} it permits digits, and only rejects a value with no letters
+ * in it at all ("123456", "---"), which is never a name, only something typed to get
  * past the form.
  *
- * <p>If a pharmacy would rather hold staff names to the strict person rule, swapping
- * this for {@code @PersonName} is a one-line change on the DTO.
+ * <p><strong>Nothing applies this today.</strong> It was on {@code CreateStaffRequest}
+ * and {@code UpdateStaffRequest} to allow "Billing Counter 2" as a login name; QA
+ * ruled that a staff member is a person and their name must read like one, so both
+ * DTOs now carry {@code @PersonName}. Kept for a future non-person login — anything
+ * adopting it should first check that a person's name is not what is really being
+ * captured. Mirrors ACCOUNT_NAME_RE in {@code packages/utils/src/validation.ts}, which
+ * is in the same state.
  *
  * <p>Says nothing about presence: pair it with {@code @NotBlank} when mandatory.
  */

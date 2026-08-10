@@ -360,6 +360,31 @@ public class BillingService {
             }
         }
 
+        // Holds by OTHER sessions that are still live, counted from the reservation
+        // rows rather than from Inventory.reservedQuantity.
+        //
+        // That counter is denormalised and still includes holds whose TTL has passed —
+        // they are only subtracted when something sweeps them, and the sweeper is a
+        // cron (every 5 min) while the TTL is 15. Reading the counter therefore refused
+        // sales against stock that was already free for up to a sweep interval, and
+        // blamed "another billing session" that had ended. Worse, a till that built a
+        // cart, was interrupted past the TTL, then pressed Save was blocked by its OWN
+        // dead hold: an expired row no longer matches this session's live set, so it
+        // counted as somebody else's.
+        //
+        // Read AFTER the batch locks above, deliberately: reserve() takes the same row
+        // locks before inserting, so while this transaction holds them no new hold can
+        // be committed against these batches and this count cannot go stale under us.
+        Instant liveAt = Instant.now();
+        Map<String, Integer> liveOtherReserved = new HashMap<>();
+        for (StockReservation r : reservationRepository
+                .findByPharmacyIdAndInventoryIdInAndExpiresAtAfter(pharmacyId, idsToLock, liveAt)) {
+            if (sessionId != null && sessionId.equals(r.getSessionId())) {
+                continue; // our own hold — released below as part of this same sale
+            }
+            liveOtherReserved.merge(r.getInventoryId(), r.getQuantity(), Integer::sum);
+        }
+
         Pharmacy pharmacy = pharmacyRepository.findById(pharmacyId).orElseThrow(() -> new NotFoundException("Pharmacy not found"));
 
         // Decided from the request, before the customer is read, because it determines
@@ -588,15 +613,17 @@ public class BillingService {
             // the paid quantity would let a 100+10 sale drive a 105-unit batch to -5.
             int dispensed = quantity + freeQty;
             int quantityBefore = batch.getQuantity();
-            // Only stock held by OTHER sessions reduces what this sale may take. Our
-            // own hold is released a few lines below as part of this same transaction,
-            // so counting it here would mean a till competing with itself.
-            int ownReserved = ownReservedByInventoryId.getOrDefault(batch.getId(), 0);
-            int reservedByOthers = Math.max(0, batch.getReservedQuantity() - ownReserved);
+            // Only LIVE stock held by OTHER sessions reduces what this sale may take.
+            // Our own hold is released a few lines below as part of this same
+            // transaction, so counting it here would mean a till competing with itself.
+            int reservedByOthers = liveOtherReserved.getOrDefault(batch.getId(), 0);
             int available = quantityBefore - reservedByOthers;
             if (dispensed > available) {
+                // "open" is load-bearing: expired holds are excluded above, so if this
+                // number is non-zero another till really is holding the stock right now
+                // and waiting will clear it.
                 String reservedNote = reservedByOthers > 0
-                        ? " (" + reservedByOthers + " reserved by another billing session)" : "";
+                        ? " (" + reservedByOthers + " reserved by another open billing session)" : "";
                 String freeNote = freeQty > 0 ? " (" + quantity + " + " + freeQty + " free)" : "";
                 throw new ConflictException("Insufficient stock for \"" + batch.getMedicine().getName() + "\": "
                         + Math.max(0, available) + " available" + reservedNote + ", " + dispensed + " requested" + freeNote);

@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { normalizeIndianMobile, validateAccountName, validateEmail, validateIndianMobile } from "@pharmacy/utils";
+import { normalizeIndianMobile, sanitizePersonName, validateEmail, validateIndianMobile, validatePersonName } from "@pharmacy/utils";
 import {
   Users,
   Plus,
@@ -32,7 +32,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { ListSkeleton } from "@/components/Skeleton";
 import { useToast } from "@/hooks/useToast";
 import { getStoredUser } from "@/lib/auth";
@@ -151,8 +151,14 @@ function timeAgo(iso: string | null) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/**
+ * `(err as Error).message` on an axios failure is "Request failed with status code
+ * 400" — it hid every message the API actually sent, so "That email is already in
+ * use" reached the screen as a status code. getErrorMessage reads the `{ error }`
+ * envelope, including the per-field validation messages the DTO constraints produce.
+ */
 function errMsg(err: unknown): string {
-  return (err as Error)?.message || "Something went wrong";
+  return getErrorMessage(err, "Something went wrong");
 }
 
 // ─── Role badge ───────────────────────────────────────────────
@@ -183,11 +189,12 @@ function StatusBadge({ active }: { active: boolean }) {
 // ─── Form field ───────────────────────────────────────────────
 function FormField({
   label, required, icon: Icon, placeholder, value, onChange,
-  type = "text", hint, error, disabled,
+  type = "text", hint, error, disabled, inputMode, maxLength,
 }: {
   label: string; required?: boolean; icon: React.ElementType;
   placeholder: string; value: string; onChange: (v: string) => void;
   type?: string; hint?: string; error?: string; disabled?: boolean;
+  inputMode?: "text" | "numeric" | "tel" | "email"; maxLength?: number;
 }) {
   const [focused, setFocused] = useState(false);
   return (
@@ -208,6 +215,8 @@ function FormField({
         />
         <input
           type={type} placeholder={placeholder} value={value}
+          inputMode={inputMode} maxLength={maxLength}
+          aria-invalid={!!error}
           onChange={(e) => onChange(e.target.value)}
           onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
           disabled={disabled}
@@ -311,6 +320,7 @@ function StaffDrawer({ member, onClose, onSave, saving, isLastOwner }: {
   isLastOwner:  boolean;
 }) {
   const isEdit = member !== null;
+  const toast  = useToast();
   const [name,     setName]     = useState(member?.name  ?? "");
   const [email,    setEmail]    = useState(member?.email ?? "");
   const [phone,    setPhone]    = useState(normalizeIndianMobile(member?.phone ?? ""));
@@ -327,9 +337,11 @@ function StaffDrawer({ member, onClose, onSave, saving, isLastOwner }: {
 
   function validate() {
     const e: Record<string, string> = {};
-    // Account rule, not the person rule: "Billing Counter 2" is how pharmacies name
-    // logins, so digits are allowed — what is rejected is a value with no letters at all.
-    const nameProblem = validateAccountName(name);
+    // The person rule, not the wider account rule. A staff account belongs to a named
+    // person, and QA reported "Anjali2" being accepted; the "Billing Counter 2" style
+    // of shared-till login this field used to allow is not something the product
+    // offers, so allowing digits only ever let typos through.
+    const nameProblem = validatePersonName(name, { label: "Full name" });
     if (nameProblem) e.name = nameProblem;
     if (!isEdit && password.length < 8) e.password = "Minimum 8 characters";
 
@@ -347,7 +359,14 @@ function StaffDrawer({ member, onClose, onSave, saving, isLastOwner }: {
 
   async function handleSubmit(ev?: React.FormEvent) {
     ev?.preventDefault();
-    if (!validate() || saving) return;
+    if (saving) return;
+    if (!validate()) {
+      // The Create button sits in a fixed footer below a scrolling body, so a field
+      // error can be off-screen at the moment it is pressed. Without this, pressing
+      // the button appeared to do nothing at all.
+      toast.error("Please correct the highlighted fields");
+      return;
+    }
     await onSave({
       name: name.trim(), email: email.trim().toLowerCase(),
       phone: normalizeIndianMobile(phone), role, isActive: member?.isActive ?? true,
@@ -401,9 +420,26 @@ function StaffDrawer({ member, onClose, onSave, saving, isLastOwner }: {
             </motion.div>
           )}
 
-          <FormField label="Full Name" required icon={Users} placeholder="e.g. Anjali Singh" value={name} onChange={setName} error={errors.name} />
-          <FormField label="Email Address" required={!isEdit} icon={Mail} placeholder="staff@pharmacy.com" value={email} onChange={setEmail} type="email" disabled={isEdit} hint={isEdit ? "Email cannot be changed after creation" : undefined} error={errors.email} />
-          <FormField label="Phone Number" icon={Phone} placeholder="98765 43210" value={phone} onChange={(v) => setPhone(normalizeIndianMobile(v))} type="tel" hint="10-digit Indian mobile number" error={errors.phone} />
+          {/* Each field drops what it cannot hold as it is typed — a digit in the name,
+              a letter in the phone — so the error messages below are a backstop for a
+              paste, not the first time the user learns the rule. */}
+          <FormField
+            label="Full Name" required icon={Users} placeholder="e.g. Anjali Singh"
+            value={name} onChange={(v) => setName(sanitizePersonName(v))}
+            hint="Letters, spaces and . ' - only" maxLength={100} error={errors.name}
+          />
+          <FormField
+            label="Email Address" required={!isEdit} icon={Mail} placeholder="staff@gmail.com"
+            value={email} onChange={setEmail} type="email" inputMode="email" maxLength={254}
+            disabled={isEdit} hint={isEdit ? "Email cannot be changed after creation" : undefined}
+            error={errors.email}
+          />
+          <FormField
+            label="Phone Number" icon={Phone} placeholder="98765 43210"
+            value={phone} onChange={(v) => setPhone(normalizeIndianMobile(v))}
+            type="tel" inputMode="numeric" maxLength={10}
+            hint="10-digit Indian mobile number" error={errors.phone}
+          />
 
           {/* Role selector */}
           <div className="flex flex-col gap-1.5">

@@ -41,14 +41,17 @@ const PERSON_NAME_RE = /^\p{L}[\p{L}\p{M}\s.'’-]*$/u;
 const PROFESSIONAL_NAME_RE = /^\p{L}[\p{L}\p{M}\s.,'’()/-]*$/u;
 
 /**
- * An account label — a staff member, a till, a desk.
+ * A generic account label — a till, a desk, a shared login.
  *
- * <p>The widest of the three name rules, and deliberately so. "Billing Counter 2" and
- * "Till 3" are how pharmacies actually name logins, so digits cannot be banned here
- * the way they are for a customer or a patient. What it still catches is the defect
- * that made the rule worth having: a name with NO letters in it at all — "123456",
- * "---" — which is never a name, only a placeholder someone typed to get past the
- * form.
+ * The widest of the three name rules: it permits digits ("Billing Counter 2") and
+ * only rejects a value with NO letters in it at all — "123456", "---" — which is
+ * never a name, only a placeholder someone typed to get past the form.
+ *
+ * NOT used by staff accounts any more. QA ruled that a staff member is a person and
+ * their name must read like one, so the staff form and `CreateStaffRequest` use the
+ * PERSON_NAME rule instead. Nothing applies this rule today; it is kept for a future
+ * non-person login (a shared counter terminal), and anything adopting it should
+ * first check that a person's name is not what is really being captured.
  */
 const ACCOUNT_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}\s.,'’()/&-]*$/u;
 const CONTAINS_LETTER_RE = /\p{L}/u;
@@ -57,11 +60,29 @@ const CONTAINS_LETTER_RE = /\p{L}/u;
 const INDIAN_MOBILE_RE = /^[6-9]\d{9}$/;
 
 /**
- * Deliberately simple: one @, a dot in the domain, no spaces. Anything stricter
- * rejects addresses that are legal in practice, and the only true test of an email
- * is sending to it.
+ * Email, split into the two halves so a bad address can be told apart from a bad
+ * domain.
+ *
+ * The previous rule here was "one @, a dot, no spaces", which passed `x@y.zz` and
+ * every other shape a typo produces — QA reported it as "validation exists but
+ * accepts anything". These patterns instead describe the parts:
+ *
+ *  - LOCAL: the RFC-5322 atom characters, dot-separated, so no leading, trailing or
+ *    doubled dot ("..") can slip through.
+ *  - DOMAIN: one or more labels that start and end alphanumeric (hyphens allowed
+ *    inside, never at an edge), then a TLD of 2-24 letters. That last clause is what
+ *    rejects `name@gmail` and `name@gmail.c` while accepting `gmail.com`,
+ *    `yahoo.co.in` and a company's own `sub.domain.org`.
+ *
+ * Still not a delivery guarantee — the only true test of an address is sending to
+ * it — but it now catches the mistakes people actually make at a keyboard.
  */
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const EMAIL_LOCAL_RE = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+)*$/;
+const EMAIL_DOMAIN_RE = /^(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,24}$/;
+
+/** RFC 5321 limits: 64 octets for the local part, 254 for the whole address. */
+const MAX_EMAIL_LOCAL_LENGTH = 64;
+const MAX_EMAIL_LENGTH = 254;
 
 export const MAX_PERSON_NAME_LENGTH = 100;
 
@@ -72,17 +93,30 @@ export function digitsOnly(raw: string, maxLength?: number): string {
 }
 
 /**
- * Reduce anything a user can type or paste to the bare 10-digit national number.
+ * Strip formatting and any country code or trunk zero, WITHOUT truncating.
  *
  * The country-code and trunk-zero strips are guarded by total length rather than
  * applied blindly, because "9198765432" is itself a valid 10-digit mobile — a naive
  * `startsWith("91")` would silently turn a real number into an 8-digit one.
+ *
+ * This is the exact counterpart of `ValidationPatterns.normalizeMobile` in Java, and
+ * it is what validation reads: truncating first would let "98765432101" through as
+ * ten digits, which is the one thing an eleven-digit number must not do.
  */
-export function normalizeIndianMobile(raw: string): string {
+function nationalDigits(raw: string): string {
   let digits = raw.replace(/\D/g, "");
   if (digits.length === 12 && digits.startsWith("91")) digits = digits.slice(2);
   else if (digits.length === 11 && digits.startsWith("0")) digits = digits.slice(1);
-  return digits.slice(0, 10);
+  return digits;
+}
+
+/**
+ * Reduce anything a user can type or paste to the bare 10-digit national number.
+ * For onChange handlers — the 10-digit cap is what stops an 11th digit appearing in
+ * the field at all.
+ */
+export function normalizeIndianMobile(raw: string): string {
+  return nationalDigits(raw).slice(0, 10);
 }
 
 /** Collapse runs of whitespace so "Ram   Kumar" and "Ram Kumar" are one person. */
@@ -184,8 +218,16 @@ export function validateIndianMobile(
   const raw = value.trim();
   if (!raw) return required ? `${label} is required` : null;
 
-  const digits = raw.replace(/\D/g, "");
+  // Formatting characters are fine; letters are not. Checked before normalising,
+  // because stripping non-digits first would silently turn "98765abcde" into a
+  // five-digit number and report the wrong problem.
   if (/[^\d\s+()-]/.test(raw)) return `${label} can only contain digits`;
+
+  // nationalDigits, not a bare digit strip: IndianMobileValidator on the Java side
+  // normalises first, so a plain strip here rejected "+91 98765 43210" as "12 digits"
+  // while the API accepted it. A number stored through the API could then block its
+  // own form on save without the user ever touching the field.
+  const digits = nationalDigits(raw);
   // Length first, then the leading digit: a 9-digit number is a typo, and telling
   // someone it "must start with 6-9" when it already does reads as a broken form.
   if (digits.length !== 10) return `${label} must be exactly 10 digits`;
@@ -193,10 +235,34 @@ export function validateIndianMobile(
   return null;
 }
 
+/**
+ * Each branch names the part that is wrong instead of returning one catch-all.
+ * "Enter a valid email address" in front of `asha@gmail` leaves the reader looking
+ * for a typo that isn't there; "the part after @ needs a domain ending" points at
+ * the missing `.com`.
+ */
 export function validateEmail(value: string, { required = false } = {}): string | null {
   const email = value.trim();
   if (!email) return required ? "Email is required" : null;
-  if (!EMAIL_RE.test(email)) return "Enter a valid email address, e.g. name@example.com";
+
+  if (/\s/.test(email)) return "Email cannot contain spaces";
+  if (email.length > MAX_EMAIL_LENGTH) return `Email cannot be longer than ${MAX_EMAIL_LENGTH} characters`;
+
+  // Split on the LAST @: the local part may legally contain a quoted one, and
+  // splitting on the first would blame the domain for a local-part problem.
+  const at = email.lastIndexOf("@");
+  if (at <= 0) return "Enter a valid email address, e.g. name@gmail.com";
+
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+
+  if (local.length > MAX_EMAIL_LOCAL_LENGTH) return "The part before @ is too long";
+  if (!EMAIL_LOCAL_RE.test(local)) return "The part before @ has an invalid character";
+  if (!EMAIL_DOMAIN_RE.test(domain)) {
+    // The overwhelmingly common case is a missing or truncated ending, so say that
+    // rather than listing what a domain label may contain.
+    return "Enter a complete domain after @, e.g. gmail.com";
+  }
   return null;
 }
 

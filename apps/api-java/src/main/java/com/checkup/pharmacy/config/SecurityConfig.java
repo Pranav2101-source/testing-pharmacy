@@ -172,6 +172,12 @@ public class SecurityConfig {
         config.setAllowedOrigins(Arrays.stream(allowedOrigins.split(",")).map(String::trim).toList());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));
+        // Response headers the browser is allowed to READ. `setAllowedHeaders("*")`
+        // above covers headers the client may SEND and does nothing for these — without
+        // this line, JS sees no X-Request-Id at all on a cross-origin call, so the
+        // support reference the error toast quotes would be blank in dev (:3000 → :8080)
+        // and anywhere the API is not same-origin.
+        config.setExposedHeaders(List.of("X-Request-Id"));
         config.setAllowCredentials(true); // refresh-token cookie needs credentialed requests
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

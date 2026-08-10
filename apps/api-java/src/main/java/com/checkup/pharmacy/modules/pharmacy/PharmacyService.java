@@ -1,6 +1,7 @@
 package com.checkup.pharmacy.modules.pharmacy;
 
 import com.checkup.pharmacy.common.exception.NotFoundException;
+import com.checkup.pharmacy.common.validation.ValidationPatterns;
 import com.checkup.pharmacy.modules.pharmacy.dto.PharmacyResponse;
 import com.checkup.pharmacy.modules.pharmacy.dto.UpdatePharmacyRequest;
 import com.checkup.pharmacy.tenant.TenantContext;
@@ -34,8 +35,11 @@ public class PharmacyService {
     public PharmacyResponse update(UpdatePharmacyRequest req) {
         Pharmacy p = load();
         p.setName(req.name().trim());
-        p.setPhone(req.phone());
-        p.setEmail(req.email());
+        // Stored as the bare 10 digits, the same shape registration stores, so the two
+        // write paths cannot leave the column in two different formats — invoice
+        // rendering and any future lookup-by-phone both read one canonical value.
+        p.setPhone(ValidationPatterns.normalizeMobile(req.phone()));
+        p.setEmail(req.email() == null ? null : req.email().trim());
         p.setGstin(req.gstin());
         p.setDrugLicense(req.drugLicense());
         p.setAddress(req.address());
