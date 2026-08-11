@@ -2,6 +2,7 @@ package com.checkup.pharmacy.modules.supplier;
 
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.util.DateRange;
+import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.common.validation.ValidationPatterns;
 import com.checkup.pharmacy.modules.purchase.GoodsReceiptNote;
 import com.checkup.pharmacy.modules.purchase.GoodsReceiptNoteRepository;
@@ -48,7 +49,7 @@ public class SupplierService {
     public SupplierListResponse list(String search, Boolean isActive, int page, int limit) {
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), 200);
-        PageRequest pageRequest = PageRequest.of(safePage - 1, safeLimit, Sort.by("name").ascending());
+        PageRequest pageRequest = PageRequest.of(safePage - 1, safeLimit, StableSort.of(Sort.by("name").ascending()));
 
         Page<Supplier> result = supplierRepository.search(
                 TenantContext.pharmacyId(), blankToNull(search), isActive, pageRequest);
@@ -151,6 +152,6 @@ public class SupplierService {
         return SupplierResponse.withPoCount(
                 s.getId(), s.getName(), s.getGstin(), s.getDlNumber(), s.getPhone(), s.getEmail(),
                 s.getAddress(), s.getCity(), s.getState(), s.getCreditLimit(), s.getCreditDays(),
-                s.getPaymentTerms(), s.isActive(), purchaseOrderCount);
+                s.getPaymentTerms(), s.isActive(), s.getLedgerBalance(), purchaseOrderCount);
     }
 }

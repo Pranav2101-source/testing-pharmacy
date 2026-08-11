@@ -4,6 +4,7 @@ import com.checkup.pharmacy.common.enums.CustomerType;
 import com.checkup.pharmacy.common.exception.BadRequestException;
 import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
+import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.common.validation.ValidationPatterns;
 import com.checkup.pharmacy.modules.billing.InvoiceRepository;
 import com.checkup.pharmacy.modules.customer.dto.CustomerPageResponse;
@@ -52,7 +53,7 @@ public class CustomerService {
     public CustomerPageResponse list(String search, String customerTypeRaw, int page, int limit) {
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), 100);
-        PageRequest pageRequest = PageRequest.of(safePage - 1, safeLimit, Sort.by("name").ascending());
+        PageRequest pageRequest = PageRequest.of(safePage - 1, safeLimit, StableSort.of(Sort.by("name").ascending()));
 
         CustomerType customerType = parseCustomerType(customerTypeRaw, false);
         String customerTypeParam = customerType == null ? null : customerType.name();

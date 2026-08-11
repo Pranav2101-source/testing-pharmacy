@@ -4,6 +4,7 @@ import com.checkup.pharmacy.common.exception.AppException;
 import com.checkup.pharmacy.common.exception.BadRequestException;
 import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
+import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.modules.medicine.dto.AlternativeResponse;
 import com.checkup.pharmacy.modules.medicine.dto.BulkImportRequest;
 import com.checkup.pharmacy.modules.medicine.dto.BulkImportResponse;
@@ -69,7 +70,7 @@ public class MedicineService {
                                      int page, int limit) {
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), 100);
-        PageRequest pageRequest = PageRequest.of(safePage - 1, safeLimit, Sort.by("name").ascending());
+        PageRequest pageRequest = PageRequest.of(safePage - 1, safeLimit, StableSort.of(Sort.by("name").ascending()));
 
         Page<Medicine> result = medicineRepository.search(
                 blankToNull(search), blankToNull(schedule), blankToNull(form), isActive, pageRequest);

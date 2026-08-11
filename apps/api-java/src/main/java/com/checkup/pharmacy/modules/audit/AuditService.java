@@ -3,6 +3,7 @@ package com.checkup.pharmacy.modules.audit;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.util.ClientIp;
 import com.checkup.pharmacy.common.util.DateRange;
+import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.modules.audit.dto.AuditKpisResponse;
 import com.checkup.pharmacy.modules.audit.dto.AuditListResponse;
 import com.checkup.pharmacy.modules.audit.dto.AuditLogItemResponse;
@@ -93,7 +94,7 @@ public class AuditService {
         int safeLimit = Math.min(Math.max(limit, 1), 100);
         var result = auditLogRepository.search(blankToNull(search), blankToNull(module), blankToNull(action),
                 blankToNull(severity), blankToNull(status), DateRange.from(from), DateRange.to(to),
-                PageRequest.of(safePage - 1, safeLimit, Sort.by("createdAt").descending()));
+                PageRequest.of(safePage - 1, safeLimit, StableSort.of(Sort.by("createdAt").descending())));
         List<AuditLogItemResponse> items = result.getContent().stream().map(AuditLogItemResponse::from).toList();
         return new AuditListResponse(items, result.getTotalElements());
     }

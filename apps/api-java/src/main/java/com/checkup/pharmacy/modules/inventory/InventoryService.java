@@ -11,6 +11,7 @@ import com.checkup.pharmacy.common.exception.ForbiddenException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.exception.UnprocessableEntityException;
 import com.checkup.pharmacy.common.util.DateRange;
+import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.modules.inventory.dto.AddStockRequest;
 import com.checkup.pharmacy.modules.inventory.dto.AddStockResponse;
 import com.checkup.pharmacy.modules.inventory.dto.AlertsResponse;
@@ -124,7 +125,7 @@ public class InventoryService {
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), 100);
         Pageable pageable = PageRequest.of(safePage - 1, safeLimit,
-                Sort.by(Sort.Order.asc("expiryDate"), Sort.Order.desc("createdAt")));
+                StableSort.of(Sort.by(Sort.Order.asc("expiryDate"), Sort.Order.desc("createdAt"))));
 
         Instant nearExpiryThreshold = Instant.now().plus(EXPIRY_WINDOW_DAYS, ChronoUnit.DAYS);
         Page<Inventory> result = inventoryRepository.search(pharmacyId, blankToNull(search), blankToNull(medicineId),

@@ -396,25 +396,90 @@ public class MigrationService {
         return results;
     }
 
+    /**
+     * Confirms every CSV-name -> catalog-medicine decision for a session in one pass.
+     *
+     * <p>This used to issue one SELECT and one INSERT per entry. A real 513-medicine import
+     * therefore made over a thousand round trips and exceeded the edge proxy's gateway timeout:
+     * the client saw a 504 while the transaction actually committed, so the wizard reported
+     * failure on work that had succeeded — and a retry then re-did all of it. Everything below
+     * is batched into two reads and one flush.
+     *
+     * <p>Three things the per-entry version could not see, because it only ever held one row:
+     * a request that names the same csvValue twice (the second insert violated the
+     * (pharmacyId, csvValue) unique constraint and surfaced as a raw 500), a medicineId that
+     * does not exist (accepted here, then failed much later during commit with a message that
+     * pointed at the CSV rather than the mapping), and a mapping that is neither linked to a
+     * medicine nor marked as new (silently stored, then rejected at commit).
+     */
     @Transactional
     public List<MedicineMappingResponse> confirmMedicineMappings(String id, MedicineMappingsRequest req) {
         MigrationSession session = loadSession(id);
         String pharmacyId = session.getPharmacyId();
         var principal = TenantContext.currentUser();
 
-        List<MedicineMappingResponse> result = new ArrayList<>();
+        guardRowCount(req.mappings().size());
+
+        // Collapse duplicates before touching the database. The wizard sends one entry per
+        // distinct name, but a hand-built request (or a double-submit) can repeat one, and
+        // the unique constraint would turn that into an unreadable 500. Last entry wins, so
+        // the result is deterministic rather than dependent on insert order.
+        Map<String, MedicineMappingsRequest.Entry> byCsvValue = new LinkedHashMap<>();
         for (var entry : req.mappings()) {
             if (entry.csvValue() == null || entry.csvValue().isBlank()) {
                 continue;
             }
-            String csvValue = entry.csvValue().trim().toLowerCase(Locale.ROOT);
-            MedicineMapping mapping = mappingRepository.findByPharmacyIdAndCsvValue(pharmacyId, csvValue)
-                    .orElseGet(() -> MedicineMapping.create(pharmacyId, csvValue));
-            mapping.confirm(entry.medicineId(), entry.isNew(), principal.userId());
-            mappingRepository.save(mapping);
-            result.add(MedicineMappingResponse.from(mapping));
+            byCsvValue.put(entry.csvValue().trim().toLowerCase(Locale.ROOT), entry);
         }
-        return result;
+        if (byCsvValue.isEmpty()) {
+            throw new BadRequestException("No medicine mappings were supplied — every entry had a blank name");
+        }
+
+        // Reject bad references now, while the message can still name the medicine the user
+        // picked. Left to the commit, the same problem reads as a broken CSV row instead.
+        Set<String> referencedIds = byCsvValue.values().stream()
+                .map(MedicineMappingsRequest.Entry::medicineId)
+                .filter(m -> m != null && !m.isBlank())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        Set<String> knownIds = referencedIds.isEmpty() ? Set.of()
+                : medicineRepository.findAllById(referencedIds).stream()
+                        .map(Medicine::getId)
+                        .collect(java.util.stream.Collectors.toSet());
+
+        List<String> unresolvable = new ArrayList<>();
+        for (var e : byCsvValue.entrySet()) {
+            String medicineId = e.getValue().medicineId();
+            boolean linked = medicineId != null && !medicineId.isBlank();
+            if (linked && !knownIds.contains(medicineId)) {
+                unresolvable.add("\"" + e.getKey() + "\" points at a medicine that no longer exists");
+            } else if (!linked && !e.getValue().isNew()) {
+                unresolvable.add("\"" + e.getKey() + "\" is not linked to a medicine and is not marked as new");
+            }
+        }
+        if (!unresolvable.isEmpty()) {
+            String detail = unresolvable.stream().limit(5).collect(java.util.stream.Collectors.joining("; "));
+            throw new BadRequestException(unresolvable.size() + " medicine mapping(s) could not be saved: " + detail
+                    + (unresolvable.size() > 5 ? "; and " + (unresolvable.size() - 5) + " more" : "")
+                    + ". Re-run the medicine-matching step and confirm these names.");
+        }
+
+        // ONE query for every mapping this request could update, instead of one per entry.
+        Map<String, MedicineMapping> existing = mappingRepository
+                .findByPharmacyIdAndCsvValueIn(pharmacyId, byCsvValue.keySet()).stream()
+                .collect(java.util.stream.Collectors.toMap(MedicineMapping::getCsvValue, m -> m, (a, b) -> a));
+
+        List<MedicineMapping> toSave = new ArrayList<>(byCsvValue.size());
+        for (var e : byCsvValue.entrySet()) {
+            MedicineMapping mapping = existing.get(e.getKey());
+            if (mapping == null) {
+                mapping = MedicineMapping.create(pharmacyId, e.getKey());
+            }
+            mapping.confirm(e.getValue().medicineId(), e.getValue().isNew(), principal.userId());
+            toSave.add(mapping);
+        }
+        mappingRepository.saveAll(toSave);
+
+        return toSave.stream().map(MedicineMappingResponse::from).toList();
     }
 
     // ── Preview ──────────────────────────────────────────────────────────────
