@@ -107,7 +107,7 @@ class PrescriptionIT extends AbstractPostgresIT {
 
     private CreateInvoiceRequest saleAgainst(String prescriptionId, String inventoryId, int quantity) {
         return new CreateInvoiceRequest(null, null, null, prescriptionId, null, null, null, null, null,
-                null, null, null, null,
+                null, null, null, null, null,
                 List.of(new InvoiceItemRequest(inventoryId, quantity, null, BigDecimal.ZERO)));
     }
 
@@ -198,7 +198,7 @@ class PrescriptionIT extends AbstractPostgresIT {
         String rxId = createTwoItemPrescription();
 
         var bothItems = new CreateInvoiceRequest(null, null, null, rxId, null, null, null, null, null,
-                null, null, null, null,
+                null, null, null, null, null,
                 List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO),
                         new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO)));
 
@@ -214,7 +214,7 @@ class PrescriptionIT extends AbstractPostgresIT {
         String rxId = createTwoItemPrescription();
 
         var bothItems = new CreateInvoiceRequest(null, null, null, rxId, null, null, null, null, null,
-                null, null, null, null,
+                null, null, null, null, null,
                 List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO),
                         new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO)));
         billingService.createInvoice(bothItems);

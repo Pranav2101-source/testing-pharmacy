@@ -11,6 +11,7 @@ import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.storage.SupabaseStorageClient;
 import com.checkup.pharmacy.common.util.Cuid;
 import com.checkup.pharmacy.common.util.MagicBytes;
+import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.modules.audit.AuditEntry;
 import com.checkup.pharmacy.modules.audit.AuditService;
 import com.checkup.pharmacy.modules.notification.NotificationService;
@@ -192,7 +193,7 @@ public class SupportService {
         String pharmacyFilter = SUPPORT_ROLES.contains(principal.role()) ? null : principal.pharmacyId();
 
         var result = ticketRepository.search(pharmacyFilter, null, blankToNull(raisedById), blankToNull(status),
-                blankToNull(search), PageRequest.of(safePage - 1, safeLimit, Sort.by("createdAt").descending()));
+                blankToNull(search), PageRequest.of(safePage - 1, safeLimit, StableSort.of(Sort.by("createdAt").descending())));
         List<TicketResponse> items = result.getContent().stream().map(TicketResponse::from).toList();
         return new TicketListResponse(items, result.getTotalElements(), safePage, safeLimit, result.getTotalPages());
     }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
-import { istRangeStart, istRangeEnd } from "@pharmacy/utils";
+import { istRangeStart, istRangeEnd, istCalendarDate, istMonthStart } from "@pharmacy/utils";
 import { getStoredUser } from "@/lib/auth";
 import {
   BarChart3, Receipt, AlertTriangle, Calendar,
@@ -58,7 +58,7 @@ interface ScheduleHItem {
   };
 }
 interface GstData {
-  _sum: { subtotal: number | null; discountAmount: number | null; taxableAmount: number | null; cgst: number | null; sgst: number | null; totalGst: number | null; totalAmount: number | null };
+  _sum: { subtotal: number | null; discountAmount: number | null; taxableAmount: number | null; cgst: number | null; sgst: number | null; igst: number | null; totalGst: number | null; totalAmount: number | null };
   _count: number;
 }
 interface ExpiryItem {
@@ -81,7 +81,10 @@ function fmtDate(d: string) {
 function daysUntil(d: string) {
   return Math.ceil((new Date(d).getTime() - Date.now()) / 86400000);
 }
-function toInputDate(d: Date) { return d.toISOString().slice(0, 10); }
+// The IST calendar date, NOT the UTC one. toISOString() reports the UTC day, which
+// for local midnight in IST is always the day before — so every default range on this
+// page began (and sometimes ended) a day out. See istCalendarDate.
+function toInputDate(d: Date) { return istCalendarDate(d); }
 // IST-aware range helpers — server stores UTC, IST = UTC+5:30. The offset logic lives in
 // @pharmacy/utils so this page and the Sales/Purchases filters can't drift apart; these
 // wrappers keep the non-null string contract the interpolating call sites below rely on.
@@ -680,6 +683,10 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
   const [items, setItems]           = useState<CostAnalysisItem[]>([]);
   const [loading, setLoading]       = useState(false);
   const [sortKey, setSortKey]       = useState<"cost" | "margin" | "qty">("cost");
+  // A failed load must not render as "no purchase data". Swallowing the error and
+  // showing an empty state asserts as fact that this pharmacy bought nothing in the
+  // period — the same failure the compliance registers were hardened against.
+  const [error, setError]           = useState<string | null>(null);
 
   const { from, to } = getPeriodDates(period, customFrom, customTo);
 
@@ -690,7 +697,12 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
         `/reports/purchases/cost-analysis?from=${isoFrom(f)}&to=${isoTo(t)}&limit=50`
       );
       setItems(r.data.data.items ?? []);
-    } catch { setItems([]); }
+    } catch (e) {
+      // getErrorMessage keeps the server's wording — an inverted date range now comes
+      // back naming both dates, which is more use than a generic failure string.
+      setError(getErrorMessage(e, "Could not load the purchase cost analysis."));
+      setItems([]);
+    }
     finally { setLoading(false); }
   }, []);
 
@@ -720,7 +732,7 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
         icon={ShoppingCart}
         iconBg="bg-blue-50"
         iconColor="text-blue-600"
-        action={items.length > 0 ? (
+        action={items.length > 0 && !error ? (
           <button onClick={handleExport} className="flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700 border border-slate-200 rounded-lg px-2 py-1.5 hover:bg-slate-50 transition-colors">
             <Download className="w-3 h-3" /> CSV
           </button>
@@ -731,6 +743,10 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
         </div>
         {loading ? (
           <ListSkeleton rows={5} />
+        ) : error ? (
+          /* Distinct from the empty state below: this says the report could not be
+             loaded, never that nothing was purchased. */
+          <LoadErrorState title="Cost analysis could not be loaded" message={error} onRetry={() => load(from, to)} />
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-slate-400">
             <ShoppingCart className="w-8 h-8 text-slate-200 mb-2" strokeWidth={1.4} />
@@ -791,6 +807,16 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
 // ─── Tab: Compliance ──────────────────────────────────────────────
 function ComplianceTab() {
   const [subTab, setSubTab] = useState<ComplianceSubTab>("gst");
+  // Keep-alive, same reasoning as the main tab bar: these sections were mounted
+  // conditionally, so every switch away and back re-ran the report from scratch AND
+  // reset the date range the pharmacist had just chosen. A compliance range is picked
+  // deliberately — it is a filing period — so losing it costs more here than anywhere
+  // else on the page.
+  const [mountedSubTabs, setMountedSubTabs] =
+    useState<Set<ComplianceSubTab>>(() => new Set<ComplianceSubTab>(["gst"]));
+  useEffect(() => {
+    setMountedSubTabs(prev => (prev.has(subTab) ? prev : new Set(prev).add(subTab)));
+  }, [subTab]);
 
   return (
     <div className="space-y-4">
@@ -815,9 +841,16 @@ function ComplianceTab() {
         ))}
       </div>
 
-      {subTab === "gst"         && <GstReportSection />}
-      {subTab === "hsn-summary" && <HsnSummarySection />}
-      {subTab === "schedule-h"  && <ScheduleHSection />}
+      {/* Mounted once, then shown/hidden via CSS — see the keep-alive note above. */}
+      {mountedSubTabs.has("gst") && (
+        <div className={cn(subTab !== "gst" && "hidden")}><GstReportSection /></div>
+      )}
+      {mountedSubTabs.has("hsn-summary") && (
+        <div className={cn(subTab !== "hsn-summary" && "hidden")}><HsnSummarySection /></div>
+      )}
+      {mountedSubTabs.has("schedule-h") && (
+        <div className={cn(subTab !== "schedule-h" && "hidden")}><ScheduleHSection /></div>
+      )}
     </div>
   );
 }
@@ -825,8 +858,7 @@ function ComplianceTab() {
 // ─── Compliance: GST ─────────────────────────────────────────────
 function GstReportSection() {
   const now = new Date();
-  const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const [from, setFrom]   = useState(toInputDate(firstOfMonth));
+  const [from, setFrom]   = useState(istMonthStart(now));
   const [to,   setTo]     = useState(toInputDate(now));
   const [data, setData]   = useState<GstData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -860,6 +892,7 @@ function GstReportSection() {
       ["Taxable",     String(data._sum.taxableAmount ?? 0)],
       ["CGST",        String(data._sum.cgst ?? 0)],
       ["SGST",        String(data._sum.sgst ?? 0)],
+      ["IGST",        String(data._sum.igst ?? 0)],
       ["Total GST",   String(data._sum.totalGst ?? 0)],
       ["Net Amount",  String(data._sum.totalAmount ?? 0)],
     ]);
@@ -913,6 +946,10 @@ function GstReportSection() {
               { label: "Taxable Amount",                 value: data._sum.taxableAmount,   style: "bold"      },
               { label: "CGST",                           value: data._sum.cgst,            style: "normal"    },
               { label: "SGST",                           value: data._sum.sgst,            style: "normal"    },
+              // Interstate tax. Without this row an interstate sale showed CGST 0 and
+              // SGST 0 against a non-zero Total GST — three figures that cannot be
+              // reconciled, on the screen a GSTR-1 return is transcribed from.
+              { label: "IGST",                           value: data._sum.igst,            style: "normal"    },
               { label: "Total GST Collected",            value: data._sum.totalGst,        style: "bold"      },
               { label: "Net Invoice Value",              value: data._sum.totalAmount,     style: "highlight" },
             ].map(({ label, value, style }) => (
@@ -944,8 +981,7 @@ interface HsnRow {
 }
 function HsnSummarySection() {
   const now = new Date();
-  const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const [from, setFrom]     = useState(toInputDate(firstOfMonth));
+  const [from, setFrom]     = useState(istMonthStart(now));
   const [to,   setTo]       = useState(toInputDate(now));
   const [rows, setRows]     = useState<HsnRow[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1066,8 +1102,7 @@ function HsnSummarySection() {
 // ─── Compliance: Schedule H ───────────────────────────────────────
 function ScheduleHSection() {
   const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const [from, setFrom]   = useState(toInputDate(monthStart));
+  const [from, setFrom]   = useState(istMonthStart(now));
   const [to,   setTo]     = useState(toInputDate(now));
   const [schedule, setSchedule] = useState("");
   const [items, setItems] = useState<ScheduleHItem[]>([]);
@@ -1380,7 +1415,9 @@ export default function ReportsPage() {
   // Shared period state — persists across tab switches
   const now = new Date();
   const [period,     setPeriod]     = useState<Period>("week");
-  const [customFrom, setCustomFrom] = useState(toInputDate(new Date(now.getFullYear(), now.getMonth(), 1)));
+  // istMonthStart, not new Date(y, m, 1): that builds LOCAL midnight, which is the
+  // previous day in UTC and was the source of the off-by-one in every default range.
+  const [customFrom, setCustomFrom] = useState(istMonthStart(now));
   const [customTo,   setCustomTo]   = useState(toInputDate(now));
 
   return (

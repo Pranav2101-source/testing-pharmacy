@@ -4,6 +4,7 @@ import com.checkup.pharmacy.common.enums.Role;
 import com.checkup.pharmacy.common.exception.BadRequestException;
 import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
+import com.checkup.pharmacy.common.validation.ValidationPatterns;
 import com.checkup.pharmacy.modules.staff.dto.CreateStaffRequest;
 import com.checkup.pharmacy.modules.staff.dto.StaffMemberResponse;
 import com.checkup.pharmacy.modules.staff.dto.UpdateStaffRequest;
@@ -52,11 +53,14 @@ public class StaffService {
             throw new ConflictException("An account with this email already exists");
         }
 
+        // Phone normalised to the bare 10 digits, the shape registration writes, so
+        // "+91 98765 43210" and "09876543210" cannot land in the column as three
+        // different strings for one number. (Email is normalised by User.create.)
         User user = User.create(
                 TenantContext.pharmacyId(),
                 req.name().trim(),
                 req.email(),
-                req.phone(),
+                ValidationPatterns.normalizeMobile(req.phone()),
                 passwordEncoder.encode(req.password()),
                 req.role());
         userRepository.save(user);
@@ -71,7 +75,7 @@ public class StaffService {
             user.rename(req.name().trim());
         }
         if (req.phone() != null) {
-            user.setPhone(req.phone());
+            user.setPhone(ValidationPatterns.normalizeMobile(req.phone()));
         }
         if (req.role() != null && req.role() != user.getRole()) {
             if (isLastActiveOwner(user) && req.role() != Role.OWNER) {

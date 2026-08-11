@@ -155,21 +155,35 @@ function NewBillInner() {
   const itemsRef          = useRef(items);
   useEffect(() => { itemsRef.current = items; }, [items]);
 
+  // What the reservation actually depends on: which batches, and how many units of
+  // each. Everything else on a cart line — discount, and the batch metadata carried
+  // for printing — leaves the held stock unchanged.
+  //
+  // Reserve the full dispensed amount: free units come off the same batch, so
+  // reserving only the paid quantity would under-hold stock against another till.
+  const reservationPayload = useMemo(
+    () => items.map((i) => ({ inventoryId: i.inventoryId, quantity: i.quantity + (i.freeQty || 0) })),
+    [items],
+  );
+  // Serialised so the effect below compares by VALUE. `items` gets a new array
+  // identity on every keystroke in a discount box, and each one used to cost a
+  // reservation round trip that re-sent numbers the server already had.
+  const reservationKey = JSON.stringify(reservationPayload);
+
   // Debounced stock reservation — keeps reservedQuantity in sync while building the cart
   const reservationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (reservationTimer.current) clearTimeout(reservationTimer.current);
-    if (items.length === 0) return;
+    const payload = JSON.parse(reservationKey) as { inventoryId: string; quantity: number }[];
+    if (payload.length === 0) return;
     reservationTimer.current = setTimeout(() => {
       api.post("/inventory/reserve", {
         sessionId: idempotencyKeyRef.current,
-        // Reserve the full dispensed amount: free units come off the same batch, so
-        // reserving only the paid quantity would under-hold stock against another till.
-        items: items.map((i) => ({ inventoryId: i.inventoryId, quantity: i.quantity + (i.freeQty || 0) })),
+        items: payload,
       }).catch(() => { /* best-effort; authoritative check is at bill save */ });
     }, 500);
     return () => { if (reservationTimer.current) clearTimeout(reservationTimer.current); };
-  }, [items]);
+  }, [reservationKey]);
 
   // Release reservation on unmount (navigation away, tab close)
   useEffect(() => {
@@ -239,13 +253,15 @@ function NewBillInner() {
   // Net payable includes bill-level adjustments. Shares one helper with
   // InvoiceBreakdownModal so the header figure and the breakdown cannot drift.
   const { netPayable, shortfall } = useMemo(
+    // totals.totalAmount already has the bill discount inside it — getTotals passes
+    // meta.billDiscountPct to calcInvoiceTotals so the tax is computed on the
+    // discounted value. Subtracting it again here would apply it twice.
     () => computeNetPayable({
       itemsTotal:       totals.totalAmount,
-      billDiscountPct:  meta.billDiscountPct,
       extraCharges:     meta.extraCharges,
       adjustmentAmount: meta.adjustmentAmount,
     }),
-    [totals.totalAmount, meta.billDiscountPct, meta.extraCharges, meta.adjustmentAmount],
+    [totals.totalAmount, meta.extraCharges, meta.adjustmentAmount],
   );
 
   const roundedTotal = Math.round(netPayable);
@@ -280,6 +296,12 @@ function NewBillInner() {
     try {
       const { data } = await api.post<{ data: { id: string; invoiceNumber: string; createdAt: string } }>("/billing", {
         idempotencyKey:   idempotencyKeyRef.current,
+        // The reservation session this cart has been holding stock under. The server
+        // discounts our own hold when checking availability and releases it as part of
+        // the sale — without it, a cart holding more than half a batch was refused for
+        // stock it had reserved itself. Sent explicitly rather than relying on it
+        // happening to equal idempotencyKey.
+        sessionId:        idempotencyKeyRef.current,
         customerId:       (meta.customerId && meta.customerId !== "COUNTER") ? meta.customerId : undefined,
         doctorId:         meta.doctorId         || undefined,
         doctorName:       meta.doctorName       || undefined,

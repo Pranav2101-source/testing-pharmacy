@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AxiosError, AxiosHeaders } from "axios";
-import { getDownloadErrorMessage, getErrorMessage } from "./api-client";
+import { getDownloadErrorMessage, getErrorMessage, unwrapList } from "./api-client";
 
 /**
  * These two functions decide the sentence a pharmacist reads when something goes
@@ -16,6 +16,7 @@ function axiosError(opts: {
   data?: unknown;
   message?: string;
   responseType?: string;
+  headers?: Record<string, string>;
 }): AxiosError {
   // Default mirrors what axios itself sets when the interceptor has not replaced it:
   // "Request failed with status code 400". Using a made-up default here would let a
@@ -32,7 +33,7 @@ function axiosError(opts: {
       status: opts.status,
       statusText: "",
       data: opts.data,
-      headers: {},
+      headers: opts.headers ?? {},
       config: { headers: new AxiosHeaders() } as never,
     };
   }
@@ -106,6 +107,47 @@ describe("getErrorMessage", () => {
     it("rewrites a 500 with no body at all", () => {
       const err = axiosError({ status: 500, data: undefined });
       expect(getErrorMessage(err, FALLBACK)).toMatch(/on our end/);
+    });
+
+    // "Something went wrong" alone is a dead end: nothing for the pharmacist to
+    // report, nothing for support to grep. The id is already on every response and
+    // in the server log line for the same request.
+    it("quotes the request id so the failure can be traced to its log line", () => {
+      const err = axiosError({
+        status: 500,
+        data: { error: "Internal server error" },
+        headers: { "x-request-id": "5024d4e9-abbd-4ad4-8d3a-cd3e05103036" },
+      });
+      expect(getErrorMessage(err, FALLBACK)).toBe(
+        "Something went wrong on our end. Please try again in a moment. (Reference: 5024d4e9)",
+      );
+    });
+
+    it("reads the id from an AxiosHeaders instance too, not just a plain object", () => {
+      // Which of the two arrives depends on the adapter; reading only the plain form
+      // would silently drop the reference on whichever requests use the other.
+      const err = axiosError({ status: 503 });
+      err.response!.headers = new AxiosHeaders({ "X-Request-Id": "abc12345-0000" }) as never;
+      expect(getErrorMessage(err, FALLBACK)).toMatch(/\(Reference: abc12345\)$/);
+    });
+
+    it("omits the reference entirely when no id came back", () => {
+      // A proxy or gateway error never reaches RequestIdFilter, so there is no id to
+      // quote — an empty "(Reference: )" would just look broken.
+      const err = axiosError({ status: 502 });
+      expect(getErrorMessage(err, FALLBACK)).toBe(
+        "Something went wrong on our end. Please try again in a moment.",
+      );
+    });
+
+    it("does not attach a reference to an actionable 4xx", () => {
+      // Those already say what to fix; a support code would only add noise.
+      const err = axiosError({
+        status: 409,
+        data: { error: "Insufficient stock for \"Dolo 650\"" },
+        headers: { "x-request-id": "5024d4e9-abbd" },
+      });
+      expect(getErrorMessage(err, FALLBACK)).toBe('Insufficient stock for "Dolo 650"');
     });
 
     it("rewrites 502/503/504 the same way", () => {
@@ -264,5 +306,35 @@ describe("getDownloadErrorMessage", () => {
   it("still applies the 403 override on a failed download", async () => {
     const err = axiosError({ status: 403, responseType: "blob", data: new Blob([]) });
     await expect(getDownloadErrorMessage(err, FALLBACK)).resolves.toMatch(/don't have permission/);
+  });
+});
+
+/**
+ * The Assign Location dialog read `response.data.data` from an endpoint that returns
+ * the paginated envelope, then reduced over it. An object has no `.reduce`, so the
+ * dialog threw during render and a production build reported it as "n is not a
+ * function" — no field name, no call site. These cases are the two live response
+ * shapes plus the ones that must not throw.
+ */
+describe("unwrapList", () => {
+  it("returns a bare array unchanged", () => {
+    expect(unwrapList<number>([1, 2, 3])).toEqual([1, 2, 3]);
+    expect(unwrapList<number>([])).toEqual([]);
+  });
+
+  it("reads items out of the paginated envelope", () => {
+    const envelope = { items: [{ id: "s1" }], total: 1, page: 1, totalPages: 1 };
+    expect(unwrapList<{ id: string }>(envelope)).toEqual([{ id: "s1" }]);
+  });
+
+  it("yields an empty array for anything else, rather than a value that throws later", () => {
+    // Each of these used to reach a .map/.reduce/.filter downstream.
+    for (const payload of [null, undefined, {}, { items: null }, { items: "nope" }, "text", 7]) {
+      expect(unwrapList(payload), JSON.stringify(payload) ?? "undefined").toEqual([]);
+    }
+  });
+
+  it("survives an error body being passed in place of a list", () => {
+    expect(unwrapList({ error: "Pharmacy not found" })).toEqual([]);
   });
 });

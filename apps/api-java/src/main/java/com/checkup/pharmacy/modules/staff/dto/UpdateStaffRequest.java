@@ -1,7 +1,8 @@
 package com.checkup.pharmacy.modules.staff.dto;
 
 import com.checkup.pharmacy.common.enums.Role;
-import jakarta.validation.constraints.Pattern;
+import com.checkup.pharmacy.common.validation.IndianMobile;
+import com.checkup.pharmacy.common.validation.PersonName;
 
 /**
  * PATCH /staff/{id} body. Every field is optional — a partial update; a null
@@ -9,8 +10,10 @@ import jakarta.validation.constraints.Pattern;
  * after account creation.
  */
 public record UpdateStaffRequest(
-        String name,
-        @Pattern(regexp = "^[6-9]\\d{9}$", message = "Enter a valid 10-digit mobile number") String phone,
+        // Kept in step with CreateStaffRequest — see the note there on why this is the
+        // person rule and not the account one.
+        @PersonName String name,
+        @IndianMobile String phone,
         Role role,
         Boolean isActive
 ) {

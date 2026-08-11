@@ -12,6 +12,9 @@ import java.util.Optional;
 
 public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrder, String> {
 
+    /** Rollback guard: how many purchase orders name one of these distributors. */
+    long countByPharmacyIdAndSupplierIdIn(String pharmacyId, java.util.Collection<String> supplierIds);
+
     @Query("SELECT po FROM PurchaseOrder po LEFT JOIN FETCH po.supplier WHERE po.id = :id AND po.pharmacyId = :pharmacyId")
     Optional<PurchaseOrder> findByIdAndPharmacyId(@Param("id") String id, @Param("pharmacyId") String pharmacyId);
 

@@ -9,12 +9,30 @@ import {
 import { cn } from "@/lib/utils";
 import { storeTokens, storeUser, type StoredUser } from "@/lib/auth";
 import { API_BASE_URL } from "@/lib/api-client";
+import {
+  normalizeIndianMobile,
+  sanitizePersonName,
+  validateIndianMobile,
+  validatePersonName,
+} from "@pharmacy/utils";
 
 const step1Schema = z.object({
-  pharmacyName: z.string().min(2, "Pharmacy name must be at least 2 characters"),
-  ownerName:    z.string().min(2, "Owner name must be at least 2 characters"),
-  phone:        z.string().regex(/^[6-9]\d{9}$/, "Enter a valid 10-digit mobile number"),
-  city:         z.string().optional(),
+  // A pharmacy is a business: "24x7 Medicos" and "A-1 Medical Store" are real shop
+  // names, so this one keeps a length rule and nothing more.
+  pharmacyName: z.string().trim().min(2, "Pharmacy name must be at least 2 characters"),
+  // The owner is a person. Shared with the backend's @PersonName so the form and the
+  // API agree on what a name is.
+  ownerName: z.string()
+    .min(2, "Owner name must be at least 2 characters")
+    .superRefine((value, ctx) => {
+      const message = validatePersonName(value, { label: "Owner name" });
+      if (message) ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+    }),
+  phone: z.string().superRefine((value, ctx) => {
+    const message = validateIndianMobile(value);
+    if (message) ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+  }),
+  city: z.string().optional(),
 });
 
 const step2Schema = z.object({
@@ -228,8 +246,11 @@ export default function RegisterPage() {
               </Field>
 
               <Field label="Owner / Manager Name" required error={errors.ownerName} htmlFor="reg-owner-name">
+                {/* Digits and symbols are dropped as they are typed, the same way the
+                    mobile field below drops letters. */}
                 <Input id="reg-owner-name" icon={User} placeholder="Full name"
-                  value={ownerName} onChange={setOwnerName} error={!!errors.ownerName} />
+                  value={ownerName} onChange={(v) => setOwnerName(sanitizePersonName(v))}
+                  error={!!errors.ownerName} />
               </Field>
 
               <Field label="Mobile Number" required error={errors.phone} htmlFor="reg-phone">
@@ -244,8 +265,12 @@ export default function RegisterPage() {
                     <Phone className="w-4 h-4 text-slate-400 flex-shrink-0" strokeWidth={1.8} />
                     <input
                       id="reg-phone" name="phone"
-                      type="tel" placeholder="98765 43210" value={phone} maxLength={10}
-                      onChange={e => setPhone(e.target.value.replace(/\D/g, ""))}
+                      type="tel" placeholder="98765 43210" value={phone}
+                      // No maxLength: the browser applies it to the pasted text BEFORE
+                      // onChange, so "+91 98765 43210" would arrive already chopped to
+                      // "+91 98765 " and normalise to a 7-digit number. The normaliser
+                      // does the capping instead, after the country code is stripped.
+                      onChange={e => setPhone(normalizeIndianMobile(e.target.value))}
                       className="flex-1 text-sm text-slate-800 placeholder-slate-300 bg-transparent outline-none py-0"
                     />
                   </div>

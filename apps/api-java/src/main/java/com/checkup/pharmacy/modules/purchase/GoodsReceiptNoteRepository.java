@@ -16,6 +16,9 @@ import java.util.Optional;
 
 public interface GoodsReceiptNoteRepository extends JpaRepository<GoodsReceiptNote, String> {
 
+    /** Rollback guard: how many goods receipts name one of these distributors. */
+    long countByPharmacyIdAndSupplierIdIn(String pharmacyId, java.util.Collection<String> supplierIds);
+
     @Query("SELECT g FROM GoodsReceiptNote g LEFT JOIN FETCH g.supplier WHERE g.id = :id AND g.pharmacyId = :pharmacyId")
     Optional<GoodsReceiptNote> findByIdAndPharmacyId(@Param("id") String id, @Param("pharmacyId") String pharmacyId);
 

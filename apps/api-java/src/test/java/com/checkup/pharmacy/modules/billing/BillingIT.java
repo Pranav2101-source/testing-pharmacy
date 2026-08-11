@@ -11,6 +11,8 @@ import com.checkup.pharmacy.modules.customer.Customer;
 import com.checkup.pharmacy.modules.customer.CustomerRepository;
 import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
+import com.checkup.pharmacy.modules.inventory.InventoryService;
+import com.checkup.pharmacy.modules.inventory.dto.ReserveStockRequest;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
 import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
@@ -55,6 +57,7 @@ class BillingIT extends AbstractPostgresIT {
     @Autowired private PharmacyRepository pharmacyRepository;
     @Autowired private MedicineRepository medicineRepository;
     @Autowired private InventoryRepository inventoryRepository;
+    @Autowired private InventoryService inventoryService;
     @Autowired private CustomerRepository customerRepository;
     @Autowired private UserRepository userRepository;
     @Autowired private EntityManager entityManager;
@@ -123,7 +126,7 @@ class BillingIT extends AbstractPostgresIT {
     private static CreateInvoiceRequest build(String customerId, String idempotencyKey,
                                               String inventoryId, int quantity) {
         return new CreateInvoiceRequest(customerId, null, null, null, null, null, null, null, null,
-                null, null, null, idempotencyKey,
+                null, null, null, idempotencyKey, null,
                 List.of(new InvoiceItemRequest(inventoryId, quantity, null, BigDecimal.ZERO)));
     }
 
@@ -165,11 +168,17 @@ class BillingIT extends AbstractPostgresIT {
     @DisplayName("reserved stock is not available to another till")
     void reservedStockIsNotSellable() {
         // 100 on hand, 95 reserved by another billing session -> only 5 sellable.
-        Inventory reserved = batch();
-        ReflectionTestUtils.setField(reserved, "reservedQuantity", 95);
-        inventoryRepository.save(reserved);
+        //
+        // Reserved through the service rather than by setting reservedQuantity
+        // reflectively. That counter is denormalised: the application only ever raises
+        // it alongside a StockReservation row, so a counter of 95 with no row behind it
+        // is a state that cannot occur — and availability is now decided from the rows,
+        // because the counter keeps counting holds whose TTL has passed.
+        inventoryService.reserve(new ReserveStockRequest("another-till",
+                List.of(new ReserveStockRequest.Item(batchId, 95))));
         flushAndClear();
 
+        assertThat(batch().getReservedQuantity()).isEqualTo(95);
         assertThatThrownBy(() -> billingService.createInvoice(invoiceFor(batchId, 10)))
                 .isInstanceOf(ConflictException.class)
                 .hasMessageContaining("reserved");
@@ -248,7 +257,7 @@ class BillingIT extends AbstractPostgresIT {
         flushAndClear();
 
         var request = new CreateInvoiceRequest(walkInId, null, null, null,
-                "CREDIT", "PENDING", null, null, null, null, null, null, null,
+                "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
@@ -263,7 +272,7 @@ class BillingIT extends AbstractPostgresIT {
 
         // 10 x Rs.20 MRP = Rs.200, well past the Rs.50 limit.
         var request = new CreateInvoiceRequest(creditId, null, null, null,
-                "CREDIT", "PENDING", null, null, null, null, null, null, null,
+                "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
@@ -277,7 +286,7 @@ class BillingIT extends AbstractPostgresIT {
         String creditId = createCreditCustomer(new BigDecimal("5000.00"));
 
         var request = new CreateInvoiceRequest(creditId, null, null, null,
-                "CREDIT", "PENDING", null, null, null, null, null, null, null,
+                "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
 
         var response = billingService.createInvoice(request);
@@ -304,7 +313,7 @@ class BillingIT extends AbstractPostgresIT {
         String creditId = createCreditCustomer(BigDecimal.ZERO);
 
         var request = new CreateInvoiceRequest(creditId, null, null, null,
-                "CREDIT", "PENDING", null, null, null, null, null, null, null,
+                "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
@@ -348,7 +357,7 @@ class BillingIT extends AbstractPostgresIT {
     void negativeTotalIsRefused() {
         // 10 x Rs.20 = Rs.200 of goods, less a Rs.5000 "adjustment".
         var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
-                null, null, new BigDecimal("-5000"), null,
+                null, null, new BigDecimal("-5000"), null, null,
                 List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
@@ -369,7 +378,7 @@ class BillingIT extends AbstractPostgresIT {
     @DisplayName("a legitimately zero-value bill is still allowed")
     void zeroValueInvoiceIsAllowed() {
         var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
-                new BigDecimal("100"), null, null, null,
+                new BigDecimal("100"), null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
 
         var response = billingService.createInvoice(request);

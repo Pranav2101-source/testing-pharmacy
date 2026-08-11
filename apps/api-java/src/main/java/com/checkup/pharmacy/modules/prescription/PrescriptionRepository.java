@@ -13,6 +13,9 @@ public interface PrescriptionRepository extends JpaRepository<Prescription, Stri
 
     long countByPharmacyId(String pharmacyId);
 
+    /** Rollback guard: how many prescriptions name one of these doctors. */
+    long countByPharmacyIdAndDoctorIdIn(String pharmacyId, java.util.Collection<String> doctorIds);
+
     Optional<Prescription> findByIdAndPharmacyId(String id, String pharmacyId);
 
     /**
@@ -22,6 +25,7 @@ public interface PrescriptionRepository extends JpaRepository<Prescription, Stri
      */
     @Query("""
             SELECT rx FROM Prescription rx
+            LEFT JOIN FETCH rx.doctor
             WHERE rx.pharmacyId = :pharmacyId
               AND (:status IS NULL OR CAST(rx.status AS string) = :status)
               AND (:doctorId IS NULL OR rx.doctorId = :doctorId)

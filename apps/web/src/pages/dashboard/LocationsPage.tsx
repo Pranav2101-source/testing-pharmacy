@@ -5,7 +5,7 @@ import {
   LayoutGrid, Plus, X, Pencil, Loader2, FileX,
   Building2, Layers, Package, Search, ToggleLeft, ToggleRight,
 } from "lucide-react";
-import { api, getErrorMessage } from "@/lib/api-client";
+import { api, getErrorMessage, unwrapList } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -223,8 +223,8 @@ export default function LocationsPage() {
         api.get("/locations/racks",   { params: { limit: 200, includeInactive: true } }),
         api.get("/locations/shelves", { params: { limit: 500, includeInactive: true } }),
       ]);
-      setRacks(rackRes.data.data.items ?? []);
-      setAllShelves(shelfRes.data.data.items ?? []);
+      setRacks(unwrapList<Rack>(rackRes.data?.data));
+      setAllShelves(unwrapList<Shelf>(shelfRes.data?.data));
     } finally { setLoading(false); }
   }, []);
 

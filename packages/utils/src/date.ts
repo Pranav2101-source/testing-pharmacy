@@ -3,6 +3,8 @@
  * offset since 1945, so a literal beats a tz database lookup here.
  */
 const IST_OFFSET = "+05:30";
+/** The same offset in minutes, for arithmetic on instants. */
+const IST_OFFSET_MINUTES = 5 * 60 + 30;
 
 /**
  * Convert a `<input type="date">` value (`YYYY-MM-DD`) into the ISO-8601 instant
@@ -25,6 +27,41 @@ export function istRangeStart(dateStr: string): string | null {
   if (!dateStr) return null;
   const d = new Date(`${dateStr}T00:00:00${IST_OFFSET}`);
   return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+/**
+ * The IST calendar date of an instant, as `YYYY-MM-DD` for a `<input type="date">`.
+ *
+ * <p>The inverse of {@link istRangeStart}, and the reason it exists: report screens
+ * were filling their date boxes with `d.toISOString().slice(0, 10)`, which is the
+ * date in **UTC**. For any zone ahead of UTC that is a different day for part of the
+ * day, and for local midnight it is ALWAYS the day before — so a "this month" default
+ * built from `new Date(y, m, 1)` rendered as the last day of the PREVIOUS month, every
+ * time. On a GST summary that silently pulled a day of sales from the previous filing
+ * period into the current one.
+ *
+ * <p>Anchored to IST rather than the browser's zone for the same reason as the range
+ * helpers: the pharmacy's business day is IST wherever the viewer happens to be, and
+ * these values are handed straight back to {@link istRangeStart}/{@link istRangeEnd}.
+ */
+export function istCalendarDate(date: Date = new Date()): string {
+  if (isNaN(date.getTime())) return "";
+  // Shift the instant by the offset, then read the UTC fields: the shifted clock
+  // face IS the IST wall clock, and toISOString reads UTC without re-applying any
+  // local-zone conversion.
+  const shifted = new Date(date.getTime() + IST_OFFSET_MINUTES * 60_000);
+  return shifted.toISOString().slice(0, 10);
+}
+
+/**
+ * First day of the IST month containing the given instant, as `YYYY-MM-DD`.
+ *
+ * <p>Derived from the IST date rather than `new Date(y, m, 1)`, whose local-midnight
+ * result is what produced the off-by-one above.
+ */
+export function istMonthStart(date: Date = new Date()): string {
+  const istDate = istCalendarDate(date);
+  return istDate ? `${istDate.slice(0, 7)}-01` : "";
 }
 
 /**

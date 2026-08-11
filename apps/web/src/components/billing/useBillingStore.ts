@@ -111,7 +111,15 @@ const DEFAULT_META: BillingMeta = {
  *    clearer explanation than a row that silently refuses to accept input.
  */
 function clampQuantity(quantity: number, availableStock?: number): number {
-  const atLeastOne = Math.max(1, quantity);
+  // Floor first. Nothing downstream rounds — calcGstFromMrp multiplies mrp by this
+  // number directly — so a quantity of 1.5 would quietly bill half a strip. Free
+  // quantity has always floored; paid quantity did not, which is the half that
+  // reaches the customer's total.
+  //
+  // Number.isFinite covers NaN and Infinity: Number("") is 0 and Number("1e999") is
+  // Infinity, and both can arrive from an input the user is midway through editing.
+  const whole = Number.isFinite(quantity) ? Math.floor(quantity) : 1;
+  const atLeastOne = Math.max(1, whole);
   if (availableStock == null) return atLeastOne;
   if (availableStock <= 0) return 1;
   return Math.min(atLeastOne, availableStock);
@@ -127,7 +135,8 @@ function clampQuantity(quantity: number, availableStock?: number): number {
  */
 function clampLine(quantity: number, freeQty: number, availableStock?: number): { quantity: number; freeQty: number } {
   const paid = clampQuantity(quantity, availableStock);
-  const free = Math.max(0, Math.floor(freeQty || 0));
+  // `|| 0` catches NaN as well as undefined; Math.floor(NaN) would survive otherwise.
+  const free = Math.max(0, Math.floor(Number.isFinite(freeQty) ? freeQty : 0) || 0);
   if (availableStock == null || availableStock <= 0) return { quantity: paid, freeQty: free };
   return { quantity: paid, freeQty: Math.min(free, Math.max(0, availableStock - paid)) };
 }
@@ -255,9 +264,13 @@ export const useBillingStore = create<BillingStore>((set, get) => ({
 
   getTotals() {
     const { items, meta } = get();
+    // The bill discount goes IN here, not on afterwards: it reduces the taxable value
+    // (s.15(3) CGST Act), so the tax shown in the cart is the tax that will be charged.
+    // The server computes the same way — see GstCalculator.calcInvoiceTotals.
     return calcInvoiceTotals(
       items.map((i) => ({ mrp: i.mrp, quantity: i.quantity, discount: i.discount, gstRate: i.gstRate })),
       meta.isInterstate,
+      meta.billDiscountPct,
     );
   },
 }));

@@ -814,8 +814,13 @@ export function TopNav() {
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Utilities — desktop */}
-      <div className="hidden md:flex items-center gap-1.5">
+      {/* Utilities — desktop (xl and up).
+          `xl:flex`, not `md:flex`: the tablet cluster below is `md:flex xl:hidden`, so
+          a `md` breakpoint here made BOTH render between 768px and 1279px — which is
+          why New Bill, Search and the profile menu each appeared twice on a laptop.
+          The three clusters must stay mutually exclusive: <md mobile, md–xl tablet,
+          xl+ desktop. */}
+      <div className="hidden xl:flex items-center gap-1.5">
         <NewBillBtn />
 
         <div className="h-5 w-px bg-white/15 mx-1" />
@@ -845,10 +850,13 @@ export function TopNav() {
         <MobileMenu pathname={pathname} rawRole={rawRole} />
       </div>
 
-      {/* Tablet */}
+      {/* Tablet — md up to xl. Carries the notification bell too: it used to come from
+          the desktop cluster overlapping this range, so narrowing that cluster to xl
+          would otherwise have dropped alerts entirely at tablet widths. */}
       <div className="hidden md:flex xl:hidden items-center gap-1.5">
         <NewBillBtn />
         <GlobalSearchBar />
+        <NotificationBell />
         <ProfileDropdown />
         <MobileMenu pathname={pathname} rawRole={rawRole} />
       </div>

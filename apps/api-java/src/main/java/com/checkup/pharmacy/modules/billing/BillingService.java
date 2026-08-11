@@ -36,6 +36,8 @@ import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryMovement;
 import com.checkup.pharmacy.modules.inventory.InventoryMovementRepository;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
+import com.checkup.pharmacy.modules.inventory.StockReservation;
+import com.checkup.pharmacy.modules.inventory.StockReservationRepository;
 import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride;
 import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository;
 import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
@@ -61,6 +63,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -95,6 +98,7 @@ public class BillingService {
     private final SalesReturnItemRepository salesReturnItemRepository;
     private final InventoryRepository inventoryRepository;
     private final InventoryMovementRepository movementRepository;
+    private final StockReservationRepository reservationRepository;
     private final CustomerRepository customerRepository;
     private final DoctorRepository doctorRepository;
     private final PharmacyRepository pharmacyRepository;
@@ -109,7 +113,8 @@ public class BillingService {
     public BillingService(InvoiceRepository invoiceRepository, InvoiceItemRepository invoiceItemRepository,
                           InvoicePaymentRepository invoicePaymentRepository, SalesReturnRepository salesReturnRepository,
                           SalesReturnItemRepository salesReturnItemRepository, InventoryRepository inventoryRepository,
-                          InventoryMovementRepository movementRepository, CustomerRepository customerRepository,
+                          InventoryMovementRepository movementRepository, StockReservationRepository reservationRepository,
+                          CustomerRepository customerRepository,
                           DoctorRepository doctorRepository, PharmacyRepository pharmacyRepository,
                           PharmacyMedicineOverrideRepository overrideRepository, PrescriptionRepository prescriptionRepository,
                           PrescriptionItemRepository prescriptionItemRepository,
@@ -123,6 +128,7 @@ public class BillingService {
         this.salesReturnItemRepository = salesReturnItemRepository;
         this.inventoryRepository = inventoryRepository;
         this.movementRepository = movementRepository;
+        this.reservationRepository = reservationRepository;
         this.customerRepository = customerRepository;
         this.doctorRepository = doctorRepository;
         this.pharmacyRepository = pharmacyRepository;
@@ -316,6 +322,18 @@ public class BillingService {
             }
         }
 
+        // What this till is already holding. Read before the locks so the full set of
+        // batches to lock is known up front — including any this session reserved and
+        // then removed from the cart, which must still be released below.
+        String sessionId = req.reservationSessionId();
+        List<StockReservation> ownReservations = sessionId == null
+                ? List.of()
+                : reservationRepository.findByPharmacyIdAndSessionId(pharmacyId, sessionId);
+        Map<String, Integer> ownReservedByInventoryId = new HashMap<>();
+        for (StockReservation r : ownReservations) {
+            ownReservedByInventoryId.merge(r.getInventoryId(), r.getQuantity(), Integer::sum);
+        }
+
         // Take the write locks FIRST, before reading any quantity. Everything below
         // — availability checks, GST maths, the decrement — then operates on batch
         // rows no other transaction can move underneath us. Loading them unlocked
@@ -325,8 +343,15 @@ public class BillingService {
         // The query filters by pharmacyId in SQL, so the previous in-Java tenant
         // check is no longer load-bearing: a batch belonging to another pharmacy
         // is simply not returned, and falls out as "not found" below.
+        //
+        // LinkedHashSet: the invoice's own batches plus any this session still has
+        // reserved. lockAllByIdInAndPharmacyId orders by id, so lock acquisition
+        // order stays deterministic and two tills cannot deadlock against each other.
+        Set<String> idsToLock = new LinkedHashSet<>(inventoryIds);
+        idsToLock.addAll(ownReservedByInventoryId.keySet());
+
         Map<String, Inventory> batchMap = new HashMap<>();
-        for (Inventory inv : inventoryRepository.lockAllByIdInAndPharmacyId(inventoryIds, pharmacyId)) {
+        for (Inventory inv : inventoryRepository.lockAllByIdInAndPharmacyId(idsToLock, pharmacyId)) {
             batchMap.put(inv.getId(), inv);
         }
         for (String id : inventoryIds) {
@@ -335,11 +360,47 @@ public class BillingService {
             }
         }
 
+        // Holds by OTHER sessions that are still live, counted from the reservation
+        // rows rather than from Inventory.reservedQuantity.
+        //
+        // That counter is denormalised and still includes holds whose TTL has passed —
+        // they are only subtracted when something sweeps them, and the sweeper is a
+        // cron (every 5 min) while the TTL is 15. Reading the counter therefore refused
+        // sales against stock that was already free for up to a sweep interval, and
+        // blamed "another billing session" that had ended. Worse, a till that built a
+        // cart, was interrupted past the TTL, then pressed Save was blocked by its OWN
+        // dead hold: an expired row no longer matches this session's live set, so it
+        // counted as somebody else's.
+        //
+        // Read AFTER the batch locks above, deliberately: reserve() takes the same row
+        // locks before inserting, so while this transaction holds them no new hold can
+        // be committed against these batches and this count cannot go stale under us.
+        Instant liveAt = Instant.now();
+        Map<String, Integer> liveOtherReserved = new HashMap<>();
+        for (StockReservation r : reservationRepository
+                .findByPharmacyIdAndInventoryIdInAndExpiresAtAfter(pharmacyId, idsToLock, liveAt)) {
+            if (sessionId != null && sessionId.equals(r.getSessionId())) {
+                continue; // our own hold — released below as part of this same sale
+            }
+            liveOtherReserved.merge(r.getInventoryId(), r.getQuantity(), Integer::sum);
+        }
+
         Pharmacy pharmacy = pharmacyRepository.findById(pharmacyId).orElseThrow(() -> new NotFoundException("Pharmacy not found"));
-        Customer customer = req.customerId() != null && !req.customerId().isBlank()
-                ? customerRepository.findByIdAndPharmacyIdAndDeletedAtIsNull(req.customerId(), pharmacyId)
-                        .orElseThrow(() -> new NotFoundException("Customer not found"))
-                : null;
+
+        // Decided from the request, before the customer is read, because it determines
+        // HOW the customer is read: a sale that will move the credit balance takes a
+        // write lock on the row, an ordinary cash sale must not queue behind one.
+        PaymentMode paymentMode = parsePaymentMode(req.paymentModeOrDefault());
+        PaymentStatus paymentStatus = parsePaymentStatus(req.paymentStatusOrDefault());
+        boolean onCredit = paymentMode == PaymentMode.CREDIT && paymentStatus != PaymentStatus.PAID;
+
+        Customer customer = null;
+        if (req.customerId() != null && !req.customerId().isBlank()) {
+            customer = (onCredit
+                    ? customerRepository.lockByIdAndPharmacyId(req.customerId(), pharmacyId)
+                    : customerRepository.findByIdAndPharmacyIdAndDeletedAtIsNull(req.customerId(), pharmacyId))
+                    .orElseThrow(() -> new NotFoundException("Customer not found"));
+        }
 
         boolean isInterstate = req.isInterstateOrDefault();
         if (pharmacy.getState() != null && !pharmacy.getState().isBlank()) {
@@ -377,13 +438,18 @@ public class BillingService {
             }
         }
 
+        // Only the medicines actually being sold. batchMap can now also hold batches
+        // this session merely had reserved, so the ids come from the invoice lines.
         Set<String> medicineIds = new HashSet<>();
-        for (Inventory inv : batchMap.values()) {
-            medicineIds.add(inv.getMedicineId());
+        for (InvoiceItemRequest item : req.items()) {
+            medicineIds.add(batchMap.get(item.inventoryId()).getMedicineId());
         }
+        // Filtered in SQL, not in Java: this used to load every override the pharmacy
+        // had ever set — thousands of rows on a customised catalogue — and discard all
+        // but the few on this bill, on every single sale.
         Map<String, BigDecimal> gstOverrideByMedicineId = new HashMap<>();
-        for (PharmacyMedicineOverride o : overrideRepository.findByIdPharmacyId(pharmacyId)) {
-            if (o.getGstRate() != null && medicineIds.contains(o.getMedicineId())) {
+        for (PharmacyMedicineOverride o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, medicineIds)) {
+            if (o.getGstRate() != null) {
                 gstOverrideByMedicineId.put(o.getMedicineId(), o.getGstRate());
             }
         }
@@ -411,7 +477,10 @@ public class BillingService {
             }
 
             BigDecimal gstRate = gstOverrideByMedicineId.getOrDefault(batch.getMedicineId(), batch.getMedicine().getGstRate());
-            GstCalculator.MrpGstBreakdown gst = GstCalculator.calcGstFromMrp(batch.getMrp(), item.quantity(), item.discountOrZero(), gstRate, isInterstate);
+            // The bill discount is folded into the LINE, so the stored per-line tax is
+            // the tax actually charged — which is what the GSTR-1 HSN summary sums.
+            GstCalculator.MrpGstBreakdown gst = GstCalculator.calcGstFromMrp(batch.getMrp(), item.quantity(),
+                    item.discountOrZero(), gstRate, isInterstate, req.billDiscountPctOrZero());
             BigDecimal rate = GstCalculator.round2(batch.getMrp().multiply(
                     BigDecimal.ONE.subtract(item.discountOrZero().divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_UP))));
             String location = null; // shelf/rack location display is a Tier 2 inventory-list concern; not resolved here to avoid an extra join per line
@@ -420,11 +489,15 @@ public class BillingService {
             totalsInput.add(new GstCalculator.MrpLineInput(batch.getMrp(), item.quantity(), item.discountOrZero(), gstRate));
         }
 
-        GstCalculator.InvoiceTotals itemTotals = GstCalculator.calcInvoiceTotals(totalsInput, isInterstate);
+        // The bill discount is already inside these totals — it reduced the taxable
+        // value of every line — so it must NOT be subtracted again here. Deducting it
+        // after the tax was the bug: GST was charged on the pre-discount value, the
+        // pharmacy remitted tax on money it never took, and the invoice did not add up,
+        // because taxable + GST came from before the discount and the total from after.
+        GstCalculator.InvoiceTotals itemTotals =
+                GstCalculator.calcInvoiceTotals(totalsInput, isInterstate, req.billDiscountPctOrZero());
 
-        BigDecimal billDiscountAmt = itemTotals.totalAmount().multiply(req.billDiscountPctOrZero())
-                .divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_UP);
-        BigDecimal preRound = itemTotals.totalAmount().subtract(billDiscountAmt)
+        BigDecimal preRound = itemTotals.totalAmount()
                 .add(req.extraChargesOrZero()).add(req.adjustmentAmountOrZero());
         // Refuse, rather than silently clamp to zero.
         //
@@ -446,13 +519,32 @@ public class BillingService {
         }
         // Indian retail convention: round the final payable amount to the nearest rupee.
         BigDecimal finalTotal = preRound.setScale(0, RoundingMode.HALF_UP);
-        BigDecimal discountAmount = GstCalculator.round2(itemTotals.discountAmount().add(billDiscountAmt));
+        // Signed, and STORED rather than left to be re-derived. With this the invoice
+        // satisfies, from its own columns:
+        //   taxableAmount + totalGst + extraCharges + adjustmentAmount + roundOff
+        //     == totalAmount
+        // Before, the gap between taxable+GST and the total was an unexplained lump —
+        // the extra charges and the adjustment were never written down anywhere, so a
+        // bill that used them could not be reconciled by anyone afterwards.
+        BigDecimal roundOff = GstCalculator.round2(finalTotal.subtract(preRound));
+        // Already covers line AND bill discounts — see calcInvoiceTotals.
+        BigDecimal discountAmount = GstCalculator.round2(itemTotals.discountAmount());
 
-        PaymentMode paymentMode = parsePaymentMode(req.paymentModeOrDefault());
-        PaymentStatus paymentStatus = parsePaymentStatus(req.paymentStatusOrDefault());
+        boolean isCreditSale = onCredit && finalTotal.compareTo(BigDecimal.ZERO) > 0;
 
-        boolean isCreditSale = customer != null && finalTotal.compareTo(BigDecimal.ZERO) > 0
-                && paymentMode == PaymentMode.CREDIT && paymentStatus != PaymentStatus.PAID;
+        // A debt has to be owed by somebody.
+        //
+        // The guard used to be folded into isCreditSale as `customer != null`, so an
+        // unpaid credit bill with no customer skipped every check below — no credit
+        // type, no limit, no creditUsed — and was issued anyway. The stock left the
+        // shelf and the money was owed by nobody: the receivables report is built from
+        // customer.creditUsed, so the amount was invisible there, and there was no one
+        // to chase for it.
+        if (isCreditSale && customer == null) {
+            throw new UnprocessableEntityException(
+                    "A credit sale needs a customer to bill. Select or add the customer, "
+                    + "or mark this bill as paid.");
+        }
         if (isCreditSale) {
             if (customer.getCustomerType() != CustomerType.CREDIT) {
                 throw new UnprocessableEntityException(
@@ -507,7 +599,8 @@ public class BillingService {
                 prescription == null ? null : prescription.getId(), paymentMode, paymentStatus, isInterstate,
                 combinedNotes.isBlank() ? null : combinedNotes, req.idempotencyKey(), itemTotals.subtotal(),
                 discountAmount, itemTotals.taxableAmount(), itemTotals.cgst(), itemTotals.sgst(), itemTotals.igst(),
-                itemTotals.totalGst(), finalTotal);
+                itemTotals.totalGst(), finalTotal,
+                req.extraChargesOrZero(), req.adjustmentAmountOrZero(), roundOff);
         invoiceRepository.save(invoice);
 
         List<InvoiceItem> savedItems = new ArrayList<>();
@@ -520,10 +613,17 @@ public class BillingService {
             // the paid quantity would let a 100+10 sale drive a 105-unit batch to -5.
             int dispensed = quantity + freeQty;
             int quantityBefore = batch.getQuantity();
-            int available = quantityBefore - batch.getReservedQuantity();
+            // Only LIVE stock held by OTHER sessions reduces what this sale may take.
+            // Our own hold is released a few lines below as part of this same
+            // transaction, so counting it here would mean a till competing with itself.
+            int reservedByOthers = liveOtherReserved.getOrDefault(batch.getId(), 0);
+            int available = quantityBefore - reservedByOthers;
             if (dispensed > available) {
-                String reservedNote = batch.getReservedQuantity() > 0
-                        ? " (" + batch.getReservedQuantity() + " reserved by another billing session)" : "";
+                // "open" is load-bearing: expired holds are excluded above, so if this
+                // number is non-zero another till really is holding the stock right now
+                // and waiting will clear it.
+                String reservedNote = reservedByOthers > 0
+                        ? " (" + reservedByOthers + " reserved by another open billing session)" : "";
                 String freeNote = freeQty > 0 ? " (" + quantity + " + " + freeQty + " free)" : "";
                 throw new ConflictException("Insufficient stock for \"" + batch.getMedicine().getName() + "\": "
                         + Math.max(0, available) + " available" + reservedNote + ", " + dispensed + " requested" + freeNote);
@@ -546,6 +646,15 @@ public class BillingService {
                     freeQty > 0 ? quantity + " sold + " + freeQty + " free" : null));
         }
 
+        // The sale is the end of this billing session, so its hold on the shelf goes
+        // with it — including on batches that were reserved and later taken out of the
+        // cart. Left behind, these rows kept stock flagged reserved against every other
+        // till until the 15-minute TTL swept them, on every completed sale.
+        //
+        // Safe to mutate here: every one of these batches is in the lock set taken
+        // above, so no concurrent sale or reservation can be reading the count.
+        releaseOwnReservations(ownReservations, ownReservedByInventoryId, batchMap);
+
         if (prescription != null) {
             // Collapse the invoice to medicine -> units, which is the granularity a
             // prescription is written at. Two batches of the same medicine on one bill
@@ -558,6 +667,32 @@ public class BillingService {
         }
 
         return toResponse(invoice, customer, doctor, userRepository.findById(userId).orElse(null), savedItems, List.of(), List.of());
+    }
+
+    /**
+     * Drops this billing session's stock reservations once its sale has committed.
+     *
+     * <p>Mirrors {@code InventoryService.release} but operates on batches this
+     * transaction already holds write locks on, rather than re-reading them unlocked —
+     * decrementing {@code reservedQuantity} is a read-modify-write like any other.
+     *
+     * <p>A reservation whose batch has since been deleted still has its row removed:
+     * there is no count left to correct, and leaving it would keep the sweeper busy
+     * with a row that can never be applied.
+     */
+    private void releaseOwnReservations(List<StockReservation> reservations,
+                                        Map<String, Integer> reservedByInventoryId,
+                                        Map<String, Inventory> lockedBatches) {
+        if (reservations.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<String, Integer> e : reservedByInventoryId.entrySet()) {
+            Inventory batch = lockedBatches.get(e.getKey());
+            if (batch != null) {
+                batch.reserve(-e.getValue());
+            }
+        }
+        reservationRepository.deleteAll(reservations);
     }
 
     // ── Get / List ────────────────────────────────────────────────────────────
@@ -582,19 +717,37 @@ public class BillingService {
         List<RepeatCartResponse.Unavailable> unavailable = new ArrayList<>();
         Instant now = Instant.now();
 
+        // Two batched lookups instead of two per line. This loop used to run a findById
+        // and a FEFO query for EVERY item on the previous bill — a 15-line repeat cost
+        // 30 round trips before the cart appeared. Also closes a tenancy gap: the old
+        // findById carried no pharmacyId predicate.
+        Map<String, String> medicineIdByBatchId = new HashMap<>();
+        for (Inventory inv : inventoryRepository.findByIdInAndPharmacyId(
+                originalItems.stream().map(InvoiceItem::getInventoryId).distinct().toList(), pharmacyId)) {
+            medicineIdByBatchId.put(inv.getId(), inv.getMedicineId());
+        }
+
+        // Ordered by (medicineId, expiryDate) — putIfAbsent therefore keeps the
+        // earliest-expiring batch per medicine, which is what FEFO means.
+        Map<String, Inventory> fefoByMedicineId = new HashMap<>();
+        if (!medicineIdByBatchId.isEmpty()) {
+            for (Inventory candidate : inventoryRepository.findFefoCandidatesForMedicines(
+                    pharmacyId, new HashSet<>(medicineIdByBatchId.values()), now, 1)) {
+                fefoByMedicineId.putIfAbsent(candidate.getMedicineId(), candidate);
+            }
+        }
+
         for (InvoiceItem original : originalItems) {
-            Inventory originalBatch = inventoryRepository.findById(original.getInventoryId()).orElse(null);
-            String medicineId = originalBatch == null ? null : originalBatch.getMedicineId();
+            String medicineId = medicineIdByBatchId.get(original.getInventoryId());
             if (medicineId == null) {
                 unavailable.add(new RepeatCartResponse.Unavailable(original.getMedicineName(), "Medicine no longer in catalog"));
                 continue;
             }
-            List<Inventory> candidates = inventoryRepository.findFefoCandidates(pharmacyId, medicineId, now, 1, PageRequest.of(0, 1));
-            if (candidates.isEmpty()) {
+            Inventory batch = fefoByMedicineId.get(medicineId);
+            if (batch == null) {
                 unavailable.add(new RepeatCartResponse.Unavailable(original.getMedicineName(), "Out of stock"));
                 continue;
             }
-            Inventory batch = candidates.get(0);
             int available = batch.getQuantity() - batch.getReservedQuantity();
             int requested = original.getQuantity();
             int quantity = Math.min(available, requested);
@@ -697,11 +850,16 @@ public class BillingService {
         invoice.cancel(reason);
 
         Map<String, Inventory> batchMap = new HashMap<>();
-        // Tenant-scoped: this loop WRITES (restores sold quantity). The ids come from
-        // this invoice's own items, so an unscoped findAllById was not exploitable —
-        // but it made tenancy here depend on that staying true, which is exactly the
-        // assumption doReserve's author declined to rely on.
-        for (Inventory inv : inventoryRepository.findByIdInAndPharmacyId(
+        // Tenant-scoped AND locked: this loop WRITES (restores sold quantity).
+        //
+        // Serializable isolation already makes a lost update here impossible — Postgres
+        // refuses to let this transaction overwrite a row a concurrent transaction
+        // changed after our snapshot, and RetryOnConflict replays it. But that safety
+        // is a property of the isolation level, invisible at the call site, and it does
+        // not survive someone lowering the isolation for performance the way
+        // createInvoice's was. Taking the lock makes the guarantee local to the code
+        // that depends on it, and matches every other quantity write in the system.
+        for (Inventory inv : inventoryRepository.lockAllByIdInAndPharmacyId(
                 items.stream().map(InvoiceItem::getInventoryId).distinct().toList(), pharmacyId)) {
             batchMap.put(inv.getId(), inv);
         }
@@ -710,17 +868,26 @@ public class BillingService {
             if (inv == null) {
                 continue; // batch was hard-deleted since the sale — nothing to restore
             }
+            // Put back everything that left the shelf, scheme goods included.
+            //
+            // The sale decrements quantity + freeQty; restoring only the charged
+            // quantity meant every cancelled 10+2 destroyed 2 units of real stock, with
+            // a movement row that recorded the wrong figure — so the ledger reconciled
+            // against itself and quietly stopped matching the shelf.
+            int restored = item.getQuantity() + item.getFreeQty();
             int before = inv.getQuantity();
-            inv.setQuantity(before + item.getQuantity());
+            inv.setQuantity(before + restored);
             movementRepository.save(InventoryMovement.record(pharmacyId, inv.getId(), userId, MovementType.ADJUSTMENT,
-                    MovementDirection.IN, item.getQuantity(), before, before + item.getQuantity(), "INVOICE_CANCEL",
-                    invoice.getId(), "Cancellation: " + reason));
+                    MovementDirection.IN, restored, before, before + restored, "INVOICE_CANCEL",
+                    invoice.getId(), item.getFreeQty() > 0
+                            ? "Cancellation: " + reason + " (" + item.getQuantity() + " sold + " + item.getFreeQty() + " free)"
+                            : "Cancellation: " + reason));
         }
 
         boolean wasCreditSale = invoice.getCustomerId() != null && invoice.getPaymentMode() == PaymentMode.CREDIT
                 && invoice.getPaymentStatus() != PaymentStatus.PAID && invoice.getTotalAmount().compareTo(BigDecimal.ZERO) > 0;
         if (wasCreditSale) {
-            customerRepository.findByIdAndPharmacyIdAndDeletedAtIsNull(invoice.getCustomerId(), pharmacyId)
+            customerRepository.lockByIdAndPharmacyId(invoice.getCustomerId(), pharmacyId)
                     .filter(c -> c.getCustomerType() == CustomerType.CREDIT)
                     .ifPresent(c -> c.adjustCreditUsed(invoice.getTotalAmount().negate()));
         }
@@ -816,9 +983,9 @@ public class BillingService {
         }
 
         Map<String, Inventory> batchMap = new HashMap<>();
-        // Tenant-scoped for the same reason as the cancellation path above: the loop
-        // below WRITES restocked quantity back onto these batches.
-        for (Inventory inv : inventoryRepository.findByIdInAndPharmacyId(
+        // Tenant-scoped and locked, for the same reason as the cancellation path above:
+        // the loop below WRITES restocked quantity back onto these batches.
+        for (Inventory inv : inventoryRepository.lockAllByIdInAndPharmacyId(
                 lines.stream().map(l -> l.original().getInventoryId()).distinct().toList(), pharmacyId)) {
             batchMap.put(inv.getId(), inv);
         }
@@ -875,7 +1042,7 @@ public class BillingService {
         boolean wasCreditSale = invoice.getCustomerId() != null && invoice.getPaymentMode() == PaymentMode.CREDIT
                 && invoice.getPaymentStatus() != PaymentStatus.PAID && totalAmount.compareTo(BigDecimal.ZERO) > 0;
         if (wasCreditSale) {
-            customerRepository.findByIdAndPharmacyIdAndDeletedAtIsNull(invoice.getCustomerId(), pharmacyId)
+            customerRepository.lockByIdAndPharmacyId(invoice.getCustomerId(), pharmacyId)
                     .filter(c -> c.getCustomerType() == CustomerType.CREDIT)
                     .ifPresent(c -> c.adjustCreditUsed(totalAmount.negate()));
         }
@@ -985,7 +1152,7 @@ public class BillingService {
                 && invoice.getCustomerId() != null && invoice.getPaymentMode() == PaymentMode.CREDIT;
         if (settlesCreditSale) {
             BigDecimal decrementBy = effectiveTotal.max(BigDecimal.ZERO);
-            customerRepository.findByIdAndPharmacyIdAndDeletedAtIsNull(invoice.getCustomerId(), pharmacyId)
+            customerRepository.lockByIdAndPharmacyId(invoice.getCustomerId(), pharmacyId)
                     .filter(c -> c.getCustomerType() == CustomerType.CREDIT)
                     .ifPresent(c -> c.adjustCreditUsed(decrementBy.negate()));
         }
@@ -1145,6 +1312,7 @@ public class BillingService {
                 invoice.getPrescriptionId(), prescriptionRef, invoice.getPaymentMode().name(), invoice.getPaymentStatus().name(),
                 invoice.getStatus().name(), invoice.getSubtotal(), invoice.getDiscountAmount(), invoice.getTaxableAmount(),
                 invoice.getCgst(), invoice.getSgst(), invoice.getIgst(), invoice.getTotalGst(), invoice.getTotalAmount(),
+                invoice.getExtraCharges(), invoice.getAdjustmentAmount(), invoice.getRoundOff(),
                 invoice.getReturnedAmount(), invoice.isInterstate(), invoice.getNotes(), invoice.isCancelled(),
                 invoice.getCancelledAt(), invoice.getCancelReason(), itemResponses, paymentResponses, returnRefs,
                 invoice.getCreatedAt(), invoice.getUpdatedAt());

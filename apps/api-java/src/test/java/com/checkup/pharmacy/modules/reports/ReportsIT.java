@@ -88,7 +88,7 @@ class ReportsIT extends AbstractPostgresIT {
 
     private void cashSale(int units) {
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
-                null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO))));
         flushAndClear();
     }
@@ -116,6 +116,104 @@ class ReportsIT extends AbstractPostgresIT {
     }
 
     @Test
+    @DisplayName("an invoice reconciles from its own stored columns, charges and all")
+    void invoiceReconcilesFromStoredColumns() {
+        // The identity a tax invoice has to satisfy, and could not before these three
+        // columns existed: extraCharges and adjustmentAmount were never written down,
+        // so the gap between taxable + GST and the total was unexplainable afterwards.
+        var created = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
+                null, null, null, new BigDecimal("10"), new BigDecimal("25"), new BigDecimal("-3.50"),
+                null, null,
+                List.of(new InvoiceItemRequest(batchId, 3, null, BigDecimal.ZERO))));
+        flushAndClear();
+
+        var invoice = billingService.getInvoice(created.id());
+
+        assertThat(invoice.extraCharges()).isEqualByComparingTo(new BigDecimal("25"));
+        assertThat(invoice.adjustmentAmount()).isEqualByComparingTo(new BigDecimal("-3.50"));
+
+        BigDecimal derived = invoice.taxableAmount()
+                .add(invoice.totalGst())
+                .add(invoice.extraCharges())
+                .add(invoice.adjustmentAmount())
+                .add(invoice.roundOff());
+        assertThat(derived)
+                .as("taxable + GST + charges + adjustment + round-off must equal the billed total")
+                .isEqualByComparingTo(invoice.totalAmount());
+    }
+
+    @Test
+    @DisplayName("a bill-level discount reduces the tax, and the two GST reports agree")
+    void billDiscountReducesTaxAndReportsReconcile() {
+        // The bill discount used to be deducted AFTER the tax, so the pharmacy remitted
+        // GST on money it never collected and the invoice did not add up: taxable + GST
+        // came from before the discount, totalAmount from after.
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
+                null, null, null, new BigDecimal("10"), null, null, null, null,
+                List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO))));
+        flushAndClear();
+
+        var from = Instant.now().minus(1, ChronoUnit.HOURS);
+        var to = Instant.now();
+        var gst = reportsService.gstSummary(from, to);
+        var hsn = reportsService.hsnSummary(from, to);
+
+        // The invoice reconciles on its own terms.
+        assertThat(gst._sum().taxableAmount().add(gst._sum().totalGst()))
+                .as("taxable + GST must equal the value the customer was billed")
+                .isEqualByComparingTo(gst._sum().totalAmount());
+
+        // And the GSTR-1 HSN summary, which sums the stored LINES, agrees with the
+        // header the GST summary reads. These are shown side by side on one screen.
+        BigDecimal hsnTaxable = hsn.rows().stream().map(r -> r.taxableAmount())
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal hsnGst = hsn.rows().stream().map(r -> r.totalGst())
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertThat(hsnTaxable).isEqualByComparingTo(gst._sum().taxableAmount());
+        assertThat(hsnGst).isEqualByComparingTo(gst._sum().totalGst());
+    }
+
+    @Test
+    @DisplayName("the GST summary reports IGST separately, so the figures reconcile")
+    void gstSummaryReportsIgst() {
+        // An interstate sale stores the whole tax as IGST with CGST and SGST at zero.
+        // The summary omitted IGST entirely, so such a sale showed 0 + 0 against a
+        // non-zero Total GST — three numbers a GSTR-1 return cannot be built from.
+        interstateSale(2);
+
+        var summary = reportsService.gstSummary(Instant.now().minus(1, ChronoUnit.HOURS), Instant.now());
+
+        assertThat(summary._sum().igst()).isGreaterThan(BigDecimal.ZERO);
+        assertThat(summary._sum().cgst()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(summary._sum().sgst()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(summary._sum().cgst().add(summary._sum().sgst()).add(summary._sum().igst()))
+                .as("the breakdown must add up to the headline figure")
+                .isEqualByComparingTo(summary._sum().totalGst());
+    }
+
+    @Test
+    @DisplayName("the HSN summary groups in SQL and still totals every line")
+    void hsnSummaryGroupsByHsnAndRate() {
+        cashSale(2);
+        cashSale(3); // same medicine, same HSN and rate — must collapse into one row
+
+        var summary = reportsService.hsnSummary(Instant.now().minus(1, ChronoUnit.HOURS), Instant.now());
+
+        assertThat(summary.rows()).hasSize(1);
+        var row = summary.rows().get(0);
+        assertThat(row.totalQty()).isEqualTo(5);
+        assertThat(row.totalGst()).isEqualByComparingTo(row.cgst().add(row.sgst()).add(row.igst()));
+        assertThat(row.taxableAmount()).isGreaterThan(BigDecimal.ZERO);
+    }
+
+    private void interstateSale(int units) {
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
+                true, null, null, null, null, null, null, null,
+                List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO))));
+        flushAndClear();
+    }
+
+    @Test
     @DisplayName("another pharmacy's sales do not inflate this pharmacy's daily report")
     void dailySalesIsTenantScoped() {
         cashSale(1);
@@ -130,7 +228,7 @@ class ReportsIT extends AbstractPostgresIT {
         flushAndClear();
         authenticateAs(otherUser.getId(), other.getId(), Role.OWNER);
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
-                null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(otherBatch, 5, null, BigDecimal.ZERO))));
         flushAndClear();
 
@@ -200,7 +298,7 @@ class ReportsIT extends AbstractPostgresIT {
         flushAndClear();
 
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, prescription.getId(), "CASH", "PAID",
-                null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO))));
         flushAndClear();
 
@@ -238,6 +336,72 @@ class ReportsIT extends AbstractPostgresIT {
         var quietDay = series.get(0);
         assertThat(quietDay.invoiceCount()).isZero();
         assertThat(quietDay.revenue()).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    /**
+     * Pins the IST day boundary against a sale whose timestamp we choose, rather than "now".
+     *
+     * <p>The test above could not catch the bug this one exists for. It creates a sale at the
+     * current instant and asks whether it lands on today, so the wrong grouping and the right
+     * one agree for most of the day and disagree only once the clock passes midnight IST —
+     * a suite that is green until roughly 00:00 and red until 05:30, which reads as flakiness
+     * and gets re-run rather than investigated. Choosing the timestamp removes the clock from
+     * the assertion entirely.
+     *
+     * <p>Two instants, either side of an IST midnight, both written directly because no API
+     * lets a caller backdate an invoice:
+     *
+     * <ul>
+     *   <li>18:29:59Z — 23:59:59 IST, the last second of the earlier IST day</li>
+     *   <li>18:30:01Z — 00:00:01 IST, the first second of the next one</li>
+     * </ul>
+     *
+     * <p>They are 2 seconds apart and must land on DIFFERENT bars. Under the old
+     * single-argument conversion both fell on the earlier date, because it shifted -5:30
+     * instead of +5:30 — so a pharmacy's whole morning was billed to the previous day.
+     */
+    @Test
+    @DisplayName("the day boundary is IST midnight, not UTC midnight")
+    void dailySeriesBucketsByIstMidnight() {
+        cashSale(1);
+        String invoiceId = (String) entityManager
+                .createNativeQuery("SELECT id FROM invoices WHERE \"pharmacyId\" = :p LIMIT 1")
+                .setParameter("p", pharmacyId)
+                .getSingleResult();
+        flushAndClear();
+
+        // 2026-03-10T18:29:59Z = 23:59:59 IST on the 10th; one second later is the 11th.
+        java.time.Instant lateOnTheTenth = java.time.Instant.parse("2026-03-10T18:29:59Z");
+        java.time.Instant earlyOnTheEleventh = java.time.Instant.parse("2026-03-10T18:30:01Z");
+
+        setCreatedAt(invoiceId, lateOnTheTenth);
+        assertThat(dayOf(invoiceId, "2026-03-09", "2026-03-12"))
+                .as("23:59:59 IST belongs to that IST day, not the next")
+                .isEqualTo("2026-03-10");
+
+        setCreatedAt(invoiceId, earlyOnTheEleventh);
+        assertThat(dayOf(invoiceId, "2026-03-09", "2026-03-12"))
+                .as("00:00:01 IST belongs to the new IST day — two seconds later, a different bar")
+                .isEqualTo("2026-03-11");
+    }
+
+    /** Backdates an invoice. Native, because no API may rewrite when a sale happened. */
+    private void setCreatedAt(String invoiceId, java.time.Instant at) {
+        entityManager.createNativeQuery(
+                        "UPDATE invoices SET \"createdAt\" = :at WHERE id = :id")
+                .setParameter("at", java.sql.Timestamp.from(at))
+                .setParameter("id", invoiceId)
+                .executeUpdate();
+        flushAndClear();
+    }
+
+    /** The single populated bar in the window — which IST day the series put the sale on. */
+    private String dayOf(String invoiceId, String from, String to) {
+        return reportsService.dailySalesSeries(from, to).stream()
+                .filter(d -> d.invoiceCount() > 0)
+                .map(d -> d.date())
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("the sale fell outside the queried window"));
     }
 
     @Test

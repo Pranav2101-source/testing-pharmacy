@@ -670,6 +670,12 @@ model Invoice {
   igst           Decimal       @default(0) @db.Decimal(12, 2)
   totalGst       Decimal       @db.Decimal(12, 2)
   totalAmount    Decimal       @db.Decimal(12, 2)
+  // Bill-level additions, stored so the invoice can be re-derived from its own row:
+  // taxableAmount + totalGst + extraCharges + adjustmentAmount + roundOff = totalAmount.
+  // roundOff is signed — the rupee rounding goes either way and prints as its own line.
+  extraCharges     Decimal     @default(0) @db.Decimal(12, 2)
+  adjustmentAmount Decimal     @default(0) @db.Decimal(12, 2)
+  roundOff         Decimal     @default(0) @db.Decimal(12, 2)
   returnedAmount Decimal       @default(0) @db.Decimal(12, 2)
   isInterstate   Boolean       @default(false)
   notes          String?

@@ -11,6 +11,7 @@ import com.checkup.pharmacy.common.exception.ForbiddenException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.exception.UnprocessableEntityException;
 import com.checkup.pharmacy.common.util.DateRange;
+import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.modules.inventory.dto.AddStockRequest;
 import com.checkup.pharmacy.modules.inventory.dto.AddStockResponse;
 import com.checkup.pharmacy.modules.inventory.dto.AlertsResponse;
@@ -124,7 +125,7 @@ public class InventoryService {
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), 100);
         Pageable pageable = PageRequest.of(safePage - 1, safeLimit,
-                Sort.by(Sort.Order.asc("expiryDate"), Sort.Order.desc("createdAt")));
+                StableSort.of(Sort.by(Sort.Order.asc("expiryDate"), Sort.Order.desc("createdAt"))));
 
         Instant nearExpiryThreshold = Instant.now().plus(EXPIRY_WINDOW_DAYS, ChronoUnit.DAYS);
         Page<Inventory> result = inventoryRepository.search(pharmacyId, blankToNull(search), blankToNull(medicineId),
@@ -153,8 +154,13 @@ public class InventoryService {
         medicineRepository.findById(req.medicineId()).orElseThrow(() -> new NotFoundException("Medicine not found"));
         validateShelf(req.shelfId());
 
+        // Re-read under a write lock when merging into an existing batch: mergeIncoming
+        // is a read-modify-write on quantity, and without the lock a goods-in racing a
+        // sale of the same batch overwrites the sale's decrement.
         Inventory existing = inventoryRepository
                 .findByPharmacyIdAndMedicineIdAndBatchNumber(pharmacyId, req.medicineId(), req.batchNumber())
+                .flatMap(found -> inventoryRepository
+                        .lockAllByIdInAndPharmacyId(List.of(found.getId()), pharmacyId).stream().findFirst())
                 .orElse(null);
         int quantityBefore = existing == null ? 0 : existing.getQuantity();
 
@@ -191,7 +197,17 @@ public class InventoryService {
             throw new BadRequestException("statusReason is required when changing status");
         }
 
-        Inventory inv = load(id);
+        // Locked, not a plain read.
+        //
+        // Every other quantity write in the system takes this lock; this one did not,
+        // and it runs at READ COMMITTED. A stock correction racing a sale on the same
+        // batch read the pre-sale quantity, then wrote its own total over the top —
+        // the sale's decrement vanished and the shelf count silently drifted.
+        //
+        // Locked for ANY patch, not just an adjustment: Hibernate writes every column
+        // on update, so even a status or shelf change re-writes quantity from whatever
+        // this transaction happened to read.
+        Inventory inv = loadForUpdate(id);
 
         if (req.adjust() != null) {
             applyAdjustment(inv, req.adjust());
@@ -641,6 +657,8 @@ public class InventoryService {
     private static final int FREQUENT_WINDOW_DAYS = 30;
     private static final int MIN_STOCK_FLOOR = 5;
     private static final int FREQUENT_LIMIT = 10;
+    /** How many ranked medicines to consider to fill {@link #FREQUENT_LIMIT} in-stock slots. */
+    private static final int FREQUENT_CANDIDATE_MULTIPLIER = 5;
 
     /**
      * "Smart Stock Levels" — recomputes each medicine's minimum-stock threshold from its trailing
@@ -713,17 +731,39 @@ public class InventoryService {
         List<InventoryMovementRepository.MedicineSalesAggregateRow> ranked =
                 movementRepository.aggregateSalesByMedicine(pharmacyId, from, to);
 
+        // One FEFO query for the whole shortlist instead of one per medicine.
+        //
+        // This powers the quick-add card on the billing screen, so it runs every time a
+        // cashier opens a new bill. It used to issue a FEFO query per ranked medicine
+        // until it had filled the list — and because out-of-stock medicines are skipped
+        // rather than counted, a pharmacy whose top sellers were out of stock walked
+        // most of the ranking, one round trip at a time.
+        //
+        // The shortlist is capped rather than taking every medicine ever sold: the rows
+        // are ranked by sales volume, so needing to look past this many to find ten
+        // in-stock items is not a real scenario, and the cap bounds both the IN list and
+        // the rows returned.
+        List<String> shortlist = ranked.stream()
+                .limit((long) FREQUENT_LIMIT * FREQUENT_CANDIDATE_MULTIPLIER)
+                .map(InventoryMovementRepository.MedicineSalesAggregateRow::getMedicineId)
+                .toList();
+        Map<String, Inventory> fefoByMedicineId = new HashMap<>();
+        if (!shortlist.isEmpty()) {
+            // Ordered by (medicineId, expiryDate), so the first row per medicine is FEFO.
+            for (Inventory candidate : inventoryRepository.findFefoCandidatesForMedicines(pharmacyId, shortlist, to, 1)) {
+                fefoByMedicineId.putIfAbsent(candidate.getMedicineId(), candidate);
+            }
+        }
+
         List<FrequentItemResponse> out = new ArrayList<>();
         for (InventoryMovementRepository.MedicineSalesAggregateRow row : ranked) {
             if (out.size() >= FREQUENT_LIMIT) {
                 break;
             }
-            List<Inventory> candidates = inventoryRepository.findFefoCandidates(
-                    pharmacyId, row.getMedicineId(), to, 1, PageRequest.of(0, 1));
-            if (candidates.isEmpty()) {
+            Inventory batch = fefoByMedicineId.get(row.getMedicineId());
+            if (batch == null) {
                 continue;
             }
-            Inventory batch = candidates.get(0);
             Medicine medicine = batch.getMedicine();
             if (medicine == null) {
                 continue;
@@ -792,6 +832,13 @@ public class InventoryService {
 
     private Inventory load(String id) {
         return inventoryRepository.findByIdAndPharmacyId(id, TenantContext.pharmacyId())
+                .orElseThrow(() -> new NotFoundException("Inventory item not found"));
+    }
+
+    /** {@link #load} for callers that are about to WRITE the row — see patch(). */
+    private Inventory loadForUpdate(String id) {
+        return inventoryRepository.lockAllByIdInAndPharmacyId(List.of(id), TenantContext.pharmacyId())
+                .stream().findFirst()
                 .orElseThrow(() -> new NotFoundException("Inventory item not found"));
     }
 

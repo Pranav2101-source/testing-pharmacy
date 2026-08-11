@@ -3,8 +3,8 @@ package com.checkup.pharmacy.modules.support.dto;
 import com.checkup.pharmacy.common.enums.TicketLanguage;
 import com.checkup.pharmacy.common.enums.TicketPriority;
 import com.checkup.pharmacy.common.enums.TicketSLA;
+import com.checkup.pharmacy.common.validation.IndianMobile;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
@@ -22,8 +22,10 @@ public record CreateTicketRequest(
         String agentId,
         @NotBlank(message = "Description required")
         @Size(min = 10, max = 2000, message = "Description must be at least 10 characters") String description,
-        @Pattern(regexp = "^[6-9]\\d{9}$|^$", message = "Enter a valid 10-digit mobile number") String mobile,
-        @Pattern(regexp = "^[6-9]\\d{9}$|^$") String altMobile
+        // @IndianMobile already treats blank as "not supplied", so the "|^$" branch
+        // the inline pattern needed is gone.
+        @IndianMobile String mobile,
+        @IndianMobile String altMobile
 ) {
     public enum AssignmentType { UNASSIGNED, ROUND_ROBIN, MANUAL }
 }

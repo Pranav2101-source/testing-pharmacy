@@ -6,6 +6,13 @@ import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
 import { Calendar, Stethoscope, ChevronDown, FileText, X, UserPlus, AlertTriangle, CheckCircle2, Plus, Loader2, Upload, ImageIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import {
+  isClean,
+  normalizeIndianMobile,
+  sanitizeProfessionalName,
+  validateIndianMobile,
+  validateProfessionalName,
+} from "@pharmacy/utils";
 import { cn } from "@/lib/utils";
 import { useBillingStore } from "./useBillingStore";
 import { CustomerSearchCombobox } from "./CustomerSearchCombobox";
@@ -16,6 +23,16 @@ import { useToast } from "@/hooks/useToast";
 
 // Computed once per session — bill date never changes mid-session
 const TODAY_LABEL = format(new Date(), "dd/MM/yyyy");
+
+/** Inline message under a prescription field. Renders nothing when the field is fine. */
+function RxFieldError({ message }: { message?: string | null }) {
+  if (!message) return null;
+  return (
+    <p className="flex items-center gap-1 text-[11px] text-red-600 font-medium mt-1">
+      <AlertTriangle className="w-3 h-3 flex-shrink-0" />{message}
+    </p>
+  );
+}
 
 interface DoctorHint { id: string; name: string; specialty: string | null; registrationNo: string | null; }
 interface RxHint {
@@ -296,6 +313,13 @@ function QuickPrescriptionModal({
   const fileRef = useRef<HTMLInputElement>(null);
   const toast   = useToast();
   const qc      = useQueryClient();
+  const [rxErrors, setRxErrors] = useState<{ patientName?: string | null; patientPhone?: string | null }>({});
+
+  /** Set a validated field and drop its complaint as soon as it is being corrected. */
+  function setPatientField(key: "patientName" | "patientPhone", value: string) {
+    setForm(f => ({ ...f, [key]: value }));
+    setRxErrors(e => (e[key] ? { ...e, [key]: null } : e));
+  }
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -327,8 +351,24 @@ function QuickPrescriptionModal({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.doctor.name.trim()) { toast.error("Doctor name is required"); return; }
-    if (!form.patientName.trim()) { toast.error("Patient name is required"); return; }
+    const doctorProblem = validateProfessionalName(form.doctor.name, { label: "Doctor name" });
+    if (doctorProblem) { toast.error(doctorProblem); return; }
+
+    // The doctor's name goes through the wider professional rule so a speciality in
+    // brackets survives; the patient's goes through the narrow one.
+    const found = {
+      // Professional rule, matching @ProfessionalName on the DTO: digits stay blocked,
+      // but "Ram Kumar (S/O Shyam)" — how a counter tells two same-named patients
+      // apart — is not rejected.
+      patientName:  validateProfessionalName(form.patientName, { label: "Patient name", maxLength: 200 }),
+      patientPhone: validateIndianMobile(form.patientPhone, { label: "Phone", required: false }),
+    };
+    setRxErrors(found);
+    if (!isClean(found)) {
+      toast.error(found.patientName ?? found.patientPhone ?? "Please correct the highlighted fields");
+      return;
+    }
+
     if (form.drugs.every(d => !d.medicineName.trim())) { toast.error("Add at least one medicine"); return; }
     setSaving(true);
     try {
@@ -337,7 +377,7 @@ function QuickPrescriptionModal({
         doctorName:     form.doctor.name.trim(),
         patientName:    form.patientName.trim(),
         patientAge:     form.patientAge   ? parseInt(form.patientAge, 10) : undefined,
-        patientPhone:   form.patientPhone.trim()  || undefined,
+        patientPhone:   normalizeIndianMobile(form.patientPhone) || undefined,
         patientGender:  form.patientGender        || undefined,
         prescribedDate: form.prescribedDate ? `${form.prescribedDate}T00:00:00.000Z` : undefined,
         validUntil:     form.validUntil     ? `${form.validUntil}T00:00:00.000Z`     : undefined,
@@ -404,10 +444,16 @@ function QuickPrescriptionModal({
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">Patient Name *</label>
               <input
                 value={form.patientName}
-                onChange={set("patientName")}
+                // Digits and symbols never make it into the field, so a prescription
+                // cannot be recorded against "Ram 123".
+                onChange={(e) => setPatientField("patientName", sanitizeProfessionalName(e.target.value))}
                 placeholder="Full name"
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] text-slate-800 placeholder-slate-400 focus:outline-none focus:border-violet-400 transition-colors"
+                className={cn(
+                  "w-full border rounded-lg px-3 py-2 text-[13px] text-slate-800 placeholder-slate-400 focus:outline-none transition-colors",
+                  rxErrors.patientName ? "border-red-300 focus:border-red-400" : "border-slate-200 focus:border-violet-400",
+                )}
               />
+              <RxFieldError message={rxErrors.patientName} />
             </div>
             <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">Age</label>
@@ -416,8 +462,13 @@ function QuickPrescriptionModal({
             </div>
             <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">Phone</label>
-              <input value={form.patientPhone} onChange={set("patientPhone")} type="tel" placeholder="Contact"
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] placeholder-slate-400 focus:outline-none focus:border-violet-400 transition-colors" />
+              <input value={form.patientPhone} type="tel" inputMode="numeric" placeholder="98765 43210"
+                onChange={(e) => setPatientField("patientPhone", normalizeIndianMobile(e.target.value))}
+                className={cn(
+                  "w-full border rounded-lg px-3 py-2 text-[13px] placeholder-slate-400 focus:outline-none transition-colors",
+                  rxErrors.patientPhone ? "border-red-300 focus:border-red-400" : "border-slate-200 focus:border-violet-400",
+                )} />
+              <RxFieldError message={rxErrors.patientPhone} />
             </div>
           </div>
 
@@ -587,7 +638,10 @@ function DoctorCombobox({ value, onChange }: { value: string; onChange: (name: s
   }, []);
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const v = e.target.value;
+    // Qualifications and specialities stay ("Dr. Sharma (Ortho)"); digits and stray
+    // symbols are dropped. A registration number has its own field on the doctor
+    // record, and typing one in here used to save a doctor called "Dr Rao 12345".
+    const v = sanitizeProfessionalName(e.target.value);
     setQuery(v);
     onChange(v, "");   // free-text: no doctorId
     if (timerRef.current) clearTimeout(timerRef.current);

@@ -2,6 +2,7 @@ package com.checkup.pharmacy.modules.location;
 
 import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
+import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.modules.location.dto.CreateRackRequest;
 import com.checkup.pharmacy.modules.location.dto.CreateShelfRequest;
 import com.checkup.pharmacy.modules.location.dto.ListEnvelope;
@@ -167,7 +168,7 @@ public class LocationService {
     private PageRequest pageRequest(int page, int limit, String sortField) {
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), 500);
-        return PageRequest.of(safePage - 1, safeLimit, Sort.by(sortField).ascending());
+        return PageRequest.of(safePage - 1, safeLimit, StableSort.of(Sort.by(sortField).ascending()));
     }
 
     private String normalizeCode(String raw) {

@@ -19,6 +19,13 @@ public record SupplierResponse(
         int creditDays,
         String paymentTerms,
         boolean isActive,
+        /**
+         * What this pharmacy still owes the supplier; negative means the supplier owes us.
+         * The Distributors tab renders this as the "Outstanding" figure and its type declares
+         * it non-nullable, so it is never omitted — a supplier with no ledger activity sends
+         * 0, not null, or the tab silently renders every balance as empty.
+         */
+        BigDecimal ledgerBalance,
         @JsonProperty("_count") PurchaseOrderCount count
 ) {
     public record PurchaseOrderCount(long purchaseOrders) {
@@ -27,8 +34,10 @@ public record SupplierResponse(
     public static SupplierResponse withPoCount(
             String id, String name, String gstin, String dlNumber, String phone, String email,
             String address, String city, String state, BigDecimal creditLimit, int creditDays,
-            String paymentTerms, boolean isActive, long purchaseOrderCount) {
+            String paymentTerms, boolean isActive, BigDecimal ledgerBalance, long purchaseOrderCount) {
         return new SupplierResponse(id, name, gstin, dlNumber, phone, email, address, city, state,
-                creditLimit, creditDays, paymentTerms, isActive, new PurchaseOrderCount(purchaseOrderCount));
+                creditLimit, creditDays, paymentTerms, isActive,
+                ledgerBalance == null ? BigDecimal.ZERO : ledgerBalance,
+                new PurchaseOrderCount(purchaseOrderCount));
     }
 }

@@ -56,9 +56,38 @@ public final class GstCalculator {
      */
     public static MrpGstBreakdown calcGstFromMrp(BigDecimal mrp, int quantity, BigDecimal discountPct,
                                                   BigDecimal gstRate, boolean isInterstate) {
+        return calcGstFromMrp(mrp, quantity, discountPct, gstRate, isInterstate, BigDecimal.ZERO);
+    }
+
+    /**
+     * As above, with a bill-level discount folded into the line before tax is derived.
+     *
+     * <p>WHY THE BILL DISCOUNT BELONGS HERE AND NOT AFTER THE TAX
+     *
+     * <p>Section 15(3) of the CGST Act excludes a discount from the value of a supply
+     * when it is given at or before the time of supply and is recorded in the invoice.
+     * A bill-level discount is exactly that, so the taxable value — and therefore the
+     * tax — is computed on what the customer actually pays.
+     *
+     * <p>Deducting it after the tax, as this used to, charged GST on money the pharmacy
+     * never collected: the pharmacy remitted the difference out of its own margin, and
+     * the invoice itself did not add up, because {@code taxableAmount + totalGst} was a
+     * figure from before the discount while {@code totalAmount} was from after it.
+     *
+     * <p>Applied to the line rather than the header so the stored per-line figures stay
+     * consistent with the invoice they belong to — the GSTR-1 HSN summary is built by
+     * summing those lines, and it has to reconcile with the return it feeds.
+     *
+     * <p>Compounds with any line discount rather than adding to it: 10% off a line and
+     * then 5% off the bill is 0.90 × 0.95, not 15%. That is what "5% off this bill"
+     * means to the person reading it.
+     */
+    public static MrpGstBreakdown calcGstFromMrp(BigDecimal mrp, int quantity, BigDecimal discountPct,
+                                                  BigDecimal gstRate, boolean isInterstate,
+                                                  BigDecimal billDiscountPct) {
         BigDecimal lineTotal = mrp.multiply(BigDecimal.valueOf(quantity));
         BigDecimal discountAmount = divide(lineTotal.multiply(discountPct), BigDecimal.valueOf(100));
-        BigDecimal afterDiscount = lineTotal.subtract(discountAmount);
+        BigDecimal afterDiscount = lineTotal.subtract(discountAmount).multiply(billDiscountFactor(billDiscountPct));
         BigDecimal divisor = BigDecimal.ONE.add(divide(gstRate, BigDecimal.valueOf(100)));
         BigDecimal taxableAmount = afterDiscount.divide(divisor, 10, RoundingMode.HALF_UP);
         BigDecimal totalGstUnrounded = afterDiscount.subtract(taxableAmount);
@@ -96,6 +125,20 @@ public final class GstCalculator {
      * error across many line items and drift from the true invoice total.
      */
     public static InvoiceTotals calcInvoiceTotals(List<MrpLineInput> items, boolean isInterstate) {
+        return calcInvoiceTotals(items, isInterstate, BigDecimal.ZERO);
+    }
+
+    /**
+     * As above, with a bill-level discount applied to every line before tax is derived.
+     *
+     * <p>See {@link #calcGstFromMrp(BigDecimal, int, BigDecimal, BigDecimal, boolean, BigDecimal)}
+     * for why the discount reduces the taxable value rather than being deducted from
+     * the total afterwards. {@code discountAmount} reports line and bill discounts
+     * together, which is the single "Discount" figure a customer expects to read.
+     */
+    public static InvoiceTotals calcInvoiceTotals(List<MrpLineInput> items, boolean isInterstate,
+                                                   BigDecimal billDiscountPct) {
+        BigDecimal billFactor = billDiscountFactor(billDiscountPct);
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal discountAmount = BigDecimal.ZERO;
         BigDecimal taxableAmount = BigDecimal.ZERO;
@@ -107,13 +150,17 @@ public final class GstCalculator {
         for (MrpLineInput item : items) {
             BigDecimal lineTotal = item.mrp().multiply(BigDecimal.valueOf(item.quantity()));
             BigDecimal lineDiscount = divide(lineTotal.multiply(item.discountPct()), BigDecimal.valueOf(100));
-            BigDecimal afterDiscount = lineTotal.subtract(lineDiscount);
+            BigDecimal afterLineDiscount = lineTotal.subtract(lineDiscount);
+            BigDecimal afterDiscount = afterLineDiscount.multiply(billFactor);
+            // What the bill discount took off THIS line, so the invoice's single
+            // "Discount" figure covers both kinds.
+            BigDecimal billDiscount = afterLineDiscount.subtract(afterDiscount);
             BigDecimal divisor = BigDecimal.ONE.add(divide(item.gstRate(), BigDecimal.valueOf(100)));
             BigDecimal taxable = afterDiscount.divide(divisor, 10, RoundingMode.HALF_UP);
             BigDecimal gst = afterDiscount.subtract(taxable);
 
             subtotal = subtotal.add(lineTotal);
-            discountAmount = discountAmount.add(lineDiscount);
+            discountAmount = discountAmount.add(lineDiscount).add(billDiscount);
             taxableAmount = taxableAmount.add(taxable);
             gstTotal = gstTotal.add(gst);
         }
@@ -129,6 +176,21 @@ public final class GstCalculator {
         BigDecimal totalGst = roundedHalf.multiply(BigDecimal.valueOf(2));
         return new InvoiceTotals(round2(subtotal), round2(discountAmount), roundedTaxable,
                 roundedHalf, roundedHalf, BigDecimal.ZERO, totalGst, roundedTaxable.add(totalGst));
+    }
+
+    /**
+     * The multiplier a bill-level discount applies to each line, e.g. 5% -> 0.95.
+     *
+     * <p>Null and out-of-range values collapse to "no discount" rather than throwing:
+     * this is arithmetic on a document that is already being issued, and the request
+     * DTO bounds the percentage to 0-100 before it ever reaches here.
+     */
+    private static BigDecimal billDiscountFactor(BigDecimal billDiscountPct) {
+        if (billDiscountPct == null || billDiscountPct.signum() <= 0) {
+            return BigDecimal.ONE;
+        }
+        BigDecimal capped = billDiscountPct.min(BigDecimal.valueOf(100));
+        return BigDecimal.ONE.subtract(divide(capped, BigDecimal.valueOf(100)));
     }
 
     public static BigDecimal round2(BigDecimal value) {

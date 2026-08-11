@@ -46,8 +46,12 @@ export function calcBreakdown(params: {
 
   // Shared with BillingNewPage so the breakdown and the header total can never
   // disagree, and deliberately NOT clamped to zero — see lib/billTotals.ts.
+  // billAmount, not itemsTotal: this modal derives its figures from the rounded cart
+  // LINE amounts, which are shown before the bill discount so the deduction can appear
+  // as its own row. computeNetPayable no longer subtracts the discount itself — it now
+  // reduces the taxable value upstream — so the already-discounted figure goes in.
   const { roundOff, netPayable, shortfall } = computeNetPayable({
-    itemsTotal, billDiscountPct, extraCharges, adjustmentAmount,
+    itemsTotal: billAmount, extraCharges, adjustmentAmount,
   });
 
   return {

@@ -1,6 +1,7 @@
 package com.checkup.pharmacy.modules.doctor;
 
 import com.checkup.pharmacy.common.exception.NotFoundException;
+import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.modules.doctor.dto.DoctorListResponse;
 import com.checkup.pharmacy.modules.doctor.dto.DoctorRequest;
 import com.checkup.pharmacy.modules.doctor.dto.DoctorResponse;
@@ -28,7 +29,7 @@ public class DoctorService {
     public DoctorListResponse list(String search, int page, int limit) {
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), 100);
-        PageRequest pageRequest = PageRequest.of(safePage - 1, safeLimit, Sort.by("name").ascending());
+        PageRequest pageRequest = PageRequest.of(safePage - 1, safeLimit, StableSort.of(Sort.by("name").ascending()));
 
         Page<Doctor> result = doctorRepository.search(
                 TenantContext.pharmacyId(), blankToNull(search), pageRequest);

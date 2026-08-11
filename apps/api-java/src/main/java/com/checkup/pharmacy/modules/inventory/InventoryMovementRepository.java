@@ -11,6 +11,9 @@ import java.util.List;
 
 public interface InventoryMovementRepository extends JpaRepository<InventoryMovement, String> {
 
+    /** Rollback guard: movements on these batches that the import did NOT create. */
+    long countByInventoryIdInAndReferenceTypeNot(java.util.Collection<String> inventoryIds, String referenceType);
+
     /**
      * type/direction compared as text to avoid the null-enum-parameter crash
      * (SQLState 42P18) — see InventoryRepository.search for the same pattern.

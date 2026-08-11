@@ -185,10 +185,42 @@ export function getErrorMessage(err: unknown, fallback: string): string {
     return "You don't have permission to do this. Ask an owner or manager for access.";
   }
   if (status && status >= 500 && (!serverMsg || serverMsg === "Internal server error")) {
-    return "Something went wrong on our end. Please try again in a moment.";
+    // A bare "something went wrong" is a dead end for everyone: the pharmacist has
+    // nothing to report, and support has no way to find the one request that failed
+    // among a day's logs. The reference is the X-Request-Id the server already sets
+    // on every response and already logs via MDC, so quoting it leads straight to the
+    // actual exception — without putting a stack trace on a shop counter screen.
+    //
+    // This is what the Schedule H register failure looked like from the outside:
+    // "Something went wrong on our end", where the real cause was one missing column.
+    const ref = requestIdOf(err);
+    return "Something went wrong on our end. Please try again in a moment."
+      + (ref ? ` (Reference: ${ref})` : "");
   }
 
   return serverMsg ?? usableAxiosMessage(err.message) ?? fallback;
+}
+
+/**
+ * The short form of the request id, for quoting to support.
+ *
+ * Axios lower-cases response header names, but only for the plain-object form — a
+ * fetch-style AxiosHeaders instance needs `.get()`. Both are handled because which
+ * one arrives depends on the adapter, and reading the wrong one silently yields
+ * undefined, which would quietly drop the reference from every message.
+ */
+function requestIdOf(err: AxiosError): string | undefined {
+  const headers = err.response?.headers as
+    | { get?: (k: string) => unknown; [k: string]: unknown }
+    | undefined;
+  if (!headers) return undefined;
+  const raw = typeof headers.get === "function"
+    ? headers.get("x-request-id")
+    : headers["x-request-id"];
+  const id = typeof raw === "string" ? raw.trim() : "";
+  // First segment only: a full UUID is unreadable over a phone call, and the prefix
+  // is still unique enough to grep a day of logs for.
+  return id ? id.split("-")[0] : undefined;
 }
 
 function blankToUndefined(s: string | undefined): string | undefined {
@@ -214,6 +246,26 @@ const AXIOS_DEFAULT_STATUS_MESSAGE = /^Request failed with status code \d+$/;
 function usableAxiosMessage(s: string | undefined): string | undefined {
   const msg = blankToUndefined(s);
   return msg && AXIOS_DEFAULT_STATUS_MESSAGE.test(msg) ? undefined : msg;
+}
+
+/**
+ * Read a list out of `response.data.data`, whichever of the two shapes the endpoint
+ * uses: a bare array, or the paginated `{ items, total, page, totalPages }` envelope.
+ *
+ * Both shapes are live in the API, and guessing wrong is not a graceful failure — it
+ * hands the caller an object where it expected an array, and the next `.map` /
+ * `.reduce` / `.filter` throws mid-render. In a production build that surfaces as
+ * "n is not a function" with no clue which call site produced it, which is exactly
+ * how the Assign Location dialog failed: it read `data.data` from an endpoint that
+ * returns the envelope, then reduced over it.
+ *
+ * Anything else (null, an error body, a shape nobody expected) yields an empty array,
+ * so a surprising response renders as "nothing here" rather than a blank screen.
+ */
+export function unwrapList<T>(payload: unknown): T[] {
+  if (Array.isArray(payload)) return payload as T[];
+  const items = (payload as { items?: unknown } | null | undefined)?.items;
+  return Array.isArray(items) ? (items as T[]) : [];
 }
 
 /**

@@ -57,6 +57,10 @@ scripts/data/import-report.txt
 apps/api/uploads/
 /uploads/
 
+# Client data exported from their previous system, staged for migration —
+# real business data; must NEVER be committed
+/client-data/
+
 # Local dev seed script with hardcoded credentials
 apps/api/scripts/_seed-admin.ts
 .env*

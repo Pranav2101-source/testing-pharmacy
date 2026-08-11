@@ -11,6 +11,12 @@ import { Link } from "react-router-dom";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
+import {
+  normalizeIndianMobile,
+  sanitizeProfessionalName,
+  validateIndianMobile,
+  validateProfessionalName,
+} from "@pharmacy/utils";
 
 // ─── Drug schedule descriptions ───────────────────────────────────────────────
 
@@ -115,7 +121,10 @@ function DoctorSearchInput({
   }, []);
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const v = e.target.value;
+    // Sanitised before it reaches state or the search: digits belong in the
+    // registration-number field beside this one, and the API rejects them here
+    // (@ProfessionalName on CreatePrescriptionRequest.doctorName).
+    const v = sanitizeProfessionalName(e.target.value);
     setQuery(v);
     onChange({ name: v, id: "", regNo: "" }); // clear regNo — only a picked doctor populates it
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -216,6 +225,7 @@ const BLANK_FORM: CreateForm = {
 
 function CreateModal({ onClose }: { onClose: () => void }) {
   const [form,        setForm]        = useState<CreateForm>(BLANK_FORM);
+  const [errors,      setErrors]      = useState<Record<string, string | null>>({});
   const [saving,      setSaving]      = useState(false);
   const [uploadState, setUploadState] = useState<UploadState | null>(null);
   const [uploading,   setUploading]   = useState(false);
@@ -274,9 +284,24 @@ function CreateModal({ onClose }: { onClose: () => void }) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.doctor.name.trim())  { toast.error("Doctor name is required"); return; }
-    if (!form.patientName.trim())  { toast.error("Patient name is required"); return; }
     if (form.drugs.every(d => !d.medicineName.trim())) { toast.error("Add at least one medicine"); return; }
+
+    // Mirrors CreatePrescriptionRequest: @ProfessionalName on both names, @IndianMobile
+    // on both phones. Validated here so the reason lands on the field instead of
+    // arriving as a 400 after the form has been filled in.
+    const problems: Record<string, string | null> = {
+      doctorName:   validateProfessionalName(form.doctor.name, { label: "Doctor name", maxLength: 200 }),
+      patientName:  validateProfessionalName(form.patientName, { label: "Patient name", maxLength: 200 }),
+      doctorPhone:  validateIndianMobile(form.doctorPhone,  { label: "Doctor phone",  required: false }),
+      patientPhone: validateIndianMobile(form.patientPhone, { label: "Patient phone", required: false }),
+    };
+    const firstProblem = Object.values(problems).find(Boolean);
+    if (firstProblem) {
+      setErrors(problems);
+      toast.error(firstProblem);
+      return;
+    }
+    setErrors({});
 
     setSaving(true);
     try {
@@ -385,11 +410,23 @@ function CreateModal({ onClose }: { onClose: () => void }) {
                 </label>
                 <input
                   value={form.patientName}
-                  onChange={setField("patientName")}
+                  // Sanitised per keystroke, so a digit never lands in the field. A
+                  // patient name is transcribed off a paper script; the professional
+                  // rule keeps "Ram Kumar (S/O Shyam)" typeable while blocking digits.
+                  onChange={(e) => {
+                    setForm(f => ({ ...f, patientName: sanitizeProfessionalName(e.target.value) }));
+                    setErrors(x => ({ ...x, patientName: null }));
+                  }}
                   required
+                  maxLength={200}
+                  aria-invalid={!!errors.patientName}
                   placeholder="Full name"
-                  className="w-full border-b border-slate-300 focus:border-blue-500 pb-1 text-[14px] text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none transition-colors"
+                  className={cn(
+                    "w-full border-b pb-1 text-[14px] text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none transition-colors",
+                    errors.patientName ? "border-red-400 focus:border-red-500" : "border-slate-300 focus:border-blue-500",
+                  )}
                 />
+                {errors.patientName && <p className="text-[11px] text-red-500 font-medium mt-1">{errors.patientName}</p>}
               </div>
               <div>
                 <label className="block text-[11px] font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Age</label>
@@ -407,11 +444,19 @@ function CreateModal({ onClose }: { onClose: () => void }) {
                 <label className="block text-[11px] font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Phone</label>
                 <input
                   value={form.patientPhone}
-                  onChange={setField("patientPhone")}
-                  type="tel"
-                  placeholder="Patient contact"
-                  className="w-full border-b border-slate-300 focus:border-blue-500 pb-1 text-[14px] text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none transition-colors"
+                  onChange={(e) => {
+                    setForm(f => ({ ...f, patientPhone: normalizeIndianMobile(e.target.value) }));
+                    setErrors(x => ({ ...x, patientPhone: null }));
+                  }}
+                  type="tel" inputMode="numeric" maxLength={10}
+                  aria-invalid={!!errors.patientPhone}
+                  placeholder="10-digit mobile"
+                  className={cn(
+                    "w-full border-b pb-1 text-[14px] text-slate-800 placeholder-slate-400 bg-transparent focus:outline-none transition-colors",
+                    errors.patientPhone ? "border-red-400 focus:border-red-500" : "border-slate-300 focus:border-blue-500",
+                  )}
                 />
+                {errors.patientPhone && <p className="text-[11px] text-red-500 font-medium mt-1">{errors.patientPhone}</p>}
               </div>
               <div>
                 <label className="block text-[11px] font-bold text-slate-500 mb-1.5 uppercase tracking-wide">Gender</label>

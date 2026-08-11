@@ -27,8 +27,23 @@
   },
   "packageManager": "pnpm@9.12.0",
   "pnpm": {
+    "//overrides": [
+      "Transitive dependencies pinned above a published advisory. Nothing in the tree",
+      "declares any of these directly at the vulnerable version, so a range bump on our",
+      "own dependencies cannot reach them — an override is the only lever.",
+      "",
+      "Each selector is scoped to the advisory's own vulnerable range rather than the",
+      "bare package name: an unconditional override would drag every major in the tree",
+      "up to one version, which is how a security patch turns into a build break.",
+      "",
+      "The brace-expansion entry has widened once already (GHSA-3jxr-9vmj-r5cp, then",
+      "GHSA-rgw5-rvv9-x895 and its follow-up). Widen the range here rather than adding",
+      "a second entry, so two selectors can never disagree about the same version."
+    ],
     "overrides": {
-      "brace-expansion@>=3.0.0 <5.0.7": ">=5.0.7"
+      "brace-expansion@>=3.0.0 <5.0.9": ">=5.0.9",
+      "postcss@>=8.0.0 <8.5.18": ">=8.5.18",
+      "nanoid@>=3.0.0 <3.3.17": ">=3.3.17"
     }
   }
 }

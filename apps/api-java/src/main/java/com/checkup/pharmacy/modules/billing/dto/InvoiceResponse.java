@@ -27,6 +27,11 @@ public record InvoiceResponse(
         BigDecimal igst,
         BigDecimal totalGst,
         BigDecimal totalAmount,
+        // Stored so a bill can be reconciled from what it reports:
+        // taxable + totalGst + extraCharges + adjustmentAmount + roundOff == totalAmount.
+        BigDecimal extraCharges,
+        BigDecimal adjustmentAmount,
+        BigDecimal roundOff,
         BigDecimal returnedAmount,
         boolean isInterstate,
         String notes,

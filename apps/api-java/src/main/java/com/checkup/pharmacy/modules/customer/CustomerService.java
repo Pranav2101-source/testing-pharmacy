@@ -4,6 +4,8 @@ import com.checkup.pharmacy.common.enums.CustomerType;
 import com.checkup.pharmacy.common.exception.BadRequestException;
 import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
+import com.checkup.pharmacy.common.util.StableSort;
+import com.checkup.pharmacy.common.validation.ValidationPatterns;
 import com.checkup.pharmacy.modules.billing.InvoiceRepository;
 import com.checkup.pharmacy.modules.customer.dto.CustomerPageResponse;
 import com.checkup.pharmacy.modules.customer.dto.CustomerRequest;
@@ -51,7 +53,7 @@ public class CustomerService {
     public CustomerPageResponse list(String search, String customerTypeRaw, int page, int limit) {
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), 100);
-        PageRequest pageRequest = PageRequest.of(safePage - 1, safeLimit, Sort.by("name").ascending());
+        PageRequest pageRequest = PageRequest.of(safePage - 1, safeLimit, StableSort.of(Sort.by("name").ascending()));
 
         CustomerType customerType = parseCustomerType(customerTypeRaw, false);
         String customerTypeParam = customerType == null ? null : customerType.name();
@@ -72,7 +74,7 @@ public class CustomerService {
             throw new ConflictException("A customer with this card number already exists");
         }
 
-        Customer customer = Customer.create(pharmacyId, req.name().trim());
+        Customer customer = Customer.create(pharmacyId, ValidationPatterns.normalizeName(req.name()));
         applyRequest(customer, req, cardNumber);
         customerRepository.save(customer);
         return toResponse(customer, 0L);
@@ -126,9 +128,13 @@ public class CustomerService {
     }
 
     private void applyRequest(Customer customer, CustomerRequest req, String cardNumber) {
+        // Normalise before storing: @IndianMobile tolerates "+91 98765 43210" so a
+        // pasted number is not a user error, but the same person must not end up
+        // stored two ways — customer lookup and duplicate detection both match on the
+        // raw column. Names collapse repeated spaces for the same reason.
         customer.applyFields(
-                req.name().trim(),
-                blankToNull(req.phone()),
+                ValidationPatterns.normalizeName(req.name()),
+                blankToNull(ValidationPatterns.normalizeMobile(req.phone())),
                 blankToNull(req.email()),
                 blankToNull(req.address()),
                 blankToNull(req.state()),

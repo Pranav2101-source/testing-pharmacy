@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   formatDate, isExpired, isNearExpiry,
   istRangeStart, istRangeEnd, istRangeParams, financialYearShort,
+  istCalendarDate, istMonthStart,
 } from "./date.js";
 
 // ── IST range helpers ─────────────────────────────────────────────────────────
@@ -202,5 +203,35 @@ describe("financialYearShort", () => {
 
   it("produces the two-digit hyphenated form the backend emits", () => {
     expect(financialYearShort(new Date("2026-08-02T12:00:00+05:30"))).toMatch(/^\d{2}-\d{2}$/);
+  });
+});
+
+describe("istCalendarDate / istMonthStart", () => {
+  it("returns the IST date, not the UTC date", () => {
+    // 02:00 IST on the 8th is still the 7th in UTC. A date box filled from the UTC
+    // value showed yesterday, so a report defaulting to "today" silently omitted
+    // everything sold since IST midnight.
+    expect(istCalendarDate(new Date("2026-08-08T02:00:00+05:30"))).toBe("2026-08-08");
+    expect(istCalendarDate(new Date("2026-08-08T23:59:00+05:30"))).toBe("2026-08-08");
+    expect(istCalendarDate(new Date("2026-08-08T00:00:00+05:30"))).toBe("2026-08-08");
+  });
+
+  it("month start is the 1st, not the previous month's last day", () => {
+    // The original defect: new Date(y, m, 1) is LOCAL midnight, which in IST is
+    // 18:30 UTC on the last day of the previous month — so a GST summary defaulting
+    // to "this month" began one day early, in the previous filing period.
+    expect(istMonthStart(new Date("2026-08-08T11:00:00+05:30"))).toBe("2026-08-01");
+    expect(istMonthStart(new Date("2026-08-01T00:05:00+05:30"))).toBe("2026-08-01");
+    expect(istMonthStart(new Date("2026-01-15T11:00:00+05:30"))).toBe("2026-01-01");
+  });
+
+  it("round-trips through the range helpers", () => {
+    const day = istCalendarDate(new Date("2026-08-08T02:00:00+05:30"));
+    expect(istRangeStart(day)).toBe("2026-08-07T18:30:00.000Z"); // IST midnight of the 8th
+    expect(istRangeEnd(day)).toBe("2026-08-08T18:29:59.999Z");
+  });
+
+  it("returns empty string for an invalid date rather than throwing", () => {
+    expect(istCalendarDate(new Date("nonsense"))).toBe("");
   });
 });

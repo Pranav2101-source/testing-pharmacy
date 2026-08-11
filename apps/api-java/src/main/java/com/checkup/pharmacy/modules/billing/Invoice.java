@@ -95,6 +95,22 @@ public class Invoice extends BaseEntity {
     @Column(name = "totalAmount")
     private BigDecimal totalAmount;
 
+    /**
+     * Bill-level additions, stored so this invoice can be re-derived from its own row:
+     * {@code taxableAmount + totalGst + extraCharges + adjustmentAmount + roundOff
+     * == totalAmount}. Before these existed the difference was an unexplained lump that
+     * nobody — pharmacist, auditor, or this codebase — could reproduce after the fact.
+     */
+    @Column(name = "extraCharges")
+    private BigDecimal extraCharges = BigDecimal.ZERO;
+
+    @Column(name = "adjustmentAmount")
+    private BigDecimal adjustmentAmount = BigDecimal.ZERO;
+
+    /** Signed: rupee rounding goes either way, and prints as its own invoice line. */
+    @Column(name = "roundOff")
+    private BigDecimal roundOff = BigDecimal.ZERO;
+
     @Column(name = "returnedAmount")
     private BigDecimal returnedAmount = BigDecimal.ZERO;
 
@@ -138,7 +154,8 @@ public class Invoice extends BaseEntity {
                                  PaymentStatus paymentStatus, boolean isInterstate, String notes,
                                  String idempotencyKey, BigDecimal subtotal, BigDecimal discountAmount,
                                  BigDecimal taxableAmount, BigDecimal cgst, BigDecimal sgst, BigDecimal igst,
-                                 BigDecimal totalGst, BigDecimal totalAmount) {
+                                 BigDecimal totalGst, BigDecimal totalAmount,
+                                 BigDecimal extraCharges, BigDecimal adjustmentAmount, BigDecimal roundOff) {
         Invoice inv = new Invoice();
         inv.assignId(Cuid.generate());
         inv.pharmacyId = pharmacyId;
@@ -165,6 +182,9 @@ public class Invoice extends BaseEntity {
         inv.igst = igst;
         inv.totalGst = totalGst;
         inv.totalAmount = totalAmount;
+        inv.extraCharges = extraCharges != null ? extraCharges : BigDecimal.ZERO;
+        inv.adjustmentAmount = adjustmentAmount != null ? adjustmentAmount : BigDecimal.ZERO;
+        inv.roundOff = roundOff != null ? roundOff : BigDecimal.ZERO;
         return inv;
     }
 
@@ -186,6 +206,12 @@ public class Invoice extends BaseEntity {
     }
 
     public String getPharmacyId() { return pharmacyId; }
+
+    public BigDecimal getExtraCharges() { return extraCharges; }
+
+    public BigDecimal getAdjustmentAmount() { return adjustmentAmount; }
+
+    public BigDecimal getRoundOff() { return roundOff; }
 
     public String getInvoiceNumber() { return invoiceNumber; }
 

@@ -5,6 +5,7 @@ import com.checkup.pharmacy.common.exception.BadRequestException;
 import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.exception.UnauthorizedException;
+import com.checkup.pharmacy.common.validation.ValidationPatterns;
 import com.checkup.pharmacy.common.enums.AuditModule;
 import com.checkup.pharmacy.common.enums.AuditStatus;
 import com.checkup.pharmacy.common.mail.EmailPayload;
@@ -94,8 +95,13 @@ public class AuthService {
             throw new ConflictException("An account with this email already exists");
         }
 
+        // Stored as bare 10 digits regardless of how it was typed — @IndianMobile
+        // accepts "+91 98765 43210", and a pharmacy that can be looked up by phone
+        // must not depend on which spelling the owner used at signup.
+        String phone = ValidationPatterns.normalizeMobile(req.phone());
+
         Pharmacy pharmacy = Pharmacy.create(req.pharmacyName(), uniqueSlug(req.pharmacyName()));
-        pharmacy.setPhone(req.phone());
+        pharmacy.setPhone(phone);
         pharmacy.setEmail(req.email());
         pharmacy.setCity(req.city());
         pharmacy.setState(req.state());
@@ -107,9 +113,9 @@ public class AuthService {
 
         User user = User.create(
                 pharmacy.getId(),
-                req.ownerName(),
+                ValidationPatterns.normalizeName(req.ownerName()),
                 req.email(),
-                req.phone(),
+                phone,
                 passwordEncoder.encode(req.password()),
                 Role.OWNER);
         userRepository.save(user);
