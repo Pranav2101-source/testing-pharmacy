@@ -106,4 +106,46 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
     }
 
     List<InventoryMovement> findByInventoryIdInAndReferenceType(List<String> inventoryIds, String referenceType);
+
+    interface ExpiryWriteOffRow {
+        long getBatches();
+        Long getUnits();
+        java.math.BigDecimal getCost();
+        java.math.BigDecimal getItc();
+    }
+
+    /**
+     * Input tax credit blocked by expired stock written off in the period — GSTR-3B Table 4(B)(1).
+     *
+     * <p>Section 17(5)(h) blocks credit on goods "lost, stolen, destroyed, written off". Expired
+     * medicine is destroyed by definition, so the credit claimed when it was bought has to be
+     * reversed in the period it is disposed of — which is what makes the write-off the taxable
+     * event, and why this reads movements rather than the current state of the batch.
+     *
+     * <p>ONLY {@code EXPIRY_REMOVAL}. Deliberately not "every OUT adjustment", which would be the
+     * obvious wider net and would be wrong twice over: confirming a supplier return also writes
+     * {@code ADJUSTMENT/OUT}, so those units would have their credit reversed HERE as well as in
+     * Table 4(B)(2) through the debit note — the same rupees counted twice — and an ordinary
+     * stock correction is not a disposal at all. A dedicated movement type is what keeps a tax
+     * reversal from being inferred out of unrelated bookkeeping.
+     *
+     * <p>Cost comes from the batch's own {@code purchaseRate}, which survives the write-off (only
+     * the quantity is zeroed), and the rate from the medicine. Both are current values; see
+     * {@code InventoryRepository.expiredStockOnBooks} for the same caveat about which tax head
+     * the credit was originally claimed under.
+     */
+    @Query("""
+            SELECT COUNT(m) AS batches,
+                   COALESCE(SUM(m.quantity), 0) AS units,
+                   COALESCE(SUM(i.purchaseRate * m.quantity), 0) AS cost,
+                   COALESCE(SUM(i.purchaseRate * m.quantity * med.gstRate / 100), 0) AS itc
+            FROM InventoryMovement m
+            JOIN Inventory i ON i.id = m.inventoryId
+            JOIN Medicine med ON med.id = i.medicineId
+            WHERE m.pharmacyId = :pharmacyId
+              AND CAST(m.type AS string) = 'EXPIRY_REMOVAL'
+              AND m.createdAt >= :from AND m.createdAt <= :to
+            """)
+    ExpiryWriteOffRow expiryWriteOffItc(@Param("pharmacyId") String pharmacyId,
+                                        @Param("from") Instant from, @Param("to") Instant to);
 }

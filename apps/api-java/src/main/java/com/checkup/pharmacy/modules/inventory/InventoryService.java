@@ -26,6 +26,8 @@ import com.checkup.pharmacy.modules.inventory.dto.LedgerPageResponse;
 import com.checkup.pharmacy.modules.inventory.dto.PatchInventoryRequest;
 import com.checkup.pharmacy.modules.inventory.dto.ReservationItemResult;
 import com.checkup.pharmacy.modules.inventory.dto.ReserveStockRequest;
+import com.checkup.pharmacy.modules.inventory.dto.WriteOffExpiredRequest;
+import com.checkup.pharmacy.modules.inventory.dto.WriteOffExpiredResponse;
 import com.checkup.pharmacy.modules.location.Rack;
 import com.checkup.pharmacy.modules.location.RackRepository;
 import com.checkup.pharmacy.modules.location.Shelf;
@@ -783,6 +785,107 @@ public class InventoryService {
                             medicine.getSchedule(), medicine.getPackSize())));
         }
         return out;
+    }
+
+    // ── Expiry write-off ─────────────────────────────────────────────────────
+
+    /**
+     * Takes expired batches off the books, permanently.
+     *
+     * <p>WHY THIS EXISTS. Nothing in this system ever disposed of expired stock.
+     * {@code applyStatusChange} refuses to let anyone set {@link BatchStatus#EXPIRED} by hand —
+     * "EXPIRED is set automatically" — and nothing set it automatically; {@code EXPIRY_REMOVAL}
+     * was declared in {@link MovementType} and never written. So an expired batch kept its
+     * quantity and its full cost indefinitely, with three consequences: the stock valuation was
+     * overstated at cost, dead-stock reporting counted goods that could never be sold, and the
+     * input tax credit claimed on them was never reversed although section 17(5)(h) blocks
+     * credit on goods that are destroyed.
+     *
+     * <p>EVERY ID IS RE-CHECKED SERVER-SIDE. The caller names the batches, but the caller does
+     * not get to decide what "expired" means: a batch that is still in date is REFUSED, not
+     * quietly skipped, because silently ignoring one id in a list of two hundred is how a
+     * pharmacist ends up believing stock was disposed of when it is still on the shelf. The
+     * whole request fails together — this is a destructive, irreversible operation, so a partial
+     * application is the worst outcome available.
+     *
+     * <p>Rows are LOCKED before they are read for update. Writing off decrements to zero, and an
+     * unlocked read-then-write races a concurrent sale of the same batch: the sale would decrement
+     * from a quantity this transaction is about to overwrite, and the movement ledger would record
+     * a "before" figure that never existed.
+     *
+     * <p>Already-empty expired batches are accepted and skipped rather than refused. Writing off
+     * nothing is not an error, and refusing would make the obvious retry-after-a-partial-failure
+     * impossible.
+     */
+    @RetryOnConflict
+    @Transactional
+    public WriteOffExpiredResponse writeOffExpired(WriteOffExpiredRequest req) {
+        String pharmacyId = TenantContext.pharmacyId();
+        String userId = TenantContext.userId();
+        List<String> ids = req.inventoryIds().stream().distinct().toList();
+
+        List<Inventory> batches = inventoryRepository.lockAllByIdInAndPharmacyId(ids, pharmacyId);
+        if (batches.size() != ids.size()) {
+            // Tenant-scoped lookup, so a missing row is either another pharmacy's or nonexistent.
+            // Same message for both: confirming which would leak the existence of another
+            // tenant's batch.
+            throw new NotFoundException("One or more of those batches could not be found");
+        }
+
+        Instant now = Instant.now();
+        List<String> notExpired = batches.stream()
+                .filter(b -> !b.getExpiryDate().isBefore(now))
+                .map(Inventory::getBatchNumber)
+                .toList();
+        if (!notExpired.isEmpty()) {
+            throw new UnprocessableEntityException("These batches have not expired yet and cannot be "
+                    + "written off as expired: " + String.join(", ", notExpired)
+                    + ". To remove stock that is still in date, use a stock adjustment instead.");
+        }
+
+        Map<String, Medicine> medicines = medicineRepository
+                .findAllById(batches.stream().map(Inventory::getMedicineId).distinct().toList())
+                .stream().collect(java.util.stream.Collectors.toMap(Medicine::getId, m -> m));
+
+        long batchesWritten = 0;
+        long unitsWritten = 0;
+        BigDecimal cost = BigDecimal.ZERO;
+        BigDecimal itc = BigDecimal.ZERO;
+
+        for (Inventory batch : batches) {
+            int before = batch.getQuantity();
+            if (before <= 0) {
+                continue; // nothing left to write off; not an error
+            }
+            batch.writeOffExpired();
+
+            BigDecimal batchCost = batch.getPurchaseRate().multiply(BigDecimal.valueOf(before));
+            Medicine medicine = medicines.get(batch.getMedicineId());
+            BigDecimal gstRate = medicine != null && medicine.getGstRate() != null
+                    ? medicine.getGstRate() : BigDecimal.ZERO;
+
+            batchesWritten++;
+            unitsWritten += before;
+            cost = cost.add(batchCost);
+            itc = itc.add(batchCost.multiply(gstRate).divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP));
+
+            // EXPIRY_REMOVAL, not ADJUSTMENT: this is the movement type GSTR-3B Table 4(B)(1)
+            // is derived from, and burying it among ordinary adjustments would make the tax
+            // reversal indistinguishable from a stock correction.
+            //
+            // referenceType is EXPIRY_WRITEOFF — one word, no underscore before OFF. It is not
+            // free text: a CHECK constraint allowlists this column (migration
+            // 20260619000017), and this value was already in the list, reserved for exactly
+            // this operation years before anything wrote it. Spell it any other way and the
+            // insert is rejected at the database.
+            movementRepository.save(InventoryMovement.record(pharmacyId, batch.getId(), userId,
+                    MovementType.EXPIRY_REMOVAL, MovementDirection.OUT, before, before, 0,
+                    "EXPIRY_WRITEOFF", null,
+                    "Expired stock written off: " + req.reason()));
+        }
+
+        return new WriteOffExpiredResponse(batchesWritten, unitsWritten,
+                cost.setScale(2, RoundingMode.HALF_UP), itc.setScale(2, RoundingMode.HALF_UP));
     }
 
     // ── Batch Recall ─────────────────────────────────────────────────────────

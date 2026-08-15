@@ -78,6 +78,7 @@ public class PurchasesService {
     private final com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository;
     private final UserRepository userRepository;
     private final DocumentSequenceService sequenceService;
+    private final com.checkup.pharmacy.modules.pharmacy.PharmacyRepository pharmacyRepository;
     private final com.checkup.pharmacy.common.idempotency.DuplicateSubmitGuard duplicateSubmitGuard;
 
     public PurchasesService(PurchaseOrderRepository purchaseOrderRepository, GoodsReceiptNoteRepository grnRepository,
@@ -86,7 +87,9 @@ public class PurchasesService {
                             MedicineRepository medicineRepository,
                             com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository,
                             UserRepository userRepository, DocumentSequenceService sequenceService,
+                            com.checkup.pharmacy.modules.pharmacy.PharmacyRepository pharmacyRepository,
                             com.checkup.pharmacy.common.idempotency.DuplicateSubmitGuard duplicateSubmitGuard) {
+        this.pharmacyRepository = pharmacyRepository;
         this.purchaseOrderRepository = purchaseOrderRepository;
         this.grnRepository = grnRepository;
         this.grnItemRepository = grnItemRepository;
@@ -352,7 +355,7 @@ public class PurchasesService {
         grn.setSourceUploadId(req.sourceUploadId());
         grnRepository.save(grn);
 
-        List<GRNItem> items = buildGrnItems(pharmacyId, grn.getId(), req.items(), totals);
+        List<GRNItem> items = buildGrnItems(pharmacyId, grn.getId(), req.items(), totals, isInterstate(supplier));
         grnItemRepository.saveAll(items);
         grn.applyDraftEdit(grn.getSupplierInvoiceNo(), grn.getSupplierInvoiceDate(), grn.getNotes(), totals[0], totals[1]);
 
@@ -382,7 +385,8 @@ public class PurchasesService {
             checkNearExpiry(req.items(), req.allowNearExpiry());
             grnItemRepository.deleteByGrnId(id);
             BigDecimal[] totals = new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO};
-            items = buildGrnItems(grn.getPharmacyId(), id, req.items(), totals);
+            items = buildGrnItems(grn.getPharmacyId(), id, req.items(), totals,
+                    isInterstate(loadSupplier(grn.getSupplierId())));
             grnItemRepository.saveAll(items);
             subtotal = totals[0];
             totalGst = totals[1];
@@ -398,19 +402,20 @@ public class PurchasesService {
         return toResponse(grn, supplier, items, null);
     }
 
-    private List<GRNItem> buildGrnItems(String pharmacyId, String grnId, List<GrnItemRequest> requests, BigDecimal[] totalsOut) {
+    private List<GRNItem> buildGrnItems(String pharmacyId, String grnId, List<GrnItemRequest> requests,
+                                        BigDecimal[] totalsOut, boolean isInterstate) {
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal totalGst = BigDecimal.ZERO;
         List<GRNItem> items = new ArrayList<>();
         for (GrnItemRequest r : requests) {
             GstCalculator.PurchaseLineGst gst = GstCalculator.calcPurchaseLineGst(
-                    r.purchaseRate(), r.receivedQty(), r.discountOrZero(), r.gstRate());
+                    r.purchaseRate(), r.receivedQty(), r.discountOrZero(), r.gstRate(), isInterstate);
             subtotal = subtotal.add(gst.lineTotal());
             totalGst = totalGst.add(gst.totalGst());
             items.add(GRNItem.create(pharmacyId, grnId, r.medicineId(), r.medicineName(), r.batchNumber(),
                     r.expiryDate(), r.orderedQty(), r.receivedQty(), r.freeQtyOrZero(), r.purchaseUnitOrDefault(),
                     r.conversionFactorOrDefault(), r.purchaseRate(), r.mrp(), r.discountOrZero(), r.gstRate(),
-                    gst.cgst(), gst.sgst(), gst.amount()));
+                    gst.cgst(), gst.sgst(), gst.igst(), gst.amount()));
         }
         totalsOut[0] = subtotal;
         totalsOut[1] = totalGst;
@@ -593,6 +598,30 @@ public class PurchasesService {
     private GoodsReceiptNote loadGrn(String id) {
         return grnRepository.findByIdAndPharmacyId(id, TenantContext.pharmacyId())
                 .orElseThrow(() -> new NotFoundException("GRN not found"));
+    }
+
+    /**
+     * Whether buying from this supplier attracts IGST instead of CGST + SGST.
+     *
+     * <p>Mirrors the rule BillingService already applies to sales — compare the counterparty
+     * state against the pharmacy own state — so a purchase and a sale never disagree about
+     * what "inter-state" means.
+     *
+     * <p>Falls back to intra-state when either state is unknown. That is the safe direction:
+     * an unset pharmacy state would otherwise make every local purchase look inter-state and
+     * move the whole pharmacy input credit into the wrong column, which is far worse than
+     * leaving the handful of genuinely inter-state ones as they are recorded today. The
+     * GSTR-3B sheet flags anything it believes is misclassified rather than silently
+     * assuming.
+     */
+    private boolean isInterstate(Supplier supplier) {
+        String pharmacyState = pharmacyRepository.findById(TenantContext.pharmacyId())
+                .map(com.checkup.pharmacy.modules.pharmacy.Pharmacy::getState)
+                .orElse(null);
+        // Resolved through IndianState rather than compared as raw text — "Tamilnadu" and
+        // "Tamil Nadu" are the same state, and equalsIgnoreCase said otherwise. Same call
+        // the sales and debit-note paths make, so the three can never disagree.
+        return com.checkup.pharmacy.common.tax.TaxJurisdiction.isInterstate(pharmacyState, supplier.getState());
     }
 
     private Supplier loadSupplier(String id) {

@@ -1,5 +1,6 @@
 package com.checkup.pharmacy.modules.billing;
 
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -162,11 +163,24 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
             """)
     long countActiveInRange(@Param("pharmacyId") String pharmacyId, @Param("from") Instant from, @Param("to") Instant to);
 
+    /**
+     * The period's invoice totals.
+     *
+     * <p>{@code extraCharges}, {@code adjustmentAmount} and {@code roundOff} are summed here
+     * because the GST summary screen cannot reconcile without them. Every invoice satisfies
+     * {@code taxableAmount + totalGst + extraCharges + adjustmentAmount + roundOff ==
+     * totalAmount} — the three middle terms were simply never selected, so the summary showed
+     * a taxable value and a tax total that did not add up to the net figure printed beneath
+     * them, on the tab a GSTR-1 return is transcribed from.
+     */
     @Query("""
             SELECT COALESCE(SUM(i.subtotal), 0) AS subtotal, COALESCE(SUM(i.discountAmount), 0) AS discountAmount,
                    COALESCE(SUM(i.taxableAmount), 0) AS taxableAmount, COALESCE(SUM(i.cgst), 0) AS cgst,
                    COALESCE(SUM(i.sgst), 0) AS sgst, COALESCE(SUM(i.igst), 0) AS igst,
                    COALESCE(SUM(i.totalGst), 0) AS totalGst,
+                   COALESCE(SUM(i.extraCharges), 0) AS extraCharges,
+                   COALESCE(SUM(i.adjustmentAmount), 0) AS adjustmentAmount,
+                   COALESCE(SUM(i.roundOff), 0) AS roundOff,
                    COALESCE(SUM(i.totalAmount), 0) AS totalAmount, COUNT(i) AS cnt
             FROM Invoice i
             WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false
@@ -215,6 +229,181 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
     List<DailySalesRow> dailySalesSeries(@Param("pharmacyId") String pharmacyId,
                                          @Param("from") Instant from, @Param("to") Instant to);
 
+    /**
+     * The same series bucketed by IST calendar MONTH ({@code YYYY-MM}) instead of day.
+     *
+     * <p>Exists because the chart stops being readable long before the query stops being
+     * cheap: a quarter is 90 bars and a year is 365, in a bar chart sized for seven. The
+     * caller picks the bucket from the width of the range, so "This Year" draws twelve
+     * bars rather than a picket fence.
+     *
+     * <p>Deliberately a separate method rather than an interpolated format string. The
+     * pattern sits inside the SQL text, so building it from a parameter would mean
+     * concatenating caller input into a query — and the only thing that would buy is one
+     * saved method. See {@code dailySalesSeries} for why both {@code AT TIME ZONE} halves
+     * are required; the same reasoning applies unchanged here, and getting it wrong shifts
+     * a month boundary rather than a day one.
+     */
+    @Query(value = """
+            SELECT to_char((i."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date,
+                           'YYYY-MM') AS day,
+                   COUNT(*) AS invoiceCount,
+                   COALESCE(SUM(i."totalAmount"), 0) AS revenue,
+                   COALESCE(SUM(i."totalGst"), 0) AS gstCollected
+            FROM invoices i
+            WHERE i."pharmacyId" = :pharmacyId AND i."isCancelled" = false
+              AND i."createdAt" >= :from AND i."createdAt" <= :to
+            GROUP BY 1
+            ORDER BY 1
+            """, nativeQuery = true)
+    List<DailySalesRow> monthlySalesSeries(@Param("pharmacyId") String pharmacyId,
+                                           @Param("from") Instant from, @Param("to") Instant to);
+
+    // ── Customer analytics ─────────────────────────────────────────────────────
+    //
+    // Everything below groups by customerId, NEVER by customerPhone, and the reason is
+    // not performance (though there is no index on customerPhone and there is one on
+    // customerId). A phone number is not a person here: 196 of the numbers carried over
+    // from the previous system are shared between family members — one of them is both
+    // MOULESWARAN and RATHA — which is why that import keyed patients on their hospital
+    // registration number instead. Grouping by phone would merge a family into a single
+    // "customer" and put the wrong name on a call list.
+    //
+    // Bills with no customerId are walk-ins. They are excluded from every grouping here
+    // and counted separately, so the caller can say how much of the period is unattributed
+    // rather than quietly under-reporting it.
+
+    interface CustomerActivityRow {
+        String getCustomerId();
+        long getBills();
+        BigDecimal getRevenue();
+        Instant getLastVisit();
+    }
+
+    @Query("""
+            SELECT i.customerId AS customerId, COUNT(i) AS bills,
+                   COALESCE(SUM(i.totalAmount), 0) AS revenue, MAX(i.createdAt) AS lastVisit
+            FROM Invoice i
+            WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false AND i.customerId IS NOT NULL
+              AND i.createdAt >= :from AND i.createdAt <= :to
+            GROUP BY i.customerId
+            ORDER BY SUM(i.totalAmount) DESC
+            """)
+    List<CustomerActivityRow> topCustomersInRange(@Param("pharmacyId") String pharmacyId,
+                                                  @Param("from") Instant from, @Param("to") Instant to, Limit limit);
+
+    interface CustomerPeriodTotalsRow {
+        Long getIdentifiedCustomers();
+        Long getIdentifiedBills();
+        Long getWalkInBills();
+        BigDecimal getIdentifiedRevenue();
+    }
+
+    @Query("""
+            SELECT COUNT(DISTINCT i.customerId) AS identifiedCustomers,
+                   COALESCE(SUM(CASE WHEN i.customerId IS NOT NULL THEN 1 ELSE 0 END), 0) AS identifiedBills,
+                   COALESCE(SUM(CASE WHEN i.customerId IS NULL THEN 1 ELSE 0 END), 0) AS walkInBills,
+                   COALESCE(SUM(CASE WHEN i.customerId IS NOT NULL THEN i.totalAmount ELSE 0 END), 0) AS identifiedRevenue
+            FROM Invoice i
+            WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false
+              AND i.createdAt >= :from AND i.createdAt <= :to
+            """)
+    CustomerPeriodTotalsRow customerPeriodTotals(@Param("pharmacyId") String pharmacyId,
+                                                 @Param("from") Instant from, @Param("to") Instant to);
+
+    /**
+     * Customers whose FIRST EVER bill falls inside the range — the new ones.
+     *
+     * <p>Scans the customer's whole history rather than the range, which is the entire
+     * point: someone billed in July for the first time is new in July, and someone billed
+     * in July who also bought last year is not. A range-local query cannot tell them apart
+     * and would report every returning customer as new in their first month on the system.
+     *
+     * <p>Returns the ids rather than a count so the caller can size the list itself; the
+     * result is bounded by how many customers are new in one period, not by the table.
+     */
+    @Query("""
+            SELECT i.customerId
+            FROM Invoice i
+            WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false AND i.customerId IS NOT NULL
+            GROUP BY i.customerId
+            HAVING MIN(i.createdAt) >= :from AND MIN(i.createdAt) <= :to
+            """)
+    List<String> customerIdsFirstBilledInRange(@Param("pharmacyId") String pharmacyId,
+                                               @Param("from") Instant from, @Param("to") Instant to);
+
+    /**
+     * Customers who bought repeatedly and have since gone quiet — the call list.
+     *
+     * <p>Deliberately NOT range-scoped. "Has not been in for ninety days" is a fact about
+     * today, not about a reporting window, and scoping it to a period would produce the
+     * nonsense of someone being lapsed in March and not in April.
+     *
+     * <p>{@code minVisits} is what separates a lapsed regular from a stranger who came once:
+     * a single visit eighteen months ago is not a customer who left, and burying the real
+     * ones under thousands of those would make the list unusable. Ordered by lifetime value,
+     * so the most expensive silences are at the top.
+     */
+    @Query("""
+            SELECT i.customerId AS customerId, COUNT(i) AS bills,
+                   COALESCE(SUM(i.totalAmount), 0) AS revenue, MAX(i.createdAt) AS lastVisit
+            FROM Invoice i
+            WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false AND i.customerId IS NOT NULL
+            GROUP BY i.customerId
+            HAVING MAX(i.createdAt) < :inactiveSince AND COUNT(i) >= :minVisits
+            ORDER BY SUM(i.totalAmount) DESC
+            """)
+    List<CustomerActivityRow> lapsedCustomers(@Param("pharmacyId") String pharmacyId,
+                                              @Param("inactiveSince") Instant inactiveSince,
+                                              @Param("minVisits") long minVisits, Limit limit);
+
+    interface LateCancellationRow {
+        long getCnt();
+        BigDecimal getTaxableValue();
+        BigDecimal getTotalGst();
+    }
+
+    /**
+     * Invoices that were live when a period ended and have been cancelled since.
+     *
+     * <p>Every compliance query filters {@code isCancelled = false}, and nothing bounds how old
+     * an invoice may be when it is cancelled — a CASH bill records no InvoicePayment row, so the
+     * "money already collected" guard on cancellation never fires for one. The consequence is
+     * quiet: re-run last quarter's GSTR-3B after someone cancels a bill from it and the figures
+     * come out lower than what was filed, with nothing on the sheet to say why.
+     *
+     * <p>Sales returns were deliberately designed to avoid exactly this — a credit note is dated
+     * when it is issued, so a closed month cannot move. Cancellation is the hole in that
+     * reasoning, and this query is what makes the hole visible instead of closing it: blocking
+     * a late cancellation outright would break a legitimate workflow for a correction that is
+     * usually harmless, while leaving it silent is what makes it dangerous.
+     *
+     * <p>{@code cancelledAt > :to} is the whole test. An invoice cancelled INSIDE its own period
+     * is not interesting — it never counted towards anything anyone filed. Only one cancelled
+     * after the period closed changes an answer that was already given. When {@code to} is in
+     * the future (the ordinary "this month so far" case) this cannot match, which is correct.
+     */
+    @Query("""
+            SELECT COUNT(i) AS cnt,
+                   COALESCE(SUM(i.taxableAmount), 0) AS taxableValue,
+                   COALESCE(SUM(i.totalGst), 0) AS totalGst
+            FROM Invoice i
+            WHERE i.pharmacyId = :pharmacyId
+              AND i.isCancelled = true
+              AND i.createdAt >= :from AND i.createdAt <= :to
+              AND i.cancelledAt IS NOT NULL AND i.cancelledAt > :to
+            """)
+    LateCancellationRow cancelledAfterPeriod(@Param("pharmacyId") String pharmacyId,
+                                             @Param("from") Instant from, @Param("to") Instant to);
+
+    // Table 3.2 (inter-state supplies by place of supply) used to live here, reading
+    // invoice-level taxableAmount/igst. It moved to InvoiceItemRepository because 3.2 is
+    // declared as a SUBSET of 3.1(a) and the portal validates that — deriving the two from
+    // different granularities meant a mixed bill's nil-rated value inflated 3.2, credit notes
+    // were never deducted from it, and interstate bills with no customer vanished from it
+    // entirely. See InvoiceItemRepository.interstateSuppliesByPlaceOfSupply. Do not
+    // reintroduce an invoice-level version alongside it.
+
     interface DailySalesRow {
         String getDay();
         long getInvoiceCount();
@@ -232,6 +421,12 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
          *  against a non-zero total — figures that could not be reconciled or filed. */
         BigDecimal getIgst();
         BigDecimal getTotalGst();
+        /** Flat additions to the bill (delivery and the like). Not a taxable supply — see the query. */
+        BigDecimal getExtraCharges();
+        /** Signed manual correction applied to the bill. */
+        BigDecimal getAdjustmentAmount();
+        /** Signed rounding to the nearest rupee, Indian retail convention. */
+        BigDecimal getRoundOff();
         BigDecimal getTotalAmount();
         long getCnt();
     }

@@ -1,0 +1,33 @@
+-- Give a purchase line somewhere to record inter-state tax.
+--
+-- WHAT WAS WRONG
+-- `GstCalculator.calcPurchaseLineGst` had no inter-state branch at all: it split every
+-- purchase into equal CGST and SGST, and `grn_items` had no `igst` column to hold the
+-- alternative. A pharmacy in Tamil Nadu buying from a Maharashtra distributor pays IGST,
+-- and the whole amount was booked as half CGST and half SGST.
+--
+-- The GRN still added up, which is why nobody caught it — the tax TOTAL was right and only
+-- its classification was wrong. GSTR-3B is where that surfaces: Table 4(A)(5) has separate
+-- IGST, CGST and SGST columns for input tax credit, so the pharmacy was claiming credit
+-- under two heads it never paid while the head it did pay read zero.
+--
+-- The sales side has always got this right (`invoices.igst` exists and BillingService
+-- derives interstate from customer state vs pharmacy state). Only purchases were missing it.
+--
+-- DEFAULT 0, NOT NULL: every row written before this column existed came from the
+-- intra-state-only calculator, so zero IGST is not a placeholder for those rows — it is the
+-- correct value. No backfill is possible or wanted here; see the note below.
+--
+-- HISTORIC INTER-STATE PURCHASES ARE DELIBERATELY NOT REWRITTEN. Rows already recorded as
+-- CGST+SGST may sit behind GST returns that have been filed. Silently moving those amounts
+-- into a different tax head would put the database at odds with what was declared, and the
+-- pharmacy would have no record that it happened. The GSTR-3B working sheet flags any
+-- confirmed GRN from an out-of-state supplier that carries no IGST, so the discrepancy is
+-- shown to the accountant instead of being quietly corrected underneath them.
+--
+-- Adding a defaulted column takes no table-rewrite lock on Postgres 11+, so this is safe to
+-- run against a live pharmacy mid-day.
+--
+-- IF NOT EXISTS because this is applied to Supabase BY HAND — Railway never runs
+-- `prisma migrate deploy` here, and a hand-run that stops half way must be safe to repeat.
+ALTER TABLE "grn_items" ADD COLUMN IF NOT EXISTS "igst" DECIMAL(12, 2) NOT NULL DEFAULT 0;

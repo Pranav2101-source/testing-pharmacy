@@ -47,12 +47,15 @@ public class SupplierReturnsService {
     private final InventoryRepository inventoryRepository;
     private final InventoryMovementRepository movementRepository;
     private final DocumentSequenceService sequenceService;
+    private final com.checkup.pharmacy.modules.pharmacy.PharmacyRepository pharmacyRepository;
     private final com.checkup.pharmacy.common.idempotency.DuplicateSubmitGuard duplicateSubmitGuard;
 
     public SupplierReturnsService(SupplierReturnRepository returnRepository, SupplierRepository supplierRepository,
                                   InventoryRepository inventoryRepository, InventoryMovementRepository movementRepository,
                                   DocumentSequenceService sequenceService,
+                                  com.checkup.pharmacy.modules.pharmacy.PharmacyRepository pharmacyRepository,
                                   com.checkup.pharmacy.common.idempotency.DuplicateSubmitGuard duplicateSubmitGuard) {
+        this.pharmacyRepository = pharmacyRepository;
         this.returnRepository = returnRepository;
         this.supplierRepository = supplierRepository;
         this.inventoryRepository = inventoryRepository;
@@ -61,33 +64,48 @@ public class SupplierReturnsService {
         this.duplicateSubmitGuard = duplicateSubmitGuard;
     }
 
+    /** Same rule as the purchase side — see TaxJurisdiction for why it fails safe. */
+    private boolean isInterstate(com.checkup.pharmacy.modules.supplier.Supplier supplier) {
+        String pharmacyState = pharmacyRepository.findById(TenantContext.pharmacyId())
+                .map(com.checkup.pharmacy.modules.pharmacy.Pharmacy::getState)
+                .orElse(null);
+        return com.checkup.pharmacy.common.tax.TaxJurisdiction.isInterstate(pharmacyState, supplier.getState());
+    }
+
     @Transactional
     public SupplierReturnResponse create(CreateSupplierReturnRequest req) {
         duplicateSubmitGuard.guard("supplier.return.create", req);
         String pharmacyId = TenantContext.pharmacyId();
         Supplier supplier = loadSupplier(req.supplierId());
 
+        // A debit note reverses input tax credit, so it has to reverse it under the SAME head
+        // the purchase claimed it under. The igst slot on the snapshot has existed all along
+        // and was being handed a hard-coded zero, which meant a return against an inter-state
+        // purchase reversed CGST and SGST that were never claimed.
+        boolean isInterstate = isInterstate(supplier);
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal totalCgst = BigDecimal.ZERO;
         BigDecimal totalSgst = BigDecimal.ZERO;
+        BigDecimal totalIgst = BigDecimal.ZERO;
         List<SupplierReturnItemSnapshot> snapshots = new ArrayList<>();
         for (SupplierReturnItemRequest item : req.items()) {
             GstCalculator.PurchaseLineGst gst = GstCalculator.calcPurchaseLineGst(
-                    item.purchaseRate(), item.quantity(), BigDecimal.ZERO, item.gstRateOrDefault());
+                    item.purchaseRate(), item.quantity(), BigDecimal.ZERO, item.gstRateOrDefault(), isInterstate);
             subtotal = subtotal.add(gst.lineTotal());
             totalCgst = totalCgst.add(gst.cgst());
             totalSgst = totalSgst.add(gst.sgst());
+            totalIgst = totalIgst.add(gst.igst());
             snapshots.add(new SupplierReturnItemSnapshot(item.inventoryId(), item.medicineId(), item.medicineName(),
                     item.batchNumber(), item.expiryDate().toString(), item.quantity(), item.purchaseRate(),
-                    gst.lineTotal(), item.gstRateOrDefault(), gst.cgst(), gst.sgst(), BigDecimal.ZERO, gst.amount(),
+                    gst.lineTotal(), item.gstRateOrDefault(), gst.cgst(), gst.sgst(), gst.igst(), gst.amount(),
                     item.reasonOrDefault()));
         }
-        BigDecimal totalGst = totalCgst.add(totalSgst);
+        BigDecimal totalGst = totalCgst.add(totalSgst).add(totalIgst);
 
         int seq = sequenceService.next(pharmacyId, DocumentSequenceService.SUPPLIER_RETURN);
         SupplierReturn sr = SupplierReturn.create(pharmacyId, supplier.getId(),
                 DocumentNumberFormat.supplierReturn(seq), blankToNull(req.debitNoteNo()), req.notes(), snapshots,
-                subtotal, totalCgst, totalSgst, totalGst);
+                subtotal, totalCgst, totalSgst, totalIgst, totalGst);
         returnRepository.save(sr);
 
         return toResponse(sr, supplier);

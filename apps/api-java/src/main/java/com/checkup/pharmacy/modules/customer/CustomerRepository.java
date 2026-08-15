@@ -101,4 +101,20 @@ public interface CustomerRepository extends JpaRepository<Customer, String> {
             ORDER BY c.creditUsed DESC
             """)
     java.util.List<Customer> findOutstanding(@Param("pharmacyId") String pharmacyId);
+
+    /**
+     * Names and phone numbers for a batch of ids — display enrichment for reports that group
+     * invoices by customer.
+     *
+     * <p>Takes pharmacyId even though the ids are already tenant-derived. A bare
+     * {@code findAllById} is one refactor away from being handed ids from somewhere else, and
+     * the tenant guard exists so that possibility never has to be reasoned about per call site.
+     *
+     * <p>Soft-deleted customers are INCLUDED. They still have bills in the history, and a
+     * report that silently rendered their rows as "Unknown" would look like missing data
+     * rather than a removed record.
+     */
+    @Query("SELECT c FROM Customer c WHERE c.pharmacyId = :pharmacyId AND c.id IN :ids")
+    java.util.List<Customer> findByIdInAndPharmacyId(@Param("ids") java.util.Collection<String> ids,
+                                                     @Param("pharmacyId") String pharmacyId);
 }

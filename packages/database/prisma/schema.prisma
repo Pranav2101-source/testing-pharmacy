@@ -1229,6 +1229,12 @@ model SupplierReturn {
   items         Json
   itemCount     Int                  @default(0)
 
+  // When the goods actually went back. GSTR-3B Table 4(B) reverses input credit on this,
+  // mirroring Table 4(A)(5), which CLAIMS it on GoodsReceiptNote.confirmedAt. Null until
+  // confirmed — which is what lets the 3B query filter on it directly, since a return
+  // that was never confirmed has no date on which anything was sent back.
+  confirmedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1265,6 +1271,8 @@ model GRNItem {
   gstRate          Decimal  @db.Decimal(12, 2)
   cgst             Decimal  @db.Decimal(12, 2)
   sgst             Decimal  @db.Decimal(12, 2)
+  /// Inter-state purchase tax. Mutually exclusive with cgst/sgst — never both on one line.
+  igst             Decimal  @default(0) @db.Decimal(12, 2)
   amount           Decimal  @db.Decimal(12, 2)
   inventoryId      String?
 

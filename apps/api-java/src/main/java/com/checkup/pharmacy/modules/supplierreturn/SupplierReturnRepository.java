@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Optional;
 
@@ -47,4 +48,47 @@ public interface SupplierReturnRepository extends JpaRepository<SupplierReturn, 
                                 @Param("from") Instant from,
                                 @Param("to") Instant to,
                                 Pageable pageable);
+
+    interface ItcReversalRow {
+        BigDecimal getIgst();
+        BigDecimal getCgst();
+        BigDecimal getSgst();
+    }
+
+    /**
+     * Input tax credit to reverse in Table 4(B) — the debit notes CONFIRMED on suppliers in
+     * the period.
+     *
+     * <p>Stock sent back is stock the pharmacy no longer holds, so the credit claimed when it
+     * arrived has to come back out. Omitting this leaves the return over-claiming ITC by the
+     * whole value of every rejection, expiry return and short-supply adjustment in the month.
+     *
+     * <p>CONFIRMED ONLY, and this is not a detail. A supplier return computes and STORES its
+     * cgst/sgst/igst at creation time, then sits in DRAFT until someone confirms it — and
+     * {@code cancel()} only flips the status, leaving those tax columns populated. Without the
+     * status filter this query reversed credit for goods that never left the building and for
+     * debit notes that were explicitly abandoned, understating Table 4(C) net ITC and making
+     * the pharmacy pay the difference in cash.
+     *
+     * <p>Mirrors {@code GRNItemRepository.inwardSuppliesByTaxability} deliberately: that query
+     * claims credit on CONFIRMED receipts keyed on {@code confirmedAt}, and a reversal has to
+     * be filtered and dated the same way or the two halves of Table 4 describe different sets
+     * of events. Keyed on {@code createdAt}, a return drafted on 30 March and confirmed on
+     * 5 April reversed in March a credit that was claimed in April.
+     *
+     * <p>{@code confirmedAt} is null for anything not confirmed, so the status test and the
+     * date test agree by construction rather than by coincidence.
+     */
+    @Query("""
+            SELECT COALESCE(SUM(r.igst), 0) AS igst,
+                   COALESCE(SUM(r.cgst), 0) AS cgst,
+                   COALESCE(SUM(r.sgst), 0) AS sgst
+            FROM SupplierReturn r
+            WHERE r.pharmacyId = :pharmacyId
+              AND CAST(r.status AS string) = 'CONFIRMED'
+              AND r.confirmedAt IS NOT NULL
+              AND r.confirmedAt >= :from AND r.confirmedAt <= :to
+            """)
+    ItcReversalRow itcReversedInRange(@Param("pharmacyId") String pharmacyId,
+                                      @Param("from") Instant from, @Param("to") Instant to);
 }

@@ -114,6 +114,30 @@ public class Inventory extends BaseEntity {
         this.status = status;
     }
 
+    /**
+     * Takes an expired batch off the books: no stock left, and marked EXPIRED for good.
+     *
+     * <p>This is the code path {@link BatchStatus#EXPIRED} was always meant to have.
+     * {@code InventoryService.applyStatusChange} refuses to let anyone set EXPIRED by hand,
+     * saying it "is set automatically" — but nothing set it, and {@code MovementType.EXPIRY_REMOVAL}
+     * sat declared and unused. So expired medicine kept its quantity and its full cost for ever:
+     * it inflated the stock valuation, it counted as dead stock at cost, and the input tax credit
+     * claimed on it was never reversed even though section 17(5)(h) blocks credit on goods that
+     * are destroyed.
+     *
+     * <p>Reservations are cleared too. A reservation against stock that no longer exists would
+     * keep the batch looking partly spoken-for on a row that has nothing left to give.
+     *
+     * @return the quantity written off, so the caller can record it on the movement
+     */
+    public int writeOffExpired() {
+        int removed = this.quantity;
+        this.quantity = 0;
+        this.reservedQuantity = 0;
+        this.status = BatchStatus.EXPIRED;
+        return removed;
+    }
+
     /** shelfId (structured) and location (free-text) are mutually exclusive; caller resolves which wins. */
     public void setPlacement(String shelfId, String location) {
         this.shelfId = shelfId;

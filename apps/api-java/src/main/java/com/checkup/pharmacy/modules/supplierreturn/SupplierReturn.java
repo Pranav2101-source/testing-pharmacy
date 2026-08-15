@@ -42,6 +42,22 @@ public class SupplierReturn extends BaseEntity {
     @JdbcTypeCode(SqlTypes.NAMED_ENUM)
     private SupplierReturnStatus status = SupplierReturnStatus.DRAFT;
 
+    /**
+     * When the goods actually went back, i.e. when this debit note took effect.
+     *
+     * <p>Exists so the GSTR-3B input-credit tables are symmetrical. Credit is CLAIMED on
+     * {@code GoodsReceiptNote.confirmedAt} — the moment the pharmacy accepted the goods —
+     * so it must be REVERSED on the moment the pharmacy sent them back, not on the moment
+     * somebody started typing the debit note. Keyed on {@code createdAt}, a return drafted
+     * on 30 March and confirmed on 5 April reversed credit in March, against a claim that
+     * was booked in April.
+     *
+     * <p>Null for DRAFT and CANCELLED returns, which is what makes it usable as the filter:
+     * a return that was never confirmed has no date on which anything went back.
+     */
+    @Column(name = "confirmedAt")
+    private java.time.Instant confirmedAt;
+
     @Column(name = "notes")
     private String notes;
 
@@ -83,7 +99,7 @@ public class SupplierReturn extends BaseEntity {
 
     public static SupplierReturn create(String pharmacyId, String supplierId, String returnNumber, String debitNoteNo,
                                         String notes, List<SupplierReturnItemSnapshot> items, BigDecimal subtotal,
-                                        BigDecimal cgst, BigDecimal sgst, BigDecimal totalGst) {
+                                        BigDecimal cgst, BigDecimal sgst, BigDecimal igst, BigDecimal totalGst) {
         SupplierReturn sr = new SupplierReturn();
         sr.assignId(Cuid.generate());
         sr.pharmacyId = pharmacyId;
@@ -98,14 +114,32 @@ public class SupplierReturn extends BaseEntity {
         sr.taxableAmount = subtotal;
         sr.cgst = cgst;
         sr.sgst = sgst;
-        sr.igst = BigDecimal.ZERO;
+        // KEEP THE IGST THAT WAS PASSED IN. This line used to be followed by an
+        // unconditional `sr.igst = BigDecimal.ZERO;` — a dead store that threw the
+        // computed value away one statement after it was assigned.
+        //
+        // SupplierReturnsService had already been fixed to derive inter-state tax from
+        // the supplier's state and hand it down here, so the bug hid behind code that
+        // looked correct at the call site. What actually got stored for an inter-state
+        // debit note was cgst 0, sgst 0, igst 0 against a NON-ZERO totalGst — a document
+        // whose own tax breakdown did not add up, and which reversed no input credit at
+        // all in GSTR-3B Table 4(B) while still crediting the supplier ledger in full.
+        sr.igst = igst != null ? igst : BigDecimal.ZERO;
         sr.totalGst = totalGst;
         sr.totalAmount = subtotal.add(totalGst);
         return sr;
     }
 
+    /**
+     * Marks the goods as gone back, stamping the moment it happened.
+     *
+     * <p>The timestamp is what GSTR-3B Table 4(B) reverses credit on — see
+     * {@link #confirmedAt}. Set here rather than in the service so it cannot be
+     * confirmed without being dated.
+     */
     public void confirm() {
         this.status = SupplierReturnStatus.CONFIRMED;
+        this.confirmedAt = java.time.Instant.now();
     }
 
     public void cancel() {
@@ -121,6 +155,8 @@ public class SupplierReturn extends BaseEntity {
     public String getDebitNoteNo() { return debitNoteNo; }
 
     public SupplierReturnStatus getStatus() { return status; }
+
+    public java.time.Instant getConfirmedAt() { return confirmedAt; }
 
     public String getNotes() { return notes; }
 
