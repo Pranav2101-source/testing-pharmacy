@@ -160,6 +160,58 @@ class GstCalculatorTest {
     @DisplayName("calcInvoiceTotals — multi-line aggregation")
     class InvoiceTotals {
 
+        /**
+         * The invariant a tax invoice must satisfy, and the one the old implementation could
+         * not: the header IS the sum of the lines.
+         *
+         * <p>Totals used to be accumulated unrounded and rounded once at the end, to avoid
+         * compounding per-line rounding. Defensible in isolation, and wrong here — the GST
+         * summary reads the invoice header while the GSTR-1 HSN summary sums the stored
+         * LINES, and both get filed. A three-line bill at mixed slabs reported 269.27 in one
+         * place and 269.28 in the other, with no way to say which was right.
+         *
+         * <p>Asserted line by line rather than on a single total, because a sum can agree by
+         * two errors cancelling.
+         */
+        @Test
+        @DisplayName("the header equals the sum of the lines, exactly, per tax head")
+        void headerEqualsSumOfLines() {
+            List<GstCalculator.MrpLineInput> lines = List.of(
+                    new GstCalculator.MrpLineInput(bd("33.33"), 3, bd("7.5"), bd("5")),
+                    new GstCalculator.MrpLineInput(bd("249.90"), 2, BigDecimal.ZERO, bd("12")),
+                    new GstCalculator.MrpLineInput(bd("17.77"), 7, bd("2.5"), bd("18")),
+                    new GstCalculator.MrpLineInput(bd("99.99"), 1, BigDecimal.ZERO, BigDecimal.ZERO));
+
+            for (boolean interstate : new boolean[] {true, false}) {
+                for (String billDiscount : new String[] {"0", "7.5"}) {
+                    var totals = GstCalculator.calcInvoiceTotals(lines, interstate, bd(billDiscount));
+
+                    BigDecimal taxable = BigDecimal.ZERO;
+                    BigDecimal cgst = BigDecimal.ZERO;
+                    BigDecimal sgst = BigDecimal.ZERO;
+                    BigDecimal igst = BigDecimal.ZERO;
+                    for (var line : lines) {
+                        var l = GstCalculator.calcGstFromMrp(line.mrp(), line.quantity(), line.discountPct(),
+                                line.gstRate(), interstate, bd(billDiscount));
+                        taxable = taxable.add(l.taxableAmount());
+                        cgst = cgst.add(l.cgst());
+                        sgst = sgst.add(l.sgst());
+                        igst = igst.add(l.igst());
+                    }
+
+                    String where = "interstate=" + interstate + " billDiscount=" + billDiscount;
+                    assertThat(totals.taxableAmount()).as("taxable, " + where).isEqualByComparingTo(taxable);
+                    assertThat(totals.cgst()).as("cgst, " + where).isEqualByComparingTo(cgst);
+                    assertThat(totals.sgst()).as("sgst, " + where).isEqualByComparingTo(sgst);
+                    assertThat(totals.igst()).as("igst, " + where).isEqualByComparingTo(igst);
+                    assertThat(totals.totalGst()).as("totalGst, " + where)
+                            .isEqualByComparingTo(cgst.add(sgst).add(igst));
+                    assertThat(totals.taxableAmount().add(totals.totalGst())).as("total, " + where)
+                            .isEqualByComparingTo(totals.totalAmount());
+                }
+            }
+        }
+
         @Test
         @DisplayName("accumulates unrounded, so many small lines do not compound rounding drift")
         void doesNotCompoundRoundingDrift() {
@@ -240,6 +292,70 @@ class GstCalculatorTest {
 
             assertThat(purchase.amount()).isEqualByComparingTo(bd("118.00"));
             assertThat(billing.amount()).isEqualByComparingTo(bd("100.01"));
+        }
+
+        @Test
+        @DisplayName("an out-of-state supplier is charged IGST, not CGST + SGST")
+        void interstatePurchaseChargesIgst() {
+            // The defect this pins: purchases had no inter-state branch at all, so a pharmacy
+            // buying across a state line booked the whole tax as half CGST and half SGST. The
+            // GRN still added up — only the tax head was wrong — and GSTR-3B Table 4(A)(5)
+            // claims input credit under heads that were never paid.
+            var result = GstCalculator.calcPurchaseLineGst(bd("100"), 10, BigDecimal.ZERO, bd("18"), true);
+
+            assertThat(result.igst()).isEqualByComparingTo(bd("180.00"));
+            assertThat(result.cgst()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(result.sgst()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(result.totalGst()).isEqualByComparingTo(bd("180.00"));
+            assertThat(result.amount()).isEqualByComparingTo(bd("1180.00"));
+        }
+
+        @Test
+        @DisplayName("a local supplier is still CGST + SGST, and the default stays local")
+        void intrastatePurchaseSplitsEvenly() {
+            var explicit = GstCalculator.calcPurchaseLineGst(bd("100"), 10, BigDecimal.ZERO, bd("18"), false);
+            var byDefault = GstCalculator.calcPurchaseLineGst(bd("100"), 10, BigDecimal.ZERO, bd("18"));
+
+            assertThat(explicit.cgst()).isEqualByComparingTo(bd("90.00"));
+            assertThat(explicit.sgst()).isEqualByComparingTo(bd("90.00"));
+            assertThat(explicit.igst()).isEqualByComparingTo(BigDecimal.ZERO);
+            // The four-argument overload must keep behaving exactly as it did, or every caller
+            // that has no supplier state to work from silently changes tax head.
+            assertThat(byDefault.cgst()).isEqualByComparingTo(explicit.cgst());
+            assertThat(byDefault.sgst()).isEqualByComparingTo(explicit.sgst());
+            assertThat(byDefault.igst()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
+
+        @Test
+        @DisplayName("the head changes and the total moves by at most a paisa")
+        void headChangesAndTotalBarelyMoves() {
+            // Why the defect survived: to anyone looking at a GRN the amount payable is the
+            // same. It is not bit-identical though, and the difference is deliberate — the
+            // intra-state branch must round a HALF and double it, because CGST has to equal
+            // SGST to the paisa, while IGST is a single levy rounded once. 249.38 at 12%
+            // gives 14.96 x 2 = 29.92 one way and 29.93 the other.
+            var local = GstCalculator.calcPurchaseLineGst(bd("37.50"), 7, bd("5"), bd("12"), false);
+            var distant = GstCalculator.calcPurchaseLineGst(bd("37.50"), 7, bd("5"), bd("12"), true);
+
+            assertThat(distant.lineTotal()).isEqualByComparingTo(local.lineTotal());
+            assertThat(distant.igst()).isEqualByComparingTo(bd("29.93"));
+            assertThat(local.cgst().add(local.sgst())).isEqualByComparingTo(bd("29.92"));
+            assertThat(distant.totalGst().subtract(local.totalGst()).abs())
+                    .as("the two roundings may differ by a paisa, never more")
+                    .isLessThanOrEqualTo(bd("0.01"));
+        }
+
+        @Test
+        @DisplayName("IGST is rounded once, so the line total never drifts by a paisa")
+        void igstRoundsOnce() {
+            // Rounding a half and doubling it quantises to even paise. The intra-state branch
+            // has to accept that (CGST must equal SGST); the inter-state one must not, because
+            // there is no halving constraint to satisfy.
+            var result = GstCalculator.calcPurchaseLineGst(bd("33.33"), 3, BigDecimal.ZERO, bd("5"), true);
+
+            assertThat(result.lineTotal()).isEqualByComparingTo(bd("99.99"));
+            assertThat(result.igst()).isEqualByComparingTo(bd("5.00"));
+            assertThat(result.lineTotal().add(result.igst())).isEqualByComparingTo(result.amount());
         }
 
         @Test
