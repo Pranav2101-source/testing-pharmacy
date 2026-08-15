@@ -59,8 +59,16 @@ public class DuplicateSubmitGuard {
             return; // can't fingerprint → don't block a real create
         }
 
-        String key = "idem:" + action + ":" + TenantContext.pharmacyId() + ":" + TenantContext.userId()
-                + ":" + fingerprint;
+        String pharmacyId = "anon";
+        String userId = "anon";
+        
+        org.springframework.security.core.Authentication auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.getPrincipal() instanceof com.checkup.pharmacy.security.UserPrincipal principal) {
+            pharmacyId = principal.pharmacyId();
+            userId = principal.userId();
+        }
+
+        String key = "idem:" + action + ":" + pharmacyId + ":" + userId + ":" + fingerprint;
 
         Boolean firstTime;
         try {

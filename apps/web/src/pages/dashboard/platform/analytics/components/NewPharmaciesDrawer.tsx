@@ -11,6 +11,7 @@ import {
   Loader2, Filter, ChevronLeft, ChevronRight, AlertTriangle
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { NewPharmacyItem } from "../analytics.types";
 
 type NewPharmaciesDrawerProps = {
   isOpen: boolean;
@@ -244,7 +245,7 @@ export function NewPharmaciesDrawer({ isOpen, onClose, days, onTenantClick }: Ne
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {data?.items.map((item) => {
+                  {data?.items.map((item: NewPharmacyItem) => {
                     const isNewToday = isToday(new Date(item.createdAt));
                     
                     return (
