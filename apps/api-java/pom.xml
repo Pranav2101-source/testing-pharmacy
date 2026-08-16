@@ -170,6 +170,13 @@
              and replay
              the real Prisma migrations into a per-run database.
              See AbstractPostgresIT for the full rationale and the override hook. -->
+             
+        <!-- Dotenv for local development -->
+        <dependency>
+            <groupId>me.paulschwarz</groupId>
+            <artifactId>spring-dotenv</artifactId>
+            <version>4.0.0</version>
+        </dependency>
     </dependencies>
 
     <build>

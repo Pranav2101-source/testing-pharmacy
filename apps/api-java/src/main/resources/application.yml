@@ -32,6 +32,8 @@ server:
   shutdown: graceful
 
 spring:
+  dotenv:
+    directory: ../../
   application:
     name: checkup-pharmacy-api
 

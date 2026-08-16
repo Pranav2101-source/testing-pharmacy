@@ -22,6 +22,9 @@ import com.checkup.pharmacy.modules.auth.dto.RegisterRequest;
 import com.checkup.pharmacy.modules.auth.dto.ResetPasswordRequest;
 import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
 import com.checkup.pharmacy.modules.pharmacy.PharmacyRepository;
+import com.checkup.pharmacy.modules.platform.tenant.OnboardCommand;
+import com.checkup.pharmacy.modules.platform.tenant.PharmacyOnboardingService;
+import com.checkup.pharmacy.modules.platform.tenant.PlanPricing;
 import com.checkup.pharmacy.modules.user.User;
 import com.checkup.pharmacy.modules.user.UserRepository;
 import com.checkup.pharmacy.security.JwtService;
@@ -66,6 +69,7 @@ public class AuthService {
     private final JwtService jwtService;
     private final AuditService auditService;
     private final EmailService emailService;
+    private final PharmacyOnboardingService onboardingService;
     private final String appUrl;
 
     public AuthService(UserRepository userRepository,
@@ -74,6 +78,7 @@ public class AuthService {
                        JwtService jwtService,
                        AuditService auditService,
                        EmailService emailService,
+                       PharmacyOnboardingService onboardingService,
                        @Value("${app.mail.app-url:http://localhost:3000}") String appUrl) {
         this.userRepository = userRepository;
         this.pharmacyRepository = pharmacyRepository;
@@ -81,6 +86,7 @@ public class AuthService {
         this.jwtService = jwtService;
         this.auditService = auditService;
         this.emailService = emailService;
+        this.onboardingService = onboardingService;
         this.appUrl = appUrl;
     }
 
@@ -100,25 +106,23 @@ public class AuthService {
         // must not depend on which spelling the owner used at signup.
         String phone = ValidationPatterns.normalizeMobile(req.phone());
 
-        Pharmacy pharmacy = Pharmacy.create(req.pharmacyName(), uniqueSlug(req.pharmacyName()));
-        pharmacy.setPhone(phone);
-        pharmacy.setEmail(req.email());
-        pharmacy.setCity(req.city());
-        pharmacy.setState(req.state());
-        pharmacy.setPincode(req.pincode());
-        pharmacy.setAddress(req.address());
-        pharmacy.setGstin(req.gstin());
-        pharmacy.setDrugLicense(req.drugLicense());
-        pharmacyRepository.save(pharmacy);
+        OnboardCommand cmd = new OnboardCommand(
+                req.pharmacyName(), req.gstin(), req.drugLicense(), phone, req.email(), req.address(), req.city(),
+                req.state(), req.pincode(),
+                true, ValidationPatterns.normalizeName(req.ownerName()), req.email(), phone, passwordEncoder.encode(req.password()),
+                PlanPricing.DEFAULT_PLAN, PlanPricing.DEFAULT_BILLING_CYCLE,
+                5, 5, 500, 1024,
+                true, true, false, false, false, false, false, false);
 
-        User user = User.create(
-                pharmacy.getId(),
-                ValidationPatterns.normalizeName(req.ownerName()),
-                req.email(),
-                phone,
-                passwordEncoder.encode(req.password()),
-                Role.OWNER);
-        userRepository.save(user);
+        // enforceUniqueName = FALSE. Pharmacy names are not unique in the real world — two
+        // Apollo branches in different cities are separate tenants with the same name, and
+        // the signup path this replaced deliberately allowed that (unique SLUG, free NAME).
+        // Inheriting the admin path's uniqueness rule rejected any pharmacy whose name was
+        // already taken by an unrelated business, which is most of the common ones.
+        PharmacyOnboardingService.OnboardResult result = onboardingService.onboard(cmd, null, null, false);
+
+        User user = result.owner();
+        Pharmacy pharmacy = result.pharmacy();
 
         TokenPair tokens = jwtService.issueTokens(user);
 

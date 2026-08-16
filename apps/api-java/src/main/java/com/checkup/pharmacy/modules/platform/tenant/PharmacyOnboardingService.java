@@ -69,8 +69,37 @@ public class PharmacyOnboardingService {
     public record OnboardResult(Pharmacy pharmacy, Subscription subscription, TenantSettings settings, User owner) {
     }
 
+    /**
+     * Onboard a tenant from the PLATFORM ADMIN path, where a duplicate pharmacy name is
+     * rejected — an admin typing a name that already exists is almost certainly creating
+     * the same tenant twice.
+     */
     @Transactional
     public OnboardResult onboard(OnboardCommand cmd, String actorUserId, String actorEmail) {
+        return onboard(cmd, actorUserId, actorEmail, true);
+    }
+
+    /**
+     * As above, with the name-uniqueness rule made explicit.
+     *
+     * <p>WHY PUBLIC SIGNUP PASSES {@code false}
+     *
+     * <p>Pharmacy names are not unique in the real world. Two Apollo branches, or two
+     * MedPlus franchises in different cities, are separate tenants that legitimately share
+     * a name. The signup path never enforced uniqueness — it called
+     * {@code Pharmacy.create(name, uniqueSlug(name))}, making the SLUG unique and leaving
+     * the NAME free — and routing signup through this service silently inherited a rule
+     * written for a different flow. The result was a 409 on any pharmacy whose name was
+     * already taken by an unrelated business, which is most of the common ones.
+     *
+     * <p>The only thing that must be unique is the slug, which is the column carrying the
+     * database constraint; {@code buildSlug} already makes it so.
+     *
+     * @param enforceUniqueName true for admin-initiated onboarding, false for public signup
+     */
+    @Transactional
+    public OnboardResult onboard(OnboardCommand cmd, String actorUserId, String actorEmail,
+                                 boolean enforceUniqueName) {
         // Onboarding is the one create-flow in this codebase that provisions a
         // pharmacy + subscription + owner login all at once, and — unlike every
         // other create endpoint (customer, supplier, PO, quotation, ticket, ...) —
@@ -82,8 +111,9 @@ public class PharmacyOnboardingService {
         // submissions both pass it.
         duplicateSubmitGuard.guard("platform.tenant.onboard", cmd);
 
-        // Pharmacy name has no DB uniqueness constraint — enforce it here (matches Node).
-        if (pharmacyRepository.existsByNameIgnoreCase(cmd.name())) {
+        // Pharmacy name has no DB uniqueness constraint — enforce it here (matches Node)
+        // for the admin path only. See the javadoc for why signup must not.
+        if (enforceUniqueName && pharmacyRepository.existsByNameIgnoreCase(cmd.name())) {
             throw new ConflictException("A pharmacy with this name already exists");
         }
         if (cmd.createOwner()) {
