@@ -75,6 +75,44 @@ class AuthIT extends AbstractPostgresIT {
     }
 
 
+    /**
+     * Two unrelated businesses may share a name, and both must be able to sign up.
+     *
+     * <p>Pharmacy names are not unique in the real world — two Apollo branches, or two
+     * MedPlus franchises in different cities, are separate tenants with the same name. The
+     * original signup path allowed this deliberately: unique SLUG, free NAME. Routing signup
+     * through {@code PharmacyOnboardingService} inherited a uniqueness rule written for the
+     * platform-admin flow, and every pharmacy whose name was already taken got a 409.
+     *
+     * <p>The whole {@code @BeforeEach} in this class registers "Test Pharmacy", so the
+     * regression took out 16 of 17 tests here — but implicitly. This states it.
+     */
+    @Test
+    @DisplayName("two pharmacies with the same name can both sign up; only the slug is unique")
+    void duplicatePharmacyNamesAreAllowedAtSignup() {
+        String sameName = "Apollo Pharmacy " + UUID.randomUUID().toString().substring(0, 6);
+
+        var first = authService.register(new RegisterRequest(
+                sameName, "Owner One", "9876543210",
+                "one-" + UUID.randomUUID().toString().substring(0, 8) + "@test.local", PASSWORD,
+                null, null, null, null, null, null));
+        var second = authService.register(new RegisterRequest(
+                sameName, "Owner Two", "9876543211",
+                "two-" + UUID.randomUUID().toString().substring(0, 8) + "@test.local", PASSWORD,
+                null, null, null, null, null, null));
+
+        assertThat(second.user().pharmacyId())
+                .as("they are separate tenants, not the same one reused")
+                .isNotEqualTo(first.user().pharmacyId());
+
+        var one = pharmacyRepository.findById(first.user().pharmacyId()).orElseThrow();
+        var two = pharmacyRepository.findById(second.user().pharmacyId()).orElseThrow();
+        assertThat(two.getName()).isEqualTo(one.getName());
+        assertThat(two.getSlug())
+                .as("the slug is the column carrying the DB uniqueness constraint")
+                .isNotEqualTo(one.getSlug());
+    }
+
     private User user() {
         return userRepository.findById(userId).orElseThrow();
     }
