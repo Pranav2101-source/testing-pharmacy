@@ -8,6 +8,13 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { storeTokens, storeUser, type StoredUser } from "@/lib/auth";
+// The single list, shared with the settings form and mirroring the backend's IndianState
+// enum. The inline array this replaced held 28 entries and omitted nine real states and
+// union territories — Puducherry, Chandigarh, Jammu and Kashmir, Ladakh, Lakshadweep,
+// Andaman and Nicobar, Arunachal Pradesh, Dadra and Nagar Haveli and Daman and Diu, and
+// Other Territory. A pharmacy in any of them could not select its own state at signup, and
+// state is what decides IGST versus CGST+SGST on every invoice it will ever raise.
+import { INDIAN_STATES } from "@/lib/indianStates";
 import { API_BASE_URL } from "@/lib/api-client";
 import {
   normalizeIndianMobile,
@@ -121,13 +128,6 @@ function Stepper({ current }: { current: 1 | 2 }) {
     </div>
   );
 }
-
-const STATES = [
-  "Andhra Pradesh","Assam","Bihar","Chhattisgarh","Delhi","Goa","Gujarat","Haryana",
-  "Himachal Pradesh","Jharkhand","Karnataka","Kerala","Madhya Pradesh","Maharashtra",
-  "Manipur","Meghalaya","Mizoram","Nagaland","Odisha","Punjab","Rajasthan","Sikkim",
-  "Tamil Nadu","Telangana","Tripura","Uttar Pradesh","Uttarakhand","West Bengal",
-];
 
 export default function RegisterPage() {
   const navigate = useNavigate();
@@ -372,7 +372,7 @@ export default function RegisterPage() {
                           <select id="reg-state" name="state" value={stateVal} onChange={e => setStateVal(e.target.value)}
                             className="w-full appearance-none pl-3 pr-7 py-3 text-sm text-slate-700 bg-white border border-slate-200 rounded-xl focus:border-blue-500 focus:ring-3 focus:ring-blue-100 outline-none transition-all">
                             <option value="">Select</option>
-                            {STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                            {INDIAN_STATES.map(s => <option key={s.code} value={s.name}>{s.name}</option>)}
                           </select>
                           <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
                         </div>
