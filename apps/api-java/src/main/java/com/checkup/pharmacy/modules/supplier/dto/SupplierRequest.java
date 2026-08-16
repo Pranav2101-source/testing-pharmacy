@@ -21,6 +21,17 @@ public record SupplierRequest(
         @Email(message = "Enter a valid email address") String email,
         String address,
         String city,
+        /**
+         * Required, and validated against {@link com.checkup.pharmacy.common.tax.IndianState}
+         * in the service.
+         *
+         * <p>This is a tax field, not an address field. Whether a purchase attracts IGST or
+         * CGST+SGST is decided by comparing this against the pharmacy's own state, and a
+         * supplier with none is silently treated as local — which is how a pharmacy ends up
+         * claiming input credit under a head it never paid. 72 of 77 suppliers had it blank
+         * when this was made required.
+         */
+        @NotBlank(message = "Supplier state is required — it decides whether purchases attract IGST or CGST+SGST")
         String state,
         @DecimalMin(value = "0", message = "Credit limit cannot be negative") BigDecimal creditLimit,
         @Min(value = 0, message = "Credit days cannot be negative") Integer creditDays,

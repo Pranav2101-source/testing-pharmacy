@@ -265,4 +265,51 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
     List<Inventory> findActiveNonExpiredByMedicineIdIn(@Param("pharmacyId") String pharmacyId,
                                                        @Param("medicineIds") java.util.Collection<String> medicineIds,
                                                        @Param("now") java.time.Instant now);
+
+    interface ExpiredStockRow {
+        long getBatches();
+        Long getUnits();
+        java.math.BigDecimal getCost();
+        java.math.BigDecimal getEmbeddedItc();
+    }
+
+    /**
+     * Expired stock still sitting on the books, and the input tax credit embedded in it.
+     *
+     * <p>WHY THIS IS A GST FIGURE AND NOT JUST AN INVENTORY ONE
+     *
+     * <p>Section 17(5)(h) of the CGST Act blocks input tax credit on goods "lost, stolen,
+     * destroyed, written off or disposed of by way of gift or free samples". Expired medicine
+     * is destroyed by definition — so the credit claimed when it was bought has to be reversed
+     * in the period it is written off, under Table 4(B)(1).
+     *
+     * <p>Nothing in this system ever writes expired stock off. {@code BatchStatus.EXPIRED} is
+     * set by no code path at all — the only reference to it REFUSES to let anyone assign it,
+     * saying it "is set automatically", which is not true — and {@code MovementType.EXPIRY_REMOVAL}
+     * is declared and never used. So expired batches keep their quantity and their full cost
+     * forever: they inflate the inventory valuation, and their ITC is never reversed.
+     *
+     * <p>This query cannot fix that, and deliberately does not try. It reports the exposure so
+     * the 3B sheet can state a number the filer has to act on by hand, instead of reporting an
+     * automatic 4(B)(1) of nil that reads as "nothing to reverse".
+     *
+     * <p>The ITC is an ESTIMATE and the sheet says so: it applies the medicine's CURRENT GST
+     * rate to the batch's recorded purchase rate. It does not know which tax head the credit
+     * was originally claimed under (a batch can merge receipts from more than one supplier), and
+     * a pharmacy-level GST override is not considered. It is the right order of magnitude and
+     * the right list of batches — the exact split belongs to whoever signs the return.
+     */
+    @Query("""
+            SELECT COUNT(i) AS batches,
+                   COALESCE(SUM(i.quantity), 0) AS units,
+                   COALESCE(SUM(i.purchaseRate * i.quantity), 0) AS cost,
+                   COALESCE(SUM(i.purchaseRate * i.quantity * m.gstRate / 100), 0) AS embeddedItc
+            FROM Inventory i
+            JOIN Medicine m ON m.id = i.medicineId
+            WHERE i.pharmacyId = :pharmacyId
+              AND i.quantity > 0
+              AND i.expiryDate < :asOf
+            """)
+    ExpiredStockRow expiredStockOnBooks(@Param("pharmacyId") String pharmacyId,
+                                        @Param("asOf") java.time.Instant asOf);
 }

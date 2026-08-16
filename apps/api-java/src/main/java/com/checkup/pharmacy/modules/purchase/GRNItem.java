@@ -70,6 +70,17 @@ public class GRNItem extends CreatedAtEntity {
     @Column(name = "sgst")
     private BigDecimal sgst;
 
+    /**
+     * Inter-state purchase tax. Zero on an intra-state purchase, where CGST and SGST carry it
+     * instead — the two are mutually exclusive, never both populated on one line.
+     *
+     * <p>Defaults to zero rather than allowing null so that every GRN written before this
+     * column existed reads back as "no IGST", which is the correct answer for the intra-state
+     * purchases that were the only kind the calculator could produce.
+     */
+    @Column(name = "igst")
+    private BigDecimal igst = BigDecimal.ZERO;
+
     @Column(name = "amount")
     private BigDecimal amount;
 
@@ -84,7 +95,7 @@ public class GRNItem extends CreatedAtEntity {
                                  String batchNumber, Instant expiryDate, Integer orderedQty, int receivedQty,
                                  int freeQty, String purchaseUnit, int conversionFactor, BigDecimal purchaseRate,
                                  BigDecimal mrp, BigDecimal discount, BigDecimal gstRate, BigDecimal cgst,
-                                 BigDecimal sgst, BigDecimal amount) {
+                                 BigDecimal sgst, BigDecimal igst, BigDecimal amount) {
         GRNItem item = new GRNItem();
         item.assignId(Cuid.generate());
         item.pharmacyId = pharmacyId;
@@ -104,6 +115,7 @@ public class GRNItem extends CreatedAtEntity {
         item.gstRate = gstRate;
         item.cgst = cgst;
         item.sgst = sgst;
+        item.igst = igst != null ? igst : BigDecimal.ZERO;
         item.amount = amount;
         return item;
     }
@@ -150,6 +162,8 @@ public class GRNItem extends CreatedAtEntity {
     public BigDecimal getCgst() { return cgst; }
 
     public BigDecimal getSgst() { return sgst; }
+
+    public BigDecimal getIgst() { return igst != null ? igst : BigDecimal.ZERO; }
 
     public BigDecimal getAmount() { return amount; }
 

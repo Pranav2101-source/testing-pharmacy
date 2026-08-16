@@ -16,24 +16,58 @@ public final class GstCalculator {
     private GstCalculator() {
     }
 
-    public record PurchaseLineGst(BigDecimal lineTotal, BigDecimal cgst, BigDecimal sgst,
+    public record PurchaseLineGst(BigDecimal lineTotal, BigDecimal cgst, BigDecimal sgst, BigDecimal igst,
                                    BigDecimal totalGst, BigDecimal amount) {
     }
 
-    /**
-     * @param rate       per-unit purchase rate
-     * @param quantity   line quantity
-     * @param discountPct percentage 0-100, pass ZERO for purchase orders with no discount
-     * @param gstRate    percentage (0/5/12/18)
-     */
+    /** Intra-state purchase — CGST + SGST. Kept for callers with no supplier state to work from. */
     public static PurchaseLineGst calcPurchaseLineGst(BigDecimal rate, int quantity, BigDecimal discountPct, BigDecimal gstRate) {
+        return calcPurchaseLineGst(rate, quantity, discountPct, gstRate, false);
+    }
+
+    /**
+     * Purchase-side GST, split by where the supplier is.
+     *
+     * <p>WHY THE SPLIT EXISTS
+     *
+     * <p>This used to compute CGST + SGST unconditionally, with no inter-state branch and no
+     * {@code igst} field to put the answer in. A pharmacy in Tamil Nadu buying from a
+     * Maharashtra distributor pays IGST, and the whole amount was being booked as half CGST
+     * and half SGST.
+     *
+     * <p>The invoice still added up, which is why it went unnoticed: the tax total was right
+     * and only its classification was wrong. GSTR-3B is where that surfaces — Table 4(A)(5)
+     * has separate IGST, CGST and SGST columns for input tax credit, so the credit was being
+     * claimed under two heads that were never paid while the head that was paid showed
+     * nothing. The sales side has always got this right (see
+     * {@link #calcGstFromMrp(BigDecimal, int, BigDecimal, BigDecimal, boolean)}); only
+     * purchases were missing it.
+     *
+     * @param rate        per-unit purchase rate
+     * @param quantity    line quantity
+     * @param discountPct percentage 0-100, pass ZERO for purchase orders with no discount
+     * @param gstRate     percentage (0/5/12/18)
+     * @param isInterstate supplier's state differs from the pharmacy's — charge IGST
+     */
+    public static PurchaseLineGst calcPurchaseLineGst(BigDecimal rate, int quantity, BigDecimal discountPct,
+                                                      BigDecimal gstRate, boolean isInterstate) {
         BigDecimal gross = rate.multiply(BigDecimal.valueOf(quantity));
         BigDecimal discountFactor = BigDecimal.ONE.subtract(divide(discountPct, BigDecimal.valueOf(100)));
         BigDecimal lineTotal = round2(gross.multiply(discountFactor));
+
+        if (isInterstate) {
+            // Rounded ONCE, for the same reason as the sales side: IGST is a single levy with
+            // no equal-halves constraint, so going via a half value would quantise it to even
+            // paise and drift the line total by a paisa either way.
+            BigDecimal igst = round2(divide(lineTotal.multiply(gstRate), BigDecimal.valueOf(100)));
+            return new PurchaseLineGst(lineTotal, BigDecimal.ZERO, BigDecimal.ZERO, igst, igst,
+                    round2(lineTotal.add(igst)));
+        }
+
         BigDecimal halfGst = round2(divide(lineTotal.multiply(gstRate), BigDecimal.valueOf(200)));
         BigDecimal totalGst = halfGst.multiply(BigDecimal.valueOf(2));
-        BigDecimal amount = round2(lineTotal.add(totalGst));
-        return new PurchaseLineGst(lineTotal, halfGst, halfGst, totalGst, amount);
+        return new PurchaseLineGst(lineTotal, halfGst, halfGst, BigDecimal.ZERO, totalGst,
+                round2(lineTotal.add(totalGst)));
     }
 
     /** One line item's MRP, quantity, discount %, and GST rate — the shared input shape for billing GST math. */
@@ -118,11 +152,31 @@ public final class GstCalculator {
     }
 
     /**
-     * Invoice-level aggregate totals. Deliberately re-derives taxable/GST from
-     * raw (mrp, quantity, discount, gstRate) per line and accumulates
-     * <b>unrounded</b>, rounding only once at the end — summing already-rounded
-     * per-line values (from {@link #calcGstFromMrp}) would compound rounding
-     * error across many line items and drift from the true invoice total.
+     * Invoice-level aggregate totals: the sum of the invoice's own lines, exactly.
+     *
+     * <p>WHY THIS SUMS ROUNDED LINES RATHER THAN ACCUMULATING RAW
+     *
+     * <p>This used to accumulate taxable value and tax <b>unrounded</b> and round once at the
+     * end, on the reasoning that summing already-rounded per-line values compounds rounding
+     * error. That reasoning is sound in isolation and wrong for a tax invoice, because it
+     * guarantees the one thing an invoice may not do: the header stopped equalling the sum of
+     * the lines printed underneath it.
+     *
+     * <p>The two are not interchangeable views of the same number — they are read by different
+     * things, and both are filed. The GST summary reads the invoice header; the GSTR-1 HSN
+     * summary (Table 12) sums the stored LINES. A three-line bill at mixed slabs reported a
+     * taxable value of 269.27 in one place and 269.28 in the other, and nobody could say which
+     * was right because both were, under their own rule. Anyone adding up a printed invoice
+     * hits the same discrepancy.
+     *
+     * <p>What was traded away is bounded and small: half a paisa per line, in a figure that is
+     * itself a sum of 2dp values. What was bought is that the invoice, the GST summary and the
+     * HSN summary agree by construction rather than by coincidence — which is what makes the
+     * return reconcile.
+     *
+     * <p>{@code subtotal} and {@code discountAmount} are still accumulated raw and rounded
+     * once, because neither is split across the line/header boundary: no report sums them
+     * per line, so there is nothing for them to disagree with.
      */
     public static InvoiceTotals calcInvoiceTotals(List<MrpLineInput> items, boolean isInterstate) {
         return calcInvoiceTotals(items, isInterstate, BigDecimal.ZERO);
@@ -142,40 +196,42 @@ public final class GstCalculator {
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal discountAmount = BigDecimal.ZERO;
         BigDecimal taxableAmount = BigDecimal.ZERO;
-        // Accumulate the FULL tax, not the half. Halving is a presentation concern of
-        // the intra-state split and is applied once at the end; folding it into the
-        // accumulator imposed even-paise quantisation on inter-state invoices too.
-        BigDecimal gstTotal = BigDecimal.ZERO;
+        BigDecimal cgst = BigDecimal.ZERO;
+        BigDecimal sgst = BigDecimal.ZERO;
+        BigDecimal igst = BigDecimal.ZERO;
 
         for (MrpLineInput item : items) {
+            // The SAME call the caller makes per line when it builds the stored line items,
+            // so the header cannot drift from them. Anything else here — however carefully
+            // reasoned — reintroduces the two-sources-of-truth problem this method had.
+            MrpGstBreakdown line = calcGstFromMrp(item.mrp(), item.quantity(), item.discountPct(),
+                    item.gstRate(), isInterstate, billDiscountPct);
+
             BigDecimal lineTotal = item.mrp().multiply(BigDecimal.valueOf(item.quantity()));
             BigDecimal lineDiscount = divide(lineTotal.multiply(item.discountPct()), BigDecimal.valueOf(100));
             BigDecimal afterLineDiscount = lineTotal.subtract(lineDiscount);
-            BigDecimal afterDiscount = afterLineDiscount.multiply(billFactor);
             // What the bill discount took off THIS line, so the invoice's single
             // "Discount" figure covers both kinds.
-            BigDecimal billDiscount = afterLineDiscount.subtract(afterDiscount);
-            BigDecimal divisor = BigDecimal.ONE.add(divide(item.gstRate(), BigDecimal.valueOf(100)));
-            BigDecimal taxable = afterDiscount.divide(divisor, 10, RoundingMode.HALF_UP);
-            BigDecimal gst = afterDiscount.subtract(taxable);
+            BigDecimal billDiscount = afterLineDiscount.subtract(afterLineDiscount.multiply(billFactor));
 
             subtotal = subtotal.add(lineTotal);
             discountAmount = discountAmount.add(lineDiscount).add(billDiscount);
-            taxableAmount = taxableAmount.add(taxable);
-            gstTotal = gstTotal.add(gst);
+            taxableAmount = taxableAmount.add(line.taxableAmount());
+            cgst = cgst.add(line.cgst());
+            sgst = sgst.add(line.sgst());
+            igst = igst.add(line.igst());
         }
 
+        // Already a sum of 2dp values — round2 here only normalises the scale.
         BigDecimal roundedTaxable = round2(taxableAmount);
+        // CGST and SGST stay equal because every line's pair is equal, so summing preserves
+        // it. That invariant used to be enforced at the end by halving the total; it now
+        // holds line by line, which is where GST actually requires it.
+        BigDecimal totalGst = cgst.add(sgst).add(igst);
 
-        if (isInterstate) {
-            BigDecimal igst = round2(gstTotal);
-            return new InvoiceTotals(round2(subtotal), round2(discountAmount), roundedTaxable,
-                    BigDecimal.ZERO, BigDecimal.ZERO, igst, igst, roundedTaxable.add(igst));
-        }
-        BigDecimal roundedHalf = round2(divide(gstTotal, BigDecimal.valueOf(2)));
-        BigDecimal totalGst = roundedHalf.multiply(BigDecimal.valueOf(2));
         return new InvoiceTotals(round2(subtotal), round2(discountAmount), roundedTaxable,
-                roundedHalf, roundedHalf, BigDecimal.ZERO, totalGst, roundedTaxable.add(totalGst));
+                round2(cgst), round2(sgst), round2(igst), round2(totalGst),
+                roundedTaxable.add(totalGst));
     }
 
     /**

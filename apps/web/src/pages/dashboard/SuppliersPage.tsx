@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { api, getErrorMessage } from "@/lib/api-client";
+import { INDIAN_STATES, stateFromGstin, normaliseState } from "@/lib/indianStates";
 import { cn } from "@/lib/utils";
 import { useDebounce } from "@/hooks/useDebounce";
 import { queryKeys } from "@/lib/queryKeys";
@@ -203,7 +204,9 @@ function SupplierModal({ supplier, onClose, onSaved }: {
     email:        supplier.email        ?? "",
     address:      supplier.address      ?? "",
     city:         supplier.city         ?? "",
-    state:        supplier.state        ?? "",
+    // Legacy rows hold free text ("karnataka"); resolve to the canonical name so the select
+    // shows the value rather than appearing blank and inviting a needless re-pick.
+    state:        normaliseState(supplier.state)?.name ?? supplier.state ?? "",
     creditLimit:  String(supplier.creditLimit),
     creditDays:   String(supplier.creditDays),
     paymentTerms: supplier.paymentTerms ?? "",
@@ -212,6 +215,48 @@ function SupplierModal({ supplier, onClose, onSaved }: {
   const [error,  setError]  = useState<string | null>(null);
 
   const set = (k: keyof FormState) => (v: string) => setForm((f) => ({ ...f, [k]: v }));
+
+  /**
+   * State is a fixed list, never free text.
+   *
+   * <p>It decides whether purchases from this supplier attract IGST or CGST+SGST, and that
+   * decision is made by comparing it against the pharmacy's own state — so a typo is not a
+   * cosmetic problem, it silently books tax under the wrong head. Live data had one
+   * supplier's state recorded as "cjd9949".
+   */
+  function StateField() {
+    const derived = stateFromGstin(form.gstin);
+    const mismatch = derived && form.state && derived.name !== form.state;
+    return (
+      <div>
+        <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">
+          State <span className="text-red-500">*</span>
+        </label>
+        <select
+          value={form.state}
+          onChange={(e) => set("state")(e.target.value)}
+          className={cn(
+            "w-full border rounded-lg px-3 py-2 text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-colors",
+            mismatch ? "border-red-300 text-red-700" : form.state ? "border-slate-200 text-slate-800" : "border-slate-200 text-slate-400"
+          )}
+        >
+          <option value="">Select a state…</option>
+          {INDIAN_STATES.map(st => (
+            <option key={st.code} value={st.name}>{st.name}</option>
+          ))}
+        </select>
+        {mismatch ? (
+          <p className="text-[10px] text-red-600 mt-1">
+            This GSTIN belongs to {derived.name}. The two must agree — correct whichever is wrong.
+          </p>
+        ) : derived ? (
+          <p className="text-[10px] text-emerald-600 mt-1">Matches the GSTIN.</p>
+        ) : (
+          <p className="text-[10px] text-slate-400 mt-1">Decides IGST vs CGST+SGST on purchases.</p>
+        )}
+      </div>
+    );
+  }
 
   function F({ label, k, placeholder, type = "text" }: { label: string; k: keyof FormState; placeholder?: string; type?: string }) {
     return (
@@ -226,6 +271,15 @@ function SupplierModal({ supplier, onClose, onSaved }: {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.name.trim()) { setError("Supplier name is required"); return; }
+    if (!form.state.trim()) {
+      setError("Pick the supplier's state — it decides whether their invoices carry IGST or CGST+SGST.");
+      return;
+    }
+    const gstinState = stateFromGstin(form.gstin);
+    if (gstinState && gstinState.name !== form.state.trim()) {
+      setError(`This GSTIN belongs to ${gstinState.name}, but the state is set to ${form.state.trim()}. They must agree.`);
+      return;
+    }
     setSaving(true); setError(null);
     try {
       const body = {
@@ -288,7 +342,7 @@ function SupplierModal({ supplier, onClose, onSaved }: {
             <div className="grid grid-cols-3 gap-4">
               <div className="col-span-3"><F label="Street Address" k="address" placeholder="123, MG Road" /></div>
               <F label="City"  k="city"  placeholder="Mumbai" />
-              <F label="State" k="state" placeholder="Maharashtra" />
+              <StateField />
             </div>
           </div>
 

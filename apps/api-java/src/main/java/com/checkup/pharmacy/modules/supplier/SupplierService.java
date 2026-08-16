@@ -1,6 +1,8 @@
 package com.checkup.pharmacy.modules.supplier;
 
+import com.checkup.pharmacy.common.exception.BadRequestException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
+import com.checkup.pharmacy.common.tax.IndianState;
 import com.checkup.pharmacy.common.util.DateRange;
 import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.common.validation.ValidationPatterns;
@@ -68,8 +70,47 @@ public class SupplierService {
         return suppliers.stream().map(s -> toResponse(s, poCounts.getOrDefault(s.getId(), 0L))).toList();
     }
 
+    /**
+     * Reject a state this system cannot compare, and a GSTIN that contradicts it.
+     *
+     * <p>Free text made the interstate comparison unreliable in both directions: one live
+     * record held {@code "cjd9949"} as a state, another {@code "karnataka"} beside a GSTIN
+     * whose code said Chhattisgarh. Neither is something a tax decision can be based on, and
+     * neither was caught at the point it was typed.
+     *
+     * <p>The GSTIN check runs only when a GSTIN is present and well-formed — an absent one is
+     * legitimate for an unregistered supplier, and a malformed one is reported as malformed
+     * rather than used to second-guess the state.
+     */
+    private void validateTaxIdentity(SupplierRequest req) {
+        IndianState state = IndianState.fromName(req.state())
+                .orElseThrow(() -> new BadRequestException("\"" + req.state().trim()
+                        + "\" is not a recognised Indian state or union territory. Pick the state from "
+                        + "the list — it decides whether purchases from this supplier attract IGST."));
+
+        String gstin = req.gstin() == null ? null : req.gstin().trim();
+        if (gstin == null || gstin.isEmpty()) {
+            return;
+        }
+        if (!gstin.matches(IndianState.GSTIN_PATTERN)) {
+            throw new BadRequestException("\"" + gstin + "\" is not a valid GSTIN. A GSTIN is "
+                    + IndianState.GSTIN_LENGTH + " characters, starting with a two-digit state code.");
+        }
+        IndianState fromGstin = IndianState.fromGstin(gstin).orElseThrow(() ->
+                new BadRequestException("The GSTIN starts with \"" + gstin.substring(0, 2)
+                        + "\", which is not a valid GST state code."));
+        if (fromGstin != state) {
+            // The GSTIN wins on authority, but we refuse rather than silently overwrite: one of
+            // the two is wrong and only the person entering it knows which.
+            throw new BadRequestException("This GSTIN belongs to " + fromGstin.displayName()
+                    + ", but the state is set to " + state.displayName()
+                    + ". Correct whichever is wrong — they must agree.");
+        }
+    }
+
     @Transactional
     public SupplierResponse create(SupplierRequest req) {
+        validateTaxIdentity(req);
         duplicateSubmitGuard.guard("supplier.create", req);
         Supplier supplier = Supplier.create(TenantContext.pharmacyId(), req.name().trim());
         applyRequest(supplier, req);
@@ -79,6 +120,7 @@ public class SupplierService {
 
     @Transactional
     public SupplierResponse update(String id, SupplierRequest req) {
+        validateTaxIdentity(req);
         Supplier supplier = load(id);
         applyRequest(supplier, req);
         return toResponse(supplier, poCounts(List.of(id)).getOrDefault(id, 0L));

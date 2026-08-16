@@ -402,10 +402,19 @@ public class BillingService {
                     .orElseThrow(() -> new NotFoundException("Customer not found"));
         }
 
+        // Resolved through IndianState, not compared as raw text: "Tamilnadu" and "Tamil Nadu"
+        // are one state, and equalsIgnoreCase charged IGST on a local sale when they differed.
+        // The same call decides a goods receipt and a debit note, so a sale and a purchase can
+        // never disagree about where this pharmacy is.
+        //
+        // The client's own flag is honoured ONLY while the pharmacy has no state on file —
+        // there is nothing to compare against then, and refusing outright would block billing
+        // on a setting the cashier cannot change. Once the state is set it is authoritative.
         boolean isInterstate = req.isInterstateOrDefault();
         if (pharmacy.getState() != null && !pharmacy.getState().isBlank()) {
-            isInterstate = customer != null && customer.getState() != null && !customer.getState().isBlank()
-                    && !customer.getState().equalsIgnoreCase(pharmacy.getState());
+            isInterstate = customer != null
+                    && com.checkup.pharmacy.common.tax.TaxJurisdiction.isInterstate(
+                            pharmacy.getState(), customer.getState());
         }
 
         Doctor doctor = req.doctorId() != null && !req.doctorId().isBlank()

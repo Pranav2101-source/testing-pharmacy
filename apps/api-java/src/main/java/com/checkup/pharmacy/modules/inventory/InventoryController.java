@@ -16,6 +16,8 @@ import com.checkup.pharmacy.modules.inventory.dto.LedgerPageResponse;
 import com.checkup.pharmacy.modules.inventory.dto.PatchInventoryRequest;
 import com.checkup.pharmacy.modules.inventory.dto.ReservationItemResult;
 import com.checkup.pharmacy.modules.inventory.dto.ReserveStockRequest;
+import com.checkup.pharmacy.modules.inventory.dto.WriteOffExpiredRequest;
+import com.checkup.pharmacy.modules.inventory.dto.WriteOffExpiredResponse;
 import jakarta.validation.Valid;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
@@ -125,6 +127,20 @@ public class InventoryController {
     @GetMapping("/frequent")
     public ApiResponse<List<FrequentItemResponse>> frequentItems() {
         return ApiResponse.ok(inventoryService.frequentItems());
+    }
+
+    /**
+     * Writes expired batches off the books — zero stock, marked EXPIRED, permanently.
+     *
+     * <p>OWNER only, matching batch recall. This destroys real inventory value and cannot be
+     * undone, and it creates a tax obligation at the same moment: section 17(5)(h) blocks input
+     * credit on goods that are destroyed, so the response reports the credit to reverse in
+     * GSTR-3B Table 4(B)(1).
+     */
+    @PostMapping("/write-off-expired")
+    @PreAuthorize("hasRole('OWNER')")
+    public ApiResponse<WriteOffExpiredResponse> writeOffExpired(@Valid @RequestBody WriteOffExpiredRequest req) {
+        return ApiResponse.ok(inventoryService.writeOffExpired(req));
     }
 
     @PostMapping("/batch-recall")

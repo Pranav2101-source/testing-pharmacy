@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api, getErrorMessage } from "@/lib/api-client";
+import { downloadCsv } from "@/lib/export";
 import { useToast } from "@/hooks/useToast";
 import { GridSkeletonRows } from "@/components/Skeleton";
 
@@ -595,11 +596,10 @@ function CompareModal({ ids, onClose }: { ids: string[]; onClose: () => void }) 
         }),
       ]),
     ];
-    const csv = rows.map(r => r.map((c: string) => `"${c}"`).join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "quote-comparison.csv"; a.click();
-    URL.revokeObjectURL(url);
+    // Shared serialiser. This export is the one that suffered most from the old hand-rolled
+    // version: every cell carries ₹, ★ or an em dash, and without a byte order mark Excel
+    // rendered all three as mojibake.
+    downloadCsv("quote-comparison.csv", rows);
   }
 
   return (

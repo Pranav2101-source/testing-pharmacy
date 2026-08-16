@@ -160,8 +160,17 @@ class RequestConstraintWiringTest {
 
     // ── Suppliers ─────────────────────────────────────────────────────────────
 
+    /**
+     * State is supplied because it is now required — it decides whether a purchase attracts
+     * IGST or CGST+SGST, and 72 of 77 live suppliers had it blank. The cases below are about
+     * the name/phone/email constraints, so the fixture keeps state valid to isolate them.
+     */
     private SupplierRequest supplier(String name, String phone, String email) {
-        return new SupplierRequest(name, null, null, phone, email, null, null, null,
+        return supplier(name, phone, email, "Tamil Nadu");
+    }
+
+    private SupplierRequest supplier(String name, String phone, String email, String state) {
+        return new SupplierRequest(name, null, null, phone, email, null, null, state,
                 BigDecimal.ZERO, 30, null);
     }
 
@@ -178,6 +187,17 @@ class RequestConstraintWiringTest {
     @DisplayName("a distributor's phone stays optional — some are reachable only by email")
     void supplierPhoneRemainsOptional() {
         assertThat(fieldsInError(supplier("Sun Pharma Distributors", null, null))).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a distributor must name its state — it decides IGST versus CGST+SGST")
+    void supplierStateIsRequired() {
+        // Not cosmetic: with no state the supplier is treated as local, so an out-of-state
+        // purchase books tax under a head the pharmacy never paid.
+        assertThat(fieldsInError(supplier("Sun Pharma Distributors", "9876543210", null, null)))
+                .contains("state");
+        assertThat(fieldsInError(supplier("Sun Pharma Distributors", "9876543210", null, "   ")))
+                .contains("state");
     }
 
     @Test
