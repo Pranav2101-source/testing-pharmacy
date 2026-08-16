@@ -11,6 +11,7 @@ import com.checkup.pharmacy.modules.platform.tenant.PlanPricing;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -21,8 +22,19 @@ import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * One-off repair for pharmacies created before signup provisioned a subscription.
+ *
+ * <p>PLATFORM_ADMIN, matching {@link SubscriptionController} — same package, same base
+ * path. Without the annotation this inherited only {@code SecurityConfig}'s closing
+ * {@code .anyRequest().authenticated()}, so ANY logged-in user (a cashier at any pharmacy)
+ * could call it, and it iterates {@code findAll()} across every tenant on the platform and
+ * writes rows for all of them. {@code UnscopedFinderCallGuardTest} did not catch the
+ * unscoped finder because it only scans {@code *Service.java} under {@code modules/}.
+ */
 @RestController
 @RequestMapping("/api/v1/platform/subscriptions")
+@PreAuthorize("hasRole('PLATFORM_ADMIN')")
 public class SubscriptionBackfillController {
 
     private static final Logger log = LoggerFactory.getLogger(SubscriptionBackfillController.class);

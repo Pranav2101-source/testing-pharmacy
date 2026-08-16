@@ -21,6 +21,20 @@ public class DatabaseUrlEnvironmentPostProcessor implements EnvironmentPostProce
     public void postProcessEnvironment(ConfigurableEnvironment environment, SpringApplication application) {
         Map<String, Object> props = new HashMap<>();
 
+        // A REAL JDBC_DATABASE_URL WINS, ALWAYS. This is a local-development convenience —
+        // it derives a JDBC URL from the Prisma-style DATABASE_URL so a developer does not
+        // have to maintain both. Where the platform already supplies JDBC_DATABASE_URL
+        // (Railway does), that is the authoritative value and this must not touch it.
+        //
+        // Without this guard the processor read a .env off disk and injected the result with
+        // addFirst — highest precedence — so a stray .env file inside a deployed image would
+        // silently repoint the running service at whatever database it named, and override
+        // JWT_SECRET with whatever it carried. Nothing would look wrong in the logs.
+        String existingJdbc = environment.getProperty("JDBC_DATABASE_URL");
+        if (existingJdbc != null && !existingJdbc.isBlank()) {
+            return;
+        }
+
         // 1. Try to read DATABASE_URL from ../../.env
         Path envPath = Paths.get("../../.env");
         if (!Files.exists(envPath)) {
@@ -89,15 +103,12 @@ public class DatabaseUrlEnvironmentPostProcessor implements EnvironmentPostProce
                 if (username != null) props.put("DB_USER", username);
                 if (password != null) props.put("DB_PASSWORD", password);
                 
-                System.out.println("======================================================");
-                System.out.println("[Config] Injecting production Supabase credentials");
-                System.out.println("  JDBC URL: " + jdbcUrl);
-                System.out.println("  Host: " + host);
-                System.out.println("  Database: " + path);
-                System.out.println("  Username: " + username);
-                System.out.println("  Source: Root .env (DATABASE_URL)");
-                System.out.println("  Active profile: " + String.join(",", environment.getActiveProfiles()));
-                System.out.println("======================================================");
+                // Host only, and nothing else. This printed the full JDBC URL, the database
+                // name and the DB username on every boot, into a log stream the hosting
+                // platform retains — so the credentials were only ever one log export away
+                // from being readable. The host is enough to confirm the right database was
+                // resolved, which is the only thing this line is for.
+                System.out.println("[Config] Derived JDBC_DATABASE_URL from DATABASE_URL (host: " + host + ")");
 
             } catch (Exception e) {
                 System.err.println("Failed to parse DATABASE_URL: " + e.getMessage());

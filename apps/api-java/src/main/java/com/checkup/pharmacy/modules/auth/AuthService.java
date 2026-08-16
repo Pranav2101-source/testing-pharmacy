@@ -114,7 +114,12 @@ public class AuthService {
                 5, 5, 500, 1024,
                 true, true, false, false, false, false, false, false);
 
-        PharmacyOnboardingService.OnboardResult result = onboardingService.onboard(cmd, null, null);
+        // enforceUniqueName = FALSE. Pharmacy names are not unique in the real world — two
+        // Apollo branches in different cities are separate tenants with the same name, and
+        // the signup path this replaced deliberately allowed that (unique SLUG, free NAME).
+        // Inheriting the admin path's uniqueness rule rejected any pharmacy whose name was
+        // already taken by an unrelated business, which is most of the common ones.
+        PharmacyOnboardingService.OnboardResult result = onboardingService.onboard(cmd, null, null, false);
 
         User user = result.owner();
         Pharmacy pharmacy = result.pharmacy();
