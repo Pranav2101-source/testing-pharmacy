@@ -49,13 +49,20 @@ model Pharmacy {
   // must look the same on every till. Same shape and lifecycle as invoiceSettings.
   billingPreferences Json?
   // Per-pharmacy EMR machine-to-machine HMAC secret, AES-256-GCM at rest (see
-  // EmrSecretCipher / EmrHmacAuthenticationFilter). Null until a platform admin
-  // rotates one; the EMR integration route fails closed when any of the three
-  // is absent. Never a shared/global secret — that was the cross-tenant
-  // impersonation gap this replaces.
+  // EmrSecretCipher / EmrHmacAuthenticationFilter). Null until the pharmacy
+  // generates one from its own Integrations screen; the EMR integration route
+  // fails closed when any of the three is absent. Never a shared/global secret
+  // — that was the cross-tenant impersonation gap this replaces.
   emrSecretCiphertext String?
   emrSecretIv         String?
   emrSecretTag        String?
+  // The clinic this pharmacy is connected to, as entered on the Integrations
+  // screen. emrCallbackUrl is where dispensing updates are POSTed back; the
+  // clinic's own connection id is part of that URL, which is why it has to be
+  // per-pharmacy and not one process-wide address.
+  emrClinicName   String?
+  emrCallbackUrl  String?
+  emrConnectedAt  DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

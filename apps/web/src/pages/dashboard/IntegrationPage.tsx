@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import { Link2, CheckCircle2, Clock, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ClinicConnectionPanel } from "./integrations/ClinicConnectionPanel";
 
 type IntStatus = "connected" | "coming_soon";
 
@@ -87,11 +88,14 @@ export default function IntegrationPage() {
               Connect Checkup with the tools your pharmacy already uses.
             </p>
           </div>
-          <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-            <Clock className="w-3.5 h-3.5 text-amber-600" strokeWidth={2} />
-            <span className="text-xs font-bold text-amber-700">All Coming Soon</span>
-          </div>
         </motion.div>
+
+        {/* The one integration that is actually live. Every card below it is a
+            placeholder, so it sits above them rather than among them. */}
+        <div>
+          <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">Clinic / EMR</h2>
+          <ClinicConnectionPanel />
+        </div>
 
         {/* Categories */}
         {CATEGORIES.map((category, ci) => {

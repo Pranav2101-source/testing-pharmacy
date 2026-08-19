@@ -209,18 +209,17 @@ public class TenantService {
     /**
      * Generates a fresh per-pharmacy EMR HMAC secret, stores it encrypted
      * (see {@link EmrSecretCipher}), and returns the plaintext once — it is
-     * never persisted in plaintext and this call never returns it again. The
-     * platform admin relays it out-of-band for pasting into the EMR side's
-     * pharmacy-connection form.
+     * never persisted in plaintext and this call never returns it again.
+     *
+     * <p>A support path only. The pharmacy generates its own key from its
+     * Integrations screen ({@code EmrConnectionService}); this exists for the
+     * case where a platform admin is doing it on their behalf, and is not a
+     * precondition for anything.
      */
     @Transactional
     public EmrSecretRotationResponse rotateEmrSecret(String id, String actorUserId) {
         Pharmacy p = pharmacyRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("Tenant not found"));
-        TenantSettings settings = tenantSettingsRepository.findByPharmacyId(id).orElse(null);
-        if (settings == null || !settings.isEnableEmr()) {
-            throw new BadRequestException("Enable the EMR module for this tenant before generating a secret");
-        }
 
         byte[] raw = new byte[32];
         RNG.nextBytes(raw);

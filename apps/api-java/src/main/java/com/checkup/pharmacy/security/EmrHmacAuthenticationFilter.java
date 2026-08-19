@@ -4,7 +4,6 @@ import com.checkup.pharmacy.common.api.ApiResponse;
 import com.checkup.pharmacy.common.enums.Role;
 import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
 import com.checkup.pharmacy.modules.pharmacy.PharmacyRepository;
-import com.checkup.pharmacy.modules.platform.domain.TenantSettingsRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ReadListener;
@@ -47,25 +46,21 @@ public class EmrHmacAuthenticationFilter extends OncePerRequestFilter {
     private static final int MAX_SIGNED_BODY_BYTES = 1_048_576;
 
     private final PharmacyRepository pharmacyRepository;
-    private final TenantSettingsRepository tenantSettingsRepository;
     private final EmrSecretCipher secretCipher;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
     @Autowired
     public EmrHmacAuthenticationFilter(PharmacyRepository pharmacyRepository,
-                                       TenantSettingsRepository tenantSettingsRepository,
                                        EmrSecretCipher secretCipher,
                                        ObjectMapper objectMapper) {
-        this(pharmacyRepository, tenantSettingsRepository, secretCipher, objectMapper, Clock.systemUTC());
+        this(pharmacyRepository, secretCipher, objectMapper, Clock.systemUTC());
     }
 
     EmrHmacAuthenticationFilter(PharmacyRepository pharmacyRepository,
-                                TenantSettingsRepository tenantSettingsRepository,
                                 EmrSecretCipher secretCipher,
                                 ObjectMapper objectMapper, Clock clock) {
         this.pharmacyRepository = pharmacyRepository;
-        this.tenantSettingsRepository = tenantSettingsRepository;
         this.secretCipher = secretCipher;
         this.objectMapper = objectMapper;
         this.clock = clock;
@@ -105,11 +100,12 @@ public class EmrHmacAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
-        // Each pharmacy verifies against its own decrypted secret, gated on
-        // TenantSettings.enableEmr — never a process-wide secret. Every failure
-        // path below (unknown pharmacy, EMR disabled, no secret rotated yet, or
-        // a genuine signature mismatch) returns the same generic message so the
-        // response can't be used as a pharmacy-id or feature-flag oracle.
+        // Each pharmacy verifies against its own decrypted secret — never a
+        // process-wide one. Holding a secret IS the permission: a pharmacy that has
+        // not generated one, or has disconnected its clinic, has none to verify
+        // against. Every failure path below (unknown pharmacy, no secret generated
+        // yet, or a genuine signature mismatch) returns the same generic message so
+        // the response can't be used as a pharmacy-id oracle.
         String secret = resolveSecret(pharmacyId);
         if (secret == null) {
             reject(response, HttpServletResponse.SC_UNAUTHORIZED, "Invalid EMR authentication signature");
@@ -137,13 +133,10 @@ public class EmrHmacAuthenticationFilter extends OncePerRequestFilter {
         chain.doFilter(new CachedBodyRequest(request, body), response);
     }
 
-    /** Null if the pharmacy is unknown, EMR isn't enabled for it, or it has no secret rotated yet. */
+    /** Null if the pharmacy is unknown, inactive, or has no secret generated yet. */
     private String resolveSecret(String pharmacyId) {
         Optional<Pharmacy> pharmacy = pharmacyRepository.findById(pharmacyId);
         if (pharmacy.isEmpty() || !pharmacy.get().isActive()) return null;
-        boolean enabled = tenantSettingsRepository.findByPharmacyId(pharmacyId)
-                .map(settings -> settings.isEnableEmr()).orElse(false);
-        if (!enabled) return null;
         Pharmacy p = pharmacy.get();
         if (p.getEmrSecretCiphertext() == null || p.getEmrSecretIv() == null || p.getEmrSecretTag() == null) {
             return null;

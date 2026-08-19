@@ -360,7 +360,6 @@ function FeaturesTab({ features }: { features: any }) {
   const flags = [
     { label: "Billing", on: features.enableBilling },
     { label: "Inventory", on: features.enableInventory },
-    { label: "EMR", on: features.enableEmr },
     { label: "CRM", on: features.enableCrm },
     { label: "WhatsApp", on: features.enableWhatsapp },
     { label: "SMS", on: features.enableSms },

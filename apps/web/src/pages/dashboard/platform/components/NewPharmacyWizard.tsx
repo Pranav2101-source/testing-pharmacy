@@ -47,7 +47,7 @@ const defaultForm: FormData = {
   ownerName: "", ownerEmail: "", ownerPhone: "",
   planName: "Free",
   doctorLimit: 5, staffLimit: 5, patientLimit: 500, storageLimit: 1024,
-  enableBilling: true, enableInventory: true, enableEmr: false, enableCrm: false,
+  enableBilling: true, enableInventory: true, enableEmr: true, enableCrm: false,
   enableWhatsapp: false, enableSms: false, enableApiAccess: false, enableOnlineBooking: false,
 };
 
@@ -453,7 +453,7 @@ function StepSubscription({ form, update }: { form: FormData; update: (k: keyof 
 
 function StepReview({ form }: { form: FormData }) {
   const features = [
-    ["enableBilling", "Billing"], ["enableInventory", "Inventory"], ["enableEmr", "EMR"],
+    ["enableBilling", "Billing"], ["enableInventory", "Inventory"],
     ["enableCrm", "CRM"], ["enableWhatsapp", "WhatsApp"], ["enableSms", "SMS"],
     ["enableApiAccess", "API Access"], ["enableOnlineBooking", "Online Booking"],
   ] as const;

@@ -126,24 +126,14 @@ class EmrDispenseFailureReasonTest {
         }
 
         @Test
-        @DisplayName("EMR switched off for the pharmacy is not retried, and says so")
-        void emrDisabled() {
-            var reason = EmrDispenseFailureReason.emrDisabled();
-
-            assertThat(reason.retryable()).isFalse();
-            assertThat(reason.message())
-                    .as("a pharmacist must be able to tell this apart from an outage")
-                    .contains("switched off");
-        }
-
-        @Test
-        @DisplayName("no key issued yet is distinct from EMR being off")
+        @DisplayName("no key generated yet is distinct from no address configured")
         void noSecret() {
-            // Two different fixes — rotate a key, versus enable the integration — so they must
-            // not collapse into one message.
+            // Two different fixes — generate a key, versus enter the clinic's address — so
+            // they must not collapse into one message.
+            assertThat(EmrDispenseFailureReason.noSecret().retryable()).isFalse();
             assertThat(EmrDispenseFailureReason.noSecret().message()).contains("key");
             assertThat(EmrDispenseFailureReason.noSecret().message())
-                    .isNotEqualTo(EmrDispenseFailureReason.emrDisabled().message());
+                    .isNotEqualTo(EmrDispenseFailureReason.notConfigured().message());
         }
     }
 

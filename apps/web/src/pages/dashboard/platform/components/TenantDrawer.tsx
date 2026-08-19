@@ -455,7 +455,6 @@ function FeaturesTab({ settings, tenantId }: { settings: any; tenantId: string }
   const flags = [
     { label: "Billing", enabled: settings.enableBilling },
     { label: "Inventory", enabled: settings.enableInventory },
-    { label: "EMR", enabled: settings.enableEmr },
     { label: "CRM", enabled: settings.enableCrm },
     { label: "WhatsApp", enabled: settings.enableWhatsapp },
     { label: "SMS", enabled: settings.enableSms },
@@ -486,15 +485,19 @@ function FeaturesTab({ settings, tenantId }: { settings: any; tenantId: string }
           ))}
         </div>
       </section>
-      {settings.enableEmr && (
+      {/* Support path only: every pharmacy manages this itself under Integrations →
+          Clinic / EMR. Kept here for the case where support is generating a key on a
+          pharmacy's behalf. */}
+      {(
         <section>
-          <h3 className="text-sm font-bold text-slate-900 mb-4 uppercase tracking-wider">EMR Integration</h3>
+          <h3 className="text-sm font-bold text-slate-900 mb-4 uppercase tracking-wider">Clinic / EMR connection</h3>
           <div className="p-4 rounded-xl border border-slate-100 bg-slate-50 space-y-3">
             <div className="flex items-center justify-between gap-3">
               <p className="text-xs text-slate-500">
-                Rotating generates a new machine-to-machine secret for this pharmacy. The
-                previous secret stops working immediately — paste the new one into this
-                tenant's EMR pharmacy-connection settings.
+                Rotating generates a new connection key for this pharmacy. The previous key
+                stops working immediately, in both directions. The pharmacy can do this
+                itself under Integrations → Clinic / EMR; use this only when doing it on
+                their behalf.
               </p>
               <button
                 onClick={() => rotateSecretMutation.mutate()}

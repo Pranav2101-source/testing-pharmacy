@@ -2,8 +2,6 @@ package com.checkup.pharmacy.security;
 
 import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
 import com.checkup.pharmacy.modules.pharmacy.PharmacyRepository;
-import com.checkup.pharmacy.modules.platform.domain.TenantSettings;
-import com.checkup.pharmacy.modules.platform.domain.TenantSettingsRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -52,7 +50,7 @@ class HmacSignerTest {
 
     @Test
     void validSignedRequestAuthenticatesTenantAndPreservesBodyForJsonBinding() throws Exception {
-        Fixture fx = fixture(true, SECRET);
+        Fixture fx = fixture(SECRET);
         String path = "/api/v1/integrations/emr/prescriptions";
         byte[] body = "{\"externalPrescriptionId\":\"rx-1\"}".getBytes(StandardCharsets.UTF_8);
         MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
@@ -75,7 +73,7 @@ class HmacSignerTest {
 
     @Test
     void staleTimestampIsRejectedBeforeTheController() throws Exception {
-        Fixture fx = fixture(true, SECRET);
+        Fixture fx = fixture(SECRET);
         String path = "/api/v1/integrations/emr/prescriptions";
         byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
         String stale = Long.toString(NOW.minusSeconds(301).getEpochSecond());
@@ -94,7 +92,7 @@ class HmacSignerTest {
 
     @Test
     void unknownPharmacyIsRejectedWithGenericMessage() throws Exception {
-        Fixture fx = fixture(true, SECRET);
+        Fixture fx = fixture(SECRET);
         String path = "/api/v1/integrations/emr/prescriptions";
         byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
         MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
@@ -112,8 +110,11 @@ class HmacSignerTest {
     }
 
     @Test
-    void pharmacyWithEmrDisabledIsRejected() throws Exception {
-        Fixture fx = fixture(false, SECRET);
+    void pharmacyThatHasGeneratedNoKeyIsRejected() throws Exception {
+        // The key IS the permission now that no feature flag gates this surface: a pharmacy
+        // that never generated one — or disconnected its clinic, which clears it — has
+        // nothing to verify against, and a forged signature must not get in on its behalf.
+        Fixture fx = fixture(null);
         String path = "/api/v1/integrations/emr/prescriptions";
         byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
         MockHttpServletRequest request = new MockHttpServletRequest("POST", path);
@@ -134,18 +135,17 @@ class HmacSignerTest {
         // Regression test for the cross-tenant impersonation gap this filter closes:
         // a signature valid for pharmacy A's own secret must not authenticate a
         // request that claims to be pharmacy B, even though both are known, active,
-        // EMR-enabled pharmacies.
+        // connected pharmacies.
         PharmacyRepository pharmacyRepository = mock(PharmacyRepository.class);
-        TenantSettingsRepository tenantSettingsRepository = mock(TenantSettingsRepository.class);
         EmrSecretCipher secretCipher = new EmrSecretCipher(ENCRYPTION_KEY);
 
-        Pharmacy pharmacyA = registerPharmacy(pharmacyRepository, tenantSettingsRepository, secretCipher,
-                "Pharmacy A", "pharmacy-a", "secret-for-pharmacy-a", true);
-        Pharmacy pharmacyB = registerPharmacy(pharmacyRepository, tenantSettingsRepository, secretCipher,
-                "Pharmacy B", "pharmacy-b", "secret-for-pharmacy-b", true);
+        Pharmacy pharmacyA = registerPharmacy(pharmacyRepository, secretCipher,
+                "Pharmacy A", "pharmacy-a", "secret-for-pharmacy-a");
+        Pharmacy pharmacyB = registerPharmacy(pharmacyRepository, secretCipher,
+                "Pharmacy B", "pharmacy-b", "secret-for-pharmacy-b");
 
         EmrHmacAuthenticationFilter filter = new EmrHmacAuthenticationFilter(pharmacyRepository,
-                tenantSettingsRepository, secretCipher, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC));
+                secretCipher, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC));
 
         String path = "/api/v1/integrations/emr/prescriptions";
         byte[] body = "{}".getBytes(StandardCharsets.UTF_8);
@@ -167,30 +167,27 @@ class HmacSignerTest {
     private record Fixture(String pharmacyId, EmrHmacAuthenticationFilter filter) {
     }
 
-    private Fixture fixture(boolean enableEmr, String secret) {
+    private Fixture fixture(String secret) {
         PharmacyRepository pharmacyRepository = mock(PharmacyRepository.class);
-        TenantSettingsRepository tenantSettingsRepository = mock(TenantSettingsRepository.class);
         EmrSecretCipher secretCipher = new EmrSecretCipher(ENCRYPTION_KEY);
 
-        Pharmacy pharmacy = registerPharmacy(pharmacyRepository, tenantSettingsRepository, secretCipher,
-                "Test Pharmacy", "test-pharmacy", secret, enableEmr);
+        Pharmacy pharmacy = registerPharmacy(pharmacyRepository, secretCipher,
+                "Test Pharmacy", "test-pharmacy", secret);
 
         EmrHmacAuthenticationFilter filter = new EmrHmacAuthenticationFilter(pharmacyRepository,
-                tenantSettingsRepository, secretCipher, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC));
+                secretCipher, new ObjectMapper(), Clock.fixed(NOW, ZoneOffset.UTC));
         return new Fixture(pharmacy.getId(), filter);
     }
 
+    /** A null secret registers a pharmacy that has never generated a connection key. */
     private Pharmacy registerPharmacy(PharmacyRepository pharmacyRepository,
-                                      TenantSettingsRepository tenantSettingsRepository,
-                                      EmrSecretCipher secretCipher, String name, String slug, String secret,
-                                      boolean enableEmr) {
+                                      EmrSecretCipher secretCipher, String name, String slug, String secret) {
         Pharmacy pharmacy = Pharmacy.create(name, slug);
-        EmrSecretCipher.Encrypted encrypted = secretCipher.encrypt(secret);
-        pharmacy.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag());
+        if (secret != null) {
+            EmrSecretCipher.Encrypted encrypted = secretCipher.encrypt(secret);
+            pharmacy.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag());
+        }
         when(pharmacyRepository.findById(pharmacy.getId())).thenReturn(Optional.of(pharmacy));
-        when(tenantSettingsRepository.findByPharmacyId(pharmacy.getId())).thenReturn(Optional.of(
-                TenantSettings.create(pharmacy.getId(), 5, 5, 500, 1024, true, true, enableEmr, false, false,
-                        false, false, false)));
         return pharmacy;
     }
 }

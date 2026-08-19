@@ -3,7 +3,6 @@ package com.checkup.pharmacy.modules.integration.emr;
 import com.checkup.pharmacy.modules.integration.emr.dto.EmrDispensePayload;
 import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
 import com.checkup.pharmacy.modules.pharmacy.PharmacyRepository;
-import com.checkup.pharmacy.modules.platform.domain.TenantSettingsRepository;
 import com.checkup.pharmacy.modules.prescription.Prescription;
 import com.checkup.pharmacy.modules.prescription.PrescriptionRepository;
 import com.checkup.pharmacy.security.EmrSecretCipher;
@@ -63,7 +62,6 @@ public class EmrDispenseCallbackService {
 
     private final PrescriptionRepository prescriptionRepository;
     private final PharmacyRepository pharmacyRepository;
-    private final TenantSettingsRepository tenantSettingsRepository;
     private final EmrSecretCipher secretCipher;
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
@@ -71,7 +69,6 @@ public class EmrDispenseCallbackService {
 
     public EmrDispenseCallbackService(PrescriptionRepository prescriptionRepository,
                                       PharmacyRepository pharmacyRepository,
-                                      TenantSettingsRepository tenantSettingsRepository,
                                       EmrSecretCipher secretCipher,
                                       ObjectMapper objectMapper,
                                       @Value("${app.integration.emr.callback-url:}") String callbackUrl,
@@ -81,7 +78,6 @@ public class EmrDispenseCallbackService {
                                       int readTimeoutMs) {
         this.prescriptionRepository = prescriptionRepository;
         this.pharmacyRepository = pharmacyRepository;
-        this.tenantSettingsRepository = tenantSettingsRepository;
         this.secretCipher = secretCipher;
         this.objectMapper = objectMapper;
         this.callbackUrl = callbackUrl == null ? "" : callbackUrl.trim();
@@ -126,27 +122,25 @@ public class EmrDispenseCallbackService {
         // meanwhile — see Prescription.markDispenseNotifyFailed.
         Instant attemptStartedAt = Instant.now();
 
-        if (callbackUrl.isEmpty()) {
+        Connection connection = SystemContext.callAsSystem(() -> resolveConnection(event.pharmacyId()));
+        if (connection == null || connection.secret() == null) {
+            recordFailure(event, EmrDispenseFailureReason.noSecret(), attemptStartedAt);
+            return false;
+        }
+        String target = connection.callbackUrl();
+        if (target.isEmpty()) {
             recordFailure(event, EmrDispenseFailureReason.notConfigured(), attemptStartedAt);
             return false;
         }
-
-        String secret = SystemContext.callAsSystem(() -> resolveSecret(event.pharmacyId()));
-        if (secret == null) {
-            // resolveSecret folds several distinct causes into null; re-derive which one so the
-            // pharmacist gets a sentence naming the thing to fix rather than "delivery failed".
-            recordFailure(event, SystemContext.callAsSystem(() -> classifySecretFailure(event.pharmacyId())),
-                    attemptStartedAt);
-            return false;
-        }
+        String secret = connection.secret();
 
         try {
             byte[] body = objectMapper.writeValueAsBytes(EmrDispensePayload.from(event));
             String timestamp = String.valueOf(Instant.now().getEpochSecond());
-            String path = URI.create(callbackUrl).getPath();
+            String path = URI.create(target).getPath();
 
             restClient.post()
-                    .uri(callbackUrl)
+                    .uri(target)
                     .contentType(MediaType.APPLICATION_JSON)
                     .header(HEADER_PHARMACY, event.pharmacyId())
                     .header(HEADER_TIMESTAMP, timestamp)
@@ -182,39 +176,44 @@ public class EmrDispenseCallbackService {
     static final String HEADER_TIMESTAMP = "X-Checkup-Timestamp";
     static final String HEADER_SIGNATURE = "X-Checkup-Signature";
 
+    /** What one delivery needs: who to call, and what to sign it with. */
+    record Connection(String secret, String callbackUrl) {
+    }
+
     /**
-     * The pharmacy's decrypted EMR secret, or null when it has none it can use.
+     * The pharmacy's decrypted EMR secret and the clinic address it belongs to, or null
+     * when the pharmacy has no usable secret.
      *
      * <p>Mirrors {@code EmrHmacAuthenticationFilter.resolveSecret} deliberately: the outbound
-     * direction must be gated on exactly the same conditions as the inbound one, or a
-     * pharmacy with EMR switched off would still be sending dispensing records out.
+     * direction must be gated on exactly the same conditions as the inbound one. Holding a
+     * secret is the whole permission on both sides — a pharmacy that disconnected its clinic
+     * has none, and stops sending as well as receiving.
+     *
+     * <p>The address is the one the pharmacy entered for its clinic. The app-level property
+     * remains as a fallback for pharmacies connected before that field existed; it is the
+     * wrong shape for more than one clinic, because the clinic's own connection id is part
+     * of the path.
      */
-    private String resolveSecret(String pharmacyId) {
+    private Connection resolveConnection(String pharmacyId) {
         Optional<Pharmacy> pharmacy = pharmacyRepository.findById(pharmacyId);
         if (pharmacy.isEmpty() || !pharmacy.get().isActive()) {
             return null;
         }
-        boolean enabled = tenantSettingsRepository.findByPharmacyId(pharmacyId)
-                .map(settings -> settings.isEnableEmr()).orElse(false);
-        if (!enabled) {
-            return null;
-        }
         Pharmacy p = pharmacy.get();
+        String target = p.getEmrCallbackUrl() == null || p.getEmrCallbackUrl().isBlank()
+                ? callbackUrl
+                : p.getEmrCallbackUrl().trim();
         if (p.getEmrSecretCiphertext() == null || p.getEmrSecretIv() == null || p.getEmrSecretTag() == null) {
-            return null;
+            return new Connection(null, target);
         }
         try {
-            return secretCipher.decrypt(p.getEmrSecretCiphertext(), p.getEmrSecretIv(), p.getEmrSecretTag());
+            return new Connection(
+                    secretCipher.decrypt(p.getEmrSecretCiphertext(), p.getEmrSecretIv(), p.getEmrSecretTag()),
+                    target);
         } catch (Exception e) {
             log.error("EMR secret for pharmacy {} could not be decrypted", pharmacyId, e);
-            return null;
+            return new Connection(null, target);
         }
-    }
-
-    private EmrDispenseFailureReason classifySecretFailure(String pharmacyId) {
-        boolean enabled = tenantSettingsRepository.findByPharmacyId(pharmacyId)
-                .map(settings -> settings.isEnableEmr()).orElse(false);
-        return enabled ? EmrDispenseFailureReason.noSecret() : EmrDispenseFailureReason.emrDisabled();
     }
 
     private void recordSent(PrescriptionDispensedEvent event) {

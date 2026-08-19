@@ -22,6 +22,18 @@ public interface PrescriptionRepository extends JpaRepository<Prescription, Stri
     Optional<Prescription> findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
             String pharmacyId, String externalEmrTenantId, String externalEmrPrescriptionId);
 
+    /** Integrations screen: how many prescriptions arrived from a clinic rather than the till. */
+    long countByPharmacyIdAndExternalEmrPrescriptionIdIsNotNull(String pharmacyId);
+
+    /** Integrations screen: dispensing updates in one delivery state (PENDING / SENT / FAILED). */
+    long countByPharmacyIdAndDispenseNotifyStatus(String pharmacyId, String dispenseNotifyStatus);
+
+    @Query("""
+            SELECT MAX(rx.createdAt) FROM Prescription rx
+            WHERE rx.pharmacyId = :pharmacyId AND rx.externalEmrPrescriptionId IS NOT NULL
+            """)
+    Instant findLastEmrPrescriptionAt(@Param("pharmacyId") String pharmacyId);
+
     /**
      * status compared as text, search cast explicitly — see
      * InventoryRepository.search's javadoc for why a null bind value needs both.

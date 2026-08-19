@@ -195,7 +195,16 @@ app:
       # BLANK BY DEFAULT, and blank is a supported state — the callback records
       # "no address configured" against the prescription and stops, rather than
       # retrying something that cannot succeed. Nothing about billing changes.
+      # FALLBACK ONLY. Each pharmacy now enters its own clinic address on the
+      # Integrations screen (Pharmacy.emrCallbackUrl), which is what the clinic's
+      # per-connection callback path requires. This value is used when a pharmacy
+      # has none stored — i.e. tenants connected before that screen existed.
       callback-url: ${EMR_CALLBACK_URL:}
+
+      # This pharmacy deployment's public base URL, shown on the Integrations screen
+      # for the pharmacist to copy into their clinic's connection form. Display only:
+      # nothing routes on it.
+      pharmacy-base-url: ${EMR_PHARMACY_BASE_URL:https://checkuppharmacy.com}
       # A clinic that accepts a connection and then goes quiet must not hold a pool
       # thread indefinitely; a handful of those would stall callbacks for everyone.
       connect-timeout-ms: ${EMR_CALLBACK_CONNECT_TIMEOUT_MS:3000}

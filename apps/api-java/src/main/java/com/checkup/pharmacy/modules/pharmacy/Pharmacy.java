@@ -9,6 +9,8 @@ import jakarta.persistence.Table;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
+import java.time.Instant;
+
 /**
  * The tenant. Maps the Prisma `Pharmacy` model (table "pharmacies"). Only the
  * columns needed by the current modules are mapped; the rest (invoiceSettings,
@@ -88,6 +90,20 @@ public class Pharmacy extends BaseEntity {
 
     @Column(name = "emrSecretTag")
     private String emrSecretTag;
+
+    // The clinic this pharmacy is connected to, entered by the pharmacy itself on
+    // its Integrations screen. The callback URL carries the clinic's own connection
+    // id in its path, so it cannot be one process-wide address shared by every
+    // tenant — the app-level property is only a fallback for pharmacies onboarded
+    // before this screen existed.
+    @Column(name = "emrClinicName")
+    private String emrClinicName;
+
+    @Column(name = "emrCallbackUrl")
+    private String emrCallbackUrl;
+
+    @Column(name = "emrConnectedAt")
+    private Instant emrConnectedAt;
 
     @Column(name = "isActive")
     private boolean isActive = true;
@@ -182,6 +198,33 @@ public class Pharmacy extends BaseEntity {
         this.emrSecretCiphertext = ciphertext;
         this.emrSecretIv = iv;
         this.emrSecretTag = tag;
+    }
+
+    public String getEmrClinicName() { return emrClinicName; }
+
+    public String getEmrCallbackUrl() { return emrCallbackUrl; }
+
+    public Instant getEmrConnectedAt() { return emrConnectedAt; }
+
+    /** Records which clinic this pharmacy sends dispensing updates to. */
+    public void connectEmrClinic(String clinicName, String callbackUrl) {
+        this.emrClinicName = clinicName;
+        this.emrCallbackUrl = callbackUrl;
+        if (this.emrConnectedAt == null) {
+            this.emrConnectedAt = Instant.now();
+        }
+    }
+
+    /**
+     * Disconnects the clinic: forgets the address AND the secret, so neither
+     * direction of the integration keeps working on a connection the pharmacy
+     * has said it no longer wants.
+     */
+    public void disconnectEmrClinic() {
+        this.emrClinicName = null;
+        this.emrCallbackUrl = null;
+        this.emrConnectedAt = null;
+        setEmrSecret(null, null, null);
     }
 
     public boolean isActive() { return isActive; }

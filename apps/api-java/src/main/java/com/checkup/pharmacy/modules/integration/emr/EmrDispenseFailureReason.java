@@ -20,17 +20,12 @@ record EmrDispenseFailureReason(String message, boolean retryable) {
 
     static EmrDispenseFailureReason notConfigured() {
         return new EmrDispenseFailureReason(
-                "No clinic callback address is configured on this server.", false);
-    }
-
-    static EmrDispenseFailureReason emrDisabled() {
-        return new EmrDispenseFailureReason(
-                "The EMR integration is switched off for this pharmacy.", false);
+                "No clinic callback address is configured. Add it under Integrations.", false);
     }
 
     static EmrDispenseFailureReason noSecret() {
         return new EmrDispenseFailureReason(
-                "No EMR key has been issued for this pharmacy yet.", false);
+                "No clinic connection key has been generated for this pharmacy yet.", false);
     }
 
     static EmrDispenseFailureReason of(Exception e) {
