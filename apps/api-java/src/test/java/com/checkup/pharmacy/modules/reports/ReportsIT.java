@@ -94,7 +94,7 @@ class ReportsIT extends AbstractPostgresIT {
     private void cashSale(int units) {
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO, null))));
         flushAndClear();
     }
 
@@ -129,7 +129,7 @@ class ReportsIT extends AbstractPostgresIT {
         var created = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, new BigDecimal("10"), new BigDecimal("25"), new BigDecimal("-3.50"),
                 null, null,
-                List.of(new InvoiceItemRequest(batchId, 3, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 3, null, BigDecimal.ZERO, null))));
         flushAndClear();
 
         var invoice = billingService.getInvoice(created.id());
@@ -155,7 +155,7 @@ class ReportsIT extends AbstractPostgresIT {
         // came from before the discount, totalAmount from after.
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, new BigDecimal("10"), null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO, null))));
         flushAndClear();
 
         var from = Instant.now().minus(1, ChronoUnit.HOURS);
@@ -193,7 +193,7 @@ class ReportsIT extends AbstractPostgresIT {
     void gstSummaryAccountsForChargesAndRounding() {
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, null, new BigDecimal("25"), new BigDecimal("-3.50"), null, null,
-                List.of(new InvoiceItemRequest(batchId, 3, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 3, null, BigDecimal.ZERO, null))));
         flushAndClear();
 
         var gst = reportsService.gstSummary(hourAgo(), Instant.now());
@@ -231,9 +231,9 @@ class ReportsIT extends AbstractPostgresIT {
 
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, new BigDecimal("7.5"), null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 3, null, new BigDecimal("5")),
-                        new InvoiceItemRequest(otherBatch, 7, null, BigDecimal.ZERO),
-                        new InvoiceItemRequest(thirdBatch, 11, null, new BigDecimal("2.5")))));
+                List.of(new InvoiceItemRequest(batchId, 3, null, new BigDecimal("5"), null),
+                        new InvoiceItemRequest(otherBatch, 7, null, BigDecimal.ZERO, null),
+                        new InvoiceItemRequest(thirdBatch, 11, null, new BigDecimal("2.5"), null))));
         flushAndClear();
 
         var gst = reportsService.gstSummary(hourAgo(), Instant.now());
@@ -292,7 +292,7 @@ class ReportsIT extends AbstractPostgresIT {
     private void interstateSale(int units) {
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 true, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO, null))));
         flushAndClear();
     }
 
@@ -312,7 +312,7 @@ class ReportsIT extends AbstractPostgresIT {
         authenticateAs(otherUser.getId(), other.getId(), Role.OWNER);
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(otherBatch, 5, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(otherBatch, 5, null, BigDecimal.ZERO, null))));
         flushAndClear();
 
         var otherReport = reportsService.dailySales(null);
@@ -382,7 +382,7 @@ class ReportsIT extends AbstractPostgresIT {
 
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, prescription.getId(), "CASH", "PAID",
                 null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO, null))));
         flushAndClear();
 
         List<ScheduleHItemResponse> register =
@@ -598,7 +598,7 @@ class ReportsIT extends AbstractPostgresIT {
         // would report a scheme-heavy month as more profitable than it was.
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 2, 1, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 2, 1, BigDecimal.ZERO, null))));
         flushAndClear();
 
         var margin = reportsService.marginReport(hourAgo(), Instant.now(), null);
@@ -616,7 +616,7 @@ class ReportsIT extends AbstractPostgresIT {
         // list the medicine simply looks popular.
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 2, null, new BigDecimal("60")))));
+                List.of(new InvoiceItemRequest(batchId, 2, null, new BigDecimal("60"), null))));
         flushAndClear();
 
         var margin = reportsService.marginReport(hourAgo(), Instant.now(), null);
@@ -687,7 +687,7 @@ class ReportsIT extends AbstractPostgresIT {
         flushAndClear();
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(freeBatch, 1, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(freeBatch, 1, null, BigDecimal.ZERO, null))));
         flushAndClear();
         cashSale(1); // one properly costed line alongside it
 
@@ -864,7 +864,7 @@ class ReportsIT extends AbstractPostgresIT {
     private String saleTo(String customerId, int units) {
         var created = billingService.createInvoice(new CreateInvoiceRequest(customerId, null, null, null,
                 "CASH", "PAID", null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO, null))));
         flushAndClear();
         return created.id();
     }
@@ -920,8 +920,8 @@ class ReportsIT extends AbstractPostgresIT {
 
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO),
-                        new InvoiceItemRequest(nilBatch, 3, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO, null),
+                        new InvoiceItemRequest(nilBatch, 3, null, BigDecimal.ZERO, null))));
         flushAndClear();
 
         var report = reportsService.gstr3b(hourAgo(), Instant.now());
@@ -1329,8 +1329,8 @@ class ReportsIT extends AbstractPostgresIT {
 
         billingService.createInvoice(new CreateInvoiceRequest(customerId, null, null, null, "CASH", "PAID",
                 null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO),
-                        new InvoiceItemRequest(nilBatch, 3, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO, null),
+                        new InvoiceItemRequest(nilBatch, 3, null, BigDecimal.ZERO, null))));
         flushAndClear();
 
         var report = reportsService.gstr3b(hourAgo(), Instant.now());
@@ -1385,7 +1385,7 @@ class ReportsIT extends AbstractPostgresIT {
         // and there is no customer at all to read a place of supply from.
         billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
                 true, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO, null))));
         flushAndClear();
 
         var report = reportsService.gstr3b(hourAgo(), Instant.now());

@@ -98,7 +98,7 @@ class InvoiceSettingsIT extends AbstractPostgresIT {
     private CreateInvoiceRequest sale(int quantity) {
         return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, quantity, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, quantity, null, BigDecimal.ZERO, null)));
     }
 
     @Nested
@@ -298,7 +298,7 @@ class InvoiceSettingsIT extends AbstractPostgresIT {
 
             var invoice = billingService.createInvoice(new CreateInvoiceRequest(
                     null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    List.of(new InvoiceItemRequest(otherBatch, 1, null, BigDecimal.ZERO))));
+                    List.of(new InvoiceItemRequest(otherBatch, 1, null, BigDecimal.ZERO, null))));
 
             assertThat(invoice.invoiceNumber()).startsWith("INV/");
         }
@@ -311,7 +311,7 @@ class InvoiceSettingsIT extends AbstractPostgresIT {
         private CreateInvoiceRequest saleWithFree(int quantity, int freeQty) {
             return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null,
-                    List.of(new InvoiceItemRequest(batchId, quantity, freeQty, BigDecimal.ZERO)));
+                    List.of(new InvoiceItemRequest(batchId, quantity, freeQty, BigDecimal.ZERO, null)));
         }
 
         private int stock() {
@@ -407,7 +407,7 @@ class InvoiceSettingsIT extends AbstractPostgresIT {
         void negativeFreeQtyRejected() {
             // @PositiveOrZero on the DTO. A negative value would otherwise ADD stock.
             var validator = jakarta.validation.Validation.buildDefaultValidatorFactory().getValidator();
-            var violations = validator.validate(new InvoiceItemRequest(batchId, 10, -5, BigDecimal.ZERO));
+            var violations = validator.validate(new InvoiceItemRequest(batchId, 10, -5, BigDecimal.ZERO, null));
             assertThat(violations).isNotEmpty();
         }
     }

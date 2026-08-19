@@ -242,7 +242,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
         void restoresFreeQuantity() {
             var invoice = billingService.createInvoice(new CreateInvoiceRequest(
                     null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    List.of(new InvoiceItemRequest(batchId, 10, 2, BigDecimal.ZERO))));
+                    List.of(new InvoiceItemRequest(batchId, 10, 2, BigDecimal.ZERO, null))));
             flushAndClear();
             assertThat(batch().getQuantity()).isEqualTo(88); // 10 charged + 2 free left the shelf
 
@@ -258,7 +258,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
         void ledgerMatchesTheRestore() {
             var invoice = billingService.createInvoice(new CreateInvoiceRequest(
                     null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    List.of(new InvoiceItemRequest(batchId, 10, 2, BigDecimal.ZERO))));
+                    List.of(new InvoiceItemRequest(batchId, 10, 2, BigDecimal.ZERO, null))));
             flushAndClear();
             billingService.cancelInvoice(invoice.id(), "wrong item");
             flushAndClear();
@@ -281,7 +281,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
         void needsACustomer() {
             assertThatThrownBy(() -> billingService.createInvoice(new CreateInvoiceRequest(
                     null, null, null, null, "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
-                    List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO)))))
+                    List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO, null)))))
                     .isInstanceOf(UnprocessableEntityException.class)
                     .hasMessageContaining("needs a customer");
 
@@ -296,7 +296,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
             billingService.createInvoice(new CreateInvoiceRequest(
                     customer.getId(), null, null, null, "CREDIT", "PENDING", null, null, null,
                     null, null, null, null, null,
-                    List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO))));
+                    List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO, null))));
             flushAndClear();
 
             assertThat(customerRepository.findById(customer.getId()).orElseThrow().getCreditUsed())
@@ -308,7 +308,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
         void paidCreditSaleIsNotADebt() {
             billingService.createInvoice(new CreateInvoiceRequest(
                     null, null, null, null, "CREDIT", "PAID", null, null, null, null, null, null, null, null,
-                    List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO))));
+                    List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO, null))));
             flushAndClear();
 
             assertThat(batch().getQuantity()).isEqualTo(95);
@@ -322,7 +322,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
             assertThatThrownBy(() -> billingService.createInvoice(new CreateInvoiceRequest(
                     customer.getId(), null, null, null, "CREDIT", "PENDING", null, null, null,
                     null, null, null, null, null,
-                    List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO)))))
+                    List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO, null)))))
                     .hasMessageContaining("Credit limit exceeded");
         }
     }
@@ -339,7 +339,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
     private CreateInvoiceRequest saleOf(int quantity, String sessionId) {
         return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, sessionId,
-                List.of(new InvoiceItemRequest(batchId, quantity, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, quantity, null, BigDecimal.ZERO, null)));
     }
 
     private Customer creditCustomer(BigDecimal limit) {

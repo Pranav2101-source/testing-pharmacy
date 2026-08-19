@@ -166,6 +166,17 @@ class TenantIsolationGuardTest {
             "UserRepository#findByPharmacyIdInAndRole",
             "UserRepository#bumpTokenVersionByPharmacyIds",
 
+
+            // ── 5. Scheduled sweepers: no tenant exists to scope BY ──────────────
+            // Reachable only from EmrDispenseCallbackRetryJob, which runs on a cron with
+            // no request and therefore no SecurityContext or TenantContext. Its whole job
+            // is to find work across every pharmacy at once: scoping it per tenant would
+            // mean one query per pharmacy every two minutes, growing with signups rather
+            // than with integrations. The rows it returns are used only to re-attempt a
+            // delivery the pharmacy itself already queued, and each delivery re-reads its
+            // own prescription scoped by the pharmacyId carried on the row.
+            "PrescriptionRepository#findDispenseCallbackBacklog",
+
             // ── 4. Load-then-authorize ───────────────────────────────────────────
             // The query is unscoped but the service checks ownership on the loaded row
             // before returning it: SupportService#getTicket calls assertCanAccess, and

@@ -593,3 +593,83 @@ describe("quantity entry", () => {
     expect(store().getTotals().totalAmount).toBe(750);
   });
 });
+
+describe("attributing a cart line to a prescribed line", () => {
+  /**
+   * The cart's half of substitution support. Everything the server needs is one optional id
+   * per line, but getting it there intact matters more than it looks: the failure it exists
+   * to prevent is a prescription reporting that the patient collected nothing while they
+   * walk out holding the medicine.
+   */
+
+  it("records the attribution on the named line", () => {
+    store().addItem(item({ inventoryId: "inv-clavam", medicineName: "Clavam 625" }));
+    store().linkToPrescriptionItem("inv-clavam", "rx-item-augmentin");
+
+    expect(line().prescriptionItemId).toBe("rx-item-augmentin");
+  });
+
+  it("survives a quantity change", () => {
+    // recompute() rebuilds each line field by field rather than spreading it, so a field it
+    // forgets is dropped on the next edit. A substitution that silently unlinked itself when
+    // the cashier corrected the quantity would be found by nobody.
+    store().addItem(item({ inventoryId: "inv-clavam" }));
+    store().linkToPrescriptionItem("inv-clavam", "rx-item-1");
+    store().updateQty("inv-clavam", 6);
+
+    expect(line().quantity).toBe(6);
+    expect(line().prescriptionItemId).toBe("rx-item-1");
+  });
+
+  it("survives a discount change", () => {
+    store().addItem(item({ inventoryId: "inv-clavam" }));
+    store().linkToPrescriptionItem("inv-clavam", "rx-item-1");
+    store().updateDiscount("inv-clavam", 10);
+
+    expect(line().prescriptionItemId).toBe("rx-item-1");
+  });
+
+  it("moves the link rather than duplicating it when a second line claims the same prescribed line", () => {
+    store().addItem(item({ inventoryId: "inv-a", medicineName: "Clavam 625" }));
+    store().addItem(item({ inventoryId: "inv-b", medicineName: "Moxikind CV 625" }));
+
+    store().linkToPrescriptionItem("inv-a", "rx-item-1");
+    store().linkToPrescriptionItem("inv-b", "rx-item-1");
+
+    // Two attributions for one prescribed line would credit it twice and could close a
+    // prescription on half the medicine.
+    expect(store().items.filter((i) => i.prescriptionItemId === "rx-item-1")).toHaveLength(1);
+    expect(store().items.find((i) => i.inventoryId === "inv-b")?.prescriptionItemId).toBe("rx-item-1");
+    expect(store().items.find((i) => i.inventoryId === "inv-a")?.prescriptionItemId).toBeUndefined();
+  });
+
+  it("clears the attribution when passed null", () => {
+    store().addItem(item({ inventoryId: "inv-clavam" }));
+    store().linkToPrescriptionItem("inv-clavam", "rx-item-1");
+    store().linkToPrescriptionItem("inv-clavam", null);
+
+    expect(line().prescriptionItemId).toBeUndefined();
+  });
+
+  it("drops every attribution when the linked prescription changes", () => {
+    store().setMeta({ prescriptionId: "rx-1" });
+    store().addItem(item({ inventoryId: "inv-clavam" }));
+    store().linkToPrescriptionItem("inv-clavam", "rx-item-1");
+
+    store().setMeta({ prescriptionId: "rx-2" });
+
+    // The ids name lines on a prescription that is no longer linked. Sending them against a
+    // different one is either rejected or, worse, matched to a same-id line on the new Rx.
+    expect(line().prescriptionItemId).toBeUndefined();
+  });
+
+  it("keeps attributions when unrelated meta changes", () => {
+    store().setMeta({ prescriptionId: "rx-1" });
+    store().addItem(item({ inventoryId: "inv-clavam" }));
+    store().linkToPrescriptionItem("inv-clavam", "rx-item-1");
+
+    store().setMeta({ paymentMode: "UPI" });
+
+    expect(line().prescriptionItemId).toBe("rx-item-1");
+  });
+});
