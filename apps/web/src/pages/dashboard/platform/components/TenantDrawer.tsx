@@ -8,7 +8,7 @@ import { useToast } from "@/hooks/useToast";
 import {
   X, Building2, Calendar, MapPin, CheckCircle2, AlertTriangle, CreditCard, HardDrive,
   Zap, Clock, Users, User, Stethoscope, Shield, Ban, Archive, Activity, Settings, BarChart3,
-  FileText, Loader2,
+  FileText, Loader2, KeyRound, Copy, Check,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -252,7 +252,7 @@ export function TenantDrawer({ tenantId, onClose }: TenantDrawerProps) {
                   {activeTab === "overview" && <OverviewTab tenant={tenant} />}
                   {activeTab === "subscription" && <SubscriptionTab tenant={tenant} navigate={navigate} />}
                   {activeTab === "health" && <HealthTab health={health} />}
-                  {activeTab === "features" && <FeaturesTab settings={tenant.tenantSettings} />}
+                  {activeTab === "features" && <FeaturesTab settings={tenant.tenantSettings} tenantId={tenant.id} />}
                   {activeTab === "activity" && <ActivityTab activity={activity} />}
                   <div className="h-8" />
                 </div>
@@ -412,7 +412,35 @@ function HealthTab({ health }: { health: any }) {
   );
 }
 
-function FeaturesTab({ settings }: { settings: any }) {
+function FeaturesTab({ settings, tenantId }: { settings: any; tenantId: string }) {
+  const toast = useToast();
+  const [revealedSecret, setRevealedSecret] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const rotateSecretMutation = useMutation({
+    mutationFn: async () => {
+      const { data } = await api.post<{ data: { secret: string; rotatedAt: string } }>(
+        `/platform/tenants/${tenantId}/emr-secret/rotate`
+      );
+      return data.data;
+    },
+    onSuccess: (data) => {
+      setRevealedSecret(data.secret);
+      setCopied(false);
+      toast.success("EMR secret rotated");
+    },
+    onError: (err: any) => {
+      toast.error(err?.response?.data?.error || "Failed to rotate EMR secret");
+    },
+  });
+
+  const copySecret = async () => {
+    if (!revealedSecret) return;
+    await navigator.clipboard.writeText(revealedSecret);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
   if (!settings) {
     return <p className="text-sm text-slate-500 italic p-4 bg-slate-50 rounded-xl border border-slate-100 text-center">No settings configured for this tenant.</p>;
   }
@@ -458,6 +486,47 @@ function FeaturesTab({ settings }: { settings: any }) {
           ))}
         </div>
       </section>
+      {settings.enableEmr && (
+        <section>
+          <h3 className="text-sm font-bold text-slate-900 mb-4 uppercase tracking-wider">EMR Integration</h3>
+          <div className="p-4 rounded-xl border border-slate-100 bg-slate-50 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-slate-500">
+                Rotating generates a new machine-to-machine secret for this pharmacy. The
+                previous secret stops working immediately — paste the new one into this
+                tenant's EMR pharmacy-connection settings.
+              </p>
+              <button
+                onClick={() => rotateSecretMutation.mutate()}
+                disabled={rotateSecretMutation.isPending}
+                className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg text-xs font-semibold transition-colors disabled:opacity-50"
+              >
+                {rotateSecretMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <KeyRound className="w-3.5 h-3.5" />}
+                {revealedSecret ? "Rotate again" : "Generate / Rotate secret"}
+              </button>
+            </div>
+            {revealedSecret && (
+              <div className="p-3 rounded-lg bg-white border border-indigo-100 space-y-2">
+                <p className="text-[11px] font-semibold text-amber-600 uppercase tracking-wide">
+                  Shown once — copy it now, it won't be shown again
+                </p>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 text-xs font-mono text-slate-800 break-all bg-slate-50 px-2 py-1.5 rounded">
+                    {revealedSecret}
+                  </code>
+                  <button
+                    onClick={copySecret}
+                    className="shrink-0 flex items-center gap-1 px-2 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg text-xs font-medium text-slate-600 transition-colors"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copied ? "Copied" : "Copy"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
     </div>
   );
 }

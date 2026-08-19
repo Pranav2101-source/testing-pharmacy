@@ -30,6 +30,18 @@ public class Prescription extends BaseEntity {
     @Column(name = "prescriptionNumber")
     private String prescriptionNumber;
 
+    @Column(name = "externalEmrTenantId")
+    private String externalEmrTenantId;
+
+    @Column(name = "externalEmrPrescriptionId")
+    private String externalEmrPrescriptionId;
+
+    @Column(name = "externalEmrPrescriptionNumber")
+    private String externalEmrPrescriptionNumber;
+
+    @Column(name = "receivedAt")
+    private Instant receivedAt;
+
     @Column(name = "doctorId")
     private String doctorId;
 
@@ -103,6 +115,21 @@ public class Prescription extends BaseEntity {
         return rx;
     }
 
+    public static Prescription createFromEmr(String pharmacyId, String prescriptionNumber,
+                                             String externalEmrTenantId, String externalEmrPrescriptionId,
+                                             String externalEmrPrescriptionNumber, String doctorName,
+                                             String doctorRegNo, String doctorPhone, String patientName,
+                                             Integer patientAge, String patientPhone, String patientGender,
+                                             Instant prescribedDate, Instant validUntil, String notes) {
+        Prescription rx = create(pharmacyId, prescriptionNumber, null, doctorName, doctorRegNo, doctorPhone,
+                patientName, patientAge, patientPhone, patientGender, prescribedDate, validUntil, notes, null);
+        rx.externalEmrTenantId = externalEmrTenantId;
+        rx.externalEmrPrescriptionId = externalEmrPrescriptionId;
+        rx.externalEmrPrescriptionNumber = externalEmrPrescriptionNumber;
+        rx.receivedAt = Instant.now();
+        return rx;
+    }
+
     public void applyFields(String doctorId, String doctorName, String doctorRegNo, String patientName,
                             Integer patientAge, String patientPhone, String patientGender,
                             Instant prescribedDate, Instant validUntil, String notes) {
@@ -141,6 +168,14 @@ public class Prescription extends BaseEntity {
     public String getPharmacyId() { return pharmacyId; }
 
     public String getPrescriptionNumber() { return prescriptionNumber; }
+
+    public String getExternalEmrTenantId() { return externalEmrTenantId; }
+
+    public String getExternalEmrPrescriptionId() { return externalEmrPrescriptionId; }
+
+    public String getExternalEmrPrescriptionNumber() { return externalEmrPrescriptionNumber; }
+
+    public Instant getReceivedAt() { return receivedAt; }
 
     public String getDoctorId() { return doctorId; }
 

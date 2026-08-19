@@ -48,6 +48,14 @@ model Pharmacy {
   // "we don't do home delivery" is a shop policy, not a cashier's preference, and it
   // must look the same on every till. Same shape and lifecycle as invoiceSettings.
   billingPreferences Json?
+  // Per-pharmacy EMR machine-to-machine HMAC secret, AES-256-GCM at rest (see
+  // EmrSecretCipher / EmrHmacAuthenticationFilter). Null until a platform admin
+  // rotates one; the EMR integration route fails closed when any of the three
+  // is absent. Never a shared/global secret — that was the cross-tenant
+  // impersonation gap this replaces.
+  emrSecretCiphertext String?
+  emrSecretIv         String?
+  emrSecretTag        String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -721,6 +729,10 @@ model Prescription {
   id                 String             @id @default(cuid())
   pharmacyId         String
   prescriptionNumber String
+  externalEmrTenantId String?
+  externalEmrPrescriptionId String?
+  externalEmrPrescriptionNumber String?
+  receivedAt         DateTime?
   doctorId           String?
   doctorName         String
   doctorRegNo        String? // MCI / state council registration number
@@ -745,6 +757,7 @@ model Prescription {
   items    PrescriptionItem[]
 
   @@unique([pharmacyId, prescriptionNumber])
+  @@unique([pharmacyId, externalEmrTenantId, externalEmrPrescriptionId])
   @@index([pharmacyId, status])
   @@index([pharmacyId, doctorId])
   @@index([pharmacyId, createdAt])
@@ -755,6 +768,7 @@ model PrescriptionItem {
   id             String  @id @default(cuid())
   pharmacyId     String
   prescriptionId String
+  externalEmrItemId String?
   medicineName   String
   medicineId     String?
   schedule       String? // H, H1, X, G, OTC
@@ -770,6 +784,7 @@ model PrescriptionItem {
   prescription Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
   medicine     Medicine?    @relation(fields: [medicineId], references: [id])
 
+  @@unique([prescriptionId, externalEmrItemId])
   @@index([pharmacyId])
   @@index([prescriptionId])
   @@map("prescription_items")

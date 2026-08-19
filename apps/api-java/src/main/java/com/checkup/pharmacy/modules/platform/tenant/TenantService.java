@@ -22,9 +22,11 @@ import com.checkup.pharmacy.modules.platform.domain.TenantSettingsRepository;
 import com.checkup.pharmacy.modules.platform.tenant.dto.BulkActionResult;
 import com.checkup.pharmacy.modules.platform.tenant.dto.CreateTenantRequest;
 import com.checkup.pharmacy.modules.platform.tenant.dto.CreateTenantResponse;
+import com.checkup.pharmacy.modules.platform.tenant.dto.EmrSecretRotationResponse;
 import com.checkup.pharmacy.modules.platform.tenant.dto.ImportResult;
 import com.checkup.pharmacy.modules.platform.tenant.dto.ImportTenantsRequest;
 import com.checkup.pharmacy.modules.platform.tenant.dto.OwnerInfo;
+import com.checkup.pharmacy.security.EmrSecretCipher;
 import com.checkup.pharmacy.modules.platform.tenant.dto.SettingsInfo;
 import com.checkup.pharmacy.modules.platform.tenant.dto.SubscriptionInfo;
 import com.checkup.pharmacy.modules.platform.tenant.dto.TenantActivityItem;
@@ -79,6 +81,7 @@ public class TenantService {
     private final PasswordEncoder passwordEncoder;
     private final PharmacyOnboardingService onboardingService;
     private final EntityManager entityManager;
+    private final EmrSecretCipher emrSecretCipher;
 
     public TenantService(PharmacyRepository pharmacyRepository, UserRepository userRepository,
                          SubscriptionRepository subscriptionRepository,
@@ -86,7 +89,7 @@ public class TenantService {
                          CustomerRepository customerRepository, SupportTicketRepository ticketRepository,
                          AuditLogRepository auditLogRepository, AuditService auditService,
                          PasswordEncoder passwordEncoder, PharmacyOnboardingService onboardingService,
-                         EntityManager entityManager) {
+                         EntityManager entityManager, EmrSecretCipher emrSecretCipher) {
         this.pharmacyRepository = pharmacyRepository;
         this.userRepository = userRepository;
         this.subscriptionRepository = subscriptionRepository;
@@ -99,6 +102,7 @@ public class TenantService {
         this.passwordEncoder = passwordEncoder;
         this.onboardingService = onboardingService;
         this.entityManager = entityManager;
+        this.emrSecretCipher = emrSecretCipher;
     }
 
     // ── List ──────────────────────────────────────────────────────────────────
@@ -198,6 +202,38 @@ public class TenantService {
                 .newData(Map.of("status", status)));
 
         return getTenant(id);
+    }
+
+    // ── EMR secret rotation ─────────────────────────────────────────────────────
+
+    /**
+     * Generates a fresh per-pharmacy EMR HMAC secret, stores it encrypted
+     * (see {@link EmrSecretCipher}), and returns the plaintext once — it is
+     * never persisted in plaintext and this call never returns it again. The
+     * platform admin relays it out-of-band for pasting into the EMR side's
+     * pharmacy-connection form.
+     */
+    @Transactional
+    public EmrSecretRotationResponse rotateEmrSecret(String id, String actorUserId) {
+        Pharmacy p = pharmacyRepository.findById(id)
+                .orElseThrow(() -> new NotFoundException("Tenant not found"));
+        TenantSettings settings = tenantSettingsRepository.findByPharmacyId(id).orElse(null);
+        if (settings == null || !settings.isEnableEmr()) {
+            throw new BadRequestException("Enable the EMR module for this tenant before generating a secret");
+        }
+
+        byte[] raw = new byte[32];
+        RNG.nextBytes(raw);
+        String plainSecret = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
+
+        EmrSecretCipher.Encrypted encrypted = emrSecretCipher.encrypt(plainSecret);
+        p.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag());
+        pharmacyRepository.save(p);
+
+        auditService.log(AuditEntry.of(AuditModule.TENANTS, "EMR_SECRET_ROTATED", "PHARMACY")
+                .pharmacyId(id).userId(actorUserId).entityId(id));
+
+        return new EmrSecretRotationResponse(plainSecret, p.getUpdatedAt());
     }
 
     // ── Bulk action ─────────────────────────────────────────────────────────────

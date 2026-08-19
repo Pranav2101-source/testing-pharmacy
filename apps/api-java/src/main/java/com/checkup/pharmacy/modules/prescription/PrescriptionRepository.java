@@ -18,6 +18,9 @@ public interface PrescriptionRepository extends JpaRepository<Prescription, Stri
 
     Optional<Prescription> findByIdAndPharmacyId(String id, String pharmacyId);
 
+    Optional<Prescription> findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
+            String pharmacyId, String externalEmrTenantId, String externalEmrPrescriptionId);
+
     /**
      * status compared as text, search cast explicitly — see
      * InventoryRepository.search's javadoc for why a null bind value needs both.

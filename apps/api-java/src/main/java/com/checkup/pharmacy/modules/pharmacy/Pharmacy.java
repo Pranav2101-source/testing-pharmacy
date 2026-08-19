@@ -75,6 +75,20 @@ public class Pharmacy extends BaseEntity {
     @Column(name = "billingPreferences")
     private String billingPreferences;
 
+    // Per-pharmacy secret for the EMR machine-to-machine HMAC surface (see
+    // EmrHmacAuthenticationFilter / EmrSecretCipher). AES-256-GCM ciphertext +
+    // nonce + auth tag, base64 text columns — same at-rest shape as the EMR
+    // side's own PharmacyConnection secret. Null until a platform admin rotates
+    // one; the EMR filter fails closed when any of the three is absent.
+    @Column(name = "emrSecretCiphertext")
+    private String emrSecretCiphertext;
+
+    @Column(name = "emrSecretIv")
+    private String emrSecretIv;
+
+    @Column(name = "emrSecretTag")
+    private String emrSecretTag;
+
     @Column(name = "isActive")
     private boolean isActive = true;
 
@@ -156,6 +170,19 @@ public class Pharmacy extends BaseEntity {
     public void setDocuments(String documents) { this.documents = documents; }
 
     public void setTenantCode(String tenantCode) { this.tenantCode = tenantCode; }
+
+    public String getEmrSecretCiphertext() { return emrSecretCiphertext; }
+
+    public String getEmrSecretIv() { return emrSecretIv; }
+
+    public String getEmrSecretTag() { return emrSecretTag; }
+
+    /** Stores a freshly-generated, already-encrypted EMR secret (or clears it if any part is null). */
+    public void setEmrSecret(String ciphertext, String iv, String tag) {
+        this.emrSecretCiphertext = ciphertext;
+        this.emrSecretIv = iv;
+        this.emrSecretTag = tag;
+    }
 
     public boolean isActive() { return isActive; }
 

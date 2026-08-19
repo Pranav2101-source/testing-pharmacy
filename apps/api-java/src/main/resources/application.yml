@@ -182,6 +182,12 @@ app:
   inventory:
     # How long a billing-session stock reservation holds before it auto-expires.
     reservation-ttl-minutes: ${RESERVATION_TTL_MINUTES:15}
+  integration:
+    emr:
+      # AES-256-GCM key (hex or base64) used to encrypt each pharmacy's own EMR HMAC
+      # secret at rest. Leave blank to keep every EMR machine route fail-closed —
+      # there is deliberately no shared fallback secret (see EmrSecretCipher).
+      encryption-key: ${EMR_CONNECTION_ENCRYPTION_KEY:}
   ratelimit:
     # Blanket per-IP ceiling across the whole API (common/ratelimit/GlobalRateLimitFilter),
     # on top of the tighter per-endpoint limits on login/register/forgot-password. Deliberately

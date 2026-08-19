@@ -27,6 +27,8 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
 
     Optional<Invoice> findByPharmacyIdAndIdempotencyKey(String pharmacyId, String idempotencyKey);
 
+    List<Invoice> findByPharmacyIdAndPrescriptionIdOrderByCreatedAtAsc(String pharmacyId, String prescriptionId);
+
     /** Most recent non-cancelled invoice for a customer — powers "repeat last bill". */
     @Query("SELECT i FROM Invoice i WHERE i.pharmacyId = :pharmacyId AND i.customerId = :customerId " +
             "AND i.isCancelled = false ORDER BY i.createdAt DESC")

@@ -60,6 +60,12 @@ public interface MedicineRepository extends JpaRepository<Medicine, String> {
     @Query("SELECT m FROM Medicine m WHERE m.isActive = true AND LOWER(m.name) IN :lowerNames")
     List<Medicine> findActiveByLowerNameIn(@Param("lowerNames") Collection<String> lowerNames);
 
+    /** Exact, batched candidates for EMR catalogue matching; fuzzy matches are deliberately excluded. */
+    @Query("SELECT m FROM Medicine m WHERE m.isActive = true AND "
+            + "(LOWER(m.name) IN :lowerNames OR LOWER(m.genericName) IN :lowerGenericNames)")
+    List<Medicine> findActiveForEmrMatch(@Param("lowerNames") Collection<String> lowerNames,
+                                         @Param("lowerGenericNames") Collection<String> lowerGenericNames);
+
     long countByIsActiveTrue();
 
     java.util.Optional<Medicine> findByBarcode(String barcode);

@@ -17,6 +17,9 @@ public class PrescriptionItem extends CreatedAtEntity {
     @Column(name = "prescriptionId")
     private String prescriptionId;
 
+    @Column(name = "externalEmrItemId")
+    private String externalEmrItemId;
+
     @Column(name = "medicineName")
     private String medicineName;
 
@@ -63,9 +66,21 @@ public class PrescriptionItem extends CreatedAtEntity {
         return item;
     }
 
+    public static PrescriptionItem createFromEmr(String pharmacyId, String prescriptionId,
+                                                  String externalEmrItemId, String medicineName,
+                                                  String medicineId, String schedule, int quantity,
+                                                  String dosage, String duration, String notes) {
+        PrescriptionItem item = create(pharmacyId, prescriptionId, medicineName, medicineId, schedule,
+                quantity, dosage, duration, notes);
+        item.externalEmrItemId = externalEmrItemId;
+        return item;
+    }
+
     public String getPharmacyId() { return pharmacyId; }
 
     public String getPrescriptionId() { return prescriptionId; }
+
+    public String getExternalEmrItemId() { return externalEmrItemId; }
 
     public String getMedicineName() { return medicineName; }
 

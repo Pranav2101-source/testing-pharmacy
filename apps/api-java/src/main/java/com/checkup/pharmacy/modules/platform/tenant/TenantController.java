@@ -5,6 +5,7 @@ import com.checkup.pharmacy.modules.platform.tenant.dto.BulkActionResult;
 import com.checkup.pharmacy.modules.platform.tenant.dto.BulkTenantActionRequest;
 import com.checkup.pharmacy.modules.platform.tenant.dto.CreateTenantRequest;
 import com.checkup.pharmacy.modules.platform.tenant.dto.CreateTenantResponse;
+import com.checkup.pharmacy.modules.platform.tenant.dto.EmrSecretRotationResponse;
 import com.checkup.pharmacy.modules.platform.tenant.dto.ImportResult;
 import com.checkup.pharmacy.modules.platform.tenant.dto.ImportTenantsRequest;
 import com.checkup.pharmacy.modules.platform.tenant.dto.TenantActivityItem;
@@ -103,6 +104,13 @@ public class TenantController {
                                                           @Valid @RequestBody com.checkup.pharmacy.modules.platform.tenant.dto.UpdateTenantStatusRequest req) {
         UserPrincipal actor = TenantContext.currentUser();
         return ApiResponse.ok(tenantService.updateTenantStatus(id, req.status(), actor.userId()));
+    }
+
+    /** Generates a fresh EMR HMAC secret for this tenant; the plaintext is returned once. */
+    @PostMapping("/{id}/emr-secret/rotate")
+    public ApiResponse<EmrSecretRotationResponse> rotateEmrSecret(@PathVariable String id) {
+        UserPrincipal actor = TenantContext.currentUser();
+        return ApiResponse.ok(tenantService.rotateEmrSecret(id, actor.userId()));
     }
 
     @GetMapping("/{id}/activity")
