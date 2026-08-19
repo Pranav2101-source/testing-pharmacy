@@ -35,6 +35,26 @@ public class PrescriptionItem extends CreatedAtEntity {
     @Column(name = "dispensedQty")
     private int dispensedQty;
 
+    /**
+     * What the patient actually received, when it differs from what was prescribed.
+     *
+     * <p>NULL is the normal case and means "as prescribed". Deliberately separate from
+     * {@code medicineId} rather than overwriting it: the line records what a doctor
+     * ordered and must stay legible as that forever. Overwriting would mean "which
+     * prescriptions ordered drug X" stops finding the ones where X was swapped out —
+     * exactly the query a recall runs.
+     */
+    @Column(name = "dispensedMedicineId")
+    private String dispensedMedicineId;
+
+    /**
+     * Denormalised beside the id because the callback runs on a background thread with a
+     * hard timeout budget; a join there would add a query per line to the one path that
+     * must stay cheap and must not fail.
+     */
+    @Column(name = "dispensedMedicineName")
+    private String dispensedMedicineName;
+
     @Column(name = "dosage")
     private String dosage;
 
@@ -114,4 +134,36 @@ public class PrescriptionItem extends CreatedAtEntity {
     public String getDuration() { return duration; }
 
     public String getNotes() { return notes; }
+
+    /**
+     * Records that a different product was handed over against this line.
+     *
+     * <p>Called only when the sold medicine differs from the prescribed one. Both id and
+     * name are stored: the id for querying, the name so the callback can report it without
+     * a lookup.
+     */
+    public void recordSubstitution(String medicineId, String medicineName) {
+        this.dispensedMedicineId = medicineId;
+        this.dispensedMedicineName = medicineName;
+    }
+
+    /** True when something other than the prescribed product was dispensed. */
+    public boolean isSubstituted() {
+        return dispensedMedicineId != null && !dispensedMedicineId.equals(medicineId);
+    }
+
+    public String getDispensedMedicineId() { return dispensedMedicineId; }
+
+    public String getDispensedMedicineName() { return dispensedMedicineName; }
+
+    /**
+     * Points an unmatched line at a catalogue product, chosen by a pharmacist.
+     *
+     * <p>Sets only the id. The medicineName stays exactly as the doctor wrote it — that text
+     * is the record of what was ordered, and replacing it with the catalogue's wording would
+     * quietly rewrite the prescription.
+     */
+    public void linkMedicine(String medicineId) {
+        this.medicineId = medicineId;
+    }
 }

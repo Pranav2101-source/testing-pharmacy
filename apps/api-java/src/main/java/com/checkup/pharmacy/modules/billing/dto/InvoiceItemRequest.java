@@ -20,7 +20,17 @@ public record InvoiceItemRequest(
          * Optional; absent means none.
          */
         @PositiveOrZero Integer freeQty,
-        @Min(0) @Max(100) BigDecimal discount
+        @Min(0) @Max(100) BigDecimal discount,
+        /**
+         * The prescribed line this sale fulfils, when the cashier said which one.
+         *
+         * <p>Optional, and null on every counter sale. It exists for one case that cannot be
+         * inferred: a SUBSTITUTION. Dispensing is otherwise attributed by matching the sold
+         * medicine to a prescribed one, which by definition cannot find the line when a
+         * different product was handed over — so without this the prescribed line would stay
+         * unfulfilled and the clinic would be told the patient collected nothing.
+         */
+        String prescriptionItemId
 ) {
     public BigDecimal discountOrZero() {
         return discount == null ? BigDecimal.ZERO : discount;

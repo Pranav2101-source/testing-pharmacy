@@ -1,5 +1,7 @@
 package com.checkup.pharmacy.modules.billing;
 
+import org.springframework.context.ApplicationEventPublisher;
+import com.checkup.pharmacy.modules.integration.emr.PrescriptionDispensedEvent;
 import com.checkup.pharmacy.common.concurrency.RetryOnConflict;
 import com.checkup.pharmacy.common.enums.BatchStatus;
 import com.checkup.pharmacy.common.enums.CustomerType;
@@ -106,6 +108,7 @@ public class BillingService {
     private final PrescriptionRepository prescriptionRepository;
     private final PrescriptionItemRepository prescriptionItemRepository;
     private final UserRepository userRepository;
+    private final ApplicationEventPublisher eventPublisher;
     private final DocumentSequenceService sequenceService;
     private final com.checkup.pharmacy.modules.audit.AuditService auditService;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
@@ -120,7 +123,8 @@ public class BillingService {
                           PrescriptionItemRepository prescriptionItemRepository,
                           UserRepository userRepository, DocumentSequenceService sequenceService,
                           com.checkup.pharmacy.modules.audit.AuditService auditService,
-                          com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
+                          com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+                          ApplicationEventPublisher eventPublisher) {
         this.invoiceRepository = invoiceRepository;
         this.invoiceItemRepository = invoiceItemRepository;
         this.invoicePaymentRepository = invoicePaymentRepository;
@@ -136,6 +140,7 @@ public class BillingService {
         this.prescriptionRepository = prescriptionRepository;
         this.prescriptionItemRepository = prescriptionItemRepository;
         this.userRepository = userRepository;
+        this.eventPublisher = eventPublisher;
         this.sequenceService = sequenceService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
@@ -665,14 +670,39 @@ public class BillingService {
         releaseOwnReservations(ownReservations, ownReservedByInventoryId, batchMap);
 
         if (prescription != null) {
-            // Collapse the invoice to medicine -> units, which is the granularity a
-            // prescription is written at. Two batches of the same medicine on one bill
-            // are one dispensing event as far as the prescription is concerned.
+            // Two ways a sold line reaches a prescribed line, in priority order.
+            //
+            // An EXPLICIT link, where the cashier said which prescribed line they were
+            // filling. That is the only thing that can express a substitution: the sold
+            // medicine differs from the prescribed one, so no amount of matching would ever
+            // connect them.
+            //
+            // Otherwise by medicine, which is the granularity a prescription is written at.
+            // Two batches of the same medicine on one bill are one dispensing event as far
+            // as the prescription is concerned.
             Map<String, Integer> dispensedByMedicineId = new HashMap<>();
+            Map<String, Attribution> attributedByItemId = new HashMap<>();
             for (ResolvedLine line : lines) {
-                dispensedByMedicineId.merge(line.batch().getMedicineId(), line.req().quantity(), Integer::sum);
+                String linkedItemId = line.req().prescriptionItemId();
+                if (linkedItemId != null && !linkedItemId.isBlank()) {
+                    attributedByItemId.merge(linkedItemId,
+                            new Attribution(line.req().quantity(), line.batch().getMedicineId(),
+                                    line.batch().getMedicine().getName()),
+                            Attribution::plus);
+                } else {
+                    dispensedByMedicineId.merge(line.batch().getMedicineId(), line.req().quantity(), Integer::sum);
+                }
             }
-            recordDispensing(prescription, dispensedByMedicineId);
+            List<PrescriptionItem> settled =
+                    recordDispensing(prescription, dispensedByMedicineId, attributedByItemId);
+
+            // Only a prescription that came from a clinic has anywhere to report back to.
+            // Published rather than delivered: the listener runs AFTER_COMMIT on its own pool,
+            // so a slow or unreachable EMR can never delay this sale or fail it.
+            if (prescription.isFromEmr()) {
+                prescription.markDispenseNotifyPending();
+                eventPublisher.publishEvent(dispensedEvent(prescription, invoice, settled));
+            }
         }
 
         return toResponse(invoice, customer, doctor, userRepository.findById(userId).orElse(null), savedItems, List.of(), List.of());
@@ -1189,10 +1219,89 @@ public class BillingService {
      * billable, so the patient is never blocked — the prescription simply does not
      * auto-close and needs cancelling by hand once fulfilled.
      */
-    private void recordDispensing(Prescription prescription, Map<String, Integer> dispensedByMedicineId) {
+
+    /**
+     * Builds the "what the patient collected" event for a clinic-sent prescription.
+     *
+     * <p>Quantities are the line's CUMULATIVE dispensed total, not this sale's contribution.
+     * That is what makes the callback idempotent: redelivering sets the same numbers again
+     * rather than adding to them, so every retry path can simply send it once more.
+     */
+    private PrescriptionDispensedEvent dispensedEvent(Prescription prescription, Invoice invoice,
+                                                      List<PrescriptionItem> items) {
+        boolean fullyDispensed = !items.isEmpty()
+                && items.stream().allMatch(PrescriptionItem::isFullyDispensed);
+
+        List<PrescriptionDispensedEvent.DispensedItem> payloadItems = items.stream()
+                .map(i -> new PrescriptionDispensedEvent.DispensedItem(
+                        i.getExternalEmrItemId(),
+                        i.getMedicineName(),
+                        i.getDispensedMedicineName() != null ? i.getDispensedMedicineName() : i.getMedicineName(),
+                        i.getDispensedQty(),
+                        i.getQuantity(),
+                        i.isSubstituted()))
+                .toList();
+
+        return new PrescriptionDispensedEvent(
+                prescription.getPharmacyId(),
+                prescription.getId(),
+                prescription.getPrescriptionNumber(),
+                prescription.getExternalEmrTenantId(),
+                prescription.getExternalEmrPrescriptionId(),
+                invoice.getInvoiceNumber(),
+                Instant.now(),
+                fullyDispensed,
+                payloadItems);
+    }
+
+    /**
+     * What one sale contributed to a prescribed line, when the cashier named the line.
+     *
+     * <p>Carries the sold medicine as well as the count, because a substitution is only
+     * knowable here: the line says what was ordered, this says what was handed over.
+     */
+    private record Attribution(int units, String medicineId, String medicineName) {
+        Attribution plus(Attribution other) {
+            return new Attribution(units + other.units, other.medicineId, other.medicineName);
+        }
+    }
+
+    /**
+     * Posts what this sale handed over against the prescription's lines, then settles
+     * the prescription's status.
+     *
+     * <p>Replaces an unconditional {@code markDispensed()}, which closed a prescription
+     * on the first sale against it. A patient collecting two of three prescribed
+     * medicines today was refused the third on their next visit, because billing only
+     * accepts an ACTIVE or PARTIAL prescription and the first sale had already made it
+     * DISPENSED.
+     *
+     * <p>An explicitly attributed line wins over medicine matching, and is the only path
+     * that can record a substitution — see {@link Attribution}.
+     *
+     * <p>KNOWN LIMITATION — items with no medicineId
+     * <p>A prescription line the EMR sent that the matcher could not resolve, or one typed
+     * as free text, cannot be matched to anything sold and so never accrues a dispensed
+     * quantity, holding the prescription at PARTIAL. That is the safe direction to fail:
+     * PARTIAL remains billable, so the patient is never blocked. It is also why the
+     * prescription screen surfaces those lines for a pharmacist to link.
+     */
+    private List<PrescriptionItem> recordDispensing(Prescription prescription,
+                                                    Map<String, Integer> dispensedByMedicineId,
+                                                    Map<String, Attribution> attributedByItemId) {
         List<PrescriptionItem> items = prescriptionItemRepository.findByPrescriptionId(prescription.getId());
 
         for (PrescriptionItem item : items) {
+            Attribution attributed = attributedByItemId.get(item.getId());
+            if (attributed != null) {
+                item.recordDispensed(attributed.units());
+                // Only when it genuinely differs. Recording a "substitution" for the product
+                // that was prescribed would put a spurious swap in front of a clinician.
+                if (!attributed.medicineId().equals(item.getMedicineId())) {
+                    item.recordSubstitution(attributed.medicineId(), attributed.medicineName());
+                }
+                continue;
+            }
             if (item.getMedicineId() == null) {
                 continue;
             }
@@ -1209,6 +1318,7 @@ public class BillingService {
         } else {
             prescription.markPartiallyDispensed();
         }
+        return items;
     }
 
     private Invoice loadInvoice(String id) {

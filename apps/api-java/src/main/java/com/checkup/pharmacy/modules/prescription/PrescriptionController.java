@@ -3,6 +3,7 @@ package com.checkup.pharmacy.modules.prescription;
 import com.checkup.pharmacy.common.api.ApiResponse;
 import com.checkup.pharmacy.modules.prescription.dto.CreatePrescriptionRequest;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionPageResponse;
+import com.checkup.pharmacy.modules.prescription.dto.LinkPrescriptionItemRequest;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionResponse;
 import com.checkup.pharmacy.modules.prescription.dto.UpdatePrescriptionRequest;
 import jakarta.validation.Valid;
@@ -62,5 +63,29 @@ public class PrescriptionController {
     @DeleteMapping("/{id}")
     public ApiResponse<PrescriptionResponse> cancel(@PathVariable String id) {
         return ApiResponse.ok(prescriptionService.cancel(id));
+    }
+
+    /**
+     * Links a line the EMR sent to a product in this pharmacy's catalogue.
+     *
+     * <p>Until this is done the line cannot be attributed to anything sold, so the
+     * prescription can never close and the clinic is never told it was fulfilled.
+     */
+    @PatchMapping("/{id}/items/{itemId}/medicine")
+    public ApiResponse<PrescriptionResponse> linkItemMedicine(@PathVariable String id,
+                                                              @PathVariable String itemId,
+                                                              @Valid @RequestBody LinkPrescriptionItemRequest req) {
+        return ApiResponse.ok(prescriptionService.linkItemToMedicine(id, itemId, req.medicineId()));
+    }
+
+    /**
+     * Queues another attempt at telling the clinic what was dispensed.
+     *
+     * <p>POST rather than PATCH: this asks for an action to happen, and is deliberately not
+     * idempotent in the sense that matters here — each call resets the retry budget.
+     */
+    @PostMapping("/{id}/dispense-notify/retry")
+    public ApiResponse<PrescriptionResponse> retryDispenseNotify(@PathVariable String id) {
+        return ApiResponse.ok(prescriptionService.retryDispenseNotify(id));
     }
 }
