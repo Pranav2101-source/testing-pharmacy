@@ -91,7 +91,7 @@ class MigrationRollbackAuditIT extends AbstractPostgresIT {
 
             billingService.createInvoice(new CreateInvoiceRequest(
                     null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    List.of(new InvoiceItemRequest(batch.getId(), 5, null, BigDecimal.ZERO))));
+                    List.of(new InvoiceItemRequest(batch.getId(), 5, null, BigDecimal.ZERO, null))));
             flushAndClear();
 
             assertThatThrownBy(() -> migrationService.rollbackSession(sessionId))
@@ -107,7 +107,7 @@ class MigrationRollbackAuditIT extends AbstractPostgresIT {
             String sessionId = importOneBatch();
             billingService.createInvoice(new CreateInvoiceRequest(
                     null, null, null, null, null, null, null, null, null, null, null, null, null, null,
-                    List.of(new InvoiceItemRequest(batch().getId(), 5, null, BigDecimal.ZERO))));
+                    List.of(new InvoiceItemRequest(batch().getId(), 5, null, BigDecimal.ZERO, null))));
             flushAndClear();
 
             assertThatThrownBy(() -> migrationService.rollbackSession(sessionId))

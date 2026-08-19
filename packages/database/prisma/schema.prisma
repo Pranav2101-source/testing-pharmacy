@@ -747,6 +747,14 @@ model Prescription {
   status             PrescriptionStatus @default(ACTIVE)
   notes              String?
 
+  // Dispense callback to the clinic. NULL throughout means "never applied" — a
+  // counter-written prescription, which is most of them.
+  dispenseNotifyStatus        String?
+  dispenseNotifiedAt          DateTime?
+  dispenseNotifyError         String?
+  dispenseNotifyAttempts      Int       @default(0)
+  dispenseNotifyNextAttemptAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -774,6 +782,9 @@ model PrescriptionItem {
   schedule       String? // H, H1, X, G, OTC
   quantity       Int
   dispensedQty   Int     @default(0)
+  // Set only when a substitute was handed over; NULL means "as prescribed".
+  dispensedMedicineId   String?
+  dispensedMedicineName String?
   dosage         String?
   duration       String?
   notes          String?

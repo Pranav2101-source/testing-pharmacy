@@ -18,6 +18,12 @@ export type CartItem = {
   discount:       number;
   gstRate:        number;
   availableStock?: number;
+  /**
+   * The prescribed line this sale fulfils. Only ever set for a substitution: the
+   * server attributes everything else by matching the medicine, which cannot work
+   * when a different product was handed over.
+   */
+  prescriptionItemId?: string;
   // computed
   rate:           number;
   taxableAmount:  number;
@@ -66,6 +72,8 @@ type BillingStore = {
   updateQty: (inventoryId: string, qty: number) => void;
   updateFreeQty: (inventoryId: string, freeQty: number) => void;
   updateDiscount: (inventoryId: string, discount: number) => void;
+  /** Attributes a cart line to a prescribed line. Pass null to clear. */
+  linkToPrescriptionItem: (inventoryId: string, prescriptionItemId: string | null) => void;
   setMeta: (patch: Partial<BillingMeta>) => void;
   clear: () => void;
   getTotals: () => ReturnType<typeof calcInvoiceTotals>;
@@ -158,6 +166,7 @@ function recompute(item: NewCartItem & Partial<CartItem>): CartItem {
   );
   return {
     inventoryId:    item.inventoryId,
+    prescriptionItemId: item.prescriptionItemId,
     medicineName:   item.medicineName,
     hsnCode:        item.hsnCode,
     schedule:       item.schedule,
@@ -248,7 +257,28 @@ export const useBillingStore = create<BillingStore>((set, get) => ({
     }));
   },
 
+  linkToPrescriptionItem(inventoryId, prescriptionItemId) {
+    set((s) => ({
+      items: s.items.map((i) => {
+        // Two cart lines claiming the same prescribed line would credit it twice and could
+        // close a prescription on half the medicine, so the link MOVES rather than copies.
+        if (prescriptionItemId && i.prescriptionItemId === prescriptionItemId
+            && i.inventoryId !== inventoryId) {
+          return recompute({ ...i, prescriptionItemId: undefined });
+        }
+        return i.inventoryId === inventoryId
+          ? recompute({ ...i, prescriptionItemId: prescriptionItemId ?? undefined })
+          : i;
+      }),
+    }));
+  },
+
   setMeta(patch) {
+    // Attributions name lines on the prescription that WAS linked. Sending them against a
+    // different one is either rejected or, worse, matched to a same-id line on the new Rx.
+    if (patch.prescriptionId !== undefined && patch.prescriptionId !== get().meta.prescriptionId) {
+      set((s) => ({ items: s.items.map((i) => recompute({ ...i, prescriptionItemId: undefined })) }));
+    }
     set((s) => ({ meta: { ...s.meta, ...patch } }));
   },
 

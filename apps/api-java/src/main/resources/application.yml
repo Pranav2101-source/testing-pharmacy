@@ -188,6 +188,18 @@ app:
       # secret at rest. Leave blank to keep every EMR machine route fail-closed —
       # there is deliberately no shared fallback secret (see EmrSecretCipher).
       encryption-key: ${EMR_CONNECTION_ENCRYPTION_KEY:}
+
+      # Where dispensing updates are sent back to. One address serves every clinic:
+      # the payload names the tenant, and the receiver routes on it.
+      #
+      # BLANK BY DEFAULT, and blank is a supported state — the callback records
+      # "no address configured" against the prescription and stops, rather than
+      # retrying something that cannot succeed. Nothing about billing changes.
+      callback-url: ${EMR_CALLBACK_URL:}
+      # A clinic that accepts a connection and then goes quiet must not hold a pool
+      # thread indefinitely; a handful of those would stall callbacks for everyone.
+      connect-timeout-ms: ${EMR_CALLBACK_CONNECT_TIMEOUT_MS:3000}
+      read-timeout-ms: ${EMR_CALLBACK_READ_TIMEOUT_MS:8000}
   ratelimit:
     # Blanket per-IP ceiling across the whole API (common/ratelimit/GlobalRateLimitFilter),
     # on top of the tighter per-endpoint limits on login/register/forgot-password. Deliberately
@@ -215,6 +227,9 @@ app:
     enabled: ${JOBS_ENABLED:true}
     # 07:00 IST — alerts are waiting when the shop opens, not mid-shift.
     stock-alerts-cron: ${STOCK_ALERTS_CRON:0 0 7 * * *}
+    # Every 2 minutes. The first retry backoff step is a minute, so a shorter tick
+    # mostly finds nothing and a longer one makes recovery slower than the outage.
+    emr-dispense-retry-cron: ${EMR_DISPENSE_RETRY_CRON:0 */2 * * * *}
     # How far ahead to warn about expiring batches. 60 days is roughly the window
     # in which a distributor will still accept a saleable return.
     expiry-window-days: ${EXPIRY_WINDOW_DAYS:60}

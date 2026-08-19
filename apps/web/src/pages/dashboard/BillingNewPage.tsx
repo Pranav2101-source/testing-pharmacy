@@ -1,4 +1,5 @@
 ﻿import { useState, useMemo, useCallback, useEffect, useRef, Suspense, lazy, memo } from "react";
+import PrescriptionFulfilmentPanel from "@/components/integration/PrescriptionFulfilmentPanel";
 import { useAnimationControls } from "framer-motion";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -319,6 +320,9 @@ function NewBillInner() {
           quantity:    i.quantity,
           freeQty:     i.freeQty || undefined,
           discount:    i.discount,
+          // Only ever set for a substitution; the server attributes everything else
+          // by matching the medicine.
+          prescriptionItemId: i.prescriptionItemId,
         })),
       });
       const printData: PrintInvoiceData = {
@@ -574,6 +578,13 @@ function NewBillInner() {
             <CartTableRows conflictInventoryIds={conflictInventoryIds} />
           </div>
         </div>
+
+        {/* Substitutions: only rendered for a clinic prescription, and only when one is linked. */}
+        {meta.prescriptionId && (
+          <div className="px-6 pb-2 flex-shrink-0">
+            <PrescriptionFulfilmentPanel prescriptionId={meta.prescriptionId} />
+          </div>
+        )}
 
         {/* Zone 4: Bottom totals bar */}
         <div

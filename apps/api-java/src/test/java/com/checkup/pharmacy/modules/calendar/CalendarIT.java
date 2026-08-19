@@ -161,7 +161,7 @@ class CalendarIT extends AbstractPostgresIT {
 
         var invoice = billingService.createInvoice(new CreateInvoiceRequest(credit.getId(), null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batch.getId(), 2, null, BigDecimal.ZERO))));
+                List.of(new InvoiceItemRequest(batch.getId(), 2, null, BigDecimal.ZERO, null))));
 
         // Due date is createdAt + 30 days, so the view window must be centred there.
         Instant dueAround = Instant.now().plus(30, ChronoUnit.DAYS);

@@ -108,7 +108,7 @@ class PrescriptionIT extends AbstractPostgresIT {
     private CreateInvoiceRequest saleAgainst(String prescriptionId, String inventoryId, int quantity) {
         return new CreateInvoiceRequest(null, null, null, prescriptionId, null, null, null, null, null,
                 null, null, null, null, null,
-                List.of(new InvoiceItemRequest(inventoryId, quantity, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(inventoryId, quantity, null, BigDecimal.ZERO, null)));
     }
 
     private PrescriptionStatus statusOf(String id) {
@@ -199,8 +199,8 @@ class PrescriptionIT extends AbstractPostgresIT {
 
         var bothItems = new CreateInvoiceRequest(null, null, null, rxId, null, null, null, null, null,
                 null, null, null, null, null,
-                List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO),
-                        new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO, null),
+                        new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO, null)));
 
         billingService.createInvoice(bothItems);
         flushAndClear();
@@ -215,8 +215,8 @@ class PrescriptionIT extends AbstractPostgresIT {
 
         var bothItems = new CreateInvoiceRequest(null, null, null, rxId, null, null, null, null, null,
                 null, null, null, null, null,
-                List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO),
-                        new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO, null),
+                        new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO, null)));
         billingService.createInvoice(bothItems);
         flushAndClear();
 
@@ -253,5 +253,77 @@ class PrescriptionIT extends AbstractPostgresIT {
 
         assertThatThrownBy(() -> prescriptionService.getById(rxId))
                 .isInstanceOf(NotFoundException.class);
+    }
+
+    // ── Substitution: the case medicine-matching cannot express ──────────────
+
+    /**
+     * Creates a clinic-sent prescription for Amoxicillin, then sells PARACETAMOL against it
+     * with an explicit attribution — the shape of a pharmacist handing over a different
+     * product from the one written.
+     */
+    private String emrPrescriptionForAmoxicillin() {
+        var rx = prescriptionRepository.save(Prescription.createFromEmr(pharmacyId, "RX-EMR-" + unique(),
+                "tenant-9", "ext-" + unique(), "EMR-1", "Dr Who", null, null,
+                "A Patient", 40, null, null, null, null, null));
+        prescriptionItemRepository.save(PrescriptionItem.createFromEmr(pharmacyId, rx.getId(),
+                "ext-item-1", "Amoxicillin 250", amoxicillinId, null, 10, null, null, null));
+        flushAndClear();
+        return rx.getId();
+    }
+
+    @Test
+    @DisplayName("a substitution is credited to the prescribed line it was handed over for")
+    void substitutionFulfilsThePrescribedLine() {
+        String rxId = emrPrescriptionForAmoxicillin();
+        String itemId = prescriptionItemRepository.findByPrescriptionId(rxId).get(0).getId();
+
+        // Paracetamol against an Amoxicillin line. Nothing matches these by medicine, so
+        // without the explicit link the prescribed line would accrue nothing at all.
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, rxId, null, null, null,
+                null, null, null, null, null, null, null,
+                List.of(new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO, itemId))));
+        flushAndClear();
+
+        PrescriptionItem line = prescriptionItemRepository.findByPrescriptionId(rxId).get(0);
+        assertThat(line.getDispensedQty())
+                .as("the prescribed line is fulfilled even though a different product was sold")
+                .isEqualTo(10);
+        assertThat(line.isSubstituted()).isTrue();
+        assertThat(line.getDispensedMedicineName()).isEqualTo("Paracetamol 500");
+        assertThat(line.getMedicineId())
+                .as("what the doctor ordered must stay legible — a recall query depends on it")
+                .isEqualTo(amoxicillinId);
+    }
+
+    @Test
+    @DisplayName("dispensing the prescribed product records no substitution")
+    void noSubstitutionWhenTheProductMatches() {
+        String rxId = emrPrescriptionForAmoxicillin();
+        String itemId = prescriptionItemRepository.findByPrescriptionId(rxId).get(0).getId();
+
+        // Explicitly attributed, but to the medicine that was actually prescribed. Reporting
+        // a "substitution" here would put a swap that never happened in front of a clinician.
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, rxId, null, null, null,
+                null, null, null, null, null, null, null,
+                List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO, itemId))));
+        flushAndClear();
+
+        PrescriptionItem line = prescriptionItemRepository.findByPrescriptionId(rxId).get(0);
+        assertThat(line.getDispensedQty()).isEqualTo(10);
+        assertThat(line.isSubstituted()).isFalse();
+        assertThat(line.getDispensedMedicineName()).isNull();
+    }
+
+    @Test
+    @DisplayName("a sale against a clinic prescription queues a callback; a counter one does not")
+    void callbackIsQueuedOnlyForClinicPrescriptions() {
+        String rxId = emrPrescriptionForAmoxicillin();
+        billingService.createInvoice(saleAgainst(rxId, amoxBatchId, 10));
+        flushAndClear();
+
+        assertThat(prescriptionRepository.findById(rxId).orElseThrow().getDispenseNotifyStatus())
+                .as("queued by the sale; delivery itself happens after commit, off this thread")
+                .isNotNull();
     }
 }

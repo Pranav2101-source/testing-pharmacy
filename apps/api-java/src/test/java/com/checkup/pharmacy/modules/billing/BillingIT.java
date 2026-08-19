@@ -127,7 +127,7 @@ class BillingIT extends AbstractPostgresIT {
                                               String inventoryId, int quantity) {
         return new CreateInvoiceRequest(customerId, null, null, null, null, null, null, null, null,
                 null, null, null, idempotencyKey, null,
-                List.of(new InvoiceItemRequest(inventoryId, quantity, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(inventoryId, quantity, null, BigDecimal.ZERO, null)));
     }
 
     private long movementCountFor(String inventoryId) {
@@ -258,7 +258,7 @@ class BillingIT extends AbstractPostgresIT {
 
         var request = new CreateInvoiceRequest(walkInId, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO, null)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
                 .isInstanceOf(UnprocessableEntityException.class)
@@ -273,7 +273,7 @@ class BillingIT extends AbstractPostgresIT {
         // 10 x Rs.20 MRP = Rs.200, well past the Rs.50 limit.
         var request = new CreateInvoiceRequest(creditId, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO, null)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
                 .isInstanceOf(UnprocessableEntityException.class)
@@ -287,7 +287,7 @@ class BillingIT extends AbstractPostgresIT {
 
         var request = new CreateInvoiceRequest(creditId, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO, null)));
 
         var response = billingService.createInvoice(request);
         flushAndClear();
@@ -314,7 +314,7 @@ class BillingIT extends AbstractPostgresIT {
 
         var request = new CreateInvoiceRequest(creditId, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO, null)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
                 .isInstanceOf(UnprocessableEntityException.class)
@@ -358,7 +358,7 @@ class BillingIT extends AbstractPostgresIT {
         // 10 x Rs.20 = Rs.200 of goods, less a Rs.5000 "adjustment".
         var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 null, null, new BigDecimal("-5000"), null, null,
-                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO, null)));
 
         assertThatThrownBy(() -> billingService.createInvoice(request))
                 .isInstanceOf(UnprocessableEntityException.class)
@@ -379,7 +379,7 @@ class BillingIT extends AbstractPostgresIT {
     void zeroValueInvoiceIsAllowed() {
         var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 new BigDecimal("100"), null, null, null, null,
-                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO)));
+                List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO, null)));
 
         var response = billingService.createInvoice(request);
         flushAndClear();

@@ -11,6 +11,8 @@ import { Link } from "react-router-dom";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
+import ClinicCallbackPanel, { type DispenseNotify } from "@/components/integration/ClinicCallbackPanel";
+import ReviewIngestedItemsPanel from "@/components/integration/ReviewIngestedItemsPanel";
 import {
   normalizeIndianMobile,
   sanitizeProfessionalName,
@@ -42,6 +44,9 @@ type PrescriptionItem = {
   dosage: string | null;
   duration: string | null;
   notes: string | null;
+  /** What was actually handed over, when it differs from what was prescribed. */
+  dispensedMedicineName: string | null;
+  substituted: boolean;
 };
 
 type UploadRecord = { id: string; fileName: string; mimeType: string; fileUrl: string };
@@ -66,6 +71,11 @@ type Prescription = {
   upload: UploadRecord | null;
   items: PrescriptionItem[];
   invoices: { id: string; invoiceNumber: string; createdAt: string }[];
+  /** Null for a counter-written prescription; the clinic tenant otherwise. */
+  externalTenantId: string | null;
+  /** Lines still needing a medicine chosen before this prescription can complete. */
+  needsReview: number;
+  dispenseNotify: DispenseNotify | null;
 };
 
 type ListResponse = { items: Prescription[]; total: number; page: number; limit: number };
@@ -781,6 +791,27 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
             <span>Created: {fmtDate(rx.createdAt)}</span>
           </div>
 
+          {/* Clinic integration: what still needs a human, and what the clinic has been told. */}
+          <div className="space-y-2">
+            <ReviewIngestedItemsPanel
+              prescriptionId={rx.id}
+              items={rx.items ?? []}
+              onLinked={async () => {
+                const { data } = await api.get(`/prescriptions/${rx.id}`);
+                setRx(data.data);
+                qc.invalidateQueries({ queryKey: ["prescriptions"] });
+              }}
+            />
+            <ClinicCallbackPanel
+              prescriptionId={rx.id}
+              notify={rx.dispenseNotify}
+              onRetried={async () => {
+                const { data } = await api.get(`/prescriptions/${rx.id}`);
+                setRx(data.data);
+              }}
+            />
+          </div>
+
           {/* Medicines table */}
           <div>
             <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
@@ -801,7 +832,19 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
                 <tbody className="divide-y divide-slate-100">
                   {(rx.items ?? []).map((item) => (
                     <tr key={item.id} className="hover:bg-slate-50">
-                      <td className="px-3 py-2 font-medium text-slate-800">{item.medicineName}</td>
+                      <td className="px-3 py-2 font-medium text-slate-800">
+                        {item.medicineName}
+                        {item.substituted && item.dispensedMedicineName && (
+                          <span className="block text-[11px] font-normal text-amber-700">
+                            Dispensed: {item.dispensedMedicineName}
+                          </span>
+                        )}
+                        {item.medicineId === null && (
+                          <span className="block text-[11px] font-normal text-amber-700">
+                            Not linked to your catalogue
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3 py-2 text-center">
                         {item.schedule
                           ? <span

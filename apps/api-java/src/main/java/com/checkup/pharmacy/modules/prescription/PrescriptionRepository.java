@@ -1,5 +1,6 @@
 package com.checkup.pharmacy.modules.prescription;
 
+import java.util.List;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -46,4 +47,29 @@ public interface PrescriptionRepository extends JpaRepository<Prescription, Stri
                               @Param("to") Instant to,
                               @Param("search") String search,
                               Pageable pageable);
+
+    /**
+     * The dispense-callback backlog: prescriptions owed a delivery and due for one.
+     *
+     * <p>Deliberately NOT scoped by pharmacy, and exempted in the tenant guard below. The
+     * sweeper runs on a schedule with no tenant and its whole job is to work across every
+     * pharmacy at once; scoping it per tenant would mean a query per pharmacy every tick,
+     * growing with signups rather than with integrations.
+     *
+     * <p>The predicate matches the partial index from migration 20260819000003 exactly —
+     * status IN (PENDING, FAILED) AND due — so the sweep reads the backlog rather than the
+     * table. Rows with nothing scheduled (delivered, or given up on) hold NULL and are
+     * excluded by the comparison.
+     */
+    @Query("""
+            SELECT rx FROM Prescription rx
+            WHERE rx.dispenseNotifyStatus IN ('PENDING', 'FAILED')
+              AND rx.dispenseNotifyNextAttemptAt IS NOT NULL
+              AND rx.dispenseNotifyNextAttemptAt <= :now
+              AND rx.dispenseNotifyAttempts < :maxAttempts
+            ORDER BY rx.dispenseNotifyNextAttemptAt
+            """)
+    List<Prescription> findDispenseCallbackBacklog(@Param("now") Instant now,
+                                                   @Param("maxAttempts") int maxAttempts,
+                                                   Pageable pageable);
 }
