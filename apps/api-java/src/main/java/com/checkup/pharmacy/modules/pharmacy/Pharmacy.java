@@ -105,6 +105,43 @@ public class Pharmacy extends BaseEntity {
     @Column(name = "emrConnectedAt")
     private Instant emrConnectedAt;
 
+    // ─── Automatic pairing (compatibility surface) ───────────────────────────
+    // Established in one exchange: the clinic presents the code the pharmacist
+    // generated and hands over where to reach it plus the secret to sign
+    // callbacks with; we answer with a credential scoped to that clinic.
+
+    @Column(name = "emrClinicExternalId")
+    private String emrClinicExternalId;
+
+    @Column(name = "emrClinicLinkId")
+    private String emrClinicLinkId;
+
+    @Column(name = "emrPairedAt")
+    private Instant emrPairedAt;
+
+    // An identifier, not a secret: it arrives in a header on every request and is
+    // what the pharmacy is looked up by, so it is stored in the clear.
+    @Column(name = "emrApiKey")
+    private String emrApiKey;
+
+    // SHA-256 of the secret half. Shown to the clinic once at pairing and never
+    // recoverable — a lost secret is re-paired, not recovered.
+    @Column(name = "emrApiSecretHash")
+    private String emrApiSecretHash;
+
+    // The CLINIC's webhook secret, encrypted at rest exactly like emrSecret*.
+    // Its presence is what marks this link as speaking the clinic's callback
+    // dialect — the secret is the thing you sign with, so holding one and using
+    // it cannot drift apart the way a separate flag could.
+    @Column(name = "emrWebhookSecretCiphertext")
+    private String emrWebhookSecretCiphertext;
+
+    @Column(name = "emrWebhookSecretIv")
+    private String emrWebhookSecretIv;
+
+    @Column(name = "emrWebhookSecretTag")
+    private String emrWebhookSecretTag;
+
     @Column(name = "isActive")
     private boolean isActive = true;
 
@@ -216,15 +253,92 @@ public class Pharmacy extends BaseEntity {
     }
 
     /**
-     * Disconnects the clinic: forgets the address AND the secret, so neither
+     * Disconnects the clinic: forgets the address AND every credential, so neither
      * direction of the integration keeps working on a connection the pharmacy
      * has said it no longer wants.
+     *
+     * <p>This must clear the pairing state as well as the HMAC secret. Leaving a
+     * live API key behind would mean "disconnected" on the pharmacy's own screen
+     * while the clinic could still push prescriptions — a half-revoked link is
+     * the state nobody can reason about, and it is exactly the hole an earlier
+     * audit found when unlinking revoked a link but not its credential.
      */
     public void disconnectEmrClinic() {
         this.emrClinicName = null;
         this.emrCallbackUrl = null;
         this.emrConnectedAt = null;
         setEmrSecret(null, null, null);
+
+        this.emrClinicExternalId = null;
+        this.emrClinicLinkId = null;
+        this.emrPairedAt = null;
+        this.emrApiKey = null;
+        this.emrApiSecretHash = null;
+        setEmrWebhookSecret(null, null, null);
+    }
+
+    public String getEmrClinicExternalId() { return emrClinicExternalId; }
+
+    public String getEmrClinicLinkId() { return emrClinicLinkId; }
+
+    public Instant getEmrPairedAt() { return emrPairedAt; }
+
+    public String getEmrApiKey() { return emrApiKey; }
+
+    public String getEmrApiSecretHash() { return emrApiSecretHash; }
+
+    public String getEmrWebhookSecretCiphertext() { return emrWebhookSecretCiphertext; }
+
+    public String getEmrWebhookSecretIv() { return emrWebhookSecretIv; }
+
+    public String getEmrWebhookSecretTag() { return emrWebhookSecretTag; }
+
+    /** Stores the clinic's already-encrypted webhook secret (or clears it if any part is null). */
+    public void setEmrWebhookSecret(String ciphertext, String iv, String tag) {
+        this.emrWebhookSecretCiphertext = ciphertext;
+        this.emrWebhookSecretIv = iv;
+        this.emrWebhookSecretTag = tag;
+    }
+
+    /**
+     * Records a completed pairing: who the clinic is, where to reach it, and the
+     * credential it will authenticate with.
+     *
+     * <p>Re-pairing an already-paired pharmacy is allowed and replaces everything.
+     * That is the recovery path for a clinic that lost its secret — the alternative,
+     * refusing, would leave a link nobody can use and nobody can rebuild.
+     *
+     * @param apiSecretHash the SHA-256 of the secret half; the plaintext is returned
+     *                      to the caller once and deliberately never stored.
+     */
+    public void pairEmrClinic(String clinicExternalId, String clinicName, String callbackUrl,
+                              String linkId, String apiKey, String apiSecretHash) {
+        this.emrClinicExternalId = clinicExternalId;
+        this.emrClinicName = clinicName;
+        this.emrCallbackUrl = callbackUrl;
+        this.emrClinicLinkId = linkId;
+        this.emrApiKey = apiKey;
+        this.emrApiSecretHash = apiSecretHash;
+        this.emrPairedAt = Instant.now();
+        if (this.emrConnectedAt == null) {
+            this.emrConnectedAt = Instant.now();
+        }
+    }
+
+    /** True when this pharmacy authenticates a clinic by API key rather than per-request HMAC. */
+    public boolean isEmrPaired() {
+        return emrApiKey != null && emrApiSecretHash != null;
+    }
+
+    /**
+     * True when dispensing callbacks for this pharmacy are signed the clinic's way.
+     * Derived from holding the clinic's webhook secret rather than from a stored flag,
+     * because that secret is the thing the signature is made with.
+     */
+    public boolean usesClinicCallbackDialect() {
+        return emrWebhookSecretCiphertext != null
+                && emrWebhookSecretIv != null
+                && emrWebhookSecretTag != null;
     }
 
     public boolean isActive() { return isActive; }

@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
 import {
   Home, FileText, ShoppingCart, Package2, FlaskConical, Zap, Link2,
-  Search, Phone, Calendar, ChevronDown, LogOut, Settings, Menu, X,
+  Search, Calendar, ChevronDown, LogOut, Settings, Menu, X,
   Dot, Monitor, Info, MapPin, Pill,
   Receipt, ClipboardList, Plus, Users,
   MoreHorizontal, TicketCheck, Stethoscope, Banknote, BarChart2, ArrowUpCircle,
@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCalendarTodayCount } from "@/components/calendar/useCalendarEvents";
+import { usePrescriptionNewCount } from "@/lib/prescriptionNewCount";
 import { useCurrentUser, clearSession, isSupportStaff, isPlatformAdmin } from "@/lib/auth";
 import { api } from "@/lib/api-client";
 
@@ -183,6 +184,31 @@ const CalendarPill = memo(function CalendarPill() {
   );
 });
 
+// ─── Prescriptions Pill ───────────────────────────────────────────
+// Prescriptions used to be reachable only via More → Prescriptions — two clicks, and
+// nothing visible from anywhere else in the app when a clinic pushes a new one. This
+// puts it one click away with a live count, the same pattern as CalendarPill above.
+const PrescriptionsPill = memo(function PrescriptionsPill() {
+  const navigate = useNavigate();
+  const { data: newCount = 0 } = usePrescriptionNewCount();
+
+  return (
+    <button
+      onClick={() => navigate("/dashboard/prescriptions")}
+      aria-label={`Prescriptions — ${newCount} new`}
+      className="relative flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 bg-white/8 hover:bg-white/14 transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+    >
+      <ClipboardList className="w-3.5 h-3.5 text-white/70 flex-shrink-0" strokeWidth={1.8} />
+      <span className="text-[12px] font-bold text-white/80 leading-none">Rx</span>
+      {newCount > 0 && (
+        <span className="min-w-[14px] h-3.5 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center px-0.5">
+          {newCount > 99 ? "99+" : newCount}
+        </span>
+      )}
+    </button>
+  );
+});
+
 // ─── Global Search ────────────────────────────────────────────────
 // A trigger for the global Command Palette (Ctrl/Cmd+K). The palette itself
 // owns the keyboard shortcut and lives in DashboardLayout; clicking here fires
@@ -203,24 +229,6 @@ const GlobalSearchBar = memo(function GlobalSearchBar() {
         <kbd className="kbd-hint">Ctrl</kbd>
         <kbd className="kbd-hint">K</kbd>
       </span>
-    </button>
-  );
-});
-
-// ─── Icon Btn ─────────────────────────────────────────────────────
-const IconBtn = memo(function IconBtn({ icon: Icon, label, badge, onClick }: { icon: React.ElementType; label: string; badge?: number; onClick?: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      aria-label={label}
-      className="relative w-8 h-8 rounded-lg bg-white/8 hover:bg-white/16 flex items-center justify-center transition-colors outline-none focus-visible:ring-2 focus-visible:ring-white/40"
-    >
-      <Icon className="w-3.5 h-3.5 text-white/70" strokeWidth={1.8} aria-hidden />
-      {badge != null && badge > 0 && (
-        <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-3.5 rounded-full bg-red-500 text-white text-[8px] font-bold flex items-center justify-center px-0.5 ring-[1.5px] ring-navy-900">
-          {badge > 99 ? "99+" : badge}
-        </span>
-      )}
     </button>
   );
 });
@@ -832,11 +840,7 @@ export function TopNav() {
         <div className="h-5 w-px bg-white/15 mx-1" />
 
         <NotificationBell />
-        <IconBtn
-          icon={Phone}
-          label="Support"
-          onClick={() => window.dispatchEvent(new CustomEvent("checkup:open-help", { detail: { category: "support" } }))}
-        />
+        <PrescriptionsPill />
 
         <div className="h-5 w-px bg-white/15 mx-1" />
 

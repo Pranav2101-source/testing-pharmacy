@@ -2,6 +2,7 @@ package com.checkup.pharmacy.modules.integration.emr;
 
 import com.checkup.pharmacy.common.enums.PrescriptionStatus;
 import com.checkup.pharmacy.common.exception.BadRequestException;
+import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.sequence.DocumentNumberFormat;
 import com.checkup.pharmacy.common.sequence.DocumentSequenceService;
@@ -70,18 +71,21 @@ public class EmrIntegrationService {
         String pharmacyId = TenantContext.pharmacyId();
         String externalTenantId = request.externalTenantId().trim();
         String externalPrescriptionId = request.externalPrescriptionId().trim();
-        var existing = prescriptionRepository
-                .findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
-                        pharmacyId, externalTenantId, externalPrescriptionId);
-        if (existing.isPresent()) {
-            return snapshot(existing.get(), Instant.now());
-        }
 
+        // Validated once, ahead of the create/amend branch below, so both paths get the
+        // same integrity check rather than the amend path silently skipping it.
         Set<String> externalItemIds = new HashSet<>();
         for (var item : request.items()) {
             if (!externalItemIds.add(item.externalItemId().trim())) {
                 throw new BadRequestException("Duplicate externalItemId: " + item.externalItemId());
             }
+        }
+
+        var existing = prescriptionRepository
+                .findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
+                        pharmacyId, externalTenantId, externalPrescriptionId);
+        if (existing.isPresent()) {
+            return applyAmendment(existing.get(), request);
         }
 
         Map<String, Medicine> resolvedByExternalItemId = matchIngestItems(request.items());
@@ -111,6 +115,109 @@ public class EmrIntegrationService {
         return snapshot(prescription, items, List.of(), Instant.now());
     }
 
+    /**
+     * Applies a re-push of a prescription the clinic already sent — a doctor's edit,
+     * re-sent under the same externalEmrPrescriptionId. A pure retry (identical data) is
+     * just an amendment that happens to change nothing; there is no separate code path for
+     * it, and no harm in re-saving the same values.
+     *
+     * <h2>Why ACTIVE only</h2>
+     * Stricter than {@link #cancel}'s guard, which still allows a PARTIAL prescription:
+     * cancelling one only stops FUTURE dispensing, but amending one would mean rewriting
+     * lines a pharmacist has already sold against — a quantity or a whole line changing
+     * under a patient who already paid for it. There is no version of that which is safe,
+     * so the whole prescription locks the moment status leaves ACTIVE. A clinic that needs
+     * to change a prescription after dispensing has started has to cancel and send a new
+     * one — same as a pharmacist would have to.
+     *
+     * <h2>Why items are merged, not replaced wholesale</h2>
+     * Specifically to protect one thing: a pharmacist who already linked an unmatched line
+     * to the right catalogue entry by hand, before any amendment arrived. A line whose
+     * medicine name is unchanged keeps its existing medicineId untouched, even though every
+     * other field on it (quantity, dosage, ...) is overwritten. Only a line whose name
+     * actually changed is re-matched against the catalogue — a changed name may no longer
+     * be the same medicine, so carrying the old link forward would be wrong in the other
+     * direction. Because the ACTIVE guard above already guarantees nothing on this
+     * prescription has been dispensed, every line is safe to update or delete outright;
+     * there is no per-line dispensedQty check left to make.
+     */
+    @Transactional
+    public EmrPrescriptionSnapshot applyAmendment(Prescription existing, EmrPrescriptionIngestRequest request) {
+        if (existing.getStatus() != PrescriptionStatus.ACTIVE) {
+            throw new ConflictException("Cannot amend prescription " + existing.getExternalEmrPrescriptionId()
+                    + " — status is " + existing.getStatus()
+                    + ". Cancel it and send a new one instead of re-pushing an edit.");
+        }
+
+        List<PrescriptionItem> currentItems = itemRepository.findByPrescriptionId(existing.getId());
+        Map<String, PrescriptionItem> remainingByExternalItemId = currentItems.stream()
+                .collect(Collectors.toMap(PrescriptionItem::getExternalEmrItemId, Function.identity()));
+
+        // Only items that are new, or whose name changed, need a fresh catalogue lookup —
+        // an unchanged name keeps whatever link it already had, matched or not.
+        List<EmrPrescriptionIngestRequest.Item> needsMatch = request.items().stream()
+                .filter(item -> {
+                    PrescriptionItem current = remainingByExternalItemId.get(item.externalItemId().trim());
+                    return current == null || !sameName(current.getMedicineName(), item.medicineName());
+                })
+                .toList();
+        // Skipped rather than delegated when empty: matchIngestItems always issues a query
+        // (a placeholder term when its input is empty, to sidestep Postgres's empty-IN-list
+        // restriction) — fine for the create path, where it is called at most once, but a
+        // no-op amendment (every line unchanged) would otherwise pay for a query whose
+        // answer nothing here reads.
+        Map<String, Medicine> resolvedByExternalItemId = needsMatch.isEmpty()
+                ? Map.of() : matchIngestItems(needsMatch);
+
+        List<PrescriptionItem> saved = new ArrayList<>();
+        for (var item : request.items()) {
+            String externalItemId = item.externalItemId().trim();
+            // Removed from the map as it is claimed, so whatever is left afterwards is
+            // exactly the lines this push did not mention — see the deletion below.
+            PrescriptionItem current = remainingByExternalItemId.remove(externalItemId);
+            Medicine resolved = resolvedByExternalItemId.get(externalItemId);
+
+            if (current == null) {
+                String medicineId = resolved == null ? null : resolved.getId();
+                saved.add(PrescriptionItem.createFromEmr(existing.getPharmacyId(), existing.getId(), externalItemId,
+                        item.medicineName().trim(), medicineId, blankToNull(item.schedule()), item.quantity(),
+                        blankToNull(item.dosage()), blankToNull(item.duration()), blankToNull(item.notes())));
+            } else {
+                boolean nameChanged = !sameName(current.getMedicineName(), item.medicineName());
+                String medicineId = nameChanged
+                        ? (resolved == null ? null : resolved.getId())
+                        : current.getMedicineId();
+                current.applyEmrAmendment(item.medicineName().trim(), medicineId, blankToNull(item.schedule()),
+                        item.quantity(), blankToNull(item.dosage()), blankToNull(item.duration()),
+                        blankToNull(item.notes()));
+                saved.add(current);
+            }
+        }
+        itemRepository.saveAll(saved);
+
+        // Whatever is left in the map was on the prescription before this push and is not
+        // in it now — the doctor removed the line. Safe to delete outright: the ACTIVE
+        // guard above already established nothing on this prescription has been dispensed.
+        if (!remainingByExternalItemId.isEmpty()) {
+            itemRepository.deleteAll(remainingByExternalItemId.values());
+        }
+
+        existing.applyEmrAmendment(request.doctorName().trim(), blankToNull(request.doctorRegNo()),
+                ValidationPatterns.normalizeMobile(request.doctorPhone()),
+                ValidationPatterns.normalizeName(request.patientName()), request.patientAge(),
+                ValidationPatterns.normalizeMobile(request.patientPhone()), blankToNull(request.patientGender()),
+                request.prescribedDate(), request.validUntil(), blankToNull(request.notes()));
+        prescriptionRepository.save(existing);
+
+        // No invoices to look up: the ACTIVE guard above guarantees none exist yet — the
+        // first sale against this prescription is what would have moved it off ACTIVE.
+        return snapshot(existing, saved, List.of(), Instant.now());
+    }
+
+    private static boolean sameName(String a, String b) {
+        return normalize(a).equals(normalize(b));
+    }
+
     @Transactional(readOnly = true)
     public EmrPrescriptionSnapshot get(String externalTenantId, String externalPrescriptionId) {
         String pharmacyId = TenantContext.pharmacyId();
@@ -118,6 +225,42 @@ public class EmrIntegrationService {
                 .findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
                         pharmacyId, externalTenantId.trim(), externalPrescriptionId.trim())
                 .orElseThrow(() -> new NotFoundException("EMR prescription not found"));
+        return snapshot(prescription, Instant.now());
+    }
+
+    /**
+     * Withdraws a prescription the clinic already pushed — a doctor cancelling it, a
+     * duplicate send, a patient who no longer needs it.
+     *
+     * <p>Without this, the only way to stop a pharmacy dispensing a withdrawn prescription
+     * was a phone call: nothing on the EMR side could reach a prescription once it had been
+     * ingested. The gap was structural, not an oversight — {@link Prescription#cancel()} has
+     * existed since the counter-prescription flow, but nothing on the machine surface ever
+     * called it. A prescription a clinic withdrew was, from the pharmacy's side,
+     * indistinguishable from one still valid.
+     *
+     * <p>Same two rules as the staff-facing cancel ({@code PrescriptionService.cancel}),
+     * deliberately not relaxed or tightened for the machine caller: a fully dispensed
+     * prescription cannot be undone by cancelling it — the medicine already left the
+     * pharmacy — and cancelling twice is a no-op error, not a second cancellation. A
+     * PARTIAL prescription CAN still be cancelled, same as the staff path: the remaining
+     * unfilled lines are what gets withdrawn, and what was already sold stays sold.
+     */
+    @Transactional
+    public EmrPrescriptionSnapshot cancel(String externalTenantId, String externalPrescriptionId) {
+        String pharmacyId = TenantContext.pharmacyId();
+        Prescription prescription = prescriptionRepository
+                .findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
+                        pharmacyId, externalTenantId.trim(), externalPrescriptionId.trim())
+                .orElseThrow(() -> new NotFoundException("EMR prescription not found"));
+        if (prescription.getStatus() == PrescriptionStatus.DISPENSED) {
+            throw new ConflictException("Cannot cancel a dispensed prescription");
+        }
+        if (prescription.getStatus() == PrescriptionStatus.CANCELLED) {
+            throw new ConflictException("Prescription is already cancelled");
+        }
+        prescription.cancel();
+        prescriptionRepository.save(prescription);
         return snapshot(prescription, Instant.now());
     }
 

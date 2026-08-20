@@ -4,12 +4,14 @@ import { ListSkeleton } from "@/components/Skeleton";
 import {
   Plus, Search, X, Loader2, ChevronLeft, ChevronRight,
   Stethoscope, User, Phone, Calendar, Pill, ClipboardList, Trash2,
-  ExternalLink, AlertCircle, Hash, Upload, ImageIcon, FileIcon,
+  ExternalLink, AlertCircle, Hash, Upload, ImageIcon, FileIcon, Sparkles,
 } from "lucide-react";
 import { format } from "date-fns";
 import { Link } from "react-router-dom";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { detectNewArrivals, arrivalToastMessage } from "@/lib/prescriptionArrivals";
+import { markPrescriptionViewed } from "@/lib/prescriptionNewCount";
 import { useToast } from "@/hooks/useToast";
 import ClinicCallbackPanel, { type DispenseNotify } from "@/components/integration/ClinicCallbackPanel";
 import ReviewIngestedItemsPanel from "@/components/integration/ReviewIngestedItemsPanel";
@@ -47,6 +49,18 @@ type PrescriptionItem = {
   /** What was actually handed over, when it differs from what was prescribed. */
   dispensedMedicineName: string | null;
   substituted: boolean;
+  /** Near-name catalogue candidates for a line the matcher could not link. Always empty once medicineId is set. */
+  suggestions: MedicineSuggestion[];
+};
+
+/** A one-click candidate — never applied automatically, always a pharmacist's own choice. */
+type MedicineSuggestion = {
+  medicineId: string;
+  name: string;
+  genericName: string | null;
+  strength: string | null;
+  form: string | null;
+  similarity: number;
 };
 
 type UploadRecord = { id: string; fileName: string; mimeType: string; fileUrl: string };
@@ -973,9 +987,58 @@ export default function PrescriptionsPage() {
       api.get<{ success: boolean; data: ListResponse }>(`/prescriptions?${params}`)
          .then(r => r.data.data),
     staleTime: 30_000,
+    // A clinic pushes a prescription with nobody at this pharmacy having done anything —
+    // without a poll it sits invisible until someone happens to reload. react-query only
+    // polls while the tab is focused (refetchIntervalInBackground defaults to false), so
+    // this doesn't run up API calls in a background tab.
+    refetchInterval: 20_000,
   });
 
   const qc = useQueryClient();
+
+  // Ids this screen has already shown at least once, across every page and poll this
+  // session — a running union, not just "this page's ids", so paging away and back does
+  // not make already-seen rows look freshly arrived again. null until the first load
+  // establishes the baseline; nothing on that first load counts as "new".
+  const seenIdsRef = useRef<Set<string> | null>(null);
+  const [newlyArrivedIds, setNewlyArrivedIds] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!data) return;
+    const { arrived, isFirstLoad } = detectNewArrivals(data.items, seenIdsRef.current);
+    if (isFirstLoad) {
+      seenIdsRef.current = new Set(data.items.map((rx) => rx.id));
+      return;
+    }
+    data.items.forEach((rx) => seenIdsRef.current!.add(rx.id));
+    if (arrived.length === 0) return;
+
+    setNewlyArrivedIds((prev) => {
+      const next = new Set(prev);
+      arrived.forEach((rx) => next.add(rx.id));
+      return next;
+    });
+    toast.info(arrivalToastMessage(arrived));
+  }, [data, toast]);
+
+  // Marks a row acknowledged the moment a pharmacist actually looks at it — simpler than a
+  // timer, and ties "seen" to the action that means it was seen.
+  function openDetail(rx: Prescription) {
+    setDetail(rx);
+    if (newlyArrivedIds.has(rx.id)) {
+      setNewlyArrivedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(rx.id);
+        return next;
+      });
+    }
+    // Durable counterpart to the in-memory pill above: clears the nav badge even when
+    // this row wasn't flagged "newly arrived" in THIS session (e.g. it arrived before
+    // the page was ever opened this visit).
+    if (rx.externalTenantId != null) {
+      markPrescriptionViewed(rx.id, qc);
+    }
+  }
 
   // When a detail is open and we cancel, reload detail or close
   async function handleDetailCancelled() {
@@ -1085,10 +1148,22 @@ export default function PrescriptionsPage() {
               {prescriptions.map((rx) => (
                 <tr
                   key={rx.id}
-                  className="hover:bg-slate-50 cursor-pointer transition-colors"
-                  onClick={() => setDetail(rx)}
+                  className={cn(
+                    "hover:bg-slate-50 cursor-pointer transition-colors",
+                    newlyArrivedIds.has(rx.id) && "bg-violet-50/70",
+                  )}
+                  onClick={() => openDetail(rx)}
                 >
-                  <td className="px-5 py-3.5 font-mono font-bold text-violet-700">{rx.prescriptionNumber}</td>
+                  <td className="px-5 py-3.5 font-mono font-bold text-violet-700">
+                    <span className="inline-flex items-center gap-1.5">
+                      {rx.prescriptionNumber}
+                      {newlyArrivedIds.has(rx.id) && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-violet-600 text-white text-[9px] font-bold uppercase tracking-wide">
+                          <Sparkles className="w-2.5 h-2.5" /> New
+                        </span>
+                      )}
+                    </span>
+                  </td>
                   <td className="px-5 py-3.5">
                     <p className="font-semibold text-slate-800">{rx.patientName}</p>
                     {rx.patientPhone && (

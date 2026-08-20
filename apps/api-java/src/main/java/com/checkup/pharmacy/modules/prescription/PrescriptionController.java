@@ -2,6 +2,7 @@ package com.checkup.pharmacy.modules.prescription;
 
 import com.checkup.pharmacy.common.api.ApiResponse;
 import com.checkup.pharmacy.modules.prescription.dto.CreatePrescriptionRequest;
+import com.checkup.pharmacy.modules.prescription.dto.NewPrescriptionCountResponse;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionPageResponse;
 import com.checkup.pharmacy.modules.prescription.dto.LinkPrescriptionItemRequest;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionResponse;
@@ -50,9 +51,22 @@ public class PrescriptionController {
         return ApiResponse.ok(prescriptionService.list(status, doctorId, search, from, to, page, limit));
     }
 
+    /** Nav badge — a literal segment, matched ahead of "/{id}" by Spring's own specificity rules. */
+    @GetMapping("/new-count")
+    public ApiResponse<NewPrescriptionCountResponse> newCount() {
+        return ApiResponse.ok(prescriptionService.newCount());
+    }
+
     @GetMapping("/{id}")
     public ApiResponse<PrescriptionResponse> getById(@PathVariable String id) {
         return ApiResponse.ok(prescriptionService.getById(id));
+    }
+
+    /** Fired when a pharmacist opens a row — clears it from the nav badge's count. */
+    @PatchMapping("/{id}/viewed")
+    public ResponseEntity<Void> markViewed(@PathVariable String id) {
+        prescriptionService.markViewed(id);
+        return ResponseEntity.noContent().build();
     }
 
     @PatchMapping("/{id}")

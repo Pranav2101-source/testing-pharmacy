@@ -7,6 +7,7 @@ import com.checkup.pharmacy.modules.prescription.Prescription;
 import com.checkup.pharmacy.modules.prescription.PrescriptionRepository;
 import com.checkup.pharmacy.security.EmrSecretCipher;
 import com.checkup.pharmacy.security.HmacSigner;
+import com.checkup.pharmacy.security.LegacyWebhookSigner;
 import com.checkup.pharmacy.tenant.SystemContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -139,19 +140,31 @@ public class EmrDispenseCallbackService {
             String timestamp = String.valueOf(Instant.now().getEpochSecond());
             String path = URI.create(target).getPath();
 
-            restClient.post()
+            var request = restClient.post()
                     .uri(target)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .header(HEADER_PHARMACY, event.pharmacyId())
-                    .header(HEADER_TIMESTAMP, timestamp)
-                    // Signed over the exact bytes sent, using the same canonical form the
-                    // inbound filter verifies. One scheme in both directions means one thing to
-                    // get right, and one thing to rotate.
-                    .header(HEADER_SIGNATURE,
-                            HmacSigner.sign(secret, timestamp, "POST", path, event.pharmacyId(), body))
-                    .body(body)
-                    .retrieve()
-                    .toBodilessEntity();
+                    .contentType(MediaType.APPLICATION_JSON);
+
+            // Two dialects, chosen by what secret resolveConnection found — never by a
+            // separate flag that could drift from it. A pharmacy paired through
+            // ClinicPairingService holds the CLINIC's webhook secret, and that clinic's
+            // receiver checks the legacy X-Pharmacy-Signature envelope, not this product's
+            // own. Sending the wrong one is indistinguishable from a wrong secret at the
+            // other end: a 401 with nothing in the response to explain why.
+            if (connection.dialect() == Connection.Dialect.LEGACY_WEBHOOK) {
+                request = request.header(LegacyWebhookSigner.HEADER,
+                        LegacyWebhookSigner.header(secret, new String(body, java.nio.charset.StandardCharsets.UTF_8)));
+            } else {
+                request = request
+                        .header(HEADER_PHARMACY, event.pharmacyId())
+                        .header(HEADER_TIMESTAMP, timestamp)
+                        // Signed over the exact bytes sent, using the same canonical form the
+                        // inbound filter verifies. One scheme in both directions means one
+                        // thing to get right, and one thing to rotate.
+                        .header(HEADER_SIGNATURE,
+                                HmacSigner.sign(secret, timestamp, "POST", path, event.pharmacyId(), body));
+            }
+
+            request.body(body).retrieve().toBodilessEntity();
 
             recordSent(event);
             log.info("Dispense callback delivered for prescription {} (tenant {})",
@@ -176,25 +189,43 @@ public class EmrDispenseCallbackService {
     static final String HEADER_TIMESTAMP = "X-Checkup-Timestamp";
     static final String HEADER_SIGNATURE = "X-Checkup-Signature";
 
-    /** What one delivery needs: who to call, and what to sign it with. */
-    record Connection(String secret, String callbackUrl) {
+    /**
+     * What one delivery needs: who to call, what to sign it with, and in which envelope.
+     *
+     * <p>{@code dialect} is derived once, in {@link #resolveConnection}, from WHICH secret
+     * was found — never carried as an independent flag. A flag can drift from the secret it
+     * describes; deriving it from the secret's own presence cannot.
+     */
+    record Connection(String secret, String callbackUrl, Dialect dialect) {
+        enum Dialect { CHECKUP_HMAC, LEGACY_WEBHOOK }
     }
 
     /**
-     * The pharmacy's decrypted EMR secret and the clinic address it belongs to, or null
-     * when the pharmacy has no usable secret.
+     * The secret and address to deliver a callback with, or null when the pharmacy has no
+     * usable connection at all.
      *
      * <p>Mirrors {@code EmrHmacAuthenticationFilter.resolveSecret} deliberately: the outbound
      * direction must be gated on exactly the same conditions as the inbound one. Holding a
      * secret is the whole permission on both sides — a pharmacy that disconnected its clinic
      * has none, and stops sending as well as receiving.
      *
-     * <p>The address is the one the pharmacy entered for its clinic. The app-level property
-     * remains as a fallback for pharmacies connected before that field existed; it is the
-     * wrong shape for more than one clinic, because the clinic's own connection id is part
-     * of the path.
+     * <p><b>Which secret, and therefore which dialect:</b> a pharmacy paired through
+     * {@code ClinicPairingService} holds the clinic's own webhook secret
+     * ({@code emrWebhookSecret*}), obtained at pairing, and callbacks to it must be signed
+     * the way that clinic verifies — see {@link Dialect#LEGACY_WEBHOOK}. Every other pharmacy
+     * uses this product's own HMAC secret ({@code emrSecret*}), exactly as before this class
+     * had two dialects to choose between. The two are mutually exclusive by construction:
+     * pairing never touches {@code emrSecret*}, and the manual connection screen never
+     * touches {@code emrWebhookSecret*}.
+     *
+     * <p>The address is the one the pharmacy holds for its clinic — entered by hand or
+     * received at pairing, the field is the same either way. The app-level property remains
+     * as a fallback for pharmacies connected before that field existed; it is the wrong shape
+     * for more than one clinic, because the clinic's own connection id is part of the path.
      */
-    private Connection resolveConnection(String pharmacyId) {
+    // Package-private rather than private: EmrDispenseCallbackServiceTest calls this
+    // directly to verify dialect selection without needing an HTTP server.
+    Connection resolveConnection(String pharmacyId) {
         Optional<Pharmacy> pharmacy = pharmacyRepository.findById(pharmacyId);
         if (pharmacy.isEmpty() || !pharmacy.get().isActive()) {
             return null;
@@ -203,16 +234,29 @@ public class EmrDispenseCallbackService {
         String target = p.getEmrCallbackUrl() == null || p.getEmrCallbackUrl().isBlank()
                 ? callbackUrl
                 : p.getEmrCallbackUrl().trim();
+
+        if (p.usesClinicCallbackDialect()) {
+            try {
+                return new Connection(
+                        secretCipher.decrypt(p.getEmrWebhookSecretCiphertext(), p.getEmrWebhookSecretIv(),
+                                p.getEmrWebhookSecretTag()),
+                        target, Connection.Dialect.LEGACY_WEBHOOK);
+            } catch (Exception e) {
+                log.error("Clinic webhook secret for pharmacy {} could not be decrypted", pharmacyId, e);
+                return new Connection(null, target, Connection.Dialect.LEGACY_WEBHOOK);
+            }
+        }
+
         if (p.getEmrSecretCiphertext() == null || p.getEmrSecretIv() == null || p.getEmrSecretTag() == null) {
-            return new Connection(null, target);
+            return new Connection(null, target, Connection.Dialect.CHECKUP_HMAC);
         }
         try {
             return new Connection(
                     secretCipher.decrypt(p.getEmrSecretCiphertext(), p.getEmrSecretIv(), p.getEmrSecretTag()),
-                    target);
+                    target, Connection.Dialect.CHECKUP_HMAC);
         } catch (Exception e) {
             log.error("EMR secret for pharmacy {} could not be decrypted", pharmacyId, e);
-            return new Connection(null, target);
+            return new Connection(null, target, Connection.Dialect.CHECKUP_HMAC);
         }
     }
 

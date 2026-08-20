@@ -16,6 +16,7 @@ import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
 import com.checkup.pharmacy.modules.pharmacy.PharmacyRepository;
 import com.checkup.pharmacy.modules.prescription.dto.CreatePrescriptionRequest;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionItemRequest;
+import com.checkup.pharmacy.modules.prescription.dto.UpdatePrescriptionRequest;
 import com.checkup.pharmacy.modules.user.User;
 import com.checkup.pharmacy.modules.user.UserRepository;
 import com.checkup.pharmacy.testsupport.AbstractPostgresIT;
@@ -177,6 +178,52 @@ class PrescriptionIT extends AbstractPostgresIT {
     }
 
     @Test
+    @DisplayName("editing items on a prescription with nothing dispensed yet replaces them normally")
+    void editingItemsBeforeAnythingIsDispensedStillWorks() {
+        String rxId = createTwoItemPrescription();
+
+        var req = new UpdatePrescriptionRequest(null, null, null, null, null, null, null, null, null, null,
+                List.of(new PrescriptionItemRequest("Amoxicillin 250", amoxicillinId, null, 20, null, null, null)));
+        prescriptionService.update(rxId, req);
+        flushAndClear();
+
+        assertThat(prescriptionItemRepository.findByPrescriptionId(rxId))
+                .singleElement()
+                .satisfies(i -> assertThat(i.getQuantity()).isEqualTo(20));
+    }
+
+    /**
+     * The bug: the edit form resubmits the whole item list with no item ids (see
+     * BillHeader's "Edit Prescription"), and {@code update()} used to honour that by
+     * deleting and recreating every line unconditionally — including one a patient had
+     * already collected medicine against. The prescription kept reading PARTIAL while
+     * dispensedQty silently reset to 0, so the record disagreed with what actually left
+     * the shelf for a Schedule H/H1/X medicine.
+     */
+    @Test
+    @DisplayName("editing medicines on a prescription that already has a dispensed line is rejected, not silently wiped")
+    void editingItemsAfterDispensingIsRejected() {
+        String rxId = createTwoItemPrescription();
+
+        billingService.createInvoice(saleAgainst(rxId, amoxBatchId, 10));
+        flushAndClear();
+
+        var req = new UpdatePrescriptionRequest(null, null, null, null, null, null, null, null, null, null,
+                List.of(new PrescriptionItemRequest("Amoxicillin 250", amoxicillinId, null, 10, null, null, null),
+                        new PrescriptionItemRequest("Paracetamol 500", paracetamolId, null, 10, null, null, null)));
+
+        assertThatThrownBy(() -> prescriptionService.update(rxId, req))
+                .isInstanceOf(ConflictException.class)
+                .hasMessageContaining("already been dispensed");
+
+        assertThat(prescriptionItemRepository.findByPrescriptionId(rxId))
+                .filteredOn(i -> amoxicillinId.equals(i.getMedicineId()))
+                .singleElement()
+                .as("the rejected update must not have touched the existing dispensed history")
+                .satisfies(i -> assertThat(i.getDispensedQty()).isEqualTo(10));
+    }
+
+    @Test
     @DisplayName("collecting less than the prescribed quantity of a medicine keeps it open")
     void shortQuantityKeepsPrescriptionOpen() {
         String rxId = createTwoItemPrescription();
@@ -253,6 +300,49 @@ class PrescriptionIT extends AbstractPostgresIT {
 
         assertThatThrownBy(() -> prescriptionService.getById(rxId))
                 .isInstanceOf(NotFoundException.class);
+    }
+
+    // ── Nav badge: new-prescription count ─────────────────────────────────────
+
+    @Test
+    @DisplayName("the new count only ever counts clinic prescriptions, and only unopened ones")
+    void newCountCountsUnopenedClinicPrescriptionsOnly() {
+        createTwoItemPrescription(); // counter-written — never counts, regardless of viewedAt
+        String clinicRxId = emrPrescriptionForAmoxicillin();
+        emrPrescriptionForAmoxicillin();
+
+        assertThat(prescriptionService.newCount().count()).isEqualTo(2);
+
+        prescriptionService.markViewed(clinicRxId);
+        flushAndClear();
+
+        assertThat(prescriptionService.newCount().count())
+                .as("one of the two clinic prescriptions has now been opened")
+                .isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("marking the same prescription viewed twice does not misbehave")
+    void markViewedIsIdempotent() {
+        String clinicRxId = emrPrescriptionForAmoxicillin();
+
+        prescriptionService.markViewed(clinicRxId);
+        flushAndClear();
+        prescriptionService.markViewed(clinicRxId);
+        flushAndClear();
+
+        assertThat(prescriptionService.newCount().count()).isZero();
+    }
+
+    @Test
+    @DisplayName("marking a counter-written prescription viewed is a no-op — nothing ever counted it")
+    void markViewedIsANoOpForCounterWrittenPrescriptions() {
+        String rxId = createTwoItemPrescription();
+
+        prescriptionService.markViewed(rxId);
+        flushAndClear();
+
+        assertThat(prescriptionRepository.findById(rxId).orElseThrow().getViewedAt()).isNull();
     }
 
     // ── Substitution: the case medicine-matching cannot express ──────────────

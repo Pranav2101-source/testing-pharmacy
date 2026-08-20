@@ -167,6 +167,8 @@ public class EmrConnectionService {
                 prescriptionRepository.countByPharmacyIdAndDispenseNotifyStatus(
                         pharmacyId, Prescription.NOTIFY_PENDING),
                 prescriptionRepository.countByPharmacyIdAndDispenseNotifyStatus(
-                        pharmacyId, Prescription.NOTIFY_FAILED));
+                        pharmacyId, Prescription.NOTIFY_FAILED),
+                p.isEmrPaired(),
+                p.getEmrPairedAt());
     }
 }

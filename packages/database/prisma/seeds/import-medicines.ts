@@ -5,34 +5,78 @@
  *   pnpm --filter @pharmacy/database import:medicines
  *   pnpm --filter @pharmacy/database import:medicines -- /absolute/path/to/file.csv
  *
+ * With no argument it looks for scripts/data/medicines.csv, then scripts/medicine.csv.
+ *
+ * Pass --dry-run to parse, dedupe and report WITHOUT writing anything. Worth doing
+ * first on a large catalogue file: it prints the exact insert count and produces the
+ * full report, using only a read-only query for the existing names.
+ *
  * Expects CSV columns (order does not matter):
  *   name, price(₹), Is_discontinued, manufacturer_name, type,
  *   pack_size_label, short_composition1, short_composition2
  *
  * What it does:
- *   1. Skips medicines whose name already exists (case-insensitive)
+ *   1. Skips medicines whose name already exists in the DB, or appeared earlier in
+ *      the file (case-insensitive) — see the dedupe note in the insert loop
  *   2. Parses genericName + strength from short_composition1
  *   3. Parses form + packSize + unit from pack_size_label
  *   4. Stores price(₹) as catalogMrp (reference only — never used for billing)
  *   5. Defaults gstRate to 12 (pharmacist corrects at first GRN)
- *   6. Syncs full catalogue to Meilisearch after DB insert
+ *   6. Syncs full catalogue to Meilisearch after DB insert — INERT TODAY: the Java
+ *      backend searches Postgres directly and its reindex endpoint is still a stub
+ *      (backlog D2), so this block no-ops unless MEILISEARCH_* is set
  *   7. Writes scripts/data/import-report.txt with skipped names
  */
 
 import * as path from "path";
 import * as fs from "fs";
+import { fileURLToPath } from "url";
 
-// Resolve workspace root from this file's location
-// __dirname = packages/database/prisma/seeds  →  ../../../../ = workspace root
-const WORKSPACE_ROOT = path.resolve(__dirname, "../../../..");
+// This package is "type": "module", so there is no __dirname to resolve against.
+// SEEDS_DIR = packages/database/prisma/seeds  →  ../../../../ = workspace root
+const SEEDS_DIR      = path.dirname(fileURLToPath(import.meta.url));
+const WORKSPACE_ROOT = path.resolve(SEEDS_DIR, "../../../..");
 
 // Load .env before any other imports that need process.env
 import { config } from "dotenv";
 config({ path: path.join(WORKSPACE_ROOT, ".env") });
 
+// A fresh checkout has no .env at the workspace root — the live credentials live in
+// apps/api-java/.env, stored the way Spring wants them: a JDBC URL plus a separate user
+// and password. Prisma wants a single postgresql:// URL with the credentials inline, so
+// derive it here rather than making someone hand-assemble a URL containing a password.
+// An explicit DATABASE_URL always wins.
+if (!process.env["DATABASE_URL"]) {
+  const javaEnv = path.join(WORKSPACE_ROOT, "apps", "api-java", ".env");
+  if (fs.existsSync(javaEnv)) {
+    config({ path: javaEnv });
+    const jdbc = process.env["JDBC_DATABASE_URL"];
+    const user = process.env["DB_USER"];
+    const pass = process.env["DB_PASSWORD"];
+    if (jdbc && user && pass) {
+      // jdbc:postgresql://host:port/db?args → postgresql://user:pass@host:port/db?args
+      // Assign the raw values: the WHATWG URL setters apply the userinfo percent-encode
+      // set themselves, so pre-encoding would double-escape a password containing % or @.
+      const url = new URL(jdbc.replace(/^jdbc:/, ""));
+      url.username = user;
+      url.password = pass;
+      // Port 6543 is Supabase's TRANSACTION pooler, which cannot hold a prepared statement
+      // across calls. Prisma has to be told, or the second createMany in the chunk loop
+      // fails with "prepared statement already exists". A session-mode or direct
+      // connection is still the better choice for a quarter-million inserts.
+      if (url.port === "6543" && !url.searchParams.has("pgbouncer")) {
+        url.searchParams.set("pgbouncer", "true");
+      }
+      process.env["DATABASE_URL"] = url.toString();
+      // Only prisma migrate reads directUrl and this script never migrates, but the
+      // schema declares it, so give it a value rather than risk a missing-env error.
+      if (!process.env["DIRECT_URL"]) process.env["DIRECT_URL"] = process.env["DATABASE_URL"];
+    }
+  }
+}
+
 import { PrismaClient } from "@prisma/client";
 import { MeiliSearch } from "meilisearch";
-import { Redis } from "ioredis";
 import { parse } from "csv-parse/sync";
 
 const prisma = new PrismaClient();
@@ -135,17 +179,29 @@ function findPriceKey(headers: string[]): string | null {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  const csvArg     = process.argv[2];
-  const defaultCsv = path.join(WORKSPACE_ROOT, "scripts", "data", "medicines.csv");
+  // pnpm forwards the "--" separator itself, so the documented invocation
+  //   pnpm --filter @pharmacy/database import:medicines -- /path/to.csv
+  // arrives as argv = [node, script, "--", "/path/to.csv"]. Drop the separator and any
+  // flags; whatever is left is the optional path.
+  const args   = process.argv.slice(2).filter((a) => a !== "--");
+  const dryRun = args.includes("--dry-run");
+  const csvArg = args.find((a) => !a.startsWith("--"));
+  // Two defaults, because the bulk catalogue file was committed as scripts/medicine.csv
+  // while this script had always looked for scripts/data/medicines.csv. Accept either,
+  // rather than move a 40 MB file or rely on everyone remembering to pass the path.
+  const defaultCsvs = [
+    path.join(WORKSPACE_ROOT, "scripts", "data", "medicines.csv"),
+    path.join(WORKSPACE_ROOT, "scripts", "medicine.csv"),
+  ];
   // Resolve relative paths from workspace root, not packages/database
-  const csvPath    = csvArg
+  const csvPath = csvArg
     ? (path.isAbsolute(csvArg) ? csvArg : path.join(WORKSPACE_ROOT, csvArg))
-    : defaultCsv;
+    : defaultCsvs.find((p) => fs.existsSync(p)) ?? defaultCsvs[0]!;
 
   // ── Validate CSV exists ──────────────────────────────────────────────────
   if (!fs.existsSync(csvPath)) {
     console.error(`\n❌  CSV not found at:\n    ${csvPath}`);
-    console.error(`\n   Drop your medicines.csv here:\n    ${defaultCsv}\n`);
+    console.error(`\n   Drop your medicines.csv at either:\n${defaultCsvs.map((p) => `    ${p}`).join("\n")}\n`);
     process.exit(1);
   }
 
@@ -193,15 +249,30 @@ async function main() {
 
   const toInsert: MedicineRow[] = [];
   const skipped:  string[]       = [];
+  const dupInFile: string[]      = [];
+  const seenInFile               = new Set<string>();
 
   for (const row of rows) {
     const name = row["name"]?.trim();
     if (!name) continue;
+    const key = name.toLowerCase();
 
-    if (existingNames.has(name.toLowerCase())) {
+    if (existingNames.has(key)) {
       skipped.push(name);
       continue;
     }
+
+    // The source file repeats names — the same product listed once per pack size, and
+    // sometimes listed twice outright ("NS 0.9% Infusion" appears 12 times). Nothing
+    // downstream would reject them: medicines.name carries no unique constraint. They
+    // would simply surface as a dozen identical rows in the billing combobox, and leave
+    // resolveMedicinesByName — which matches names exactly — with no way to say which
+    // catalogue row an imported CSV line meant. Keep the first occurrence only.
+    if (seenInFile.has(key)) {
+      dupInFile.push(name);
+      continue;
+    }
+    seenInFile.add(key);
 
     const { genericName, strength } = parseComposition(row["short_composition1"]);
     const { form, packSize, unit }  = parsePackSize(row["pack_size_label"]);
@@ -231,11 +302,20 @@ async function main() {
   }
 
   console.log(`\n📦  New medicines to insert: ${toInsert.length.toLocaleString()}`);
-  console.log(`⏭️   Duplicates skipped:       ${skipped.length.toLocaleString()}`);
+  console.log(`⏭️   Already in DB, skipped:   ${skipped.length.toLocaleString()}`);
+  console.log(`🔁  Repeated within the CSV:  ${dupInFile.length.toLocaleString()}`);
+
+  if (dryRun) {
+    console.log("\n🔍  --dry-run: parsed and deduped only, nothing was written.");
+    console.log("    Rerun without the flag to insert.");
+    await writeReport(0, skipped, dupInFile, true);
+    await prisma.$disconnect();
+    return;
+  }
 
   if (toInsert.length === 0) {
     console.log("\n✅  Nothing new to import — all medicines already exist in DB\n");
-    await writeReport(0, skipped);
+    await writeReport(0, skipped, dupInFile);
     await prisma.$disconnect();
     return;
   }
@@ -295,6 +375,11 @@ async function main() {
       const redisUrl = process.env["REDIS_URL"] ?? process.env["REDIS_URI"];
       if (redisUrl) {
         try {
+          // Imported lazily: ioredis is not a dependency of this package, and the only
+          // thing it does here is set a cursor read by the OLD Node API's startup hook.
+          // A static import made a missing optional package fatal at load time, which
+          // killed the import before it read a single row.
+          const { Redis } = await import("ioredis");
           const redis     = new Redis(redisUrl);
           const cursorKey = `meilisearch:medicines:lastSyncedAt:${process.env["NODE_ENV"] ?? "development"}`;
           await redis.set(cursorKey, new Date().toISOString());
@@ -313,23 +398,29 @@ async function main() {
     console.log("    Restart the API to sync the search index");
   }
 
-  await writeReport(inserted, skipped);
+  await writeReport(inserted, skipped, dupInFile);
   console.log("\n🎉  Import complete!\n");
   await prisma.$disconnect();
 }
 
-async function writeReport(inserted: number, skipped: string[]) {
+async function writeReport(inserted: number, skipped: string[], dupInFile: string[], dryRun = false) {
   const dir = path.join(WORKSPACE_ROOT, "scripts", "data");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const lines = [
-    `Import completed: ${new Date().toISOString()}`,
-    `Inserted:  ${inserted.toLocaleString()}`,
-    `Skipped:   ${skipped.length.toLocaleString()} (name already exists in DB)`,
+    dryRun
+      ? `DRY RUN — nothing written: ${new Date().toISOString()}`
+      : `Import completed: ${new Date().toISOString()}`,
+    `Inserted:   ${inserted.toLocaleString()}`,
+    `Skipped:    ${skipped.length.toLocaleString()} (name already exists in DB)`,
+    `Collapsed:  ${dupInFile.length.toLocaleString()} (name repeated later in the CSV)`,
     "",
     ...(skipped.length > 0
-      ? ["--- Skipped (duplicates) ---", ...skipped]
-      : ["No duplicates found."]),
+      ? ["--- Skipped (already in DB) ---", ...skipped, ""]
+      : ["No rows collided with the existing catalogue.", ""]),
+    ...(dupInFile.length > 0
+      ? ["--- Collapsed (repeated in CSV, first occurrence kept) ---", ...dupInFile]
+      : ["No repeated names within the CSV."]),
   ];
 
   fs.writeFileSync(path.join(dir, "import-report.txt"), lines.join("\n"));

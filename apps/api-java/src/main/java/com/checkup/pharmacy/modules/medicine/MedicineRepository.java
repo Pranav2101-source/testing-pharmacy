@@ -107,4 +107,56 @@ public interface MedicineRepository extends JpaRepository<Medicine, String> {
                                     @Param("strength") String strength,
                                     @Param("form") String form,
                                     @Param("excludeId") String excludeId);
+
+    /**
+     * Up to {@code perTerm} near-name candidates for each of several search terms at once,
+     * in a single round trip — the batched counterpart to typing one name into
+     * {@link #quickSearch}.
+     *
+     * <p>Exists for prescription lines a clinic sent that did not match anything exactly
+     * (see {@code EmrIntegrationService}'s EXACT_NAME/GENERIC_STRENGTH_FORM strategies).
+     * Those lines are shown a pharmacist to link by hand regardless — nothing here
+     * auto-assigns a medicine — but a page can carry a dozen of them, and a naive "one
+     * trigram query per unmatched line" turns a list page into exactly the N+1 this
+     * module's own list() already had to fix once for doctor/items/upload lookups. A
+     * single {@code LATERAL} join over {@code unnest(:terms)} answers all of them together.
+     *
+     * <p>{@code term} echoes back the exact input string so the caller can regroup rows by
+     * which line they belong to without a second normalisation pass. Matched purely on
+     * {@code similarity()}, no length or prefix bias — a short generic name is not
+     * penalised against a long brand name here the way a LIKE prefix match would.
+     *
+     * <p>The 0.35 similarity floor is deliberate, not the pg_trgm session default (0.3,
+     * itself mutable per-connection and therefore not something to depend on for
+     * consistent results). This is a SUGGESTION shown to a pharmacist for a clinical
+     * product — the cost of a suggestion too weak to be useful is a moment's confusion;
+     * the cost of the floor being loose enough to make a wrong-drug guess look plausible
+     * is a dispensing error. Tighten before loosening if the tradeoff ever needs revisiting.
+     */
+    @Query(value = """
+            SELECT req.term AS term, x.id AS id, x.name AS name, x."genericName" AS genericName,
+                   x.strength AS strength, x.form AS form, x.sim AS similarity
+            FROM unnest(CAST(:terms AS text[])) AS req(term)
+            CROSS JOIN LATERAL (
+                SELECT m.id, m.name, m."genericName", m.strength, m.form,
+                       similarity(LOWER(m.name), LOWER(req.term)) AS sim
+                FROM medicines m
+                WHERE m."isActive" = true
+                  AND LOWER(m.name) % LOWER(req.term)
+                  AND similarity(LOWER(m.name), LOWER(req.term)) >= 0.35
+                ORDER BY sim DESC
+                LIMIT :perTerm
+            ) x
+            """, nativeQuery = true)
+    List<SimilarNameRow> findSimilarByNames(@Param("terms") String[] terms, @Param("perTerm") int perTerm);
+
+    interface SimilarNameRow {
+        String getTerm();
+        String getId();
+        String getName();
+        String getGenericName();
+        String getStrength();
+        String getForm();
+        double getSimilarity();
+    }
 }

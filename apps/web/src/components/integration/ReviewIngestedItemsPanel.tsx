@@ -1,15 +1,25 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Search, Link2, AlertTriangle, Check } from "lucide-react";
+import { Search, Link2, AlertTriangle, Check, Sparkles, Loader2 } from "lucide-react";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
+
+type MedicineSuggestion = {
+  medicineId: string;
+  name: string;
+  genericName: string | null;
+  strength: string | null;
+  form: string | null;
+  similarity: number;
+};
 
 type UnmatchedItem = {
   id: string;
   medicineName: string;
   quantity: number;
   dosage: string | null;
+  suggestions: MedicineSuggestion[];
 };
 
 type MedicineHit = {
@@ -41,12 +51,18 @@ export default function ReviewIngestedItemsPanel({
   onLinked,
 }: {
   prescriptionId: string;
-  items: { id: string; medicineName: string; medicineId: string | null; quantity: number; dosage: string | null }[];
+  items: {
+    id: string; medicineName: string; medicineId: string | null; quantity: number; dosage: string | null;
+    suggestions?: MedicineSuggestion[];
+  }[];
   onLinked: () => void;
 }) {
   const unmatched: UnmatchedItem[] = items
     .filter((i) => i.medicineId === null)
-    .map((i) => ({ id: i.id, medicineName: i.medicineName, quantity: i.quantity, dosage: i.dosage }));
+    .map((i) => ({
+      id: i.id, medicineName: i.medicineName, quantity: i.quantity, dosage: i.dosage,
+      suggestions: i.suggestions ?? [],
+    }));
 
   if (unmatched.length === 0) return null;
 
@@ -139,6 +155,35 @@ function UnmatchedRow({
           {open ? "Cancel" : "Choose medicine"}
         </button>
       </div>
+
+      {/* The catalogue's own best guess, one click to accept — never applied on its own.
+          Hidden once the full search is open: two ways to pick at once is just noise. */}
+      {!open && item.suggestions.length > 0 && (
+        <div className="mt-2 flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1.5">
+          <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-600" />
+          <span className="min-w-0 flex-1 truncate text-xs text-violet-800">
+            Did you mean <span className="font-semibold">{item.suggestions[0]!.name}</span>
+            {(item.suggestions[0]!.genericName || item.suggestions[0]!.strength) && (
+              <span className="text-violet-600">
+                {" "}({[item.suggestions[0]!.genericName, item.suggestions[0]!.strength, item.suggestions[0]!.form]
+                  .filter(Boolean).join(" · ")})
+              </span>
+            )}
+            ?
+          </span>
+          <button
+            type="button"
+            disabled={linking !== null}
+            onClick={() => link(item.suggestions[0]!.medicineId)}
+            className="shrink-0 inline-flex items-center gap-1 rounded-md bg-violet-600 px-2 py-1 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-60"
+          >
+            {linking === item.suggestions[0]!.medicineId
+              ? <Loader2 className="h-3 w-3 animate-spin" />
+              : <Check className="h-3 w-3" />}
+            Yes, link it
+          </button>
+        </div>
+      )}
 
       {open && (
         <div className="mt-2.5 border-t border-slate-100 pt-2.5">

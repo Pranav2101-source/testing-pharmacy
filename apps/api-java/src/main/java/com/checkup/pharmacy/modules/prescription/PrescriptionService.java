@@ -14,6 +14,7 @@ import com.checkup.pharmacy.modules.doctor.DoctorRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
 import com.checkup.pharmacy.modules.prescription.dto.CreatePrescriptionRequest;
+import com.checkup.pharmacy.modules.prescription.dto.NewPrescriptionCountResponse;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionItemRequest;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionPageResponse;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionResponse;
@@ -28,6 +29,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -129,12 +131,47 @@ public class PrescriptionService {
                     new PrescriptionResponse.UploadRef(u.getId(), u.getFileName(), u.getMimeType(), u.getFileUrl())));
         }
 
+        // One suggestion query for the WHOLE page, not one per prescription. Naively
+        // computing this inside the per-row toResponse below would reproduce exactly the
+        // N+1 the batched lookups above already exist to avoid — a 100-row page with
+        // unmatched lines scattered across a dozen prescriptions would otherwise cost a
+        // dozen trigram queries instead of one.
+        Map<String, List<PrescriptionResponse.Suggestion>> suggestionsByItemId =
+                suggestionsFor(itemsByPrescriptionId.values().stream().flatMap(List::stream).toList());
+
         List<PrescriptionResponse> items = rows.stream()
                 .map(rx -> toResponse(rx, rx.getDoctor(),
                         itemsByPrescriptionId.getOrDefault(rx.getId(), List.of()),
-                        rx.getUploadId() == null ? null : uploadsById.get(rx.getUploadId())))
+                        rx.getUploadId() == null ? null : uploadsById.get(rx.getUploadId()),
+                        suggestionsByItemId))
                 .toList();
         return new PrescriptionPageResponse(items, result.getTotalElements(), safePage, safeLimit);
+    }
+
+    /** Nav badge: how many clinic-sourced prescriptions nobody at this pharmacy has opened yet. */
+    @Transactional(readOnly = true)
+    public NewPrescriptionCountResponse newCount() {
+        long count = prescriptionRepository
+                .countByPharmacyIdAndExternalEmrPrescriptionIdIsNotNullAndViewedAtIsNull(TenantContext.pharmacyId());
+        return new NewPrescriptionCountResponse(count);
+    }
+
+    /**
+     * Marks a prescription as opened, so it stops counting toward the nav badge.
+     *
+     * <p>A dedicated action rather than a side effect of {@link #getById}: the frontend
+     * already has the row's data from the list it clicked on and never calls
+     * {@code getById} to open it, and folding a write into a read-only getter would be a
+     * surprising place to look for one. No-op on a counter-written prescription — nothing
+     * ever counted one of those as unseen.
+     */
+    @Transactional
+    public void markViewed(String id) {
+        Prescription rx = load(id);
+        if (!rx.isFromEmr()) {
+            return;
+        }
+        rx.markViewed();
     }
 
     @Transactional
@@ -162,6 +199,17 @@ public class PrescriptionService {
 
         List<PrescriptionItem> items;
         if (req.items() != null) {
+            List<PrescriptionItem> existing = itemRepository.findByPrescriptionId(id);
+            // The edit form resubmits the whole line list with no item ids (see BillHeader's
+            // "Edit Prescription"), so there is no per-line match to preserve dispensedQty
+            // across a delete/recreate. Once any line has been sold against, that recreate
+            // would silently zero it back out — the prescription still reads PARTIAL/DISPENSED
+            // but every counter agrees nothing was ever handed over. No FK stops this: billing
+            // tracks dispensing purely on prescription_items, which this would just replace.
+            if (existing.stream().anyMatch(i -> i.getDispensedQty() > 0)) {
+                throw new ConflictException("Cannot change medicines on a prescription that has already been "
+                        + "dispensed against — cancel and create a new one instead");
+            }
             itemRepository.deleteByPrescriptionId(id);
             items = req.items().stream()
                     .map(i -> PrescriptionItem.create(rx.getPharmacyId(), id, i.medicineName(), i.medicineId(),
@@ -197,24 +245,26 @@ public class PrescriptionService {
         return (s == null || s.isBlank()) ? null : s.trim();
     }
 
-    /** Single-row path: resolves the upload itself. */
+    /** Single-row path: resolves the upload itself, and batches its own suggestions. */
     private PrescriptionResponse toResponse(Prescription rx, Doctor doctor, List<PrescriptionItem> items) {
         PrescriptionResponse.UploadRef uploadRef = rx.getUploadId() == null ? null
                 : uploadRepository.findById(rx.getUploadId())
                         .map(u -> new PrescriptionResponse.UploadRef(u.getId(), u.getFileName(), u.getMimeType(), u.getFileUrl()))
                         .orElse(null);
-        return toResponse(rx, doctor, items, uploadRef);
+        return toResponse(rx, doctor, items, uploadRef, suggestionsFor(items));
     }
 
-    /** List path: the caller has already resolved items and upload in bulk. */
+    /** List path: the caller has already resolved items, upload and suggestions in bulk. */
     private PrescriptionResponse toResponse(Prescription rx, Doctor doctor, List<PrescriptionItem> items,
-                                            PrescriptionResponse.UploadRef uploadRef) {
+                                            PrescriptionResponse.UploadRef uploadRef,
+                                            Map<String, List<PrescriptionResponse.Suggestion>> suggestionsByItemId) {
         PrescriptionResponse.DoctorRef doctorRef = doctor == null ? null
                 : new PrescriptionResponse.DoctorRef(doctor.getId(), doctor.getName(), doctor.getRegistrationNo());
         List<PrescriptionResponse.Item> itemResponses = items.stream()
                 .map(i -> new PrescriptionResponse.Item(i.getId(), i.getMedicineName(), i.getMedicineId(), i.getSchedule(),
                         i.getQuantity(), i.getDispensedQty(), i.getDosage(), i.getDuration(), i.getNotes(),
-                        i.getDispensedMedicineName(), i.isSubstituted()))
+                        i.getDispensedMedicineName(), i.isSubstituted(),
+                        suggestionsByItemId.getOrDefault(i.getId(), List.of())))
                 .toList();
 
         // A line needs a human when the EMR's medicine name did not match the catalogue.
@@ -228,6 +278,44 @@ public class PrescriptionService {
                 rx.getPatientGender(), rx.getPrescribedDate(), rx.getValidUntil(), rx.getStatus().name(), rx.getNotes(),
                 itemResponses, uploadRef, rx.getExternalEmrTenantId(), needsReview, dispenseNotify(rx),
                 rx.getCreatedAt(), rx.getUpdatedAt());
+    }
+
+    /** Suggestions are shown only to a human, never applied automatically — see PrescriptionResponse.Suggestion. */
+    private static final int SUGGESTIONS_PER_ITEM = 3;
+
+    /**
+     * Batched near-name candidates for every unmatched line in {@code items}, in one query
+     * regardless of how many lines or how many distinct names they carry.
+     *
+     * <p>Keyed by item id rather than by name: two lines can share a name (a doctor
+     * prescribing the same medicine twice, at different doses on different lines) and each
+     * needs its own suggestions in the response, even though they share one query term.
+     */
+    private Map<String, List<PrescriptionResponse.Suggestion>> suggestionsFor(List<PrescriptionItem> items) {
+        List<PrescriptionItem> unmatched = items.stream().filter(i -> i.getMedicineId() == null).toList();
+        if (unmatched.isEmpty()) {
+            return Map.of();
+        }
+
+        String[] terms = unmatched.stream()
+                .map(i -> i.getMedicineName().trim().toLowerCase(Locale.ROOT))
+                .distinct()
+                .toArray(String[]::new);
+
+        Map<String, List<PrescriptionResponse.Suggestion>> byTerm = medicineRepository
+                .findSimilarByNames(terms, SUGGESTIONS_PER_ITEM).stream()
+                .collect(Collectors.groupingBy(
+                        row -> row.getTerm().toLowerCase(Locale.ROOT),
+                        Collectors.mapping(row -> new PrescriptionResponse.Suggestion(row.getId(), row.getName(),
+                                row.getGenericName(), row.getStrength(), row.getForm(), row.getSimilarity()),
+                                Collectors.toList())));
+
+        Map<String, List<PrescriptionResponse.Suggestion>> byItemId = new HashMap<>();
+        for (PrescriptionItem item : unmatched) {
+            byItemId.put(item.getId(),
+                    byTerm.getOrDefault(item.getMedicineName().trim().toLowerCase(Locale.ROOT), List.of()));
+        }
+        return byItemId;
     }
 
     /**

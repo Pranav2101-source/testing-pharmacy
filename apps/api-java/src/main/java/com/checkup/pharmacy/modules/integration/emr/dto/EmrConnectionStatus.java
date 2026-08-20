@@ -20,6 +20,12 @@ import java.time.Instant;
  * @param prescriptionsReceived   how many prescriptions arrived from a clinic
  * @param lastPrescriptionAt      when the most recent one arrived
  * @param failedDispenseUpdates   dispensing updates the clinic has not accepted
+ * @param paired    whether the clinic redeemed a pairing code rather than being connected by
+ *                  hand. Drives the frontend: a screen that just generated a code polls this
+ *                  endpoint and flips to "Connected" the instant this turns true — the point
+ *                  of pairing is that nobody has to click anything to notice the clinic
+ *                  finished its half.
+ * @param pairedAt  when that pairing completed
  */
 public record EmrConnectionStatus(
         String pharmacyId,
@@ -33,10 +39,12 @@ public record EmrConnectionStatus(
         long prescriptionsReceived,
         Instant lastPrescriptionAt,
         long pendingDispenseUpdates,
-        long failedDispenseUpdates) {
+        long failedDispenseUpdates,
+        boolean paired,
+        Instant pairedAt) {
 
-    /** Connected means both halves exist: somewhere to send, and a key to sign with. */
+    /** Connected means both halves exist: somewhere to send, and a credential to sign with. */
     public boolean connected() {
-        return keyIssued && callbackUrl != null && !callbackUrl.isBlank();
+        return (keyIssued || paired) && callbackUrl != null && !callbackUrl.isBlank();
     }
 }
