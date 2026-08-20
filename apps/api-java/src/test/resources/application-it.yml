@@ -20,11 +20,16 @@ spring:
       url: ${REDIS_URL:redis://localhost:6379}
   jpa:
     hibernate:
-      # Prisma owns the schema here exactly as in production. If this were ever set
-      # to create/update, Hibernate would silently "repair" any entity/schema drift
-      # and the suite would stop being able to detect the single most valuable class
-      # of bug an integration test catches.
-      ddl-auto: none
+      # validate, matching production. Never create/update: Hibernate would silently
+      # "repair" entity/schema drift and the suite would stop being able to detect the
+      # single most valuable class of bug an integration test catches.
+      #
+      # validate is the opposite — it detects that drift and refuses to build the
+      # SessionFactory. Because the schema here is replayed from the real Prisma
+      # migrations, this makes the whole IT suite fail the build the moment an entity
+      # maps a column no migration creates. That is the mistake this profile is best
+      # placed to catch, and catching it here means it cannot reach a deploy.
+      ddl-auto: validate
     properties:
       hibernate:
         globally_quoted_identifiers: true

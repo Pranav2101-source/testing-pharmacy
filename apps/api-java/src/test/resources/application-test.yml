@@ -2,9 +2,10 @@
 # wires up without needing Docker, a live Postgres, or a live Redis.
 #
 # This deliberately does NOT try to be a functional test database. Hibernate is
-# still ddl-auto: none (Prisma owns the schema, in tests as in production), so no
-# application query would work here and none is run. The value is entirely in
-# "does the context start".
+# ddl-auto: none here — unlike production and the `it` profile, which both validate.
+# It has to be: this H2 instance is empty, so validation would fail against every
+# table. Nothing is validated and no application query is run; the value is entirely
+# in "does the context start".
 
 spring:
   datasource:

@@ -88,8 +88,25 @@ spring:
 
   jpa:
     hibernate:
-      # CRITICAL: Prisma owns the schema. Hibernate must NEVER create/alter/validate it.
-      ddl-auto: none
+      # Prisma owns the schema — Hibernate must never CREATE or ALTER it. It should,
+      # however, VALIDATE it, and for a long time this said `none`, which meant it did
+      # not.
+      #
+      # Migrations here are applied to Supabase by hand, separately from the deploy, so
+      # code and schema can and do arrive out of order. With `none`, a build whose
+      # entities map a column the database has not got starts perfectly happily and then
+      # fails on the first query that touches the table — and because these columns sit
+      # on core entities, that is not a broken feature, it is a broken module. A column
+      # added to Prescription takes out every prescriptions query, not just the one that
+      # needed it.
+      #
+      # `validate` moves that failure to startup, names the missing column, and never
+      # writes to the schema. The deploy fails instead of the pharmacy.
+      #
+      # Overridable: set HIBERNATE_DDL_AUTO=none to boot despite drift. That is an
+      # incident lever, not a setting — the app will run, and the affected module will
+      # break exactly as it used to.
+      ddl-auto: ${HIBERNATE_DDL_AUTO:validate}
       naming:
         # Prisma stored columns verbatim in camelCase ("pharmacyId", "tokenVersion").
         # The default Spring strategy would snake_case them and break every query.
