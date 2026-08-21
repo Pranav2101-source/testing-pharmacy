@@ -2,6 +2,7 @@ package com.checkup.pharmacy.config;
 
 import com.checkup.pharmacy.common.api.ApiResponse;
 import com.checkup.pharmacy.security.CookieOriginValidationFilter;
+import com.checkup.pharmacy.security.EmrApiKeyAuthenticationFilter;
 import com.checkup.pharmacy.security.EmrHmacAuthenticationFilter;
 import com.checkup.pharmacy.security.JwtAuthenticationFilter;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -46,17 +47,20 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final CookieOriginValidationFilter cookieOriginValidationFilter;
     private final EmrHmacAuthenticationFilter emrHmacAuthenticationFilter;
+    private final EmrApiKeyAuthenticationFilter emrApiKeyAuthenticationFilter;
     private final ObjectMapper objectMapper;
     private final String allowedOrigins;
 
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
                           CookieOriginValidationFilter cookieOriginValidationFilter,
                           EmrHmacAuthenticationFilter emrHmacAuthenticationFilter,
+                          EmrApiKeyAuthenticationFilter emrApiKeyAuthenticationFilter,
                           ObjectMapper objectMapper,
                           @Value("${app.cors.allowed-origins}") String allowedOrigins) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.cookieOriginValidationFilter = cookieOriginValidationFilter;
         this.emrHmacAuthenticationFilter = emrHmacAuthenticationFilter;
+        this.emrApiKeyAuthenticationFilter = emrApiKeyAuthenticationFilter;
         this.objectMapper = objectMapper;
         this.allowedOrigins = allowedOrigins;
     }
@@ -81,6 +85,14 @@ public class SecurityConfig {
                         // Authentication for these machine routes is performed by
                         // EmrHmacAuthenticationFilter, not a staff JWT.
                         .requestMatchers("/api/v1/integrations/emr/**").permitAll()
+                        // The compatibility EMR surface, authenticated by
+                        // EmrApiKeyAuthenticationFilter. Note this is "integration"
+                        // SINGULAR and is a DIFFERENT prefix from the line above — Spring
+                        // matches whole path segments, so these two never overlap. Written
+                        // as a path-segment pattern rather than a prefix string for exactly
+                        // that reason: a startsWith-style match on "/api/v1/integration"
+                        // would also swallow every "/api/v1/integrations/..." route.
+                        .requestMatchers("/api/v1/integration/**").permitAll()
                         // API schema/docs only — never actual tenant data, so safe to leave public
                         // (and requiring auth just to view the docs would be a chicken-and-egg
                         // problem for anyone trying to learn how auth itself works).
@@ -109,6 +121,7 @@ public class SecurityConfig {
                 // in the chain as long as it runs before the controller.
                 .addFilterBefore(cookieOriginValidationFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(emrHmacAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterBefore(emrApiKeyAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 // ── Security headers (A6) ────────────────────────────────────
                 // Spring Security already sends several by default (X-Frame-Options:

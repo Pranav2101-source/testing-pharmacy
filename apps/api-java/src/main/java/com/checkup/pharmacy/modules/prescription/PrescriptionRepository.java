@@ -25,6 +25,9 @@ public interface PrescriptionRepository extends JpaRepository<Prescription, Stri
     /** Integrations screen: how many prescriptions arrived from a clinic rather than the till. */
     long countByPharmacyIdAndExternalEmrPrescriptionIdIsNotNull(String pharmacyId);
 
+    /** Nav badge: clinic-sourced prescriptions no pharmacist has opened yet. */
+    long countByPharmacyIdAndExternalEmrPrescriptionIdIsNotNullAndViewedAtIsNull(String pharmacyId);
+
     /** Integrations screen: dispensing updates in one delivery state (PENDING / SENT / FAILED). */
     long countByPharmacyIdAndDispenseNotifyStatus(String pharmacyId, String dispenseNotifyStatus);
 

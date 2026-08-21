@@ -227,7 +227,7 @@ function RxPreviewModal({
           <button
             type="button"
             onClick={() => rx && onEdit(rx)}
-            disabled={loading || !rx || rx.status === "CANCELLED" || rx.status === "DISPENSED"}
+            disabled={loading || !rx || rx.status === "CANCELLED" || rx.status === "DISPENSED" || rx.status === "PARTIAL"}
             className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-500 hover:text-slate-700 transition-colors disabled:opacity-30"
           >
             <FileText className="w-3.5 h-3.5" /> Edit Prescription

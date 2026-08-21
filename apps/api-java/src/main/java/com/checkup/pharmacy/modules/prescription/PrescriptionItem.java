@@ -96,6 +96,32 @@ public class PrescriptionItem extends CreatedAtEntity {
         return item;
     }
 
+    /**
+     * Overwrites this line with what the clinic sent this time, for a line that survives an
+     * amendment under the same externalEmrItemId.
+     *
+     * <p>{@code medicineId} is a caller decision, not something this method derives: pass
+     * the OLD value to preserve a pharmacist's manual link when the medicine name is
+     * unchanged, or a freshly re-matched value when it is not — see
+     * {@code EmrIntegrationService}'s amendment path for which case applies. Getting that
+     * choice right is the entire reason this exists rather than a delete-and-recreate: a
+     * pharmacist's manual correction on an unrelated field change should not be discarded.
+     *
+     * <p>Never called on a line with {@code dispensedQty > 0} — the caller guarantees the
+     * whole prescription is still ACTIVE before reaching here, which is the same condition
+     * that guarantees every one of its lines has dispensed nothing yet.
+     */
+    public void applyEmrAmendment(String medicineName, String medicineId, String schedule, int quantity,
+                                  String dosage, String duration, String notes) {
+        this.medicineName = medicineName;
+        this.medicineId = medicineId;
+        this.schedule = schedule;
+        this.quantity = quantity;
+        this.dosage = dosage;
+        this.duration = duration;
+        this.notes = notes;
+    }
+
     public String getPharmacyId() { return pharmacyId; }
 
     public String getPrescriptionId() { return prescriptionId; }

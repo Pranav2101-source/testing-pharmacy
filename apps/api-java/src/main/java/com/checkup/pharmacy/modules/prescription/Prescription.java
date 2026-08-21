@@ -43,6 +43,14 @@ public class Prescription extends BaseEntity {
     @Column(name = "receivedAt")
     private Instant receivedAt;
 
+    /**
+     * Null until a pharmacist opens this prescription for the first time. Only meaningful
+     * for a clinic-sourced prescription — see {@link #markViewed()} — and drives the
+     * new-prescription count behind the top-nav badge.
+     */
+    @Column(name = "viewedAt")
+    private Instant viewedAt;
+
     // ── Dispense callback to the clinic ──────────────────────────────────────
     //
     // All NULL on a counter-written prescription, which is most of them: NULL here
@@ -157,6 +165,35 @@ public class Prescription extends BaseEntity {
         rx.externalEmrPrescriptionNumber = externalEmrPrescriptionNumber;
         rx.receivedAt = Instant.now();
         return rx;
+    }
+
+    /**
+     * Replaces the clinic-editable fields with what the clinic sent this time — a doctor's
+     * edit, re-pushed under the same externalEmrPrescriptionId.
+     *
+     * <p>Deliberately the opposite of {@link #applyFields}'s null-means-unchanged PATCH
+     * semantics. The EMR sends its whole current view of the prescription on every push,
+     * never a partial diff, so a field the clinic now has as null is null because the
+     * clinic cleared it — leaving the old value in place would silently un-clear something
+     * a doctor just removed.
+     *
+     * <p>Caller ({@code EmrIntegrationService}) is responsible for confirming the
+     * prescription is still ACTIVE first — nothing here re-checks that, because by the time
+     * an amendment reaches an entity method the decision has already been made.
+     */
+    public void applyEmrAmendment(String doctorName, String doctorRegNo, String doctorPhone, String patientName,
+                                  Integer patientAge, String patientPhone, String patientGender,
+                                  Instant prescribedDate, Instant validUntil, String notes) {
+        this.doctorName = doctorName;
+        this.doctorRegNo = doctorRegNo;
+        this.doctorPhone = doctorPhone;
+        this.patientName = patientName;
+        this.patientAge = patientAge;
+        this.patientPhone = patientPhone;
+        this.patientGender = patientGender;
+        this.prescribedDate = prescribedDate;
+        this.validUntil = validUntil;
+        this.notes = notes;
     }
 
     public void applyFields(String doctorId, String doctorName, String doctorRegNo, String patientName,
@@ -307,6 +344,22 @@ public class Prescription extends BaseEntity {
     public boolean isFromEmr() {
         return externalEmrTenantId != null && externalEmrPrescriptionId != null;
     }
+
+    /**
+     * Records that a pharmacist has now looked at this prescription at least once.
+     *
+     * <p>Idempotent by design — {@code null} check rather than an unconditional stamp —
+     * so the "first seen" moment stays the first call, not whichever call happens to
+     * land last. Calling this on a counter-written prescription is harmless: nothing
+     * ever counts one of those as unseen in the first place.
+     */
+    public void markViewed() {
+        if (viewedAt == null) {
+            viewedAt = Instant.now();
+        }
+    }
+
+    public Instant getViewedAt() { return viewedAt; }
 
     public String getDispenseNotifyStatus() { return dispenseNotifyStatus; }
 

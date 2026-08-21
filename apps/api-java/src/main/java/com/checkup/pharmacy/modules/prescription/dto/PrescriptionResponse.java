@@ -41,10 +41,29 @@ public record PrescriptionResponse(
     /**
      * @param dispensedMedicineName what was actually handed over, when it differs from what
      *                              was prescribed. Null is the normal case.
+     * @param suggestions near-name catalogue candidates for a line the matcher could not
+     *                    link, closest first. Always empty when medicineId is already set —
+     *                    a matched line has nothing left to suggest. Never auto-applied: see
+     *                    {@link Suggestion}.
      */
     public record Item(String id, String medicineName, String medicineId, String schedule, int quantity,
                        int dispensedQty, String dosage, String duration, String notes,
-                       String dispensedMedicineName, boolean substituted) {
+                       String dispensedMedicineName, boolean substituted, List<Suggestion> suggestions) {
+    }
+
+    /**
+     * One candidate a pharmacist can link with a click, instead of typing the search box
+     * themselves — never a medicine the system attaches on its own.
+     *
+     * <p>Suggestion, not a match: the ingest matcher already had its chance at an exact
+     * name/generic+strength/form match and passed on this line. What is offered here comes
+     * from trigram similarity — genuinely useful (a misspelling, a missing dosage-form
+     * suffix) but not the same certainty as an exact match, and a wrong click here is a
+     * dispensing error. The pharmacist stays the one who decides; this only saves them
+     * typing the name that is already right there in front of them.
+     */
+    public record Suggestion(String medicineId, String name, String genericName, String strength,
+                             String form, double similarity) {
     }
 
     public record UploadRef(String id, String fileName, String mimeType, String fileUrl) {

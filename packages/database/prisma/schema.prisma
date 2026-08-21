@@ -63,6 +63,31 @@ model Pharmacy {
   emrClinicName   String?
   emrCallbackUrl  String?
   emrConnectedAt  DateTime?
+  // Automatic pairing (see 20260820000001). The clinic presents the code the
+  // pharmacist generated and hands over where to reach it plus the secret to
+  // sign callbacks with; we answer with a credential scoped to that clinic.
+  //
+  // emrApiKey is an identifier — it travels in a header on every request and is
+  // what we look the pharmacy up by, so it is stored in the clear and indexed.
+  // emrApiSecretHash is SHA-256: this is a 256-bit CSPRNG token, not a human
+  // password, so a slow KDF would add latency to every machine request and buy
+  // nothing. Shown once at pairing and never recoverable — re-pair instead.
+  emrClinicExternalId String?
+  emrClinicLinkId     String?
+  emrPairedAt         DateTime?
+  emrApiKey           String?   @unique
+  emrApiSecretHash    String?
+  // The CLINIC's webhook secret, held so our dispense callback can be signed the
+  // way that clinic verifies. Encrypted at rest exactly like emrSecret* — it is
+  // somebody else's credential, which is a reason for more care, not less.
+  //
+  // Its presence is also the dialect discriminator: holding one means this link
+  // was paired through the compatibility route and its callbacks are signed the
+  // clinic's way. The secret IS what you sign with, so having it and using it
+  // cannot drift apart the way a boolean flag could.
+  emrWebhookSecretCiphertext String?
+  emrWebhookSecretIv         String?
+  emrWebhookSecretTag        String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -740,6 +765,9 @@ model Prescription {
   externalEmrPrescriptionId String?
   externalEmrPrescriptionNumber String?
   receivedAt         DateTime?
+  /// Null until a pharmacist opens this prescription for the first time. Only meaningful
+  /// for a clinic-sourced one (receivedAt set) — drives the "new prescription" nav badge.
+  viewedAt           DateTime?
   doctorId           String?
   doctorName         String
   doctorRegNo        String? // MCI / state council registration number

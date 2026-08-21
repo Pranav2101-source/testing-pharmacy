@@ -24,4 +24,19 @@ public interface PharmacyRepository extends JpaRepository<Pharmacy, String> {
 
     /** Highest existing tenant code (TEN-######), for allocating the next one. */
     java.util.Optional<Pharmacy> findFirstByTenantCodeIsNotNullOrderByTenantCodeDesc();
+
+    /**
+     * Resolves the pharmacy a machine API key belongs to.
+     *
+     * <p>Deliberately unscoped, and necessarily so: this is authentication, which runs
+     * <em>before</em> there is any tenant context to scope by — the same position
+     * {@code AuthService}'s user lookup occupies for staff logins. The key IS the claim of
+     * identity, and this is the lookup that decides whether to believe it.
+     *
+     * <p>Safe because the key is high-entropy and uniquely indexed, and because the caller
+     * ({@link com.checkup.pharmacy.security.EmrApiKeyAuthenticationFilter}) still verifies
+     * the secret half before trusting the row. Finding a pharmacy here grants nothing on
+     * its own.
+     */
+    java.util.Optional<Pharmacy> findByEmrApiKey(String emrApiKey);
 }
