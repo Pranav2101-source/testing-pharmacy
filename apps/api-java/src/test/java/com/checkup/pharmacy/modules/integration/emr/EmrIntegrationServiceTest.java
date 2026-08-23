@@ -102,6 +102,63 @@ class EmrIntegrationServiceTest {
             assertThat(match.medicineId()).isEqualTo(medicine.getId());
             assertThat(match.availableQuantity()).isEqualTo(12);
             assertThat(match.approximatePrice()).isEqualByComparingTo("18.50");
+            assertThat(match.ambiguous()).isFalse();
+        });
+    }
+
+    @Test
+    @DisplayName("two active medicines sharing an exact name is AMBIGUOUS_NAME, not the same UNMATCHED a genuinely unknown drug gets")
+    void twoMedicinesSharingAnExactNameIsReportedAsAmbiguousNotUnmatched() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        InvoiceRepository invoiceRepository = mock(InvoiceRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        InventoryRepository inventoryRepository = mock(InventoryRepository.class);
+        DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
+        EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
+                invoiceRepository, medicineRepository, inventoryRepository, sequenceService);
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new UserPrincipal("machine", "ph-1", Role.OWNER, "emr@machine.local"), null, List.of()));
+
+        // Two distinct catalogue rows that happen to share a display name — a real data-quality
+        // case (two suppliers, same brand), not an unknown medicine.
+        Medicine first = Medicine.create("Paracetamol 500", new BigDecimal("5"));
+        Medicine second = Medicine.create("Paracetamol 500", new BigDecimal("6"));
+        when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of(first, second));
+
+        var response = service.matchMedicines(new EmrMedicineMatchRequest(List.of(
+                new EmrMedicineMatchRequest.Item("line-1", null, "Paracetamol 500", null, null, null))));
+
+        assertThat(response.items()).singleElement().satisfies(match -> {
+            assertThat(match.matchStrategy()).isEqualTo("AMBIGUOUS_NAME");
+            assertThat(match.medicineId()).isNull();
+            assertThat(match.ambiguous())
+                    .as("a caller that only checks matchStrategy == UNMATCHED must be able to tell this apart")
+                    .isTrue();
+        });
+    }
+
+    @Test
+    @DisplayName("a genuinely unknown medicine is still plain UNMATCHED, not ambiguous")
+    void aGenuinelyUnknownMedicineIsNotAmbiguous() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        InvoiceRepository invoiceRepository = mock(InvoiceRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        InventoryRepository inventoryRepository = mock(InventoryRepository.class);
+        DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
+        EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
+                invoiceRepository, medicineRepository, inventoryRepository, sequenceService);
+        SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
+                new UserPrincipal("machine", "ph-1", Role.OWNER, "emr@machine.local"), null, List.of()));
+        when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of());
+
+        var response = service.matchMedicines(new EmrMedicineMatchRequest(List.of(
+                new EmrMedicineMatchRequest.Item("line-1", null, "Totally Unknown Brand", null, null, null))));
+
+        assertThat(response.items()).singleElement().satisfies(match -> {
+            assertThat(match.matchStrategy()).isEqualTo("UNMATCHED");
+            assertThat(match.ambiguous()).isFalse();
         });
     }
 

@@ -91,6 +91,16 @@ public class Pharmacy extends BaseEntity {
     @Column(name = "emrSecretTag")
     private String emrSecretTag;
 
+    /**
+     * SHA-256 of the plaintext key (ApiSecretHasher), written alongside the ciphertext at
+     * the one moment the plaintext exists server-side. Lets a pairing code be found by an
+     * indexed equality lookup instead of decrypting every pharmacy's secret to compare
+     * plaintexts — see ClinicPairingService#findByPairingCode and migration
+     * 20260823000002. Null for a pharmacy whose key predates this column.
+     */
+    @Column(name = "emrSecretLookupHash")
+    private String emrSecretLookupHash;
+
     // The clinic this pharmacy is connected to, entered by the pharmacy itself on
     // its Integrations screen. The callback URL carries the clinic's own connection
     // id in its path, so it cannot be one process-wide address shared by every
@@ -230,11 +240,19 @@ public class Pharmacy extends BaseEntity {
 
     public String getEmrSecretTag() { return emrSecretTag; }
 
-    /** Stores a freshly-generated, already-encrypted EMR secret (or clears it if any part is null). */
-    public void setEmrSecret(String ciphertext, String iv, String tag) {
+    public String getEmrSecretLookupHash() { return emrSecretLookupHash; }
+
+    /**
+     * Stores a freshly-generated, already-encrypted EMR secret (or clears it if every part
+     * is null). {@code lookupHash} travels with the ciphertext rather than through a
+     * separate setter — the two must never be able to drift apart, the same discipline
+     * already applied to {@link #usesClinicCallbackDialect()}.
+     */
+    public void setEmrSecret(String ciphertext, String iv, String tag, String lookupHash) {
         this.emrSecretCiphertext = ciphertext;
         this.emrSecretIv = iv;
         this.emrSecretTag = tag;
+        this.emrSecretLookupHash = lookupHash;
     }
 
     public String getEmrClinicName() { return emrClinicName; }
@@ -267,7 +285,7 @@ public class Pharmacy extends BaseEntity {
         this.emrClinicName = null;
         this.emrCallbackUrl = null;
         this.emrConnectedAt = null;
-        setEmrSecret(null, null, null);
+        setEmrSecret(null, null, null, null);
 
         this.emrClinicExternalId = null;
         this.emrClinicLinkId = null;

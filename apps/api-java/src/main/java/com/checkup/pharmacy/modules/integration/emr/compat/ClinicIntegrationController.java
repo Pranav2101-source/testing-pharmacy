@@ -1,6 +1,9 @@
 package com.checkup.pharmacy.modules.integration.emr.compat;
 
 import com.checkup.pharmacy.common.api.ApiResponse;
+import com.checkup.pharmacy.common.exception.TooManyRequestsException;
+import com.checkup.pharmacy.common.ratelimit.RateLimitService;
+import com.checkup.pharmacy.common.util.ClientIp;
 import com.checkup.pharmacy.modules.integration.emr.EmrIntegrationService;
 import com.checkup.pharmacy.modules.integration.emr.compat.dto.ClinicIngestRequest;
 import com.checkup.pharmacy.modules.integration.emr.compat.dto.ClinicIngestResponse;
@@ -8,6 +11,7 @@ import com.checkup.pharmacy.modules.integration.emr.compat.dto.ClinicPairRequest
 import com.checkup.pharmacy.modules.integration.emr.compat.dto.ClinicPairResponse;
 import com.checkup.pharmacy.modules.integration.emr.compat.dto.ClinicStockResponse;
 import com.checkup.pharmacy.modules.integration.emr.dto.EmrPrescriptionSnapshot;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -18,6 +22,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -45,29 +50,50 @@ import java.util.List;
 @RequestMapping("/api/v1/integration")
 public class ClinicIntegrationController {
 
+    /**
+     * Per-IP pairing attempts within the window. This route is reachable with no credential
+     * at all by design (see {@link #pair}), and each attempt scans and AES-GCM-decrypts every
+     * pharmacy in the system that has ever generated a key ({@code ClinicPairingService.findByPairingCode}) —
+     * cheap at pharmacy-platform scale for a legitimate caller pairing once, expensive to
+     * offer up to an anonymous caller with no limit at all. Sized like {@code AuthController}'s
+     * login limit: generous enough that a pharmacist fumbling a code twice never sees it.
+     */
+    private static final int PAIR_PER_IP_LIMIT = 10;
+    private static final Duration PAIR_WINDOW = Duration.ofMinutes(15);
+
     private final ClinicPairingService pairingService;
     private final ClinicIngestService ingestService;
     private final ClinicStockService stockService;
     private final EmrIntegrationService integrationService;
+    private final RateLimitService rateLimitService;
 
     public ClinicIntegrationController(ClinicPairingService pairingService,
                                        ClinicIngestService ingestService,
                                        ClinicStockService stockService,
-                                       EmrIntegrationService integrationService) {
+                                       EmrIntegrationService integrationService,
+                                       RateLimitService rateLimitService) {
         this.pairingService = pairingService;
         this.ingestService = ingestService;
         this.stockService = stockService;
         this.integrationService = integrationService;
+        this.rateLimitService = rateLimitService;
     }
 
     /**
      * Redeems a pairing code for a clinic-scoped credential.
      *
      * <p>Reached without an API credential by design — this is where credentials come from.
-     * The pairing code is the proof; see {@link ClinicPairingService}.
+     * The pairing code is the proof; see {@link ClinicPairingService}. Rate limited by IP
+     * rather than by any identity in the request, for the same reason login is: there is
+     * nothing yet to scope a limit to that an attacker doesn't also control.
      */
     @PostMapping("/pair")
-    public ApiResponse<ClinicPairResponse> pair(@Valid @RequestBody ClinicPairRequest request) {
+    public ApiResponse<ClinicPairResponse> pair(@Valid @RequestBody ClinicPairRequest request,
+                                                HttpServletRequest httpRequest) {
+        String ip = ClientIp.from(httpRequest);
+        if (!rateLimitService.tryConsume("emr-pair:ip:" + ip, PAIR_PER_IP_LIMIT, PAIR_WINDOW)) {
+            throw new TooManyRequestsException("Too many pairing attempts — please try again later");
+        }
         return ApiResponse.ok(pairingService.pair(request));
     }
 

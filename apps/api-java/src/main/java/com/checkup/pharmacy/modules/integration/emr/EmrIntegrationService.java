@@ -306,8 +306,8 @@ public class EmrIntegrationService {
             Match match = matches.get(item.externalItemId());
             Medicine medicine = match.medicine();
             if (medicine == null) {
-                return new EmrMedicineMatchResponse.Item(item.externalItemId(), "UNMATCHED", null, null,
-                        null, null, null, null, 0, null);
+                return new EmrMedicineMatchResponse.Item(item.externalItemId(), match.strategy(), null, null,
+                        null, null, null, null, 0, null, match.strategy().startsWith("AMBIGUOUS"));
             }
             List<Inventory> batches = stock.getOrDefault(medicine.getId(), List.of());
             int available = batches.stream().mapToInt(b -> Math.max(0, b.getQuantity() - b.getReservedQuantity())).sum();
@@ -316,7 +316,7 @@ public class EmrIntegrationService {
                     .map(Inventory::getMrp).filter(Objects::nonNull).min(BigDecimal::compareTo).orElse(null);
             return new EmrMedicineMatchResponse.Item(item.externalItemId(), match.strategy(), medicine.getId(),
                     medicine.getName(), medicine.getGenericName(), medicine.getStrength(), medicine.getForm(),
-                    medicine.getUnit(), available, price);
+                    medicine.getUnit(), available, price, false);
         }).toList();
         return new EmrMedicineMatchResponse(response);
     }
@@ -387,6 +387,15 @@ public class EmrIntegrationService {
                 .collect(Collectors.toMap(Medicine::getId, Function.identity()));
     }
 
+    /**
+     * Two candidates tying on the same name (or generic+strength+form) is a different problem
+     * from finding none at all — one is a duplicate in this pharmacy's own catalogue, the
+     * other is a genuinely unknown product — and collapsing both to plain UNMATCHED told a
+     * pharmacist "not found" when the real answer was "found twice, pick one". AMBIGUOUS_*
+     * still resolves to no medicineId (nothing here can safely pick between two candidates on
+     * its own), but names the actual reason so it can be shown differently — see
+     * {@link EmrMedicineMatchResponse.Item#ambiguous}.
+     */
     private static Match match(EmrMedicineMatchRequest.Item item, Map<String, Medicine> direct,
                                List<Medicine> candidates) {
         if (item.medicineId() != null && direct.containsKey(item.medicineId())) {
@@ -396,12 +405,14 @@ public class EmrIntegrationService {
                 .filter(m -> normalize(m.getName()).equals(normalize(item.name())))
                 .filter(m -> compatible(m, item)).toList();
         if (exactName.size() == 1) return new Match("EXACT_NAME", exactName.getFirst());
+        if (exactName.size() > 1) return new Match("AMBIGUOUS_NAME", null);
 
         if (item.genericName() != null && !item.genericName().isBlank()) {
             List<Medicine> exactGeneric = candidates.stream()
                     .filter(m -> normalize(m.getGenericName()).equals(normalize(item.genericName())))
                     .filter(m -> compatible(m, item)).toList();
             if (exactGeneric.size() == 1) return new Match("GENERIC_STRENGTH_FORM", exactGeneric.getFirst());
+            if (exactGeneric.size() > 1) return new Match("AMBIGUOUS_GENERIC", null);
         }
         return new Match("UNMATCHED", null);
     }

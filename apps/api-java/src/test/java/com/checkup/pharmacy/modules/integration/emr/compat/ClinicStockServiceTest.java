@@ -53,7 +53,7 @@ class ClinicStockServiceTest {
         when(integrationService.matchMedicines(any())).thenReturn(new EmrMedicineMatchResponse(List.of(
                 new EmrMedicineMatchResponse.Item("Paracetamol 500mg", "EXACT_NAME", "med_1",
                         "Paracetamol 500mg", "Paracetamol", "500mg", "Tablet", "strip",
-                        40, new BigDecimal("22.50")))));
+                        40, new BigDecimal("22.50"), false))));
 
         ClinicStockResponse response = service.lookup(List.of("Paracetamol 500mg"));
 
@@ -71,7 +71,7 @@ class ClinicStockServiceTest {
         // never heard of and one it has run out of must not collapse into the same answer.
         when(integrationService.matchMedicines(any())).thenReturn(new EmrMedicineMatchResponse(List.of(
                 new EmrMedicineMatchResponse.Item("Some Unlisted Brand", "UNMATCHED", null,
-                        null, null, null, null, null, 0, null))));
+                        null, null, null, null, null, 0, null, false))));
 
         ClinicStockResponse response = service.lookup(List.of("Some Unlisted Brand"));
 
@@ -86,7 +86,7 @@ class ClinicStockServiceTest {
     void echoesTheRequestedName() {
         when(integrationService.matchMedicines(any())).thenReturn(new EmrMedicineMatchResponse(List.of(
                 new EmrMedicineMatchResponse.Item("Crocin 500", "EXACT_NAME", "med_1",
-                        "Paracetamol 500mg", "Paracetamol", "500mg", "Tablet", "strip", 5, null))));
+                        "Paracetamol 500mg", "Paracetamol", "500mg", "Tablet", "strip", 5, null, false))));
 
         ClinicStockResponse response = service.lookup(List.of("Crocin 500"));
 
@@ -98,7 +98,7 @@ class ClinicStockServiceTest {
     void omitsBlankNames() {
         when(integrationService.matchMedicines(any())).thenReturn(new EmrMedicineMatchResponse(List.of(
                 new EmrMedicineMatchResponse.Item("Paracetamol", "EXACT_NAME", "med_1",
-                        "Paracetamol", null, null, null, null, 5, null))));
+                        "Paracetamol", null, null, null, null, 5, null, false))));
 
         ClinicStockResponse response = service.lookup(java.util.Arrays.asList("Paracetamol", "", "   ", null));
 
@@ -116,7 +116,7 @@ class ClinicStockServiceTest {
             EmrMedicineMatchRequest req = inv.getArgument(0);
             return new EmrMedicineMatchResponse(req.items().stream()
                     .map(i -> new EmrMedicineMatchResponse.Item(i.externalItemId(), "UNMATCHED",
-                            null, null, null, null, null, null, 0, null))
+                            null, null, null, null, null, null, 0, null, false))
                     .toList());
         });
 
