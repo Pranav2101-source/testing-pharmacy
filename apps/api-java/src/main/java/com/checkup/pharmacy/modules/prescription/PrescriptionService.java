@@ -11,6 +11,7 @@ import com.checkup.pharmacy.common.sequence.DocumentSequenceService;
 import com.checkup.pharmacy.common.util.DateRange;
 import com.checkup.pharmacy.modules.doctor.Doctor;
 import com.checkup.pharmacy.modules.doctor.DoctorRepository;
+import com.checkup.pharmacy.modules.integration.emr.PrescriptionCancelledEvent;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
 import com.checkup.pharmacy.modules.prescription.dto.CreatePrescriptionRequest;
@@ -21,6 +22,7 @@ import com.checkup.pharmacy.modules.prescription.dto.PrescriptionResponse;
 import com.checkup.pharmacy.modules.prescription.dto.UpdatePrescriptionRequest;
 import com.checkup.pharmacy.modules.upload.UploadRepository;
 import com.checkup.pharmacy.tenant.TenantContext;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -49,17 +51,20 @@ public class PrescriptionService {
     private final UploadRepository uploadRepository;
     private final MedicineRepository medicineRepository;
     private final DocumentSequenceService sequenceService;
+    private final ApplicationEventPublisher eventPublisher;
 
     public PrescriptionService(PrescriptionRepository prescriptionRepository, PrescriptionItemRepository itemRepository,
                                DoctorRepository doctorRepository, UploadRepository uploadRepository,
                                MedicineRepository medicineRepository,
-                               DocumentSequenceService sequenceService) {
+                               DocumentSequenceService sequenceService,
+                               ApplicationEventPublisher eventPublisher) {
         this.prescriptionRepository = prescriptionRepository;
         this.itemRepository = itemRepository;
         this.doctorRepository = doctorRepository;
         this.uploadRepository = uploadRepository;
         this.medicineRepository = medicineRepository;
         this.sequenceService = sequenceService;
+        this.eventPublisher = eventPublisher;
     }
 
     @Transactional
@@ -223,6 +228,18 @@ public class PrescriptionService {
         return toResponse(rx, doctor, items);
     }
 
+    /**
+     * Cancels a prescription — from the counter, from an open draft ("discard"), or from a
+     * clinic-sourced one. Only the last of those owes anyone else anything: withdrawing a
+     * counter-written prescription, or a draft nobody outside this pharmacy ever saw, is
+     * purely a local write, same as before this method knew about EMRs at all.
+     *
+     * <p>{@code markCancelNotifyPending} + the published event follow the exact pattern
+     * billing uses to queue a dispense callback (see {@code BillingService}) — reset the
+     * attempt budget, publish AFTER_COMMIT so a cancellation that then rolls back never
+     * tells a clinic anything, and let {@link com.checkup.pharmacy.modules.integration.emr.EmrCancelCallbackListener}
+     * do the actual delivery off this thread.
+     */
     @Transactional
     public PrescriptionResponse cancel(String id) {
         Prescription rx = load(id);
@@ -232,7 +249,14 @@ public class PrescriptionService {
         if (rx.getStatus() == PrescriptionStatus.CANCELLED) {
             throw new ConflictException("Prescription is already cancelled");
         }
+        boolean notifyClinic = rx.isFromEmr();
         rx.cancel();
+        if (notifyClinic) {
+            rx.markCancelNotifyPending();
+            eventPublisher.publishEvent(new PrescriptionCancelledEvent(rx.getPharmacyId(), rx.getId(),
+                    rx.getPrescriptionNumber(), rx.getExternalEmrTenantId(), rx.getExternalEmrPrescriptionId(),
+                    Instant.now()));
+        }
         return toResponse(rx, rx.getDoctor(), itemRepository.findByPrescriptionId(id));
     }
 
@@ -267,16 +291,20 @@ public class PrescriptionService {
                         suggestionsByItemId.getOrDefault(i.getId(), List.of())))
                 .toList();
 
-        // A line needs a human when the EMR's medicine name did not match the catalogue.
-        // It only ever arises from machine ingest — a pharmacist typing a prescription
-        // resolves it by the act of typing it — and until it is resolved that line cannot
-        // be attributed to anything sold, so the prescription can never close.
-        int needsReview = (int) items.stream().filter(i -> i.getMedicineId() == null).count();
+        // A line needs a human when the EMR's medicine name did not match the catalogue, OR
+        // when the clinic sent no usable quantity (ingested as a zero placeholder rather than
+        // rejected — see PrescriptionItem.needsQuantityConfirmation). Both only ever arise
+        // from machine ingest, and both leave the line unable to be attributed to anything
+        // sold until a pharmacist resolves it — one line can need both at once, and still
+        // only counts once here.
+        int needsReview = (int) items.stream()
+                .filter(i -> i.getMedicineId() == null || i.needsQuantityConfirmation())
+                .count();
 
         return new PrescriptionResponse(rx.getId(), rx.getPrescriptionNumber(), doctorRef, rx.getDoctorName(),
                 rx.getDoctorRegNo(), rx.getDoctorPhone(), rx.getPatientName(), rx.getPatientAge(), rx.getPatientPhone(),
                 rx.getPatientGender(), rx.getPrescribedDate(), rx.getValidUntil(), rx.getStatus().name(), rx.getNotes(),
-                itemResponses, uploadRef, rx.getExternalEmrTenantId(), needsReview, dispenseNotify(rx),
+                itemResponses, uploadRef, rx.getExternalEmrTenantId(), needsReview, dispenseNotify(rx), cancelNotify(rx),
                 rx.getCreatedAt(), rx.getUpdatedAt());
     }
 
@@ -339,6 +367,19 @@ public class PrescriptionService {
                 rx.getDispenseNotifyNextAttemptAt(), canRetry);
     }
 
+    /** The cancellation callback block, or null when nothing was ever owed. Mirrors {@link #dispenseNotify}. */
+    private PrescriptionResponse.CancelNotify cancelNotify(Prescription rx) {
+        String status = rx.getCancelNotifyStatus();
+        if (status == null) {
+            return null;
+        }
+        boolean canRetry = Prescription.NOTIFY_FAILED.equals(status)
+                && rx.getCancelNotifyNextAttemptAt() == null;
+        return new PrescriptionResponse.CancelNotify(status, rx.getCancelNotifiedAt(),
+                rx.getCancelNotifyError(), rx.getCancelNotifyAttempts(),
+                rx.getCancelNotifyNextAttemptAt(), canRetry);
+    }
+
     /**
      * Links an unmatched line to a catalogue product.
      *
@@ -375,6 +416,41 @@ public class PrescriptionService {
     }
 
     /**
+     * Settles the real quantity for a line the clinic sent with none — see
+     * {@link PrescriptionItem#needsQuantityConfirmation()}. Only ever applies to a line
+     * ingested with no usable quantity; a line that already has one cannot be re-quantified
+     * from this screen, same restriction as {@link #linkItemToMedicine} on re-linking.
+     */
+    @Transactional
+    public PrescriptionResponse confirmItemQuantity(String prescriptionId, String itemId, int quantity) {
+        String pharmacyId = TenantContext.pharmacyId();
+        Prescription rx = prescriptionRepository.findByIdAndPharmacyId(prescriptionId, pharmacyId)
+                .orElseThrow(() -> new NotFoundException("Prescription not found"));
+
+        PrescriptionItem item = itemRepository.findByPrescriptionId(prescriptionId).stream()
+                .filter(i -> i.getId().equals(itemId))
+                .findFirst()
+                .orElseThrow(() -> new NotFoundException("Prescription line not found"));
+
+        if (!item.needsQuantityConfirmation()) {
+            throw new BadRequestException("This line's quantity is already confirmed");
+        }
+        // dispensedQty can only be nonzero here via an explicit-attribution sale (billing lets
+        // a pharmacist attribute a sale to a specific line even before its quantity is
+        // confirmed) — confirming below that would silently understate what was truthfully
+        // recorded as handed over.
+        if (quantity < item.getDispensedQty()) {
+            throw new BadRequestException(
+                    "Quantity cannot be less than the " + item.getDispensedQty() + " already dispensed against this line");
+        }
+
+        item.confirmQuantity(quantity);
+        itemRepository.save(item);
+
+        return getById(rx.getId());
+    }
+
+    /**
      * Queues another attempt at telling the clinic what was dispensed.
      *
      * <p>Offered only for a callback the automatic retries have given up on — the response's
@@ -394,6 +470,24 @@ public class PrescriptionService {
             throw new BadRequestException("Nothing has been dispensed against this prescription yet");
         }
         rx.requeueDispenseNotify();
+        prescriptionRepository.save(rx);
+        return getById(rx.getId());
+    }
+
+    /** Queues another attempt at telling the clinic a prescription was cancelled. Mirrors {@link #retryDispenseNotify}. */
+    @Transactional
+    public PrescriptionResponse retryCancelNotify(String prescriptionId) {
+        String pharmacyId = TenantContext.pharmacyId();
+        Prescription rx = prescriptionRepository.findByIdAndPharmacyId(prescriptionId, pharmacyId)
+                .orElseThrow(() -> new NotFoundException("Prescription not found"));
+
+        if (!rx.isFromEmr()) {
+            throw new BadRequestException("This prescription did not come from a clinic");
+        }
+        if (rx.getCancelNotifyStatus() == null) {
+            throw new BadRequestException("This prescription was never reported as cancelled to a clinic");
+        }
+        rx.requeueCancelNotify();
         prescriptionRepository.save(rx);
         return getById(rx.getId());
     }

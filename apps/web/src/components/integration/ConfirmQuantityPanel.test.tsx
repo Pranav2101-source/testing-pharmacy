@@ -1,0 +1,105 @@
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import ConfirmQuantityPanel from "./ConfirmQuantityPanel";
+import { ToastProvider } from "@/hooks/useToast";
+import { api } from "@/lib/api-client";
+
+/**
+ * A line the clinic sent "as directed" (no fixed quantity) is ingested as a `quantity: 0`
+ * placeholder rather than rejected — see `PrescriptionItem.needsQuantityConfirmation`. This
+ * panel is the only door that resolves it, mirroring ReviewIngestedItemsPanel's shape: show
+ * only what needs a human, confirm in place, refresh on success.
+ */
+vi.mock("@/lib/api-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api-client")>();
+  return { ...actual, api: { patch: vi.fn() } };
+});
+
+const mockApi = api as unknown as { patch: ReturnType<typeof vi.fn> };
+
+function renderPanel(items: Parameters<typeof ConfirmQuantityPanel>[0]["items"], onConfirmed = vi.fn()) {
+  return {
+    onConfirmed,
+    ...render(
+      <ToastProvider>
+        <ConfirmQuantityPanel prescriptionId="rx_1" items={items} onConfirmed={onConfirmed} />
+      </ToastProvider>,
+    ),
+  };
+}
+
+beforeEach(() => {
+  mockApi.patch.mockResolvedValue({ data: { data: {} } });
+});
+
+describe("ConfirmQuantityPanel", () => {
+  it("renders nothing when every line already has a quantity", () => {
+    renderPanel([{ id: "i1", medicineName: "Paracetamol", quantity: 10, dosage: null }]);
+
+    expect(screen.queryByText(/need.*a quantity confirmed/i)).not.toBeInTheDocument();
+  });
+
+  it("shows only the lines with no quantity, not the ones already set", () => {
+    renderPanel([
+      { id: "i1", medicineName: "Paracetamol", quantity: 10, dosage: null },
+      { id: "i2", medicineName: "Vitamin D3", quantity: 0, dosage: "as directed" },
+    ]);
+
+    expect(screen.getByText("1 line needs a quantity confirmed")).toBeInTheDocument();
+    expect(screen.getByText("Vitamin D3")).toBeInTheDocument();
+    expect(screen.queryByText("Paracetamol")).not.toBeInTheDocument();
+  });
+
+  it("the confirm button stays disabled until a positive whole number is entered", async () => {
+    renderPanel([{ id: "i1", medicineName: "Vitamin D3", quantity: 0, dosage: null }]);
+
+    const confirmButton = screen.getByRole("button", { name: /confirm/i });
+    expect(confirmButton).toBeDisabled();
+
+    await userEvent.type(screen.getByRole("spinbutton", { name: /quantity for vitamin d3/i }), "0");
+    expect(confirmButton).toBeDisabled();
+
+    await userEvent.clear(screen.getByRole("spinbutton", { name: /quantity for vitamin d3/i }));
+    await userEvent.type(screen.getByRole("spinbutton", { name: /quantity for vitamin d3/i }), "6");
+    expect(confirmButton).toBeEnabled();
+  });
+
+  it("confirming sends the quantity to the new endpoint and refreshes", async () => {
+    const { onConfirmed } = renderPanel([{ id: "i1", medicineName: "Vitamin D3", quantity: 0, dosage: null }]);
+
+    await userEvent.type(screen.getByRole("spinbutton", { name: /quantity for vitamin d3/i }), "6");
+    await userEvent.click(screen.getByRole("button", { name: /confirm/i }));
+
+    expect(mockApi.patch).toHaveBeenCalledWith("/prescriptions/rx_1/items/i1/quantity", { quantity: 6 });
+    expect(onConfirmed).toHaveBeenCalled();
+  });
+
+  it("a failed confirmation surfaces the real error and keeps the row so the pharmacist can retry", async () => {
+    mockApi.patch.mockRejectedValueOnce({
+      isAxiosError: true, response: { status: 400, data: { error: "This line's quantity is already confirmed" } },
+    });
+    renderPanel([{ id: "i1", medicineName: "Vitamin D3", quantity: 0, dosage: null }]);
+
+    await userEvent.type(screen.getByRole("spinbutton", { name: /quantity for vitamin d3/i }), "6");
+    await userEvent.click(screen.getByRole("button", { name: /confirm/i }));
+
+    expect(await screen.findByText(/already confirmed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /confirm/i })).toBeInTheDocument();
+  });
+
+  it("multiple unconfirmed lines are resolved independently", async () => {
+    renderPanel([
+      { id: "i1", medicineName: "Vitamin D3", quantity: 0, dosage: null },
+      { id: "i2", medicineName: "Zinc", quantity: 0, dosage: null },
+    ]);
+
+    expect(screen.getByText("2 lines need a quantity confirmed")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByRole("spinbutton", { name: /quantity for zinc/i }), "3");
+    await userEvent.click(screen.getAllByRole("button", { name: /confirm/i })[1]!);
+
+    expect(mockApi.patch).toHaveBeenCalledWith("/prescriptions/rx_1/items/i2/quantity", { quantity: 3 });
+    expect(mockApi.patch).not.toHaveBeenCalledWith("/prescriptions/rx_1/items/i1/quantity", expect.anything());
+  });
+});

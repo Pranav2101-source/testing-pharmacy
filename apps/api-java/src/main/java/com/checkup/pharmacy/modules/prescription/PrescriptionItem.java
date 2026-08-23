@@ -150,9 +150,44 @@ public class PrescriptionItem extends CreatedAtEntity {
         this.dispensedQty += units;
     }
 
-    /** True once at least the prescribed quantity has been handed over. */
+    /**
+     * True once at least the prescribed quantity has been handed over.
+     *
+     * <p>{@code quantity > 0} is not redundant. A line the clinic sent with no usable
+     * quantity is ingested as {@code quantity == 0} (see {@code ClinicIngestRequest.Item}) so
+     * a pharmacist can settle the real amount at the counter — it is a placeholder, not a
+     * prescribed amount of zero. Without this guard, {@code 0 >= 0} reads as "already fully
+     * dispensed" from the moment the line is created, which let a prescription with an
+     * unconfirmed line close as DISPENSED the instant every OTHER line was sold — the exact
+     * failure the {@code medicineId == null} case is already protected against, just reached
+     * by a different door. See {@code needsQuantityConfirmation}, which flags this same case
+     * to a pharmacist the same way an unmatched medicine already is.
+     */
     public boolean isFullyDispensed() {
-        return this.dispensedQty >= this.quantity;
+        return this.quantity > 0 && this.dispensedQty >= this.quantity;
+    }
+
+    /**
+     * True for a line the clinic sent with no usable quantity ("as directed"), ingested as a
+     * zero placeholder rather than rejected — see {@link #isFullyDispensed()}. A pharmacist
+     * has to confirm the real amount via {@link #confirmQuantity} before this line can ever
+     * count toward billing or toward the prescription being complete.
+     */
+    public boolean needsQuantityConfirmation() {
+        return this.quantity <= 0;
+    }
+
+    /**
+     * Settles a quantity the clinic never sent, once a pharmacist has asked the patient (or
+     * checked the paper prescription) — the counter-side resolution {@code ClinicIngestService}
+     * promised when it accepted the line instead of rejecting the whole prescription.
+     *
+     * <p>Only callable while {@link #needsQuantityConfirmation()} — see the guard in
+     * {@code PrescriptionService.confirmItemQuantity}, which is where "already confirmed" is
+     * reported to the caller as a clear error rather than a silent overwrite.
+     */
+    public void confirmQuantity(int quantity) {
+        this.quantity = quantity;
     }
 
     public String getDosage() { return dosage; }
