@@ -17,39 +17,64 @@ export type DispenseNotify = {
   canRetry: boolean;
 };
 
+/** Same shape as {@link DispenseNotify} — the report differs, the state machine does not. */
+export type CancelNotify = DispenseNotify;
+
+const COPY = {
+  dispense: {
+    endpoint: "dispense-notify",
+    sending: "Sending the dispensing update to the clinic…",
+    sentPrefix: "Clinic updated",
+    failedGivenUp: "The clinic could not be updated",
+    failedRetrying: "Could not reach the clinic — trying again automatically",
+    givenUpFooter: (attempts: number) =>
+      `Stopped after ${attempts} attempt${attempts === 1 ? "" : "s"}. The sale is recorded here; only the clinic's copy is out of date.`,
+  },
+  cancel: {
+    endpoint: "cancel-notify",
+    sending: "Telling the clinic this prescription was cancelled…",
+    sentPrefix: "Clinic told about the cancellation",
+    failedGivenUp: "The clinic could not be told this was cancelled",
+    failedRetrying: "Could not reach the clinic — trying again automatically",
+    givenUpFooter: (attempts: number) =>
+      `Stopped after ${attempts} attempt${attempts === 1 ? "" : "s"}. The cancellation stands here; only the clinic has not been told.`,
+  },
+} as const;
+
 /**
- * Whether the clinic has been told what the patient collected.
+ * Whether the clinic has been told something — what was dispensed, or that the prescription
+ * was cancelled. One component for both: they are the exact same state machine (see
+ * {@link DispenseNotify}/{@link CancelNotify}) reporting two different facts, and the
+ * distinction this panel is built around — FAILED-and-still-trying versus
+ * FAILED-and-given-up — applies identically to either.
  *
- * <p>The distinction this panel is built around is FAILED-and-still-trying versus
- * FAILED-and-given-up. They carry the same status and want opposite things from a
- * pharmacist: nothing at all, or a phone call and a retry. Showing one button for both
- * would have people re-sending deliveries that are already scheduled, against a server
- * that has usually just come back up.
- *
- * That verdict is the server's (`canRetry`) precisely so this component cannot get it
+ * <p>That verdict is the server's (`canRetry`) precisely so this component cannot get it
  * wrong by reading `status` alone.
  */
 export default function ClinicCallbackPanel({
   prescriptionId,
   notify,
   onRetried,
+  kind = "dispense",
 }: {
   prescriptionId: string;
-  notify: DispenseNotify | null;
+  notify: DispenseNotify | CancelNotify | null;
   onRetried: () => void;
+  kind?: "dispense" | "cancel";
 }) {
   const toast = useToast();
   const [retrying, setRetrying] = useState(false);
+  const copy = COPY[kind];
 
-  // Null means no sale has been made against this prescription yet, so nothing is owed.
-  // Deliberately renders nothing rather than "not sent" — which would describe a delivery
-  // that was never due and read as a fault.
+  // Null means nothing has happened yet that owes the clinic a report. Deliberately renders
+  // nothing rather than "not sent" — which would describe a delivery that was never due and
+  // read as a fault.
   if (!notify) return null;
 
   async function retry() {
     setRetrying(true);
     try {
-      await api.post(`/prescriptions/${prescriptionId}/dispense-notify/retry`);
+      await api.post(`/prescriptions/${prescriptionId}/${copy.endpoint}/retry`);
       toast.success("Queued — the clinic will be updated within a minute");
       onRetried();
     } catch (err) {
@@ -64,7 +89,7 @@ export default function ClinicCallbackPanel({
       <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm">
         <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
         <span className="text-emerald-800">
-          Clinic updated
+          {copy.sentPrefix}
           {notify.notifiedAt && (
             <span className="text-emerald-700">
               {" "}
@@ -80,7 +105,7 @@ export default function ClinicCallbackPanel({
     return (
       <div className="flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm">
         <Clock className="h-4 w-4 shrink-0 text-amber-600" />
-        <span className="text-amber-800">Sending the dispensing update to the clinic…</span>
+        <span className="text-amber-800">{copy.sending}</span>
       </div>
     );
   }
@@ -101,9 +126,7 @@ export default function ClinicCallbackPanel({
         />
         <div className="flex-1">
           <p className={givenUp ? "font-medium text-red-800" : "text-amber-800"}>
-            {givenUp
-              ? "The clinic could not be updated"
-              : "Could not reach the clinic — trying again automatically"}
+            {givenUp ? copy.failedGivenUp : copy.failedRetrying}
           </p>
 
           {notify.error && (
@@ -118,10 +141,7 @@ export default function ClinicCallbackPanel({
           )}
 
           {givenUp && (
-            <p className="mt-0.5 text-red-700">
-              Stopped after {notify.attempts} attempt{notify.attempts === 1 ? "" : "s"}. The sale is
-              recorded here; only the clinic's copy is out of date.
-            </p>
+            <p className="mt-0.5 text-red-700">{copy.givenUpFooter(notify.attempts)}</p>
           )}
         </div>
 

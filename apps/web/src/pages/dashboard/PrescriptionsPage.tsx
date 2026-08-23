@@ -1,10 +1,12 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { ListSkeleton } from "@/components/Skeleton";
 import {
   Plus, Search, X, Loader2, ChevronLeft, ChevronRight,
   Stethoscope, User, Phone, Calendar, Pill, ClipboardList, Trash2,
   ExternalLink, AlertCircle, Hash, Upload, ImageIcon, FileIcon, Sparkles,
+  Receipt,
 } from "lucide-react";
 import { format } from "date-fns";
 import { Link } from "react-router-dom";
@@ -13,8 +15,12 @@ import { cn } from "@/lib/utils";
 import { detectNewArrivals, arrivalToastMessage } from "@/lib/prescriptionArrivals";
 import { markPrescriptionViewed } from "@/lib/prescriptionNewCount";
 import { useToast } from "@/hooks/useToast";
-import ClinicCallbackPanel, { type DispenseNotify } from "@/components/integration/ClinicCallbackPanel";
+import ClinicCallbackPanel, { type DispenseNotify, type CancelNotify } from "@/components/integration/ClinicCallbackPanel";
 import ReviewIngestedItemsPanel from "@/components/integration/ReviewIngestedItemsPanel";
+import ConfirmQuantityPanel from "@/components/integration/ConfirmQuantityPanel";
+import ClinicPrescriptionTriage from "@/components/integration/ClinicPrescriptionTriage";
+import { useBillingStore } from "@/components/billing/useBillingStore";
+import { resolvePrescriptionToCart, canBill } from "@/lib/prescriptionToCart";
 import {
   normalizeIndianMobile,
   sanitizeProfessionalName,
@@ -90,6 +96,7 @@ type Prescription = {
   /** Lines still needing a medicine chosen before this prescription can complete. */
   needsReview: number;
   dispenseNotify: DispenseNotify | null;
+  cancelNotify: CancelNotify | null;
 };
 
 type ListResponse = { items: Prescription[]; total: number; page: number; limit: number };
@@ -306,6 +313,34 @@ function CreateModal({ onClose }: { onClose: () => void }) {
     setForm(f => ({ ...f, drugs: f.drugs.filter((_, i) => i !== idx) }));
   }
 
+  /** Shared by both save paths — a draft and a finished prescription send the same shape. */
+  function buildPayload() {
+    return {
+      uploadId:       uploadState?.uploadId || undefined,
+      doctorId:       form.doctor.id  || undefined,
+      doctorName:     form.doctor.name.trim(),
+      doctorRegNo:    form.doctor.regNo.trim()  || undefined,
+      doctorPhone:    form.doctorPhone.trim()   || undefined,
+      patientName:    form.patientName.trim(),
+      patientAge:     form.patientAge ? parseInt(form.patientAge, 10) : undefined,
+      patientPhone:   form.patientPhone.trim()  || undefined,
+      patientGender:  (form.patientGender as "M" | "F" | "Other") || undefined,
+      prescribedDate: form.prescribedDate ? `${form.prescribedDate}T00:00:00.000Z` : undefined,
+      validUntil:     form.validUntil    ? `${form.validUntil}T00:00:00.000Z`    : undefined,
+      notes:          form.notes.trim()  || undefined,
+      items: form.drugs
+        .filter(d => d.medicineName.trim())
+        .map(d => ({
+          medicineName: d.medicineName.trim(),
+          schedule:     (d.schedule as "H" | "H1" | "X" | "G" | "OTC") || undefined,
+          quantity:     parseInt(d.quantity, 10) || 1,
+          dosage:       d.dosage.trim()   || undefined,
+          duration:     d.duration.trim() || undefined,
+          notes:        d.notes.trim()    || undefined,
+        })),
+    };
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (form.drugs.every(d => !d.medicineName.trim())) { toast.error("Add at least one medicine"); return; }
@@ -329,30 +364,7 @@ function CreateModal({ onClose }: { onClose: () => void }) {
 
     setSaving(true);
     try {
-      await api.post("/prescriptions", {
-        uploadId:       uploadState?.uploadId || undefined,
-        doctorId:       form.doctor.id  || undefined,
-        doctorName:     form.doctor.name.trim(),
-        doctorRegNo:    form.doctor.regNo.trim()  || undefined,
-        doctorPhone:    form.doctorPhone.trim()   || undefined,
-        patientName:    form.patientName.trim(),
-        patientAge:     form.patientAge ? parseInt(form.patientAge, 10) : undefined,
-        patientPhone:   form.patientPhone.trim()  || undefined,
-        patientGender:  (form.patientGender as "M" | "F" | "Other") || undefined,
-        prescribedDate: form.prescribedDate ? `${form.prescribedDate}T00:00:00.000Z` : undefined,
-        validUntil:     form.validUntil    ? `${form.validUntil}T00:00:00.000Z`    : undefined,
-        notes:          form.notes.trim()  || undefined,
-        items: form.drugs
-          .filter(d => d.medicineName.trim())
-          .map(d => ({
-            medicineName: d.medicineName.trim(),
-            schedule:     (d.schedule as "H" | "H1" | "X" | "G" | "OTC") || undefined,
-            quantity:     parseInt(d.quantity, 10) || 1,
-            dosage:       d.dosage.trim()   || undefined,
-            duration:     d.duration.trim() || undefined,
-            notes:        d.notes.trim()    || undefined,
-          })),
-      });
+      await api.post("/prescriptions", buildPayload());
       toast.success("Prescription created");
       qc.invalidateQueries({ queryKey: ["prescriptions"] });
       onClose();
@@ -696,10 +708,13 @@ function CreateModal({ onClose }: { onClose: () => void }) {
 function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription; onClose: () => void; onCancelled: () => void }) {
   const [cancelling,  setCancelling]  = useState(false);
   const [viewingFile, setViewingFile] = useState(false);
+  const [billing,     setBilling]     = useState(false);
   // Fetch the full record so invoices (excluded from list query) are populated
   const [rx, setRx] = useState<Prescription>(initialRx);
   const toast = useToast();
   const qc = useQueryClient();
+  const navigate  = useNavigate();
+  const loadDraft = useBillingStore((s) => s.loadDraft);
 
   useEffect(() => {
     api.get<{ data: Prescription }>(`/prescriptions/${initialRx.id}`)
@@ -743,6 +758,34 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
     }
   }
 
+  const canBillNow = (rx.status === "ACTIVE" || rx.status === "PARTIAL")
+    && canBill(rx, rx.needsReview);
+
+  /**
+   * Jumps to New Bill with the cart pre-filled, instead of making a pharmacist re-search
+   * every medicine. Same shared resolver the clinic triage view uses, so a prescription
+   * billed from here and one billed from there produce an identical cart.
+   */
+  async function billNow() {
+    setBilling(true);
+    try {
+      const { items, meta, failures } = await resolvePrescriptionToCart(rx);
+      if (items.length === 0) {
+        toast.error("None of these medicines are in stock right now");
+        return;
+      }
+      loadDraft(items, meta);
+      if (failures.length > 0) {
+        toast.error(`Not in stock: ${failures.join(", ")} — add manually or substitute`);
+      }
+      navigate("/dashboard/billing/new");
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Could not prepare the bill"));
+    } finally {
+      setBilling(false);
+    }
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-start justify-center p-4 overflow-y-auto"
@@ -759,6 +802,17 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
             <h2 className="text-white text-[18px] font-bold leading-snug">{rx.prescriptionNumber}</h2>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+            {canBillNow && (
+              <button
+                type="button"
+                onClick={billNow}
+                disabled={billing}
+                className="flex items-center gap-1.5 bg-emerald-500 text-white font-bold text-[12px] px-4 py-2 rounded-lg hover:bg-emerald-600 transition-colors disabled:opacity-60"
+              >
+                {billing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Receipt className="w-3.5 h-3.5" />}
+                Bill Now
+              </button>
+            )}
             {canCancel && (
               <button
                 type="button"
@@ -816,9 +870,27 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
                 qc.invalidateQueries({ queryKey: ["prescriptions"] });
               }}
             />
+            <ConfirmQuantityPanel
+              prescriptionId={rx.id}
+              items={rx.items ?? []}
+              onConfirmed={async () => {
+                const { data } = await api.get(`/prescriptions/${rx.id}`);
+                setRx(data.data);
+                qc.invalidateQueries({ queryKey: ["prescriptions"] });
+              }}
+            />
             <ClinicCallbackPanel
               prescriptionId={rx.id}
               notify={rx.dispenseNotify}
+              onRetried={async () => {
+                const { data } = await api.get(`/prescriptions/${rx.id}`);
+                setRx(data.data);
+              }}
+            />
+            <ClinicCallbackPanel
+              kind="cancel"
+              prescriptionId={rx.id}
+              notify={rx.cancelNotify}
               onRetried={async () => {
                 const { data } = await api.get(`/prescriptions/${rx.id}`);
                 setRx(data.data);
@@ -858,6 +930,11 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
                             Not linked to your catalogue
                           </span>
                         )}
+                        {item.quantity <= 0 && (
+                          <span className="block text-[11px] font-normal text-sky-700">
+                            Quantity not confirmed
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-center">
                         {item.schedule
@@ -868,7 +945,9 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
                             </span>
                           : <span className="text-slate-300">—</span>}
                       </td>
-                      <td className="px-3 py-2 text-center font-mono">{item.quantity}</td>
+                      <td className="px-3 py-2 text-center font-mono">
+                        {item.quantity > 0 ? item.quantity : <span className="text-slate-300">—</span>}
+                      </td>
                       <td className="px-3 py-2 text-center font-mono text-blue-600">{item.dispensedQty}</td>
                       <td className="px-3 py-2 text-slate-600">{item.dosage || "—"}</td>
                       <td className="px-3 py-2 text-slate-600">{item.duration || "—"}</td>
@@ -964,11 +1043,12 @@ const STATUS_FILTERS: { label: string; value: string }[] = [
 const PAGE_LIMIT = 20;
 
 export default function PrescriptionsPage() {
-  const [search,      setSearch]      = useState("");
-  const [statusFilter,setStatusFilter]= useState("");
-  const [page,        setPage]        = useState(1);
-  const [showCreate,  setShowCreate]  = useState(false);
-  const [detail,      setDetail]      = useState<Prescription | null>(null);
+  const [search,       setSearch]       = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [page,         setPage]         = useState(1);
+  const [showCreate,   setShowCreate]   = useState(false);
+  const [detail,       setDetail]       = useState<Prescription | null>(null);
+  const [triage,       setTriage]       = useState<Prescription | null>(null);
   const toast = useToast();
 
   // reset page on filter change
@@ -1024,7 +1104,17 @@ export default function PrescriptionsPage() {
   // Marks a row acknowledged the moment a pharmacist actually looks at it — simpler than a
   // timer, and ties "seen" to the action that means it was seen.
   function openDetail(rx: Prescription) {
-    setDetail(rx);
+    // A clinic-sent prescription that is still open gets the triage view: it arrived without
+    // anyone here asking for it, and what it needs is a decision (fill / keep / refuse), not
+    // a record to read. Anything counter-written, or already closed, goes to the full detail
+    // view — by then the useful thing is the history, not the choice.
+    const needsDecision = rx.externalTenantId != null
+      && (rx.status === "ACTIVE" || rx.status === "PARTIAL");
+    if (needsDecision) {
+      setTriage(rx);
+    } else {
+      setDetail(rx);
+    }
     if (newlyArrivedIds.has(rx.id)) {
       setNewlyArrivedIds((prev) => {
         const next = new Set(prev);
@@ -1210,6 +1300,22 @@ export default function PrescriptionsPage() {
 
       {/* Modals */}
       {showCreate && <CreateModal onClose={() => setShowCreate(false)} />}
+      {triage && (
+        <ClinicPrescriptionTriage
+          rx={triage}
+          onClose={() => setTriage(null)}
+          onChanged={async () => {
+            // Re-read rather than patching local state: linking a medicine changes
+            // needsReview, which is what gates the three actions.
+            try {
+              const { data } = await api.get<{ data: Prescription }>(`/prescriptions/${triage.id}`);
+              setTriage(data.data);
+            } catch { /* keep what's on screen */ }
+            qc.invalidateQueries({ queryKey: ["prescriptions"] });
+          }}
+          onOpenFullDetail={() => { setDetail(triage); setTriage(null); }}
+        />
+      )}
       {detail && (
         <DetailModal
           rx={detail}

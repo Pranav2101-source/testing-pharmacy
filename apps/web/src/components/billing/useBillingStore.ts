@@ -80,7 +80,13 @@ type BillingStore = {
   loadDraft: (items: CartItem[], meta: BillingMeta) => void;
 };
 
-const DEFAULT_META: BillingMeta = {
+/**
+ * Exported so a caller building a cart from scratch — a prescription being billed or parked
+ * as a draft — can start from a clean bill rather than from whatever is half-typed in the
+ * store right now, which would otherwise carry another customer's discount and payment mode
+ * into it.
+ */
+export const DEFAULT_META: BillingMeta = {
   customerId:              "",
   customerName:            "",
   customerPhone:           "",

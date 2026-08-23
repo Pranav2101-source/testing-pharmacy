@@ -47,7 +47,17 @@ export default function PrescriptionFulfilmentPanel({ prescriptionId }: { prescr
 
   // Only lines that are not already settled: a line the patient has fully collected needs
   // no attribution, and listing it invites someone to re-attribute a closed line.
-  const open = rx.items.filter((i) => i.dispensedQty < i.quantity);
+  //
+  // quantity <= 0 is a separate case, not "settled" — it's the clinic's "as directed"
+  // placeholder (see PrescriptionItem.needsQuantityConfirmation), not a real amount, and
+  // `dispensedQty < quantity` reads it as 0 < 0 = false = "nothing left to fulfil". Without
+  // this OR, a pharmacist filling that exact line had no way to say so: the line was
+  // invisible here, identical to one already fully collected. Explicitly attributing a sale
+  // to it is safe even before the quantity is confirmed — recordDispensed doesn't require
+  // one, and isFullyDispensed() already refuses to treat a quantity-0 line as complete no
+  // matter how much has been attributed to it, so this can never wrongly close the
+  // prescription; ConfirmQuantityPanel is still the only thing that settles the real total.
+  const open = rx.items.filter((i) => i.quantity <= 0 || i.dispensedQty < i.quantity);
   if (open.length === 0 || items.length === 0) return null;
 
   return (
@@ -63,11 +73,14 @@ export default function PrescriptionFulfilmentPanel({ prescriptionId }: { prescr
       <div className="mt-2.5 space-y-1.5">
         {open.map((line) => {
           const linked = items.find((i) => i.prescriptionItemId === line.id);
+          const unconfirmedQty = line.quantity <= 0;
           return (
             <div key={line.id} className="flex items-center gap-2 text-sm">
               <span className="min-w-0 flex-1 truncate text-slate-700">
                 {line.medicineName}
-                <span className="text-slate-400"> · {line.quantity - line.dispensedQty} left</span>
+                <span className={unconfirmedQty ? "text-amber-600" : "text-slate-400"}>
+                  {" "}· {unconfirmedQty ? "quantity not set" : `${line.quantity - line.dispensedQty} left`}
+                </span>
               </span>
               <ArrowRight className="h-3.5 w-3.5 shrink-0 text-slate-300" />
               <select

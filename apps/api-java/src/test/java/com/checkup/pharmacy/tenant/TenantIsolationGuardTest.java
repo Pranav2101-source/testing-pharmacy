@@ -176,6 +176,9 @@ class TenantIsolationGuardTest {
             // delivery the pharmacy itself already queued, and each delivery re-reads its
             // own prescription scoped by the pharmacyId carried on the row.
             "PrescriptionRepository#findDispenseCallbackBacklog",
+            // The cancellation backlog is the same sweeper, the same job, and the same
+            // reasoning — it reports a withdrawal rather than a dispensing.
+            "PrescriptionRepository#findCancelCallbackBacklog",
 
             // ── 4. Load-then-authorize ───────────────────────────────────────────
             // The query is unscoped but the service checks ownership on the loaded row

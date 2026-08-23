@@ -32,6 +32,8 @@ public record PrescriptionResponse(
         int needsReview,
         /** Null unless this came from a clinic and a sale has queued a callback. */
         DispenseNotify dispenseNotify,
+        /** Null unless this came from a clinic and a pharmacist has cancelled it. */
+        CancelNotify cancelNotify,
         Instant createdAt,
         Instant updatedAt
 ) {
@@ -82,5 +84,10 @@ public record PrescriptionResponse(
      */
     public record DispenseNotify(String status, Instant notifiedAt, String error,
                                  int attempts, Instant nextAttemptAt, boolean canRetry) {
+    }
+
+    /** The state of the cancellation report back to the clinic. Mirrors {@link DispenseNotify}. */
+    public record CancelNotify(String status, Instant notifiedAt, String error,
+                               int attempts, Instant nextAttemptAt, boolean canRetry) {
     }
 }
