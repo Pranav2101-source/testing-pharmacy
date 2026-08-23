@@ -87,4 +87,17 @@ public interface PrescriptionRepository extends JpaRepository<Prescription, Stri
     List<Prescription> findDispenseCallbackBacklog(@Param("now") Instant now,
                                                    @Param("maxAttempts") int maxAttempts,
                                                    Pageable pageable);
+
+    /** The cancellation-callback backlog — the mirror of {@link #findDispenseCallbackBacklog}. */
+    @Query("""
+            SELECT rx FROM Prescription rx
+            WHERE rx.cancelNotifyStatus IN ('PENDING', 'FAILED')
+              AND rx.cancelNotifyNextAttemptAt IS NOT NULL
+              AND rx.cancelNotifyNextAttemptAt <= :now
+              AND rx.cancelNotifyAttempts < :maxAttempts
+            ORDER BY rx.cancelNotifyNextAttemptAt
+            """)
+    List<Prescription> findCancelCallbackBacklog(@Param("now") Instant now,
+                                                 @Param("maxAttempts") int maxAttempts,
+                                                 Pageable pageable);
 }

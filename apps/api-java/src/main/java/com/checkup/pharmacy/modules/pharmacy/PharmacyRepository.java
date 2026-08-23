@@ -39,4 +39,25 @@ public interface PharmacyRepository extends JpaRepository<Pharmacy, String> {
      * its own.
      */
     java.util.Optional<Pharmacy> findByEmrApiKey(String emrApiKey);
+
+    /**
+     * Resolves a pairing code by its indexed SHA-256 lookup hash — see
+     * {@link com.checkup.pharmacy.modules.integration.emr.compat.ClinicPairingService} and
+     * migration 20260823000002 for why this exists instead of decrypting every candidate.
+     *
+     * <p>Unscoped by {@code isActive} deliberately, mirroring {@link #findByEmrApiKey}: the
+     * caller checks that (and decrypts nothing further — a hash match IS the verification,
+     * the same trust level {@link com.checkup.pharmacy.security.ApiSecretHasher} already
+     * carries for API-key authentication) after loading the row, not before, so an inactive
+     * pharmacy's code fails for the same reason every other check does, not a different one.
+     */
+    java.util.Optional<Pharmacy> findByEmrSecretLookupHash(String emrSecretLookupHash);
+
+    /**
+     * The fallback population for pairing codes generated before {@code emrSecretLookupHash}
+     * existed — every candidate here still has to be decrypted and compared the old way. This
+     * set only shrinks: a pharmacy leaves it the moment its key is next rotated, from either
+     * door ({@code EmrConnectionService#generateKey} or the platform-admin equivalent).
+     */
+    java.util.List<Pharmacy> findAllByEmrSecretLookupHashIsNullAndEmrSecretCiphertextIsNotNull();
 }

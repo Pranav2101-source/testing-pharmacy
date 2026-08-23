@@ -1,6 +1,7 @@
 package com.checkup.pharmacy.modules.integration.emr.dto;
 
 import com.checkup.pharmacy.modules.integration.emr.PrescriptionDispensedEvent;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.time.Instant;
 import java.util.List;
@@ -19,6 +20,17 @@ import java.util.List;
  * pricing. The clinic is being told what its patient collected, which is the minimum that
  * makes a chart correct.
  *
+ * <p><b>{@code emrPrescriptionId} on the wire, {@code externalPrescriptionId} in Java.</b>
+ * Confirmed 2026-08-22 against the receiver in the EMR repo
+ * ({@code PharmacyDispenseService.apply()}, which reads {@code payload.path("emrPrescriptionId")})
+ * — this class had drifted to the newer "external*" naming used by the rest of this
+ * package's DTOs while the receiver still expects the older name every other DTO in the
+ * EMR's own codebase uses ({@code PharmacyIngestRequest.emrPrescriptionId},
+ * {@code PharmacyDispatchService}). The Java field keeps this package's own convention;
+ * {@code @JsonProperty} is the one place that convention yields to the wire contract it
+ * did not choose. Do not "fix" this back to {@code externalPrescriptionId} without
+ * re-checking the EMR repo — every dispense callback silently 400s (MALFORMED) without it.
+ *
  * @param externalTenantId       which clinic this concerns. Present because one endpoint
  *                               serves every tenant — the receiver routes on it.
  * @param externalPrescriptionId the clinic's own id, the key it matches on.
@@ -29,7 +41,7 @@ import java.util.List;
  */
 public record EmrDispensePayload(
         String externalTenantId,
-        String externalPrescriptionId,
+        @JsonProperty("emrPrescriptionId") String externalPrescriptionId,
         String pharmacyPrescriptionNumber,
         String invoiceNumber,
         Instant dispensedAt,
@@ -47,8 +59,9 @@ public record EmrDispensePayload(
      * @param substituted    true when a different product was dispensed from the one
      *                       prescribed; {@code dispensedName} then says what.
      */
+    /** {@code emrItemId} on the wire too — same reasoning as the record-level rename above. */
     public record Item(
-            String externalItemId,
+            @JsonProperty("emrItemId") String externalItemId,
             String prescribedName,
             String dispensedName,
             int dispensedQty,

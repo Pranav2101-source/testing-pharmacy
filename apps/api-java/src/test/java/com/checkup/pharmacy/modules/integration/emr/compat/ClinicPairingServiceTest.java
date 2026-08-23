@@ -13,11 +13,14 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @DisplayName("Clinic pairing: one exchange establishes the whole link")
@@ -38,7 +41,7 @@ class ClinicPairingServiceTest {
     @DisplayName("a valid code links the clinic and returns a credential")
     void pairsSuccessfully() {
         Pharmacy pharmacy = pharmacyWithCode(CODE);
-        when(pharmacyRepository.findAll()).thenReturn(List.of(pharmacy));
+        stubHashLookup(CODE, pharmacy);
         when(pharmacyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         ClinicPairResponse response = service.pair(request(CODE, "https://clinic.example"));
@@ -59,7 +62,7 @@ class ClinicPairingServiceTest {
     @DisplayName("the secret is stored hashed, never in the clear")
     void storesOnlyAHashOfTheSecret() {
         Pharmacy pharmacy = pharmacyWithCode(CODE);
-        when(pharmacyRepository.findAll()).thenReturn(List.of(pharmacy));
+        stubHashLookup(CODE, pharmacy);
         when(pharmacyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         ClinicPairResponse response = service.pair(request(CODE, "https://clinic.example"));
@@ -75,7 +78,7 @@ class ClinicPairingServiceTest {
     @DisplayName("the callback path is appended, so nobody has to be told a URL")
     void composesTheCallbackUrl() {
         Pharmacy pharmacy = pharmacyWithCode(CODE);
-        when(pharmacyRepository.findAll()).thenReturn(List.of(pharmacy));
+        stubHashLookup(CODE, pharmacy);
         when(pharmacyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.pair(request(CODE, "https://clinic.example"));
@@ -88,7 +91,7 @@ class ClinicPairingServiceTest {
     @DisplayName("a trailing slash on the clinic address does not produce a doubled slash")
     void normalisesTrailingSlashes() {
         Pharmacy pharmacy = pharmacyWithCode(CODE);
-        when(pharmacyRepository.findAll()).thenReturn(List.of(pharmacy));
+        stubHashLookup(CODE, pharmacy);
         when(pharmacyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.pair(request(CODE, "https://clinic.example///"));
@@ -102,7 +105,7 @@ class ClinicPairingServiceTest {
     @DisplayName("the clinic's webhook secret round-trips through encryption")
     void storesTheWebhookSecretEncrypted() {
         Pharmacy pharmacy = pharmacyWithCode(CODE);
-        when(pharmacyRepository.findAll()).thenReturn(List.of(pharmacy));
+        stubHashLookup(CODE, pharmacy);
         when(pharmacyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.pair(request(CODE, "https://clinic.example"));
@@ -120,7 +123,7 @@ class ClinicPairingServiceTest {
     @Test
     @DisplayName("a wrong code is refused")
     void rejectsAWrongCode() {
-        when(pharmacyRepository.findAll()).thenReturn(List.of(pharmacyWithCode(CODE)));
+        stubHashLookup(CODE, pharmacyWithCode(CODE));
 
         assertThatThrownBy(() -> service.pair(request("not-the-code", "https://clinic.example")))
                 .isInstanceOf(BadRequestException.class)
@@ -130,9 +133,10 @@ class ClinicPairingServiceTest {
     @Test
     @DisplayName("a pharmacy that never generated a code cannot be paired")
     void rejectsAPharmacyWithNoCode() {
-        Pharmacy noCode = Pharmacy.create("No Code", "no-code");
-        when(pharmacyRepository.findAll()).thenReturn(List.of(noCode));
-
+        // No stub needed: a pharmacy with no ciphertext at all is never returned by either
+        // real query (findByEmrSecretLookupHash — nothing was ever hashed for it — or the
+        // fallback scan, which requires a non-null ciphertext), so the default Mockito
+        // answers (empty Optional, empty List) already represent this case correctly.
         assertThatThrownBy(() -> service.pair(request(CODE, "https://clinic.example")))
                 .isInstanceOf(BadRequestException.class);
     }
@@ -142,7 +146,7 @@ class ClinicPairingServiceTest {
     void rejectsAnInactivePharmacy() {
         Pharmacy pharmacy = pharmacyWithCode(CODE);
         pharmacy.applyStatus(TenantStatus.SUSPENDED, false);
-        when(pharmacyRepository.findAll()).thenReturn(List.of(pharmacy));
+        stubHashLookup(CODE, pharmacy);
 
         assertThatThrownBy(() -> service.pair(request(CODE, "https://clinic.example")))
                 .isInstanceOf(BadRequestException.class);
@@ -151,7 +155,7 @@ class ClinicPairingServiceTest {
     @Test
     @DisplayName("a clinic address that is not an absolute http(s) URL is refused")
     void rejectsABadClinicAddress() {
-        when(pharmacyRepository.findAll()).thenReturn(List.of(pharmacyWithCode(CODE)));
+        stubHashLookup(CODE, pharmacyWithCode(CODE));
 
         assertThatThrownBy(() -> service.pair(request(CODE, "clinic.example")))
                 .isInstanceOf(BadRequestException.class)
@@ -164,7 +168,7 @@ class ClinicPairingServiceTest {
     @DisplayName("re-pairing replaces the credential — the recovery path for a lost secret")
     void rePairingIssuesAFreshCredential() {
         Pharmacy pharmacy = pharmacyWithCode(CODE);
-        when(pharmacyRepository.findAll()).thenReturn(List.of(pharmacy));
+        stubHashLookup(CODE, pharmacy);
         when(pharmacyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
 
         ClinicPairResponse first = service.pair(request(CODE, "https://clinic.example"));
@@ -186,7 +190,7 @@ class ClinicPairingServiceTest {
         // revoked the LINK but not its credential, leaving a connection that read as
         // "disconnected" on screen while still accepting pushes.
         Pharmacy pharmacy = pharmacyWithCode(CODE);
-        when(pharmacyRepository.findAll()).thenReturn(List.of(pharmacy));
+        stubHashLookup(CODE, pharmacy);
         when(pharmacyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         service.pair(request(CODE, "https://clinic.example"));
         assertThat(pharmacy.isEmrPaired()).isTrue();
@@ -201,6 +205,47 @@ class ClinicPairingServiceTest {
         assertThat(pharmacy.getEmrClinicLinkId()).isNull();
         assertThat(pharmacy.getEmrCallbackUrl()).isNull();
         assertThat(pharmacy.getEmrSecretCiphertext()).isNull();
+        assertThat(pharmacy.getEmrSecretLookupHash()).isNull();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // The indexed lookup and its fallback. Every test above exercises a pharmacy
+    // shaped exactly like generateKey() produces one today (hash set alongside the
+    // ciphertext) — these cover the other half: the fast path is actually used
+    // instead of the old scan, and a pharmacy whose key predates the hash column
+    // can still be paired.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("a hash-lookup hit never falls through to the old decrypt-scan fallback")
+    void fastPathNeverTouchesTheFallbackScan() {
+        Pharmacy pharmacy = pharmacyWithCode(CODE);
+        stubHashLookup(CODE, pharmacy);
+        when(pharmacyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service.pair(request(CODE, "https://clinic.example"));
+
+        verify(pharmacyRepository, never()).findAllByEmrSecretLookupHashIsNullAndEmrSecretCiphertextIsNotNull();
+    }
+
+    @Test
+    @DisplayName("a pharmacy whose key predates the lookup-hash column is still found, via the fallback scan")
+    void fallsBackToTheOldScanForAPharmacyWithNoLookupHashYet() {
+        // Built the way pairEmrClinic/generateKey used to, before this column existed:
+        // ciphertext present, lookup hash absent. findByEmrSecretLookupHash has nothing to
+        // find this by, so pairing must still fall through to the decrypt scan — scoped to
+        // exactly this (shrinking) population, not the whole pharmacy table.
+        Pharmacy legacy = Pharmacy.create("Legacy Pharmacy", "legacy-pharmacy");
+        EmrSecretCipher.Encrypted encrypted = CIPHER.encrypt(CODE);
+        legacy.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag(), null);
+        when(pharmacyRepository.findAllByEmrSecretLookupHashIsNullAndEmrSecretCiphertextIsNotNull())
+                .thenReturn(List.of(legacy));
+        when(pharmacyRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        ClinicPairResponse response = service.pair(request(CODE, "https://clinic.example"));
+
+        assertThat(response.pharmacyId()).isEqualTo(legacy.getId());
+        assertThat(legacy.isEmrPaired()).isTrue();
     }
 
     @Test
@@ -219,10 +264,17 @@ class ClinicPairingServiceTest {
                 "clinic-webhook-secret");
     }
 
+    /** Shaped exactly like a pharmacy generateKey() produces today: hash set alongside the ciphertext. */
     private static Pharmacy pharmacyWithCode(String code) {
         Pharmacy pharmacy = Pharmacy.create("Test Pharmacy", "test-pharmacy");
         EmrSecretCipher.Encrypted encrypted = CIPHER.encrypt(code);
-        pharmacy.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag());
+        pharmacy.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag(), ApiSecretHasher.hash(code));
         return pharmacy;
+    }
+
+    /** Stubs the indexed hash lookup every current-generation pharmacy is found through. */
+    private void stubHashLookup(String code, Pharmacy pharmacy) {
+        when(pharmacyRepository.findByEmrSecretLookupHash(ApiSecretHasher.hash(code)))
+                .thenReturn(Optional.of(pharmacy));
     }
 }

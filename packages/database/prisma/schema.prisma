@@ -56,6 +56,11 @@ model Pharmacy {
   emrSecretCiphertext String?
   emrSecretIv         String?
   emrSecretTag        String?
+  // SHA-256 of the plaintext key (ApiSecretHasher), written alongside the ciphertext at the
+  // one moment the plaintext exists server-side. Lets ClinicPairingService look up a
+  // presented pairing code by an indexed equality match instead of decrypting every
+  // pharmacy's secret to compare plaintexts — see migration 20260823000002.
+  emrSecretLookupHash String?
   // The clinic this pharmacy is connected to, as entered on the Integrations
   // screen. emrCallbackUrl is where dispensing updates are POSTed back; the
   // clinic's own connection id is part of that URL, which is why it has to be
@@ -789,6 +794,15 @@ model Prescription {
   dispenseNotifyError         String?
   dispenseNotifyAttempts      Int       @default(0)
   dispenseNotifyNextAttemptAt DateTime?
+
+  // Cancellation callback to the clinic — the mirror direction of the dispense callback
+  // above. NULL throughout means "never applied": either counter-written, or from a
+  // clinic but never cancelled from this side.
+  cancelNotifyStatus        String?
+  cancelNotifiedAt          DateTime?
+  cancelNotifyError         String?
+  cancelNotifyAttempts      Int       @default(0)
+  cancelNotifyNextAttemptAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -37,7 +37,7 @@ class EmrDispenseCallbackServiceDialectTest {
     void manualConnectionUsesCheckupHmac() {
         Pharmacy pharmacy = Pharmacy.create("Manual Pharmacy", "manual");
         EmrSecretCipher.Encrypted own = CIPHER.encrypt("own-hmac-secret");
-        pharmacy.setEmrSecret(own.ciphertext(), own.iv(), own.tag());
+        pharmacy.setEmrSecret(own.ciphertext(), own.iv(), own.tag(), null);
         pharmacy.connectEmrClinic("Apollo", "https://apollo.example/webhook");
         when(pharmacyRepository.findById("ph_1")).thenReturn(Optional.of(pharmacy));
 
@@ -77,6 +77,31 @@ class EmrDispenseCallbackServiceDialectTest {
         var connection = service.resolveConnection("ph_3");
 
         assertThat(connection.secret()).isNull();
+        assertThat(connection.decryptionFailed())
+                .as("never generated at all is a different case from generated-but-unreadable")
+                .isFalse();
+    }
+
+    @Test
+    @DisplayName("a secret that WAS generated but can no longer be decrypted is flagged distinctly from 'no secret'")
+    void undecryptableSecretIsFlaggedDistinctlyFromNoSecret() {
+        // A different cipher key than the one the service was built with — simulates
+        // app.integration.emr.encryption-key changing after the secret was stored.
+        EmrSecretCipher differentKeyCipher =
+                new EmrSecretCipher("a".repeat(64));
+        Pharmacy pharmacy = Pharmacy.create("Rekeyed Pharmacy", "rekeyed");
+        EmrSecretCipher.Encrypted encryptedUnderOldKey = differentKeyCipher.encrypt("own-hmac-secret");
+        pharmacy.setEmrSecret(encryptedUnderOldKey.ciphertext(), encryptedUnderOldKey.iv(),
+                encryptedUnderOldKey.tag(), null);
+        pharmacy.connectEmrClinic("Apollo", "https://apollo.example/webhook");
+        when(pharmacyRepository.findById("ph_rekeyed")).thenReturn(Optional.of(pharmacy));
+
+        var connection = service.resolveConnection("ph_rekeyed");
+
+        assertThat(connection.secret()).isNull();
+        assertThat(connection.decryptionFailed())
+                .as("this pharmacist DID generate a key — the failure message must not say otherwise")
+                .isTrue();
     }
 
     @Test
@@ -84,7 +109,7 @@ class EmrDispenseCallbackServiceDialectTest {
     void inactivePharmacyResolvesToNull() {
         Pharmacy pharmacy = Pharmacy.create("Inactive Pharmacy", "inactive");
         EmrSecretCipher.Encrypted own = CIPHER.encrypt("own-hmac-secret");
-        pharmacy.setEmrSecret(own.ciphertext(), own.iv(), own.tag());
+        pharmacy.setEmrSecret(own.ciphertext(), own.iv(), own.tag(), null);
         pharmacy.applyStatus(com.checkup.pharmacy.common.enums.TenantStatus.SUSPENDED, false);
         when(pharmacyRepository.findById("ph_4")).thenReturn(Optional.of(pharmacy));
 

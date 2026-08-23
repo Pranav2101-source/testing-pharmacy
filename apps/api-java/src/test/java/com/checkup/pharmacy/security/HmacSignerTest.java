@@ -185,7 +185,7 @@ class HmacSignerTest {
         Pharmacy pharmacy = Pharmacy.create(name, slug);
         if (secret != null) {
             EmrSecretCipher.Encrypted encrypted = secretCipher.encrypt(secret);
-            pharmacy.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag());
+            pharmacy.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag(), null);
         }
         when(pharmacyRepository.findById(pharmacy.getId())).thenReturn(Optional.of(pharmacy));
         return pharmacy;

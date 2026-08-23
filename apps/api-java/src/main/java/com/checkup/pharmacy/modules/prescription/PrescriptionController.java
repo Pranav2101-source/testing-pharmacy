@@ -1,6 +1,7 @@
 package com.checkup.pharmacy.modules.prescription;
 
 import com.checkup.pharmacy.common.api.ApiResponse;
+import com.checkup.pharmacy.modules.prescription.dto.ConfirmPrescriptionItemQuantityRequest;
 import com.checkup.pharmacy.modules.prescription.dto.CreatePrescriptionRequest;
 import com.checkup.pharmacy.modules.prescription.dto.NewPrescriptionCountResponse;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionPageResponse;
@@ -93,6 +94,19 @@ public class PrescriptionController {
     }
 
     /**
+     * Settles the real quantity for a line the clinic sent without one — see
+     * {@link com.checkup.pharmacy.modules.prescription.PrescriptionItem#needsQuantityConfirmation()}.
+     * Same shape as {@link #linkItemMedicine}: a human resolves what a machine feed left
+     * ambiguous, and until it is resolved the line cannot be sold or reported back.
+     */
+    @PatchMapping("/{id}/items/{itemId}/quantity")
+    public ApiResponse<PrescriptionResponse> confirmItemQuantity(@PathVariable String id,
+                                                                  @PathVariable String itemId,
+                                                                  @Valid @RequestBody ConfirmPrescriptionItemQuantityRequest req) {
+        return ApiResponse.ok(prescriptionService.confirmItemQuantity(id, itemId, req.quantity()));
+    }
+
+    /**
      * Queues another attempt at telling the clinic what was dispensed.
      *
      * <p>POST rather than PATCH: this asks for an action to happen, and is deliberately not
@@ -101,5 +115,11 @@ public class PrescriptionController {
     @PostMapping("/{id}/dispense-notify/retry")
     public ApiResponse<PrescriptionResponse> retryDispenseNotify(@PathVariable String id) {
         return ApiResponse.ok(prescriptionService.retryDispenseNotify(id));
+    }
+
+    /** Queues another attempt at telling the clinic this prescription was cancelled. */
+    @PostMapping("/{id}/cancel-notify/retry")
+    public ApiResponse<PrescriptionResponse> retryCancelNotify(@PathVariable String id) {
+        return ApiResponse.ok(prescriptionService.retryCancelNotify(id));
     }
 }

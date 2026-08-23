@@ -108,6 +108,17 @@ public class EmrDispenseCallbackService {
     }
 
     /**
+     * Lets {@link EmrCancelCallbackService} deliver over the exact same configured client —
+     * same timeouts, same no-follow-redirects policy — rather than a second copy of this
+     * constructor's setup. A default-configured {@code RestClient} has no read timeout at
+     * all, which is the specific hang this class exists to prevent; a sibling callback must
+     * not quietly reintroduce it by building its own.
+     */
+    RestClient restClient() {
+        return restClient;
+    }
+
+    /**
      * Attempts one delivery and records the outcome.
      *
      * <p>{@code REQUIRES_NEW} because the caller's transaction is already gone by the time
@@ -125,7 +136,10 @@ public class EmrDispenseCallbackService {
 
         Connection connection = SystemContext.callAsSystem(() -> resolveConnection(event.pharmacyId()));
         if (connection == null || connection.secret() == null) {
-            recordFailure(event, EmrDispenseFailureReason.noSecret(), attemptStartedAt);
+            EmrDispenseFailureReason reason = connection != null && connection.decryptionFailed()
+                    ? EmrDispenseFailureReason.decryptionFailed()
+                    : EmrDispenseFailureReason.noSecret();
+            recordFailure(event, reason, attemptStartedAt);
             return false;
         }
         String target = connection.callbackUrl();
@@ -196,7 +210,15 @@ public class EmrDispenseCallbackService {
      * was found — never carried as an independent flag. A flag can drift from the secret it
      * describes; deriving it from the secret's own presence cannot.
      */
-    record Connection(String secret, String callbackUrl, Dialect dialect) {
+    /**
+     * @param decryptionFailed true when a secret exists but could not be read back — distinct
+     *                         from a bare {@code secret == null} (never generated at all) so
+     *                         {@link #deliver} can report the right one of
+     *                         {@link EmrDispenseFailureReason#noSecret()} vs
+     *                         {@link EmrDispenseFailureReason#decryptionFailed()}. Always false
+     *                         when {@code secret} is non-null.
+     */
+    record Connection(String secret, String callbackUrl, Dialect dialect, boolean decryptionFailed) {
         enum Dialect { CHECKUP_HMAC, LEGACY_WEBHOOK }
     }
 
@@ -240,23 +262,23 @@ public class EmrDispenseCallbackService {
                 return new Connection(
                         secretCipher.decrypt(p.getEmrWebhookSecretCiphertext(), p.getEmrWebhookSecretIv(),
                                 p.getEmrWebhookSecretTag()),
-                        target, Connection.Dialect.LEGACY_WEBHOOK);
+                        target, Connection.Dialect.LEGACY_WEBHOOK, false);
             } catch (Exception e) {
                 log.error("Clinic webhook secret for pharmacy {} could not be decrypted", pharmacyId, e);
-                return new Connection(null, target, Connection.Dialect.LEGACY_WEBHOOK);
+                return new Connection(null, target, Connection.Dialect.LEGACY_WEBHOOK, true);
             }
         }
 
         if (p.getEmrSecretCiphertext() == null || p.getEmrSecretIv() == null || p.getEmrSecretTag() == null) {
-            return new Connection(null, target, Connection.Dialect.CHECKUP_HMAC);
+            return new Connection(null, target, Connection.Dialect.CHECKUP_HMAC, false);
         }
         try {
             return new Connection(
                     secretCipher.decrypt(p.getEmrSecretCiphertext(), p.getEmrSecretIv(), p.getEmrSecretTag()),
-                    target, Connection.Dialect.CHECKUP_HMAC);
+                    target, Connection.Dialect.CHECKUP_HMAC, false);
         } catch (Exception e) {
             log.error("EMR secret for pharmacy {} could not be decrypted", pharmacyId, e);
-            return new Connection(null, target, Connection.Dialect.CHECKUP_HMAC);
+            return new Connection(null, target, Connection.Dialect.CHECKUP_HMAC, true);
         }
     }
 

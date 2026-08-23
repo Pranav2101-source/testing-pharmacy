@@ -26,6 +26,7 @@ import com.checkup.pharmacy.modules.platform.tenant.dto.EmrSecretRotationRespons
 import com.checkup.pharmacy.modules.platform.tenant.dto.ImportResult;
 import com.checkup.pharmacy.modules.platform.tenant.dto.ImportTenantsRequest;
 import com.checkup.pharmacy.modules.platform.tenant.dto.OwnerInfo;
+import com.checkup.pharmacy.security.ApiSecretHasher;
 import com.checkup.pharmacy.security.EmrSecretCipher;
 import com.checkup.pharmacy.modules.platform.tenant.dto.SettingsInfo;
 import com.checkup.pharmacy.modules.platform.tenant.dto.SubscriptionInfo;
@@ -226,7 +227,7 @@ public class TenantService {
         String plainSecret = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
 
         EmrSecretCipher.Encrypted encrypted = emrSecretCipher.encrypt(plainSecret);
-        p.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag());
+        p.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag(), ApiSecretHasher.hash(plainSecret));
         pharmacyRepository.save(p);
 
         auditService.log(AuditEntry.of(AuditModule.TENANTS, "EMR_SECRET_ROTATED", "PHARMACY")

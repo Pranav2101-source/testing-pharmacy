@@ -128,26 +128,54 @@ public class ClinicPairingService {
     /**
      * Finds the pharmacy whose generated key matches the presented code.
      *
-     * <p>The code is the pharmacy's own EMR key, held encrypted, so this cannot be an
-     * indexed lookup — the ciphertext differs every time the same plaintext is encrypted
-     * (distinct GCM nonce), which is the property that makes the at-rest encryption worth
-     * having. Candidates are therefore scanned.
+     * <p>The code is the pharmacy's own EMR key, held encrypted — the ciphertext differs
+     * every time the same plaintext is encrypted (distinct GCM nonce), which is the property
+     * that makes the at-rest encryption worth having, and also why the ciphertext column
+     * itself can never be indexed for this lookup.
      *
-     * <p><b>Scale note.</b> Only pharmacies that have actually generated a key are
-     * considered, and pairing happens roughly once per pharmacy in its lifetime, so this
-     * runs on a very small set at a very low rate. If the set ever grows enough to matter,
-     * the fix is a separate indexed lookup hash of the code — not a weaker at-rest scheme.
+     * <p>What CAN be indexed, and is: {@code emrSecretLookupHash}, a deterministic SHA-256 of
+     * the plaintext (see {@link ApiSecretHasher}), written once at the only moment the
+     * plaintext exists server-side — {@code EmrConnectionService#generateKey} and the
+     * platform-admin equivalent. A hash match is already the full verification (the same
+     * trust level {@code ApiSecretHasher} carries as the SOLE authentication decision for
+     * API-key requests elsewhere) — there is nothing more certain to be gained by also
+     * decrypting and comparing the plaintext afterward, so this does not.
+     *
+     * <p>Falls back to the old decrypt-and-compare scan ONLY for the shrinking population
+     * whose key predates this column ({@code emrSecretLookupHash IS NULL}) — never the whole
+     * pharmacy table again. A wrong code and a code belonging to that not-yet-rotated
+     * population are indistinguishable from outside (both fall through to the slow path and
+     * both fail), so which one happened is not observable; what IS observable is "hash-tier
+     * hit" vs "not" — and that reveals nothing about a specific pharmacy or the 256-bit
+     * secret space, unlike a byte-at-a-time comparison leak, so it is not the same class of
+     * timing risk the constant-time compare below still guards against within one candidate.
+     */
+    private Pharmacy findByPairingCode(String code) {
+        Pharmacy hashMatch = pharmacyRepository.findByEmrSecretLookupHash(ApiSecretHasher.hash(code))
+                .filter(Pharmacy::isActive)
+                .orElse(null);
+        if (hashMatch != null) {
+            return hashMatch;
+        }
+        return scanCandidatesPredatingTheLookupHash(code);
+    }
+
+    /**
+     * The pre-{@code emrSecretLookupHash} fallback — decrypts and compares every candidate
+     * the old way, exactly as {@link #findByPairingCode} always did, just scoped to the set
+     * that column cannot yet help with instead of every pharmacy on the platform.
      *
      * <p>Comparison is constant-time. A short-circuiting compare here would leak how much of
      * a guessed code was correct, which turns forging one from a search of the whole space
      * into a character-at-a-time walk.
      */
-    private Pharmacy findByPairingCode(String code) {
+    private Pharmacy scanCandidatesPredatingTheLookupHash(String code) {
         byte[] presented = code.getBytes(StandardCharsets.UTF_8);
-        List<Pharmacy> candidates = pharmacyRepository.findAll();
+        List<Pharmacy> candidates =
+                pharmacyRepository.findAllByEmrSecretLookupHashIsNullAndEmrSecretCiphertextIsNotNull();
         Pharmacy match = null;
         for (Pharmacy p : candidates) {
-            if (!p.isActive() || p.getEmrSecretCiphertext() == null) {
+            if (!p.isActive()) {
                 continue;
             }
             String stored;

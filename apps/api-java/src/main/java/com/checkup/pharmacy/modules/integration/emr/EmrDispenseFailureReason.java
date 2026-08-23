@@ -28,6 +28,22 @@ record EmrDispenseFailureReason(String message, boolean retryable) {
                 "No clinic connection key has been generated for this pharmacy yet.", false);
     }
 
+    /**
+     * Distinct from {@link #noSecret()} on purpose: a key WAS generated, but the server could
+     * not read it back. Telling a pharmacist "generate a key" here is actively misleading —
+     * regenerating happens to work (it re-encrypts under whatever key the server holds now),
+     * but the message should point at the actual cause, which is a server-side configuration
+     * change, not something missing on the pharmacist's side. See
+     * {@code EmrHmacAuthenticationFilter.resolveSecret}, which logs the same class of failure
+     * on the inbound side.
+     */
+    static EmrDispenseFailureReason decryptionFailed() {
+        return new EmrDispenseFailureReason(
+                "This pharmacy's saved clinic connection could not be read by the server. "
+                        + "Generating a new connection key will fix this — an administrator should "
+                        + "also check why the previous one stopped decrypting.", false);
+    }
+
     static EmrDispenseFailureReason of(Exception e) {
         // Order matters: HttpConnectTimeoutException extends HttpTimeoutException, so the
         // narrower one has to be tested first or every connect timeout reads as a read

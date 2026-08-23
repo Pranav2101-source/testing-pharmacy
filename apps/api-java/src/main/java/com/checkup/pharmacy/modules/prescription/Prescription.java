@@ -79,6 +79,26 @@ public class Prescription extends BaseEntity {
     @Column(name = "dispenseNotifyNextAttemptAt")
     private Instant dispenseNotifyNextAttemptAt;
 
+    // ── Cancellation callback to the clinic ──────────────────────────────────
+    //
+    // Mirrors the dispense-notify block above exactly — same meaning, same state machine,
+    // the opposite direction of fact. NULL throughout means "never applied".
+
+    @Column(name = "cancelNotifyStatus")
+    private String cancelNotifyStatus;
+
+    @Column(name = "cancelNotifiedAt")
+    private Instant cancelNotifiedAt;
+
+    @Column(name = "cancelNotifyError")
+    private String cancelNotifyError;
+
+    @Column(name = "cancelNotifyAttempts")
+    private int cancelNotifyAttempts;
+
+    @Column(name = "cancelNotifyNextAttemptAt")
+    private Instant cancelNotifyNextAttemptAt;
+
     @Column(name = "doctorId")
     private String doctorId;
 
@@ -340,6 +360,45 @@ public class Prescription extends BaseEntity {
 
     private static final Duration MANUAL_RETRY_LEASE = Duration.ofSeconds(60);
 
+    // ── Cancel-callback state machine ────────────────────────────────────────
+    //
+    // Exact mirror of the dispense-notify state machine above — same four methods, same
+    // meaning, the opposite fact. See those for the reasoning behind each one; it is not
+    // repeated here.
+
+    public void markCancelNotifyPending() {
+        this.cancelNotifyStatus = NOTIFY_PENDING;
+        this.cancelNotifyError = null;
+        this.cancelNotifyAttempts = 0;
+        this.cancelNotifyNextAttemptAt = Instant.now();
+    }
+
+    public void markCancelNotifySent() {
+        this.cancelNotifyStatus = NOTIFY_SENT;
+        this.cancelNotifiedAt = Instant.now();
+        this.cancelNotifyError = null;
+        this.cancelNotifyNextAttemptAt = null;
+    }
+
+    public void markCancelNotifyFailed(String error, Instant nextAttemptAt, Instant attemptStartedAt) {
+        if (NOTIFY_SENT.equals(cancelNotifyStatus)
+                && cancelNotifiedAt != null
+                && attemptStartedAt != null
+                && !cancelNotifiedAt.isBefore(attemptStartedAt)) {
+            return;
+        }
+        this.cancelNotifyStatus = NOTIFY_FAILED;
+        this.cancelNotifyError = error;
+        this.cancelNotifyAttempts++;
+        this.cancelNotifyNextAttemptAt = nextAttemptAt;
+    }
+
+    public void requeueCancelNotify() {
+        this.cancelNotifyStatus = NOTIFY_PENDING;
+        this.cancelNotifyAttempts = 0;
+        this.cancelNotifyNextAttemptAt = Instant.now().plus(MANUAL_RETRY_LEASE);
+    }
+
     /** True for a prescription that came from a clinic and so has somewhere to report back to. */
     public boolean isFromEmr() {
         return externalEmrTenantId != null && externalEmrPrescriptionId != null;
@@ -370,4 +429,14 @@ public class Prescription extends BaseEntity {
     public int getDispenseNotifyAttempts() { return dispenseNotifyAttempts; }
 
     public Instant getDispenseNotifyNextAttemptAt() { return dispenseNotifyNextAttemptAt; }
+
+    public String getCancelNotifyStatus() { return cancelNotifyStatus; }
+
+    public Instant getCancelNotifiedAt() { return cancelNotifiedAt; }
+
+    public String getCancelNotifyError() { return cancelNotifyError; }
+
+    public int getCancelNotifyAttempts() { return cancelNotifyAttempts; }
+
+    public Instant getCancelNotifyNextAttemptAt() { return cancelNotifyNextAttemptAt; }
 }

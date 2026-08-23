@@ -446,7 +446,13 @@ function PairingFlow({ status, canManage, waitingSince, waitingElapsed, issuedKe
             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wide">Pairing code</span>
             {canManage && (
               <button
-                onClick={() => generateKey.mutate()}
+                onClick={() => {
+                  if (window.confirm(
+                    "Generate a new pairing code? If you've already shared this one, it will stop working immediately — your clinic would need the new code instead.",
+                  )) {
+                    generateKey.mutate();
+                  }
+                }}
                 disabled={generateKey.isPending}
                 className="text-[11px] font-bold text-brand-600 hover:text-brand-700 flex items-center gap-1"
               >
@@ -596,7 +602,16 @@ function ManualKeySection({ status, issuedKey, showKey, setShowKey, copied, copy
         </p>
         {canManage && (
           <button
-            onClick={() => generateKey.mutate()}
+            onClick={() => {
+              if (
+                !status.keyIssued ||
+                window.confirm(
+                  "Generate a new connection key? The current one will stop working immediately — anything still signing with it (including a pairing code based on it) will start failing until it's updated.",
+                )
+              ) {
+                generateKey.mutate();
+              }
+            }}
             disabled={generateKey.isPending}
             className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold disabled:opacity-50"
           >

@@ -2,6 +2,7 @@ package com.checkup.pharmacy.modules.integration.emr;
 
 import com.checkup.pharmacy.common.enums.AuditModule;
 import com.checkup.pharmacy.common.exception.BadRequestException;
+import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.modules.audit.AuditEntry;
 import com.checkup.pharmacy.modules.audit.AuditService;
@@ -12,6 +13,7 @@ import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
 import com.checkup.pharmacy.modules.pharmacy.PharmacyRepository;
 import com.checkup.pharmacy.modules.prescription.Prescription;
 import com.checkup.pharmacy.modules.prescription.PrescriptionRepository;
+import com.checkup.pharmacy.security.ApiSecretHasher;
 import com.checkup.pharmacy.security.EmrSecretCipher;
 import com.checkup.pharmacy.tenant.TenantContext;
 import org.springframework.beans.factory.annotation.Value;
@@ -64,10 +66,27 @@ public class EmrConnectionService {
         return toStatus(load());
     }
 
-    /** Saves which clinic this pharmacy is connected to, and where its updates go. */
+    /**
+     * Saves which clinic this pharmacy is connected to, and where its updates go.
+     *
+     * <p>Refuses on an already-paired pharmacy. Pairing binds {@code emrCallbackUrl} to the
+     * CLINIC's own webhook secret ({@code emrWebhookSecret*} — see
+     * {@code EmrDispenseCallbackService.resolveConnection}'s dialect selection); this method
+     * only ever touches the callback URL, never that secret. Allowing it through would let a
+     * pharmacist retarget a paired connection's delivery address while every future callback
+     * keeps signing with the original clinic's key — a failure indistinguishable from "the
+     * clinic's server is down" until someone thinks to compare the two. Disconnecting first
+     * (which clears both together) and either re-pairing or connecting manually is the one
+     * path that cannot desync them.
+     */
     @Transactional
     public EmrConnectionStatus saveClinic(SaveEmrClinicRequest req) {
         Pharmacy p = load();
+        if (p.isEmrPaired()) {
+            throw new ConflictException(
+                    "This pharmacy is connected via clinic pairing. Disconnect first if you need to change "
+                            + "these details by hand.");
+        }
         String previous = p.getEmrCallbackUrl();
         p.connectEmrClinic(req.clinicName().trim(), validateCallbackUrl(req.callbackUrl()));
         pharmacyRepository.save(p);
@@ -97,7 +116,7 @@ public class EmrConnectionService {
         String key = Base64.getUrlEncoder().withoutPadding().encodeToString(raw);
 
         EmrSecretCipher.Encrypted encrypted = secretCipher.encrypt(key);
-        p.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag());
+        p.setEmrSecret(encrypted.ciphertext(), encrypted.iv(), encrypted.tag(), ApiSecretHasher.hash(key));
         pharmacyRepository.save(p);
 
         auditService.log(AuditEntry.of(AuditModule.SETTINGS, "EMR_KEY_GENERATED", "PHARMACY")

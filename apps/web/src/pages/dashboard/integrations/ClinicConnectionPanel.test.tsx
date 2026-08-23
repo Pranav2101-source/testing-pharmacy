@@ -168,6 +168,33 @@ describe("ClinicConnectionPanel: disconnected — pairing is the default door", 
     expect(await screen.findByText(/waiting for your clinic to enter this/i)).toBeInTheDocument();
   });
 
+  it("regenerating a code that's already been shared asks for confirmation first", async () => {
+    mockApi.get.mockResolvedValue(ok(disconnectedStatus()));
+    mockApi.post.mockResolvedValue(ok({ key: "pk-code-abc123", generatedAt: "2026-08-20T10:00:00Z" }));
+    renderPanel();
+    await userEvent.click(await screen.findByRole("button", { name: /generate pairing code/i }));
+    await screen.findByText(/waiting for your clinic to enter this/i);
+
+    await userEvent.click(screen.getByRole("button", { name: /regenerate/i }));
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/stop working immediately/i));
+    expect(mockApi.post).toHaveBeenCalledTimes(2);
+  });
+
+  it("declining the regenerate confirmation leaves the outstanding code untouched", async () => {
+    mockApi.get.mockResolvedValue(ok(disconnectedStatus()));
+    mockApi.post.mockResolvedValue(ok({ key: "pk-code-abc123", generatedAt: "2026-08-20T10:00:00Z" }));
+    renderPanel();
+    await userEvent.click(await screen.findByRole("button", { name: /generate pairing code/i }));
+    await screen.findByText(/waiting for your clinic to enter this/i);
+
+    window.confirm = vi.fn().mockReturnValue(false);
+    await userEvent.click(screen.getByRole("button", { name: /regenerate/i }));
+
+    expect(mockApi.post).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("pk-code-abc123")).toBeInTheDocument();
+  });
+
   it("a failed generation surfaces the server's message as a toast, not a silent no-op", async () => {
     mockApi.get.mockResolvedValue(ok(disconnectedStatus()));
     mockApi.post.mockRejectedValue(axiosError(503, { error: "EMR integration is not configured" }));
@@ -386,6 +413,45 @@ describe("ClinicConnectionPanel: manual fallback door", () => {
     await userEvent.click(screen.getByRole("button", { name: /save clinic details/i }));
 
     expect(await screen.findByText(/must be a full http\(s\) url/i)).toBeInTheDocument();
+  });
+
+  it("rotating an already-issued manual key asks for confirmation first", async () => {
+    mockApi.get.mockResolvedValue(ok(disconnectedStatus({
+      clinicName: "Manual Clinic", callbackUrl: "https://manual.example/webhook",
+      keyIssued: true, connectedAt: "2026-08-10T10:00:00Z", keyUpdatedAt: "2026-08-10T10:00:00Z",
+    })));
+    mockApi.post.mockResolvedValue(ok({ key: "new-manual-secret", generatedAt: "2026-08-20T10:00:00Z" }));
+    renderPanel();
+
+    await userEvent.click(await screen.findByRole("button", { name: /generate a new key/i }));
+
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/stop working immediately/i));
+    expect(mockApi.post).toHaveBeenCalledWith("/pharmacy/emr-connection/key");
+  });
+
+  it("declining the manual-key rotation confirmation makes no request at all", async () => {
+    mockApi.get.mockResolvedValue(ok(disconnectedStatus({
+      clinicName: "Manual Clinic", callbackUrl: "https://manual.example/webhook",
+      keyIssued: true, connectedAt: "2026-08-10T10:00:00Z", keyUpdatedAt: "2026-08-10T10:00:00Z",
+    })));
+    window.confirm = vi.fn().mockReturnValue(false);
+    renderPanel();
+
+    await userEvent.click(await screen.findByRole("button", { name: /generate a new key/i }));
+
+    expect(mockApi.post).not.toHaveBeenCalled();
+  });
+
+  it("generating a FIRST manual key (nothing to lose yet) skips the confirmation entirely", async () => {
+    mockApi.get.mockResolvedValue(ok(disconnectedStatus()));
+    mockApi.post.mockResolvedValue(ok({ key: "manual-secret-value", generatedAt: "2026-08-20T10:00:00Z" }));
+    renderPanel();
+    await userEvent.click(await screen.findByRole("button", { name: /connect manually/i }));
+
+    await userEvent.click(screen.getByRole("button", { name: /^generate key$/i }));
+
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(mockApi.post).toHaveBeenCalledWith("/pharmacy/emr-connection/key");
   });
 
   it("the manual key is revealed on generation (it must be copied before it's gone), and can be masked and unmasked", async () => {

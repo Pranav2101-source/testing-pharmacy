@@ -11,6 +11,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 
@@ -42,9 +43,10 @@ class PrescriptionServiceSuggestionsTest {
     private final UploadRepository uploadRepository = mock(UploadRepository.class);
     private final MedicineRepository medicineRepository = mock(MedicineRepository.class);
     private final DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
+    private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
 
     private final PrescriptionService service = new PrescriptionService(prescriptionRepository, itemRepository,
-            doctorRepository, uploadRepository, medicineRepository, sequenceService);
+            doctorRepository, uploadRepository, medicineRepository, sequenceService, eventPublisher);
 
     @BeforeEach
     void tenant() {

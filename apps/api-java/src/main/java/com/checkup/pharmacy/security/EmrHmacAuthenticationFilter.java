@@ -12,6 +12,8 @@ import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletRequestWrapper;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
@@ -37,6 +39,8 @@ import java.util.Optional;
  */
 @Component
 public class EmrHmacAuthenticationFilter extends OncePerRequestFilter {
+
+    private static final Logger log = LoggerFactory.getLogger(EmrHmacAuthenticationFilter.class);
 
     public static final String PHARMACY_HEADER = "X-Pharmacy-Id";
     public static final String TIMESTAMP_HEADER = "X-Checkup-Timestamp";
@@ -144,6 +148,14 @@ public class EmrHmacAuthenticationFilter extends OncePerRequestFilter {
         try {
             return secretCipher.decrypt(p.getEmrSecretCiphertext(), p.getEmrSecretIv(), p.getEmrSecretTag());
         } catch (Exception e) {
+            // Every inbound request from this pharmacy will 401 until this is fixed, and the
+            // response is deliberately the same generic message a wrong signature gets — so
+            // without a log line here, that outage is completely silent server-side too. This
+            // is what makes it findable: a decrypt failure almost always means
+            // app.integration.emr.encryption-key changed under an already-issued secret.
+            log.error("EMR secret for pharmacy {} could not be decrypted — every request from this "
+                    + "pharmacy will be rejected until this is resolved (check "
+                    + "app.integration.emr.encryption-key)", pharmacyId, e);
             return null;
         }
     }
