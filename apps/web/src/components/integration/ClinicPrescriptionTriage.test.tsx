@@ -71,7 +71,7 @@ describe("ClinicPrescriptionTriage: blocking banner names the actual reason", ()
 
     expect(screen.getByText(/1 line still needs a quantity confirmed/i)).toBeInTheDocument();
     expect(screen.queryByText(/needs? matching to your stock/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /bill now/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /continue to billing/i })).toBeDisabled();
   });
 
   it("an unmatched medicine still blocks with the matching message", () => {
@@ -109,7 +109,7 @@ describe("ClinicPrescriptionTriage: blocking banner names the actual reason", ()
     }));
 
     expect(screen.queryByText(/still needs?/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /bill now/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /continue to billing/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /save as draft/i })).toBeEnabled();
   });
 });

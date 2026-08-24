@@ -2,6 +2,7 @@ import { calcGstFromMrp } from "@pharmacy/utils";
 import { api } from "@/lib/api-client";
 import { DEFAULT_META } from "@/components/billing/useBillingStore";
 import type { CartItem, BillingMeta } from "@/components/billing/useBillingStore";
+import type { AlternativeResult, AlternativeBatch } from "@pharmacy/types";
 
 /**
  * Turns a prescription into a billing cart.
@@ -25,6 +26,7 @@ export type BillablePrescription = {
   doctorName: string;
   doctor: { id: string; name: string } | null;
   items: {
+    id: string;
     medicineId: string | null;
     medicineName: string;
     schedule: string | null;
@@ -33,7 +35,24 @@ export type BillablePrescription = {
   }[];
 };
 
-type FefoBatch = {
+/**
+ * A pharmacist's explicit decision for a line the stock check flagged, made inline on the
+ * triage screen rather than by silently dropping the line (the old behaviour {@link
+ * resolvePrescriptionToCart} still falls back to when a line carries no resolution at all).
+ *
+ * <p>{@code replace} carries an already-built {@link CartItem} rather than just a medicine id:
+ * the pharmacist chose it from a specific batch's live stock at click time (see the triage
+ * screen's inline alternatives panel), and re-deriving it here via a second FEFO lookup could
+ * silently pick a different batch than the one they were shown. Its {@code prescriptionItemId}
+ * must be set to this line's id so billing attributes the substitution back to what was
+ * prescribed (see {@code BillingService.recordDispensing}) instead of losing the link.
+ */
+export type ItemResolution =
+  | { action: "replace"; cartItem: CartItem }
+  | { action: "remove" }
+  | { action: "hold" };
+
+export type FefoBatch = {
   id: string;
   batchNumber: string;
   expiryDate: string;
@@ -52,6 +71,8 @@ export type ResolvedCart = {
   meta: BillingMeta;
   /** Medicine names that could not be put in the cart — no stock, or the lookup failed. */
   failures: string[];
+  /** Lines a pharmacist explicitly chose to leave off this bill — see {@link ItemResolution}. */
+  skipped: { medicineName: string; reason: "hold" | "remove" }[];
 };
 
 /**
@@ -78,15 +99,32 @@ export function canBill(rx: BillablePrescription, needsReview: number) {
  * did not choose. Naming it up front lets them substitute it from the billing screen, which
  * is where the alternatives drawer already lives.
  */
-export async function resolvePrescriptionToCart(rx: BillablePrescription): Promise<ResolvedCart> {
+export async function resolvePrescriptionToCart(
+  rx: BillablePrescription,
+  resolutions?: Record<string, ItemResolution>,
+): Promise<ResolvedCart> {
   const lines = billableLines(rx);
   const failures: string[] = [];
+  const skipped: ResolvedCart["skipped"] = [];
 
   // Sequential rather than Promise.all: these hit the same inventory rows, and a burst of
   // parallel FEFO lookups on one prescription buys milliseconds while making the failure
   // order non-deterministic in the message the pharmacist reads.
   const items: CartItem[] = [];
   for (const line of lines) {
+    const resolution = resolutions?.[line.id];
+
+    if (resolution?.action === "remove" || resolution?.action === "hold") {
+      skipped.push({ medicineName: line.medicineName, reason: resolution.action });
+      continue;
+    }
+    if (resolution?.action === "replace") {
+      // Already a complete CartItem, built from the exact batch the pharmacist was shown —
+      // nothing left to resolve for this line.
+      items.push(resolution.cartItem);
+      continue;
+    }
+
     const remaining = line.quantity - line.dispensedQty;
     try {
       const { data } = await api.get<{ data: FefoBatch | null }>(
@@ -116,6 +154,7 @@ export async function resolvePrescriptionToCart(rx: BillablePrescription): Promi
       customerPhone: rx.patientPhone ?? "",
     },
     failures,
+    skipped,
   };
 }
 
@@ -131,7 +170,9 @@ export async function resolvePrescriptionToCart(rx: BillablePrescription): Promi
  * item-level calculation is always intra-state (CGST/SGST); IGST is applied at invoice level
  * from the bill's own interstate flag, exactly as the store does it.
  */
-function buildCartItem(batch: FefoBatch, schedule: string | null, quantity: number): CartItem {
+/** Exported so the triage screen's "search medicine instead" replace path can resolve a
+ *  manually-picked medicine through the same FEFO-batch → CartItem math as everything else. */
+export function buildCartItem(batch: FefoBatch, schedule: string | null, quantity: number): CartItem {
   const mrp = Number(batch.mrp);
   const gstRate = Number(batch.medicine.gstRate);
   const { taxableAmount, cgst, sgst, igst, totalAmount } =
@@ -149,6 +190,56 @@ function buildCartItem(batch: FefoBatch, schedule: string | null, quantity: numb
     discount: 0,
     gstRate,
     availableStock: batch.available,
+    rate: mrp,
+    taxableAmount,
+    cgst,
+    sgst,
+    igst,
+    amount: totalAmount,
+  };
+}
+
+/**
+ * Builds a cart row for a pharmacist-chosen substitute — the "Replace" action on the triage
+ * screen's inline stock-resolution panel.
+ *
+ * <p>Same money computation as {@link buildCartItem}, but sourced from an {@link
+ * AlternativeResult}/{@link AlternativeBatch} pair (the same shape {@code AlternativesDrawer}
+ * already fetches from {@code GET /medicines/{id}/alternatives}) rather than a FEFO batch, and
+ * always carries {@code prescriptionItemId} so the substitution is attributed back to the
+ * prescribed line at billing time instead of needing a second manual link on the billing page.
+ *
+ * <p>Quantity is capped at what this specific batch can actually cover — the pharmacist picked
+ * it off a stock count shown a moment earlier, and asking for more than that batch holds would
+ * only be caught later, at save, with a less useful error.
+ */
+export function buildAlternativeCartItem(
+  alt: AlternativeResult,
+  batch: AlternativeBatch,
+  schedule: string | null,
+  desiredQuantity: number,
+  prescriptionItemId: string,
+): CartItem {
+  const mrp = Number(batch.mrp);
+  const gstRate = Number(alt.gstRate);
+  const available = batch.quantity - batch.reservedQuantity;
+  const quantity = Math.max(1, Math.min(desiredQuantity, available));
+  const { taxableAmount, cgst, sgst, igst, totalAmount } =
+    calcGstFromMrp(mrp, quantity, 0, gstRate, false);
+  return {
+    inventoryId: batch.id,
+    medicineName: alt.name,
+    hsnCode: alt.hsnCode,
+    schedule,
+    batchNumber: batch.batchNumber,
+    expiryDate: batch.expiryDate,
+    mrp,
+    quantity,
+    freeQty: 0,
+    discount: 0,
+    gstRate,
+    availableStock: available,
+    prescriptionItemId,
     rate: mrp,
     taxableAmount,
     cgst,

@@ -22,7 +22,8 @@ const STOCK_ORDER: Record<AlternativeResult["stockStatus"], number> = {
   out_of_stock: 2,
 };
 
-function sortAlternatives(alts: AlternativeResult[]): AlternativeResult[] {
+/** Exported for reuse by the prescription triage screen's inline replace panel. */
+export function sortAlternatives(alts: AlternativeResult[]): AlternativeResult[] {
   return [...alts].sort((a, b) => {
     const s = STOCK_ORDER[a.stockStatus] - STOCK_ORDER[b.stockStatus];
     if (s !== 0) return s;

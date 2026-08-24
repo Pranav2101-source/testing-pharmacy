@@ -7,6 +7,7 @@ import com.checkup.pharmacy.modules.prescription.dto.NewPrescriptionCountRespons
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionPageResponse;
 import com.checkup.pharmacy.modules.prescription.dto.LinkPrescriptionItemRequest;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionResponse;
+import com.checkup.pharmacy.modules.prescription.dto.PrescriptionStockResponse;
 import com.checkup.pharmacy.modules.prescription.dto.UpdatePrescriptionRequest;
 import jakarta.validation.Valid;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -61,6 +62,12 @@ public class PrescriptionController {
     @GetMapping("/{id}")
     public ApiResponse<PrescriptionResponse> getById(@PathVariable String id) {
         return ApiResponse.ok(prescriptionService.getById(id));
+    }
+
+    /** Live stock per catalogue-linked line — powers the triage screen's stock-check step. */
+    @GetMapping("/{id}/stock")
+    public ApiResponse<PrescriptionStockResponse> stock(@PathVariable String id) {
+        return ApiResponse.ok(prescriptionService.stockCheck(id));
     }
 
     /** Fired when a pharmacist opens a row — clears it from the nav badge's count. */

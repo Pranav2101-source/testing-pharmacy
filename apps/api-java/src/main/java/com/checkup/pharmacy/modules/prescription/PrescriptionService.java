@@ -12,6 +12,8 @@ import com.checkup.pharmacy.common.util.DateRange;
 import com.checkup.pharmacy.modules.doctor.Doctor;
 import com.checkup.pharmacy.modules.doctor.DoctorRepository;
 import com.checkup.pharmacy.modules.integration.emr.PrescriptionCancelledEvent;
+import com.checkup.pharmacy.modules.inventory.Inventory;
+import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
 import com.checkup.pharmacy.modules.prescription.dto.CreatePrescriptionRequest;
@@ -19,6 +21,7 @@ import com.checkup.pharmacy.modules.prescription.dto.NewPrescriptionCountRespons
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionItemRequest;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionPageResponse;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionResponse;
+import com.checkup.pharmacy.modules.prescription.dto.PrescriptionStockResponse;
 import com.checkup.pharmacy.modules.prescription.dto.UpdatePrescriptionRequest;
 import com.checkup.pharmacy.modules.upload.UploadRepository;
 import com.checkup.pharmacy.tenant.TenantContext;
@@ -45,17 +48,27 @@ import java.util.stream.Collectors;
 @Service
 public class PrescriptionService {
 
+    /**
+     * Mirrors {@code MedicineService.LOW_STOCK_QTY}: the same absolute-units threshold, so a
+     * pharmacist reads the same "low stock" colour here as on the billing alternatives drawer.
+     * Duplicated rather than shared across the module boundary — same call as
+     * {@code EmrIntegrationService} independently querying {@link InventoryRepository} for its
+     * own stock preview rather than depending on the medicine module for it.
+     */
+    private static final int LOW_STOCK_QTY = 10;
+
     private final PrescriptionRepository prescriptionRepository;
     private final PrescriptionItemRepository itemRepository;
     private final DoctorRepository doctorRepository;
     private final UploadRepository uploadRepository;
     private final MedicineRepository medicineRepository;
+    private final InventoryRepository inventoryRepository;
     private final DocumentSequenceService sequenceService;
     private final ApplicationEventPublisher eventPublisher;
 
     public PrescriptionService(PrescriptionRepository prescriptionRepository, PrescriptionItemRepository itemRepository,
                                DoctorRepository doctorRepository, UploadRepository uploadRepository,
-                               MedicineRepository medicineRepository,
+                               MedicineRepository medicineRepository, InventoryRepository inventoryRepository,
                                DocumentSequenceService sequenceService,
                                ApplicationEventPublisher eventPublisher) {
         this.prescriptionRepository = prescriptionRepository;
@@ -63,6 +76,7 @@ public class PrescriptionService {
         this.doctorRepository = doctorRepository;
         this.uploadRepository = uploadRepository;
         this.medicineRepository = medicineRepository;
+        this.inventoryRepository = inventoryRepository;
         this.sequenceService = sequenceService;
         this.eventPublisher = eventPublisher;
     }
@@ -104,6 +118,46 @@ public class PrescriptionService {
     public PrescriptionResponse getById(String id) {
         Prescription rx = load(id);
         return toResponse(rx, rx.getDoctor(), itemRepository.findByPrescriptionId(id));
+    }
+
+    /**
+     * Live stock for every catalogue-linked line on this prescription, for the triage
+     * screen's stock-check step.
+     *
+     * <p>One batched {@link InventoryRepository} query for the whole prescription rather than
+     * a FEFO lookup per line ({@link com.checkup.pharmacy.modules.prescription.PrescriptionItem}
+     * lines are typically few, but this is a preview rendered on every triage open, not a
+     * one-off conversion — see {@code prescriptionToCart.ts} on the frontend for why THAT path
+     * stays sequential-per-line instead of reusing this). Unmatched lines (no medicineId yet)
+     * are omitted — there is nothing to check stock for until a pharmacist links one.
+     */
+    @Transactional(readOnly = true)
+    public PrescriptionStockResponse stockCheck(String id) {
+        Prescription rx = load(id);
+        List<PrescriptionItem> items = itemRepository.findByPrescriptionId(id);
+
+        List<String> medicineIds = items.stream()
+                .map(PrescriptionItem::getMedicineId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        Map<String, List<Inventory>> batchesByMedicine = medicineIds.isEmpty()
+                ? Map.of()
+                : inventoryRepository.findActiveNonExpiredByMedicineIdIn(rx.getPharmacyId(), medicineIds, Instant.now())
+                        .stream().collect(Collectors.groupingBy(Inventory::getMedicineId));
+
+        List<PrescriptionStockResponse.Item> result = items.stream()
+                .filter(i -> i.getMedicineId() != null)
+                .map(i -> {
+                    int available = batchesByMedicine.getOrDefault(i.getMedicineId(), List.of()).stream()
+                            .mapToInt(b -> Math.max(0, b.getQuantity() - b.getReservedQuantity()))
+                            .sum();
+                    String status = available == 0 ? "out_of_stock"
+                            : available <= LOW_STOCK_QTY ? "low_stock" : "in_stock";
+                    return new PrescriptionStockResponse.Item(i.getId(), i.getMedicineId(), available, status);
+                })
+                .toList();
+        return new PrescriptionStockResponse(result);
     }
 
     @Transactional(readOnly = true)

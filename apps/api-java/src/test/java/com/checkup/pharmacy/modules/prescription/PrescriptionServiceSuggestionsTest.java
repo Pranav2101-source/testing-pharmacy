@@ -2,6 +2,7 @@ package com.checkup.pharmacy.modules.prescription;
 
 import com.checkup.pharmacy.common.enums.Role;
 import com.checkup.pharmacy.modules.doctor.DoctorRepository;
+import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionResponse;
 import com.checkup.pharmacy.common.sequence.DocumentSequenceService;
@@ -42,11 +43,12 @@ class PrescriptionServiceSuggestionsTest {
     private final DoctorRepository doctorRepository = mock(DoctorRepository.class);
     private final UploadRepository uploadRepository = mock(UploadRepository.class);
     private final MedicineRepository medicineRepository = mock(MedicineRepository.class);
+    private final InventoryRepository inventoryRepository = mock(InventoryRepository.class);
     private final DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
     private final ApplicationEventPublisher eventPublisher = mock(ApplicationEventPublisher.class);
 
     private final PrescriptionService service = new PrescriptionService(prescriptionRepository, itemRepository,
-            doctorRepository, uploadRepository, medicineRepository, sequenceService, eventPublisher);
+            doctorRepository, uploadRepository, medicineRepository, inventoryRepository, sequenceService, eventPublisher);
 
     @BeforeEach
     void tenant() {

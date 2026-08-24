@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * A clinic line with no usable quantity ("as directed") is ingested as a placeholder rather
  * than rejected — see PrescriptionItem.needsQuantityConfirmation. This is the live, end-to-end
  * proof of the fix: the line must be VISIBLE and labelled honestly (not silently treated as
- * already dispensed), block Bill Now / Save as Draft with the right reason, and become
+ * already dispensed), block Continue to Billing / Save as Draft with the right reason, and become
  * billable the moment a pharmacist confirms a real number through ConfirmQuantityPanel.
  *
  * Screenshots are written to e2e/screenshots/ at each step so the flow can be inspected
@@ -55,7 +55,7 @@ test.describe("EMR: a clinic line with no stated quantity", () => {
     await expect(page.getByText(/needs matching to your stock/i)).toHaveCount(0);
     // The item row: amber "not set", never a struck-through "dispensed".
     await expect(page.getByText("not set")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Bill Now" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Continue to Billing" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Save as Draft" })).toBeDisabled();
 
     await page.screenshot({ path: path.join(SHOTS, "1-arrived-unconfirmed-quantity.png"), fullPage: true });
@@ -75,15 +75,15 @@ test.describe("EMR: a clinic line with no stated quantity", () => {
     // (confirm, then the panel's own refetch) against the real remote dev database.
     await expect(page.getByText(/Quantity confirmed for/i)).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(/still needs?/i)).toHaveCount(0, { timeout: 20_000 });
-    await expect(page.getByRole("button", { name: "Bill Now" })).toBeEnabled({ timeout: 10_000 });
+    await expect(page.getByRole("button", { name: "Continue to Billing" })).toBeEnabled({ timeout: 10_000 });
     await expect(page.getByRole("button", { name: "Save as Draft" })).toBeEnabled({ timeout: 10_000 });
 
     await page.screenshot({ path: path.join(SHOTS, "2-quantity-confirmed-actions-enabled.png"), fullPage: true });
   });
 
-  test("Bill Now pre-fills the cart with the now-confirmed quantity, and the sale completes end to end", async () => {
+  test("Continue to Billing pre-fills the cart with the now-confirmed quantity, and the sale completes end to end", async () => {
     await openPrescription(page, rxNumber);
-    await page.getByRole("button", { name: "Bill Now" }).click();
+    await page.getByRole("button", { name: "Continue to Billing" }).click();
 
     await expect(page).toHaveURL(/\/dashboard\/billing\/new/, { timeout: 15_000 });
     await expect(page.getByText(STOCKED_MEDICINE_NAME).first()).toBeVisible({ timeout: 10_000 });
