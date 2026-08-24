@@ -11,6 +11,7 @@ import com.checkup.pharmacy.modules.medicine.MedicineRepository;
 import com.checkup.pharmacy.modules.medicine.MedicineService;
 import com.checkup.pharmacy.modules.pharmacy.PharmacyRepository;
 import com.checkup.pharmacy.tenant.TenantContext;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -168,6 +169,16 @@ public class ClinicStockService {
                     substitutes.getOrDefault(s.match.externalItemId(), List.of())));
         }
         return new ClinicStockResponse(pharmacyName, items, omitted);
+    }
+
+    /** Searches medicines belonging to this pharmacy and returns their live stock in one shape. */
+    @Transactional(readOnly = true)
+    public ClinicStockResponse search(String query, int limit) {
+        int safeLimit = Math.min(Math.max(limit, 1), MAX_NAMES);
+        String term = query == null || query.trim().isEmpty() ? null : query.trim();
+        List<String> names = inventoryRepository.searchMedicineNames(
+                TenantContext.pharmacyId(), term, PageRequest.of(0, safeLimit));
+        return lookup(names);
     }
 
     /**

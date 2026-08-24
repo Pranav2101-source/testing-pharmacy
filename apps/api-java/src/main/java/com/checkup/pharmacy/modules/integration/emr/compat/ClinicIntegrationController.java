@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Duration;
@@ -123,6 +124,14 @@ public class ClinicIntegrationController {
     public ApiResponse<ClinicStockResponse> stock(HttpServletRequest request) {
         String[] names = request.getParameterValues("name");
         return ApiResponse.ok(stockService.lookup(names == null ? List.of() : Arrays.asList(names)));
+    }
+
+    /** Search the paired pharmacy's own inventory for the clinic's medicine autocomplete. */
+    @GetMapping("/medicines")
+    public ApiResponse<ClinicStockResponse> medicines(
+            @RequestParam(required = false) String q,
+            @RequestParam(defaultValue = "20") int limit) {
+        return ApiResponse.ok(stockService.search(q, limit));
     }
 
     /**

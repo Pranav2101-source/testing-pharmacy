@@ -80,6 +80,16 @@ class ClinicStockParamBindingTest {
         assertThat(captureNames()).isEmpty();
     }
 
+    @Test
+    @DisplayName("medicine search forwards its query and result limit")
+    void bindsMedicineSearchParameters() throws Exception {
+        mockMvc.perform(get("/api/v1/integration/medicines")
+                .param("q", "para 500")
+                .param("limit", "12"));
+
+        verify(stockService).search("para 500", 12);
+    }
+
     private List<String> captureNames() {
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<String>> captor = ArgumentCaptor.forClass(List.class);

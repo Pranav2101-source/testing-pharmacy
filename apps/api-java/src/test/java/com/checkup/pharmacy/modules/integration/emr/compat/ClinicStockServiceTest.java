@@ -18,6 +18,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.data.domain.Pageable;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -288,6 +289,23 @@ class ClinicStockServiceTest {
 
         assertThat(response.items()).isEmpty();
         assertThat(response.namesOmitted()).isZero();
+    }
+
+    @Test
+    @DisplayName("catalogue search is scoped to medicines carried by this pharmacy")
+    void searchesThisPharmacysInventory() {
+        when(inventoryRepository.searchMedicineNames(anyString(), any(), any(Pageable.class)))
+                .thenReturn(List.of("Paracetamol 500mg"));
+        matcherReturns(match("Paracetamol 500mg", "med_1", "Paracetamol 500mg", "Paracetamol",
+                "500mg", "Tablet", 40, new BigDecimal("22.50")));
+
+        ClinicStockResponse response = service.search("para", 20);
+
+        assertThat(response.items()).extracting(ClinicStockResponse.Item::medicineName)
+                .containsExactly("Paracetamol 500mg");
+        org.mockito.Mockito.verify(inventoryRepository)
+                .searchMedicineNames(org.mockito.ArgumentMatchers.eq("ph_1"),
+                        org.mockito.ArgumentMatchers.eq("para"), any(Pageable.class));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

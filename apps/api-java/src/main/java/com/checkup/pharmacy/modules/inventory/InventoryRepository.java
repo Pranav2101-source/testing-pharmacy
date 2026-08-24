@@ -79,6 +79,23 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
     List<Inventory> findByPharmacyIdAndStatus(String pharmacyId, com.checkup.pharmacy.common.enums.BatchStatus status);
 
     /**
+     * Distinct catalogue names this pharmacy has carried, for the paired clinic's prescribing
+     * autocomplete. Inventory — not the shared medicine catalogue — defines "in this pharmacy";
+     * zero/expired batches remain discoverable so the caller can honestly show Not available.
+     */
+    @Query("""
+            SELECT DISTINCT i.medicine.name FROM Inventory i
+            WHERE i.pharmacyId = :pharmacyId AND i.medicine.isActive = true
+              AND (:search IS NULL
+                   OR LOWER(i.medicine.name) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%'))
+                   OR LOWER(i.medicine.genericName) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%')))
+            ORDER BY i.medicine.name ASC
+            """)
+    List<String> searchMedicineNames(@Param("pharmacyId") String pharmacyId,
+                                     @Param("search") String search,
+                                     Pageable pageable);
+
+    /**
      * status is compared as text — binding a null value typed as the Postgres
      * custom enum fails with "could not determine data type of parameter"
      * (SQLState 42P18); casting both sides to text sidesteps it (see
