@@ -19,10 +19,10 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -106,15 +106,23 @@ public class ClinicIntegrationController {
     /**
      * Live stock for a set of medicine names, at the moment a doctor is prescribing.
      *
-     * <p>{@code name} is bound as a repeated query parameter, not a single delimited one —
-     * medicine names legitimately contain commas ("Vitamin B1, B6, B12"), and joining them
-     * on a separator that appears in the data would split one medicine into several that do
-     * not exist. Do not "simplify" this to a single {@code String} parameter split on commas.
+     * <p><b>Names are read off the request, NOT bound with {@code @RequestParam List<String>}.</b>
+     * That binding looks like it does the right thing and does not: when exactly one {@code name}
+     * parameter is present, Spring hands the resolver a single String and converts it to a
+     * collection by SPLITTING IT ON COMMAS. Medicine names legitimately contain commas —
+     * "Vitamin B1, B6, B12" is an ordinary Indian combination product — so one such lookup
+     * arrived here as three medicines, none of which exists. All three came back unmatched, and
+     * because the caller lines answers up by the name it sent, the real product matched nothing
+     * and the prescriber saw no availability at all.
+     *
+     * <p>The clinic sends one name per request, which is precisely the case that triggers the
+     * split, so this was not an edge case: it was every combination product, every time.
+     * {@code getParameterValues} performs no conversion and preserves each name as sent.
      */
     @GetMapping("/stock")
-    public ApiResponse<ClinicStockResponse> stock(
-            @RequestParam(name = "name", required = false) List<String> names) {
-        return ApiResponse.ok(stockService.lookup(names));
+    public ApiResponse<ClinicStockResponse> stock(HttpServletRequest request) {
+        String[] names = request.getParameterValues("name");
+        return ApiResponse.ok(stockService.lookup(names == null ? List.of() : Arrays.asList(names)));
     }
 
     /**

@@ -50,8 +50,15 @@ public class MedicineService {
     // oversized payloads outright rather than let them tie up a long transaction.
     private static final int MAX_BULK_ROWS = 5000;
 
-    /** Below this many sellable units a batch-set is flagged low_stock (matches the old Node backend). */
-    private static final int LOW_STOCK_QTY = 10;
+    /**
+     * Below this many sellable units a batch-set is flagged low_stock (matches the old Node backend).
+     *
+     * <p>Public because the EMR stock lookup ({@code ClinicStockService}) classifies the same
+     * shelf for a prescriber's screen. A second copy of the number there would let the clinic's
+     * badge and this pharmacy's own alternatives drawer disagree about whether a medicine is
+     * running out, which is a disagreement nobody would think to look for.
+     */
+    public static final int LOW_STOCK_QTY = 10;
 
     private final MedicineRepository medicineRepository;
     private final PharmacyMedicineOverrideRepository overrideRepository;
