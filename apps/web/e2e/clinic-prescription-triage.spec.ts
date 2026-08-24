@@ -3,7 +3,7 @@ import { test, expect, type Page, type BrowserContext, type APIRequestContext } 
 /**
  * The arrived-clinic-prescription workflow, end to end through a real browser:
  * a clinic pushes a prescription → it appears on the Prescriptions tab → the pharmacist
- * opens it → and gets three decisions: Cancel, Save as Draft, Bill Now.
+ * opens it → and gets three decisions: Cancel, Save as Draft, Continue to Billing.
  *
  * <p>Prescriptions here arrive through the REAL machine path — a clinic paired over
  * {@code /integration/pair}, then pushing over {@code /integration/prescriptions} with its
@@ -78,7 +78,7 @@ test.describe("clinic prescription → triage → decide", () => {
 
     // The triage view's identity: clinic provenance, and all three decisions present.
     await expect(page.getByText("Sent by clinic")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Bill Now" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Continue to Billing" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Save as Draft" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
     // The old record view's giveaway must NOT be what opened.
@@ -103,16 +103,16 @@ test.describe("clinic prescription → triage → decide", () => {
     await openPrescription(page, rx.prescriptionNumber);
 
     await expect(page.getByText(/still need.* matching to your stock/)).toBeVisible();
-    await expect(page.getByRole("button", { name: "Bill Now" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Continue to Billing" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Save as Draft" })).toBeDisabled();
     // Cancel stays available: refusing a prescription you cannot fill is exactly the case.
     await expect(page.getByRole("button", { name: "Cancel", exact: true })).toBeEnabled();
   });
 
-  test("Bill Now pre-fills the cart and lands in the normal billing screen", async ({ request }) => {
+  test("Continue to Billing pre-fills the cart and lands in the normal billing screen", async ({ request }) => {
     const rx = await pushFromClinic(request, clinic, "Billing Patient");
     await openPrescription(page, rx.prescriptionNumber);
-    await page.getByRole("button", { name: "Bill Now" }).click();
+    await page.getByRole("button", { name: "Continue to Billing" }).click();
 
     await expect(page).toHaveURL(/\/dashboard\/billing\/new/, { timeout: 15_000 });
     // The two things a pharmacist would otherwise have retyped: the medicine (in the cart)
@@ -152,7 +152,7 @@ test.describe("clinic prescription → triage → decide", () => {
 
     page.once("dialog", (d) => d.accept());
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
-    await expect(page.getByRole("button", { name: "Bill Now" })).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.getByRole("button", { name: "Continue to Billing" })).toHaveCount(0, { timeout: 15_000 });
 
     // Two halves of one fact: the pharmacy's own record, and the report owed to the clinic
     // that wrote it. A cancellation the clinic never hears about leaves a doctor believing a
@@ -190,7 +190,7 @@ async function openPrescription(page: Page, prescriptionNumber: string) {
   await page.getByText(prescriptionNumber, { exact: true }).first().click();
 }
 
-/** Bill Now can only be proven against real stock — an empty shelf only proves the error path. */
+/** Continue to Billing can only be proven against real stock — an empty shelf only proves the error path. */
 async function ensureStock(request: APIRequestContext, token: string) {
   const fefo = await request.get(`${API}/inventory/fefo/${STOCKED_MEDICINE.id}?quantity=30`, {
     headers: { Authorization: `Bearer ${token}` },

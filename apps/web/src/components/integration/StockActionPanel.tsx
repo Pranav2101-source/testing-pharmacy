@@ -1,0 +1,368 @@
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import {
+  ArrowLeftRight, PauseCircle, XCircle, RotateCcw, Search, Loader2, Check,
+} from "lucide-react";
+import { api, getErrorMessage } from "@/lib/api-client";
+import { useToast } from "@/hooks/useToast";
+import { cn } from "@/lib/utils";
+import { sortAlternatives } from "@/components/billing/AlternativesDrawer";
+import {
+  buildCartItem, buildAlternativeCartItem,
+  type ItemResolution, type FefoBatch,
+} from "@/lib/prescriptionToCart";
+import type { CartItem } from "@/components/billing/useBillingStore";
+import type { AlternativeResult } from "@pharmacy/types";
+
+export type StockInfo = { availableQty: number; stockStatus: "in_stock" | "low_stock" | "out_of_stock" };
+
+/** Same three-colour vocabulary as the billing alternatives drawer, so a pharmacist reads one stock language app-wide. */
+function StockDot({ status }: { status: StockInfo["stockStatus"] }) {
+  return (
+    <span className={cn(
+      "w-2 h-2 rounded-full flex-shrink-0",
+      status === "in_stock" ? "bg-emerald-500" : status === "low_stock" ? "bg-amber-400" : "bg-red-400",
+    )} />
+  );
+}
+
+function stockLabel(stock: StockInfo): string {
+  if (stock.stockStatus === "out_of_stock") return "Out of stock";
+  if (stock.stockStatus === "low_stock") return `Low stock · ${stock.availableQty} left`;
+  return `In stock · ${stock.availableQty}`;
+}
+
+/**
+ * The stock line for one prescribed, catalogue-linked item.
+ *
+ * <p>Out-of-stock is the only state that gets Replace/Remove/Hold — an in-stock or low-stock
+ * line has nothing to resolve, and offering the same three buttons there would just be three
+ * more things to read on a line that is already fine. See {@link ItemResolution} for what each
+ * decision means once "Continue to Billing" runs.
+ */
+export default function StockActionPanel({
+  medicineId,
+  medicineName,
+  schedule,
+  remaining,
+  prescriptionItemId,
+  stock,
+  stockCheckFailed,
+  resolution,
+  onResolve,
+  onClear,
+}: {
+  medicineId: string;
+  medicineName: string;
+  schedule: string | null;
+  remaining: number;
+  prescriptionItemId: string;
+  /** Undefined while the stock check is still loading, or once it has given up (see stockCheckFailed). */
+  stock: StockInfo | undefined;
+  /** True once the stock-check request has exhausted its retries and definitively failed. */
+  stockCheckFailed: boolean;
+  resolution: ItemResolution | undefined;
+  onResolve: (r: ItemResolution) => void;
+  onClear: () => void;
+}) {
+  const [replaceOpen, setReplaceOpen] = useState(false);
+
+  if (resolution) {
+    return (
+      <div className="flex items-center gap-2 mt-1.5 rounded-md bg-slate-50 border border-slate-150 px-2.5 py-1.5">
+        <span className="text-[11.5px] text-slate-600 flex-1 min-w-0 truncate">
+          {resolution.action === "replace" && (
+            <>Will use <span className="font-semibold text-slate-800">{resolution.cartItem.medicineName}</span> instead</>
+          )}
+          {resolution.action === "hold" && "Held — will stay pending on this prescription"}
+          {resolution.action === "remove" && "Removed from this bill"}
+        </span>
+        <button
+          type="button"
+          onClick={onClear}
+          className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-700"
+        >
+          <RotateCcw className="w-3 h-3" /> Undo
+        </button>
+      </div>
+    );
+  }
+
+  // Still loading, and not (yet) given up — the common, brief case.
+  if (!stock && !stockCheckFailed) {
+    return (
+      <div className="flex items-center gap-1.5 mt-1.5 text-[11.5px] text-slate-400">
+        <span className="w-2 h-2 rounded-full bg-slate-300 animate-pulse flex-shrink-0" />
+        Checking stock…
+      </div>
+    );
+  }
+
+  if (stock && stock.stockStatus !== "out_of_stock") {
+    return (
+      <div className="flex items-center gap-1.5 mt-1.5 text-[11.5px]">
+        <StockDot status={stock.stockStatus} />
+        <span className={stock.stockStatus === "low_stock" ? "text-amber-700 font-medium" : "text-emerald-700 font-medium"}>
+          {stockLabel(stock)}
+        </span>
+      </div>
+    );
+  }
+
+  // Either confirmed out of stock, or the check failed and nobody actually knows — either way
+  // a pharmacist gets the same three ways to move this line forward without waiting on a
+  // number that may never arrive. The label is the only thing that tells the two apart.
+  const unknown = !stock;
+  return (
+    <div className="mt-1.5">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={cn(
+          "flex items-center gap-1.5 text-[11.5px] font-medium",
+          unknown ? "text-slate-500" : "text-red-700",
+        )}>
+          <span className={cn("w-2 h-2 rounded-full flex-shrink-0", unknown ? "bg-slate-300" : "bg-red-400")} />
+          {unknown ? "Could not check stock" : "Out of stock"}
+        </span>
+        <div className="flex items-center gap-1 ml-auto">
+          <button
+            type="button"
+            onClick={() => setReplaceOpen((v) => !v)}
+            className={cn(
+              "inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold border transition-colors",
+              replaceOpen
+                ? "bg-violet-600 text-white border-violet-600"
+                : "bg-violet-50 text-violet-700 border-violet-200 hover:bg-violet-100",
+            )}
+          >
+            <ArrowLeftRight className="w-3 h-3" /> Replace
+          </button>
+          <button
+            type="button"
+            onClick={() => onResolve({ action: "hold" })}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+          >
+            <PauseCircle className="w-3 h-3" /> Hold
+          </button>
+          <button
+            type="button"
+            onClick={() => onResolve({ action: "remove" })}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold border border-slate-200 bg-white text-slate-500 hover:text-red-600 hover:border-red-200 hover:bg-red-50"
+          >
+            <XCircle className="w-3 h-3" /> Remove
+          </button>
+        </div>
+      </div>
+
+      {replaceOpen && (
+        <InlineAlternativesPanel
+          medicineId={medicineId}
+          medicineName={medicineName}
+          schedule={schedule}
+          remaining={remaining}
+          prescriptionItemId={prescriptionItemId}
+          onUse={(cartItem) => { onResolve({ action: "replace", cartItem }); setReplaceOpen(false); }}
+          onCancel={() => setReplaceOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Inline alternatives + fallback search ───────────────────────────────────────
+
+type MedicineHit = {
+  id: string; name: string; genericName: string | null; strength: string | null; form: string | null;
+};
+
+function InlineAlternativesPanel({
+  medicineId,
+  medicineName,
+  schedule,
+  remaining,
+  prescriptionItemId,
+  onUse,
+  onCancel,
+}: {
+  medicineId: string;
+  medicineName: string;
+  schedule: string | null;
+  remaining: number;
+  prescriptionItemId: string;
+  onUse: (cartItem: CartItem) => void;
+  onCancel: () => void;
+}) {
+  const toast = useToast();
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [term, setTerm] = useState("");
+  const [resolving, setResolving] = useState<string | null>(null);
+
+  const { data: alternatives, isLoading, isError } = useQuery({
+    queryKey: ["alternatives", medicineId],
+    queryFn: async () => {
+      const res = await api.get<{ data: AlternativeResult[] }>(`/medicines/${medicineId}/alternatives`);
+      return res.data.data;
+    },
+    staleTime: 30_000,
+  });
+  const sorted = alternatives ? sortAlternatives(alternatives).slice(0, 3) : [];
+
+  const { data: hits = [], isFetching: searching } = useQuery<MedicineHit[]>({
+    queryKey: ["medicine-search", term],
+    queryFn: async () => {
+      const { data } = await api.get("/medicines", { params: { search: term, limit: 6 } });
+      return data?.data?.items ?? data?.data ?? [];
+    },
+    enabled: searchOpen && term.trim().length >= 2,
+  });
+
+  function useAlternative(alt: AlternativeResult) {
+    const now = new Date();
+    const batch = alt.batches
+      .filter((b) => new Date(b.expiryDate) > now && b.quantity - b.reservedQuantity > 0)
+      .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime())[0];
+    if (!batch) {
+      toast.error(`${alt.name} has no sellable batch right now`);
+      return;
+    }
+    onUse(buildAlternativeCartItem(alt, batch, schedule, remaining, prescriptionItemId));
+  }
+
+  async function useSearched(hit: MedicineHit) {
+    setResolving(hit.id);
+    try {
+      const { data } = await api.get<{ data: FefoBatch | null }>(
+        `/inventory/fefo/${hit.id}`,
+        { params: { quantity: remaining } },
+      );
+      if (!data.data) {
+        toast.error(`${hit.name} is also out of stock`);
+        return;
+      }
+      const cartItem = { ...buildCartItem(data.data, schedule, remaining), prescriptionItemId };
+      onUse(cartItem);
+    } catch (err) {
+      toast.error(getErrorMessage(err, "Could not check that medicine's stock"));
+    } finally {
+      setResolving(null);
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50/50 p-2.5">
+      <p className="text-[10.5px] font-bold text-violet-700 uppercase tracking-wide mb-1.5">
+        Alternatives for {medicineName}
+      </p>
+
+      {isLoading && (
+        <p className="text-[12px] text-slate-500 flex items-center gap-1.5 py-1">
+          <Loader2 className="w-3 h-3 animate-spin" /> Looking for matches…
+        </p>
+      )}
+      {isError && <p className="text-[12px] text-red-600 py-1">Could not load alternatives.</p>}
+      {!isLoading && !isError && sorted.length === 0 && !searchOpen && (
+        <p className="text-[12px] text-slate-500 py-1">
+          No same-composition alternatives in your catalogue.
+        </p>
+      )}
+
+      {!isLoading && sorted.length > 0 && (
+        <div className="space-y-1">
+          {sorted.map((alt) => {
+            const outOfStock = alt.stockStatus === "out_of_stock";
+            return (
+            <div
+              key={alt.id}
+              className={cn(
+                "flex items-center gap-2 bg-white rounded-md border border-slate-200 px-2.5 py-1.5",
+                outOfStock && "opacity-60",
+              )}
+            >
+              <div className="min-w-0 flex-1">
+                <p className="text-[12.5px] font-semibold text-slate-800 truncate">{alt.name}</p>
+                <p className="text-[11px] text-slate-500 truncate">
+                  {alt.genericName ? `Same composition${alt.strength ? ` · ${alt.strength}` : ""}` : "Alternative"}
+                  {" · "}
+                  <span className={outOfStock ? "text-red-600" : alt.stockStatus === "low_stock" ? "text-amber-600" : "text-emerald-600"}>
+                    {outOfStock ? "Out of stock" : `${alt.totalStock} in stock`}
+                  </span>
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={outOfStock}
+                onClick={() => useAlternative(alt)}
+                className={cn(
+                  "shrink-0 inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-bold",
+                  outOfStock
+                    ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+                    : "bg-violet-600 text-white hover:bg-violet-700",
+                )}
+              >
+                <Check className="w-3 h-3" /> Use
+              </button>
+            </div>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 mt-2">
+        <button
+          type="button"
+          onClick={() => setSearchOpen((v) => !v)}
+          className="inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700 hover:text-violet-900"
+        >
+          <Search className="w-3 h-3" /> {searchOpen ? "Hide search" : "Search medicine instead"}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="ml-auto text-[11px] font-semibold text-slate-400 hover:text-slate-600"
+        >
+          Cancel
+        </button>
+      </div>
+
+      {searchOpen && (
+        <div className="mt-2">
+          <input
+            autoFocus
+            value={term}
+            onChange={(e) => setTerm(e.target.value)}
+            placeholder="Search your catalogue…"
+            className="w-full rounded-md border border-slate-200 py-1.5 px-2.5 text-[12.5px] focus:border-violet-400 focus:outline-none"
+          />
+          <div className="mt-1.5 max-h-32 overflow-y-auto space-y-1">
+            {term.trim().length < 2 ? (
+              <p className="px-1 py-1 text-[11.5px] text-slate-500">Type at least two letters.</p>
+            ) : searching ? (
+              <p className="px-1 py-1 text-[11.5px] text-slate-500">Searching…</p>
+            ) : hits.length === 0 ? (
+              <p className="px-1 py-1 text-[11.5px] text-slate-500">Nothing matched.</p>
+            ) : (
+              hits.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  disabled={resolving !== null}
+                  onClick={() => useSearched(m)}
+                  className="w-full flex items-center justify-between gap-2 rounded-md bg-white border border-slate-200 px-2.5 py-1.5 text-left hover:border-violet-300 disabled:opacity-60"
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-[12.5px] text-slate-800">{m.name}</span>
+                    {(m.genericName || m.strength) && (
+                      <span className="block truncate text-[11px] text-slate-500">
+                        {[m.genericName, m.strength, m.form].filter(Boolean).join(" · ")}
+                      </span>
+                    )}
+                  </span>
+                  {resolving === m.id && <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin text-violet-600" />}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
