@@ -25,12 +25,18 @@ public record GrnResponse(
         int itemCount,
         String warning,
         Instant createdAt,
-        String sourceUploadId
+        String sourceUploadId,
+        UserRef createdBy,
+        UserRef confirmedBy
 ) {
     public record SupplierRef(String id, String name, String phone, Integer creditDays) {
     }
 
     public record PurchaseOrderRef(String id, String orderNumber) {
+    }
+
+    /** null when the acting user was never recorded (GRN predates this field) or has since been deleted. */
+    public record UserRef(String id, String name) {
     }
 
     public record Item(String id, String medicineId, String medicineName, String batchNumber, Instant expiryDate,

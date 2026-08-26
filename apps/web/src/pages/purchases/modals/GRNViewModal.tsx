@@ -34,6 +34,8 @@ type GRNDetail = {
   supplier: { id: string; name: string; phone: string | null };
   purchaseOrder: { id: string; orderNumber: string } | null;
   items: GRNDetailItem[];
+  createdBy: { id: string; name: string } | null;
+  confirmedBy: { id: string; name: string } | null;
 };
 
 const STATUS_BADGE: Record<GRNDetail["status"], string> = {
@@ -123,8 +125,16 @@ export function GRNViewModal({ grnId, onClose }: { grnId: string; onClose: () =>
             </div>
 
             <div className="flex items-center gap-4 text-[12px] text-slate-500">
-              <span>Entry: <strong className="text-slate-700">{fmtDate(grn.createdAt)}</strong></span>
-              {grn.confirmedAt && <span>Confirmed: <strong className="text-slate-700">{fmtDate(grn.confirmedAt)}</strong></span>}
+              <span>
+                Entry: <strong className="text-slate-700">{fmtDate(grn.createdAt)}</strong>
+                {grn.createdBy && <> by <strong className="text-slate-700">{grn.createdBy.name}</strong></>}
+              </span>
+              {grn.confirmedAt && (
+                <span>
+                  Confirmed: <strong className="text-slate-700">{fmtDate(grn.confirmedAt)}</strong>
+                  {grn.confirmedBy && <> by <strong className="text-slate-700">{grn.confirmedBy.name}</strong></>}
+                </span>
+              )}
               {grn.sourceUploadId && (
                 <button type="button" onClick={() => viewSourceUpload(grn.sourceUploadId!)}
                   className="flex items-center gap-1 text-blue-600 hover:text-blue-700 font-medium">

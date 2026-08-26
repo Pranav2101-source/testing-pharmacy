@@ -31,8 +31,11 @@ import java.util.List;
 /**
  * Purchase orders and GRNs under /api/v1/purchases — tenant-scoped. Any
  * authenticated staff member can raise a PO (PHARMACIST-raised orders land as
- * PENDING_APPROVAL); every GRN write and every PO status transition is
- * OWNER-only, since both move money and physical stock.
+ * PENDING_APPROVAL). PO status transitions (approve/send/cancel) are
+ * OWNER-only, since they commit spend to a supplier. GRN writes (Gate Inward)
+ * are OWNER/MANAGER/PHARMACIST — day-to-day goods receipt shouldn't need the
+ * owner in the room, since only confirmGrn actually moves stock/ledger and
+ * updateGrn/cancelGrn only ever touch an unconfirmed DRAFT.
  */
 @RestController
 @RequestMapping("/api/v1/purchases")
@@ -119,7 +122,7 @@ public class PurchasesController {
     }
 
     @PostMapping("/grn")
-    @PreAuthorize("hasRole('OWNER')")
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER', 'PHARMACIST')")
     public ResponseEntity<ApiResponse<GrnResponse>> createGrn(@Valid @RequestBody CreateGrnRequest req) {
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(purchasesService.createGrn(req)));
     }
@@ -130,19 +133,19 @@ public class PurchasesController {
     }
 
     @PatchMapping("/grn/{id}")
-    @PreAuthorize("hasRole('OWNER')")
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER', 'PHARMACIST')")
     public ApiResponse<GrnResponse> updateGrn(@PathVariable String id, @Valid @RequestBody UpdateGrnRequest req) {
         return ApiResponse.ok(purchasesService.updateGrn(id, req));
     }
 
     @PatchMapping("/grn/{id}/confirm")
-    @PreAuthorize("hasRole('OWNER')")
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER', 'PHARMACIST')")
     public ApiResponse<GrnResponse> confirmGrn(@PathVariable String id) {
         return ApiResponse.ok(purchasesService.confirmGrn(id));
     }
 
     @DeleteMapping("/grn/{id}")
-    @PreAuthorize("hasRole('OWNER')")
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER', 'PHARMACIST')")
     public ApiResponse<GrnResponse> cancelGrn(@PathVariable String id) {
         return ApiResponse.ok(purchasesService.cancelGrn(id));
     }

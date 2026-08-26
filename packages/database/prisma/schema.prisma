@@ -325,6 +325,8 @@ model User {
   approvedPOs           PurchaseOrder[]       @relation("POApprover")
   batchRecalls          BatchRecall[]         @relation("BatchRecallUser")
   migrationSessions     MigrationSession[]
+  createdGrns           GoodsReceiptNote[]    @relation("GrnCreator")
+  confirmedGrns         GoodsReceiptNote[]    @relation("GrnConfirmer")
 
   // Email is the login identifier and must be unique across the whole system,
   // not just within one pharmacy — otherwise two pharmacies could each create
@@ -1226,6 +1228,10 @@ model GoodsReceiptNote {
   paymentDueDate      DateTime?
   // Source PDF this GRN was drafted from (e.g. supplier invoice), if any — see Upload model.
   sourceUploadId      String?
+  // Who created the draft and who confirmed it (stock/ledger posting). Nullable:
+  // existing GRNs predate this column and have no attribution to backfill.
+  createdBy           String?
+  confirmedBy         String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1234,6 +1240,8 @@ model GoodsReceiptNote {
   supplier      Supplier              @relation(fields: [supplierId], references: [id])
   purchaseOrder PurchaseOrder?        @relation(fields: [purchaseOrderId], references: [id])
   sourceUpload  Upload?               @relation(fields: [sourceUploadId], references: [id], onDelete: SetNull)
+  creator       User?                 @relation("GrnCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  confirmer     User?                 @relation("GrnConfirmer", fields: [confirmedBy], references: [id], onDelete: SetNull)
   items         GRNItem[]
   payments      SupplierLedgerEntry[]
 

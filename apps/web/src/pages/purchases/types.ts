@@ -35,6 +35,10 @@ export type GRN = {
   // the count via `itemCount`, falling back to items.length for any older cached row.
   itemCount: number;
   items?: unknown[];
+  // null for a GRN created/confirmed before attribution was added, or if that
+  // user has since been deleted (ON DELETE SET NULL).
+  createdBy: { id: string; name: string } | null;
+  confirmedBy: { id: string; name: string } | null;
 };
 
 export type SupplierReturn = {
