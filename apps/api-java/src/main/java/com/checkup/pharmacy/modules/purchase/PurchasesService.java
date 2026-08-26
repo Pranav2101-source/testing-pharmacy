@@ -351,7 +351,7 @@ public class PurchasesService {
         BigDecimal[] totals = new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO};
         GoodsReceiptNote grn = GoodsReceiptNote.create(pharmacyId, supplier.getId(), blankToNull(req.purchaseOrderId()),
                 DocumentNumberFormat.grn(seq), blankToNull(req.supplierInvoiceNo()), req.supplierInvoiceDate(),
-                req.notes(), BigDecimal.ZERO, BigDecimal.ZERO);
+                req.notes(), BigDecimal.ZERO, BigDecimal.ZERO, TenantContext.userId());
         grn.setSourceUploadId(req.sourceUploadId());
         grnRepository.save(grn);
 
@@ -490,7 +490,7 @@ public class PurchasesService {
                     "GRN", grn.getId(), notes));
         }
 
-        grn.confirm(supplier.getCreditDays());
+        grn.confirm(supplier.getCreditDays(), userId);
         supplier.adjustLedgerBalance(grn.getTotalAmount());
 
         if (grn.getPurchaseOrderId() != null) {
@@ -581,9 +581,10 @@ public class PurchasesService {
             }
         }
 
+        Map<String, GrnResponse.UserRef> actors = resolveGrnActors(grns);
         List<GrnResponse> items = grns.stream()
                 .map(grn -> toGrnListResponse(grn, itemCounts.getOrDefault(grn.getId(), 0L).intValue(),
-                        grn.getPurchaseOrderId() == null ? null : poRefs.get(grn.getPurchaseOrderId())))
+                        grn.getPurchaseOrderId() == null ? null : poRefs.get(grn.getPurchaseOrderId()), actors))
                 .toList();
         return new GrnPageResponse(items, result.getTotalElements(), safePage, safeLimit);
     }
@@ -709,10 +710,34 @@ public class PurchasesService {
                         i.getConversionFactor(), i.getPurchaseRate(), i.getMrp(), i.getDiscount(), i.getGstRate(),
                         i.getCgst(), i.getSgst(), i.getAmount()))
                 .toList();
+        Map<String, GrnResponse.UserRef> actors = resolveGrnActors(List.of(grn));
         return new GrnResponse(grn.getId(), grn.getGrnNumber(), supplierRef, poRef, grn.getSupplierInvoiceNo(),
                 grn.getSupplierInvoiceDate(), grn.getStatus().name(), grn.getNotes(), grn.getSubtotal(),
                 grn.getTotalGst(), grn.getTotalAmount(), grn.getConfirmedAt(), grn.getPaymentDueDate(),
-                itemResponses, itemResponses.size(), warning, grn.getCreatedAt(), grn.getSourceUploadId());
+                itemResponses, itemResponses.size(), warning, grn.getCreatedAt(), grn.getSourceUploadId(),
+                actors.get(grn.getCreatedBy()), actors.get(grn.getConfirmedBy()));
+    }
+
+    /**
+     * Batched createdBy/confirmedBy → {id, name} lookup for one or a page of GRNs —
+     * one query total instead of one per row (mirrors the itemCounts/poRefs batching
+     * in listGrns below). Missing keys resolve to null via Map.get, which is what a
+     * pre-attribution GRN or a deleted user (ON DELETE SET NULL) already needs.
+     */
+    private Map<String, GrnResponse.UserRef> resolveGrnActors(List<GoodsReceiptNote> grns) {
+        Set<String> userIds = new HashSet<>();
+        for (GoodsReceiptNote grn : grns) {
+            if (grn.getCreatedBy() != null) userIds.add(grn.getCreatedBy());
+            if (grn.getConfirmedBy() != null) userIds.add(grn.getConfirmedBy());
+        }
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, GrnResponse.UserRef> actors = new HashMap<>();
+        for (User u : userRepository.findByIdInAndPharmacyId(userIds, TenantContext.pharmacyId())) {
+            actors.put(u.getId(), new GrnResponse.UserRef(u.getId(), u.getName()));
+        }
+        return actors;
     }
 
     /**
@@ -722,13 +747,15 @@ public class PurchasesService {
      * GRNs costs a fixed number of queries instead of 2 per row. {@code supplier} is the
      * fetch-joined association from the list query, so reading it triggers no lazy load.
      */
-    private GrnResponse toGrnListResponse(GoodsReceiptNote grn, int itemCount, GrnResponse.PurchaseOrderRef poRef) {
+    private GrnResponse toGrnListResponse(GoodsReceiptNote grn, int itemCount, GrnResponse.PurchaseOrderRef poRef,
+                                          Map<String, GrnResponse.UserRef> actors) {
         Supplier supplier = grn.getSupplier();
         GrnResponse.SupplierRef supplierRef = supplier == null ? null
                 : new GrnResponse.SupplierRef(supplier.getId(), supplier.getName(), supplier.getPhone(), supplier.getCreditDays());
         return new GrnResponse(grn.getId(), grn.getGrnNumber(), supplierRef, poRef, grn.getSupplierInvoiceNo(),
                 grn.getSupplierInvoiceDate(), grn.getStatus().name(), grn.getNotes(), grn.getSubtotal(),
                 grn.getTotalGst(), grn.getTotalAmount(), grn.getConfirmedAt(), grn.getPaymentDueDate(),
-                List.of(), itemCount, null, grn.getCreatedAt(), grn.getSourceUploadId());
+                List.of(), itemCount, null, grn.getCreatedAt(), grn.getSourceUploadId(),
+                actors.get(grn.getCreatedBy()), actors.get(grn.getConfirmedBy()));
     }
 }

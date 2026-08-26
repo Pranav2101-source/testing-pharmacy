@@ -88,6 +88,8 @@ export function GateInwardTab({ suppliers }: { suppliers: Supplier[] }) {
           purchaseOrder: createdGrn.purchaseOrder ?? null,
           itemCount: createdGrn.itemCount ?? createdGrn.items?.length ?? 0,
           items: createdGrn.items ?? [],
+          createdBy: createdGrn.createdBy ?? null,
+          confirmedBy: createdGrn.confirmedBy ?? null,
         };
         return { ...old, items: [mapped, ...old.items].slice(0, 20), total: old.total + 1 };
       });

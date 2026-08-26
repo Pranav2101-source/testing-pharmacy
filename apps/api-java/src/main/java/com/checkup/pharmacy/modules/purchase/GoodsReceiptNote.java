@@ -69,6 +69,12 @@ public class GoodsReceiptNote extends BaseEntity {
     @Column(name = "sourceUploadId")
     private String sourceUploadId;
 
+    @Column(name = "createdBy")
+    private String createdBy;
+
+    @Column(name = "confirmedBy")
+    private String confirmedBy;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "supplierId", insertable = false, updatable = false)
     private Supplier supplier;
@@ -79,7 +85,7 @@ public class GoodsReceiptNote extends BaseEntity {
 
     public static GoodsReceiptNote create(String pharmacyId, String supplierId, String purchaseOrderId,
                                           String grnNumber, String supplierInvoiceNo, Instant supplierInvoiceDate,
-                                          String notes, BigDecimal subtotal, BigDecimal totalGst) {
+                                          String notes, BigDecimal subtotal, BigDecimal totalGst, String createdBy) {
         GoodsReceiptNote grn = new GoodsReceiptNote();
         grn.assignId(Cuid.generate());
         grn.pharmacyId = pharmacyId;
@@ -93,6 +99,7 @@ public class GoodsReceiptNote extends BaseEntity {
         grn.subtotal = subtotal;
         grn.totalGst = totalGst;
         grn.totalAmount = subtotal.add(totalGst);
+        grn.createdBy = createdBy;
         return grn;
     }
 
@@ -106,10 +113,11 @@ public class GoodsReceiptNote extends BaseEntity {
         this.totalAmount = subtotal.add(totalGst);
     }
 
-    public void confirm(int supplierCreditDays) {
+    public void confirm(int supplierCreditDays, String confirmedBy) {
         this.status = GRNStatus.CONFIRMED;
         this.confirmedAt = Instant.now();
         this.paymentDueDate = this.confirmedAt.plus(java.time.Duration.ofDays(supplierCreditDays));
+        this.confirmedBy = confirmedBy;
     }
 
     public void cancel() {
@@ -147,6 +155,10 @@ public class GoodsReceiptNote extends BaseEntity {
     public String getSourceUploadId() { return sourceUploadId; }
 
     public Instant getPaymentDueDate() { return paymentDueDate; }
+
+    public String getCreatedBy() { return createdBy; }
+
+    public String getConfirmedBy() { return confirmedBy; }
 
     public Supplier getSupplier() { return supplier; }
 }
