@@ -159,7 +159,7 @@ class CalendarIT extends AbstractPostgresIT {
         Inventory batch = inventoryRepository.save(Inventory.create(pharmacyId, medicineId, "BATCH-2",
                 Instant.now().plus(365, ChronoUnit.DAYS), 40, new BigDecimal("10"), new BigDecimal("20"), 10, 5));
 
-        var invoice = billingService.createInvoice(new CreateInvoiceRequest(credit.getId(), null, null, null,
+        var invoice = billingService.createInvoice(new CreateInvoiceRequest(credit.getId(), null, null, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batch.getId(), 2, null, BigDecimal.ZERO, null))));
 

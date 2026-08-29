@@ -125,7 +125,7 @@ class BillingIT extends AbstractPostgresIT {
 
     private static CreateInvoiceRequest build(String customerId, String idempotencyKey,
                                               String inventoryId, int quantity) {
-        return new CreateInvoiceRequest(customerId, null, null, null, null, null, null, null, null,
+        return new CreateInvoiceRequest(customerId, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, idempotencyKey, null,
                 List.of(new InvoiceItemRequest(inventoryId, quantity, null, BigDecimal.ZERO, null)));
     }
@@ -256,7 +256,7 @@ class BillingIT extends AbstractPostgresIT {
         String walkInId = customerRepository.save(Customer.create(pharmacyId, "Walk In")).getId();
         flushAndClear();
 
-        var request = new CreateInvoiceRequest(walkInId, null, null, null,
+        var request = new CreateInvoiceRequest(walkInId, null, null, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO, null)));
 
@@ -271,7 +271,7 @@ class BillingIT extends AbstractPostgresIT {
         String creditId = createCreditCustomer(new BigDecimal("50.00"));
 
         // 10 x Rs.20 MRP = Rs.200, well past the Rs.50 limit.
-        var request = new CreateInvoiceRequest(creditId, null, null, null,
+        var request = new CreateInvoiceRequest(creditId, null, null, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO, null)));
 
@@ -285,7 +285,7 @@ class BillingIT extends AbstractPostgresIT {
     void creditSaleConsumesCredit() {
         String creditId = createCreditCustomer(new BigDecimal("5000.00"));
 
-        var request = new CreateInvoiceRequest(creditId, null, null, null,
+        var request = new CreateInvoiceRequest(creditId, null, null, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO, null)));
 
@@ -312,7 +312,7 @@ class BillingIT extends AbstractPostgresIT {
     void unsetCreditLimitMeansNoCredit() {
         String creditId = createCreditCustomer(BigDecimal.ZERO);
 
-        var request = new CreateInvoiceRequest(creditId, null, null, null,
+        var request = new CreateInvoiceRequest(creditId, null, null, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO, null)));
 
@@ -356,7 +356,7 @@ class BillingIT extends AbstractPostgresIT {
     @DisplayName("adjustments that drive the bill below zero are refused, not clamped")
     void negativeTotalIsRefused() {
         // 10 x Rs.20 = Rs.200 of goods, less a Rs.5000 "adjustment".
-        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
+        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
                 null, null, new BigDecimal("-5000"), null, null,
                 List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO, null)));
 
@@ -377,7 +377,7 @@ class BillingIT extends AbstractPostgresIT {
     @Test
     @DisplayName("a legitimately zero-value bill is still allowed")
     void zeroValueInvoiceIsAllowed() {
-        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
+        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
                 new BigDecimal("100"), null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO, null)));
 

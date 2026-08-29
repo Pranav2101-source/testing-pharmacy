@@ -89,8 +89,7 @@ class MigrationRollbackAuditIT extends AbstractPostgresIT {
             String sessionId = importOneBatch();
             Inventory batch = batch();
 
-            billingService.createInvoice(new CreateInvoiceRequest(
-                    null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                     List.of(new InvoiceItemRequest(batch.getId(), 5, null, BigDecimal.ZERO, null))));
             flushAndClear();
 
@@ -105,8 +104,7 @@ class MigrationRollbackAuditIT extends AbstractPostgresIT {
         @DisplayName("nothing is deleted when the rollback is refused")
         void refusalLeavesEverythingIntact() {
             String sessionId = importOneBatch();
-            billingService.createInvoice(new CreateInvoiceRequest(
-                    null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                     List.of(new InvoiceItemRequest(batch().getId(), 5, null, BigDecimal.ZERO, null))));
             flushAndClear();
 

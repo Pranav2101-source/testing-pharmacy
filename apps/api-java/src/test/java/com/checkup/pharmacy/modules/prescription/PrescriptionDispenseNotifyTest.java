@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PrescriptionDispenseNotifyTest {
 
     private static Prescription emrPrescription() {
-        return Prescription.createFromEmr("ph-1", "RX-1", "tenant-9", "ext-rx-1", "EMR-77",
+        return Prescription.createFromEmr("ph-1", "RX-1", "tenant-9", "ext-rx-1", "EMR-77", null,
                 "Dr Who", null, null, "A Patient", 40, null, null, null, null, null);
     }
 

@@ -97,7 +97,7 @@ class CashClosureIT extends AbstractPostgresIT {
 
     /** One cash sale of `units` x Rs.100. */
     private void cashSale(int units) {
-        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PAID",
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID",
                 null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO, null))));
         flushAndClear();
@@ -163,7 +163,7 @@ class CashClosureIT extends AbstractPostgresIT {
     void creditSettlementCountsAsCash() {
         String creditCustomerId = creditCustomer();
 
-        var creditInvoice = billingService.createInvoice(new CreateInvoiceRequest(creditCustomerId, null, null, null,
+        var creditInvoice = billingService.createInvoice(new CreateInvoiceRequest(creditCustomerId, null, null, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 4, null, BigDecimal.ZERO, null))));
         flushAndClear();
@@ -190,7 +190,7 @@ class CashClosureIT extends AbstractPostgresIT {
     void unpaidCreditSaleIsNotCash() {
         String creditCustomerId = creditCustomer();
 
-        billingService.createInvoice(new CreateInvoiceRequest(creditCustomerId, null, null, null,
+        billingService.createInvoice(new CreateInvoiceRequest(creditCustomerId, null, null, null, null, null,
                 "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 4, null, BigDecimal.ZERO, null))));
         flushAndClear();
@@ -225,7 +225,7 @@ class CashClosureIT extends AbstractPostgresIT {
     @Test
     @DisplayName("a cancelled invoice is excluded from the day's takings")
     void cancelledInvoicesDoNotCount() {
-        var invoice = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, "CASH", "PENDING",
+        var invoice = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PENDING",
                 null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO, null))));
         flushAndClear();
