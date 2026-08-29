@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ArrowLeftRight, PauseCircle, XCircle, RotateCcw, Search, Loader2, Check,
+  ArrowLeftRight, PauseCircle, XCircle, RotateCcw, Search, Loader2, Check, Zap,
 } from "lucide-react";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";
@@ -13,6 +13,7 @@ import {
 } from "@/lib/prescriptionToCart";
 import type { CartItem } from "@/components/billing/useBillingStore";
 import type { AlternativeResult } from "@pharmacy/types";
+import { useMedicineCatalogSearch, type MedicineHit } from "@/lib/useMedicineCatalogSearch";
 
 export type StockInfo = { availableQty: number; stockStatus: "in_stock" | "low_stock" | "out_of_stock" };
 
@@ -65,7 +66,58 @@ export default function StockActionPanel({
   onResolve: (r: ItemResolution) => void;
   onClear: () => void;
 }) {
+  const toast = useToast();
   const [replaceOpen, setReplaceOpen] = useState(false);
+  const [usingTop, setUsingTop] = useState(false);
+
+  // Fetched at this level (not just inside the Replace drawer) so a one-click "Use" button can
+  // sit next to Replace/Hold/Remove without waiting on that extra click to open it — React
+  // Query dedupes this against the identical query the drawer below also runs, so it's not a
+  // second network round-trip once the drawer opens too.
+  const outOfStock = stock?.stockStatus === "out_of_stock" || (!stock && stockCheckFailed);
+
+  // Debounced, not immediate: a pharmacist who Holds or Removes an out-of-stock line right
+  // away (a common, fast decision — no interest in a substitute) never needed this fetch at
+  // all. Waiting a beat before firing means that fast path costs zero network calls, while a
+  // pharmacist who pauses to actually consider Replace still finds the one-click button ready
+  // by the time they look at it.
+  const [readyForAltFetch, setReadyForAltFetch] = useState(false);
+  useEffect(() => {
+    if (!outOfStock || resolution) { setReadyForAltFetch(false); return; }
+    const t = setTimeout(() => setReadyForAltFetch(true), 500);
+    return () => clearTimeout(t);
+  }, [outOfStock, resolution, medicineId]);
+
+  const { data: topAltCandidates } = useQuery({
+    queryKey: ["alternatives", medicineId],
+    queryFn: async () => {
+      const res = await api.get<{ data: AlternativeResult[] }>(`/medicines/${medicineId}/alternatives`);
+      return res.data.data;
+    },
+    enabled: outOfStock && !resolution && readyForAltFetch,
+    staleTime: 30_000,
+  });
+  const topAlt = topAltCandidates
+    ? sortAlternatives(topAltCandidates).find((a) => a.stockStatus !== "out_of_stock")
+    : undefined;
+
+  function useTopAlternative() {
+    if (!topAlt) return;
+    setUsingTop(true);
+    try {
+      const now = new Date();
+      const batch = topAlt.batches
+        .filter((b) => new Date(b.expiryDate) > now && b.quantity - b.reservedQuantity > 0)
+        .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime())[0];
+      if (!batch) {
+        toast.error(`${topAlt.name} has no sellable batch right now`);
+        return;
+      }
+      onResolve({ action: "replace", cartItem: buildAlternativeCartItem(topAlt, batch, schedule, remaining, prescriptionItemId) });
+    } finally {
+      setUsingTop(false);
+    }
+  }
 
   if (resolution) {
     return (
@@ -124,6 +176,18 @@ export default function StockActionPanel({
           {unknown ? "Could not check stock" : "Out of stock"}
         </span>
         <div className="flex items-center gap-1 ml-auto">
+          {topAlt && (
+            <button
+              type="button"
+              disabled={usingTop}
+              onClick={useTopAlternative}
+              title={`Use ${topAlt.name} without opening the alternatives list`}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold border border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
+            >
+              {usingTop ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className="w-3 h-3" />}
+              Use {topAlt.name}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setReplaceOpen((v) => !v)}
@@ -170,10 +234,6 @@ export default function StockActionPanel({
 
 // ── Inline alternatives + fallback search ───────────────────────────────────────
 
-type MedicineHit = {
-  id: string; name: string; genericName: string | null; strength: string | null; form: string | null;
-};
-
 function InlineAlternativesPanel({
   medicineId,
   medicineName,
@@ -206,14 +266,7 @@ function InlineAlternativesPanel({
   });
   const sorted = alternatives ? sortAlternatives(alternatives).slice(0, 3) : [];
 
-  const { data: hits = [], isFetching: searching } = useQuery<MedicineHit[]>({
-    queryKey: ["medicine-search", term],
-    queryFn: async () => {
-      const { data } = await api.get("/medicines", { params: { search: term, limit: 6 } });
-      return data?.data?.items ?? data?.data ?? [];
-    },
-    enabled: searchOpen && term.trim().length >= 2,
-  });
+  const { data: hits = [], isFetching: searching, isError: searchFailed } = useMedicineCatalogSearch(term, 6, searchOpen);
 
   function useAlternative(alt: AlternativeResult) {
     const now = new Date();
@@ -337,6 +390,8 @@ function InlineAlternativesPanel({
               <p className="px-1 py-1 text-[11.5px] text-slate-500">Type at least two letters.</p>
             ) : searching ? (
               <p className="px-1 py-1 text-[11.5px] text-slate-500">Searching…</p>
+            ) : searchFailed ? (
+              <p className="px-1 py-1 text-[11.5px] text-red-600">Couldn't search — check your connection and try again.</p>
             ) : hits.length === 0 ? (
               <p className="px-1 py-1 text-[11.5px] text-slate-500">Nothing matched.</p>
             ) : (

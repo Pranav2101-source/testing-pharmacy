@@ -69,8 +69,21 @@ export type ResolvedCart = {
    * half-typed bill's customer discount or payment mode would be wrong in both directions.
    */
   meta: BillingMeta;
-  /** Medicine names that could not be put in the cart — no stock, or the lookup failed. */
+  /** Medicine names confirmed to have no sellable stock at all — the check succeeded and the answer was zero. */
   failures: string[];
+  /**
+   * Medicine names where the stock check itself failed (network error, server error) — NOT
+   * confirmed absent. Kept separate from {@link failures} so the pharmacist is told "couldn't
+   * check" rather than "not in stock", which would wrongly read as a confirmed answer when the
+   * medicine may well be on the shelf.
+   */
+  checkFailed: string[];
+  /**
+   * Lines billed for LESS than prescribed because no single batch covers the full quantity —
+   * never silent: the shortfall is always reported here so it can be surfaced, not just
+   * quietly under-billed. See {@link resolvePrescriptionToCart}'s partial-fill fallback.
+   */
+  partials: { medicineName: string; requested: number; available: number }[];
   /** Lines a pharmacist explicitly chose to leave off this bill — see {@link ItemResolution}. */
   skipped: { medicineName: string; reason: "hold" | "remove" }[];
 };
@@ -97,7 +110,8 @@ export function canBill(rx: BillablePrescription, needsReview: number) {
  * rather than added as a zero-stock row: the cart is a claim on real inventory, and a row
  * that cannot be fulfilled would fail at save with a message about a medicine the pharmacist
  * did not choose. Naming it up front lets them substitute it from the billing screen, which
- * is where the alternatives drawer already lives.
+ * is where the alternatives drawer already lives. A line whose check itself errored (not a
+ * confirmed zero) is named separately in {@link ResolvedCart.checkFailed} instead.
  */
 export async function resolvePrescriptionToCart(
   rx: BillablePrescription,
@@ -105,6 +119,8 @@ export async function resolvePrescriptionToCart(
 ): Promise<ResolvedCart> {
   const lines = billableLines(rx);
   const failures: string[] = [];
+  const checkFailed: string[] = [];
+  const partials: ResolvedCart["partials"] = [];
   const skipped: ResolvedCart["skipped"] = [];
 
   // Sequential rather than Promise.all: these hit the same inventory rows, and a burst of
@@ -131,14 +147,33 @@ export async function resolvePrescriptionToCart(
         `/inventory/fefo/${line.medicineId}`,
         { params: { quantity: remaining } },
       );
-      const batch = data.data;
+      let batch = data.data;
+      let fillQty = remaining;
+
       if (!batch) {
-        failures.push(line.medicineName);
-        continue;
+        // No single batch covers the full amount — fall back to "earliest-expiring batch
+        // with ANY stock" (same FEFO ordering, just without the >= remaining floor) rather
+        // than dropping the whole line. Still FEFO-correct: the soonest-to-expire stock is
+        // exactly what should move first, whether it covers the full order or not.
+        const partial = await api.get<{ data: FefoBatch | null }>(
+          `/inventory/fefo/${line.medicineId}`,
+          { params: { quantity: 1 } },
+        );
+        batch = partial.data.data;
+        if (!batch) {
+          failures.push(line.medicineName);
+          continue;
+        }
+        fillQty = Math.min(remaining, batch.available);
+        partials.push({ medicineName: line.medicineName, requested: remaining, available: fillQty });
       }
-      items.push(buildCartItem(batch, line.schedule, remaining));
+
+      items.push(buildCartItem(batch, line.schedule, fillQty));
     } catch {
-      failures.push(line.medicineName);
+      // The check itself failed (network/server error) — NOT a confirmed "no stock". Kept
+      // out of `failures` so the pharmacist isn't told a wrong-but-confident "not in stock"
+      // for a medicine the check never actually got an answer about.
+      checkFailed.push(line.medicineName);
     }
   }
 
@@ -154,6 +189,8 @@ export async function resolvePrescriptionToCart(
       customerPhone: rx.patientPhone ?? "",
     },
     failures,
+    checkFailed,
+    partials,
     skipped,
   };
 }

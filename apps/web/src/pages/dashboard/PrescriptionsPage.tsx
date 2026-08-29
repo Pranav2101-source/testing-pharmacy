@@ -13,6 +13,7 @@ import { Link } from "react-router-dom";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { detectNewArrivals, arrivalToastMessage } from "@/lib/prescriptionArrivals";
+import { playArrivalChime } from "@/lib/notifySound";
 import { markPrescriptionViewed } from "@/lib/prescriptionNewCount";
 import { useToast } from "@/hooks/useToast";
 import ClinicCallbackPanel, { type DispenseNotify, type CancelNotify } from "@/components/integration/ClinicCallbackPanel";
@@ -769,14 +770,24 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
   async function billNow() {
     setBilling(true);
     try {
-      const { items, meta, failures } = await resolvePrescriptionToCart(rx);
+      const { items, meta, failures, checkFailed, partials } = await resolvePrescriptionToCart(rx);
       if (items.length === 0) {
-        toast.error("None of these medicines are in stock right now");
+        toast.error(
+          failures.length === 0 && checkFailed.length > 0
+            ? "Couldn't check stock — check your connection and try again"
+            : "None of these medicines are in stock right now",
+        );
         return;
       }
       loadDraft(items, meta);
       if (failures.length > 0) {
         toast.error(`Not in stock: ${failures.join(", ")} — add manually or substitute`);
+      }
+      if (checkFailed.length > 0) {
+        toast.error(`Couldn't check stock for: ${checkFailed.join(", ")} — add manually if needed`);
+      }
+      if (partials.length > 0) {
+        toast.info(partials.map((p) => `${p.medicineName}: billed ${p.available} of ${p.requested}`).join(" · "));
       }
       navigate("/dashboard/billing/new");
     } catch (err) {
@@ -1066,12 +1077,12 @@ export default function PrescriptionsPage() {
     queryFn:  () =>
       api.get<{ success: boolean; data: ListResponse }>(`/prescriptions?${params}`)
          .then(r => r.data.data),
-    staleTime: 30_000,
+    staleTime: 8_000,
     // A clinic pushes a prescription with nobody at this pharmacy having done anything —
     // without a poll it sits invisible until someone happens to reload. react-query only
     // polls while the tab is focused (refetchIntervalInBackground defaults to false), so
     // this doesn't run up API calls in a background tab.
-    refetchInterval: 20_000,
+    refetchInterval: 8_000,
   });
 
   const qc = useQueryClient();
@@ -1099,6 +1110,7 @@ export default function PrescriptionsPage() {
       return next;
     });
     toast.info(arrivalToastMessage(arrived));
+    playArrivalChime();
   }, [data, toast]);
 
   // Marks a row acknowledged the moment a pharmacist actually looks at it — simpler than a

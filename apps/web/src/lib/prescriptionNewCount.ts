@@ -16,8 +16,10 @@ export function usePrescriptionNewCount() {
       const { data } = await api.get("/prescriptions/new-count");
       return (data.data as { count: number }).count;
     },
-    staleTime: 15_000,
-    refetchInterval: 20_000,
+    // Cheap step toward "instant": tighter polling, not a real push channel yet — see
+    // notifySound.ts's doc comment on when to escalate to WebSocket/SSE instead.
+    staleTime: 5_000,
+    refetchInterval: 8_000,
   });
 }
 
