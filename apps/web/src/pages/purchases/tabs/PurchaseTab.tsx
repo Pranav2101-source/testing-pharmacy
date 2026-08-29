@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { FileX, RefreshCw, AlertTriangle, Eye, Building2 } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
@@ -15,7 +15,13 @@ import { Pagination } from "../components/Pagination";
 import { EmptyState } from "../components/EmptyState";
 import { GRNViewModal } from "../modals/GRNViewModal";
 
-export function PurchaseTab({ suppliers }: { suppliers: Supplier[] }) {
+export function PurchaseTab({ suppliers, overdueCount = 0, focusOverdueNonce = 0 }: {
+  suppliers: Supplier[];
+  /** Count of bills with overdue payment (from the shared purchase summary). */
+  overdueCount?: number;
+  /** Bumped by the parent when the Purchase-tab overdue badge is clicked. */
+  focusOverdueNonce?: number;
+}) {
   const [viewGrnId, setViewGrnId] = useState<string | null>(null);
   const [page, setPage]           = useState(1);
   const [search, setSearch]       = useState("");
@@ -25,6 +31,20 @@ export function PurchaseTab({ suppliers }: { suppliers: Supplier[] }) {
   const [overdueOnly, setOverdue] = useState(false);
 
   const dSearch = useDebounce(search, 350);
+
+  // Parent bumps focusOverdueNonce when the red overdue badge is clicked — drop
+  // every other filter and show only the overdue-payment bills.
+  useEffect(() => {
+    if (!focusOverdueNonce) return;
+    setOverdue(true);
+    setSearch(""); setSupp(""); setFrom(""); setTo("");
+    setPage(1);
+  }, [focusOverdueNonce]);
+
+  const hasFilter = Boolean(dSearch || supplierId || dateFrom || dateTo || overdueOnly);
+  function clearFilters() {
+    setSearch(""); setSupp(""); setFrom(""); setTo(""); setOverdue(false); setPage(1);
+  }
 
   const { data, isPending, isFetching, refetch } = useQuery({
     queryKey: queryKeys.purchases.grn({ page, search: dSearch, supplierId, dateFrom, dateTo, overdueOnly, status: "CONFIRMED" }),
@@ -74,7 +94,27 @@ export function PurchaseTab({ suppliers }: { suppliers: Supplier[] }) {
               <TableSkeletonRows columns={11} widths={["w-6","w-20","w-16","w-16","w-16","w-28","w-8","w-16","w-12","w-20","w-6"]} />
             ) : grns.length === 0 ? (
               <tr><td colSpan={11}>
-                <EmptyState icon={FileX} title="No purchase invoices found" desc="Confirmed GRNs will appear here" />
+                {hasFilter ? (
+                  <EmptyState icon={FileX}
+                    title="No purchase invoices match these filters"
+                    desc={overdueCount > 0 && !overdueOnly
+                      ? `${overdueCount} bill${overdueCount === 1 ? " has" : "s have"} an overdue payment.`
+                      : "Try widening the date range or clearing the filters."}
+                    action={overdueCount > 0 && !overdueOnly
+                      ? `View ${overdueCount} overdue bill${overdueCount === 1 ? "" : "s"}`
+                      : "Clear filters"}
+                    onAction={overdueCount > 0 && !overdueOnly
+                      ? () => { clearFilters(); setOverdue(true); }
+                      : clearFilters} />
+                ) : (
+                  <EmptyState icon={FileX}
+                    title="No purchase invoices found"
+                    desc={overdueCount > 0
+                      ? `${overdueCount} bill${overdueCount === 1 ? " has" : "s have"} an overdue payment.`
+                      : "Confirmed GRNs will appear here"}
+                    action={overdueCount > 0 ? `View ${overdueCount} overdue bill${overdueCount === 1 ? "" : "s"}` : undefined}
+                    onAction={overdueCount > 0 ? () => setOverdue(true) : undefined} />
+                )}
               </td></tr>
             ) : grns.map((grn, i) => {
               const overdue     = isOverdue(grn.paymentDueDate);

@@ -545,9 +545,9 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
                             return (
                               <div className="mt-1">
                                 <p className={cn("text-[10px] font-semibold mb-1", failed ? "text-orange-700" : "text-amber-700")}>
-                                  {failed ? "Couldn't check — pick or Retry" : "Not in catalogue"}
+                                  {failed ? "Couldn't check — pick or Retry" : "Not in catalogue — pick or add"}
                                 </p>
-                                <MedicineCombobox onSelect={(m) => linkRow(idx, m)} />
+                                <MedicineCombobox onSelect={(m) => linkRow(idx, m)} gstRateHint={item.gstRate} />
                               </div>
                             );
                           })()}
