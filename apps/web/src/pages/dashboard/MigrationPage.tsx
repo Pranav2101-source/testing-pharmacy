@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Upload, ArrowRight, ArrowLeft, Check, AlertTriangle,
   Info, RefreshCw, FileSpreadsheet, Download,
-  Loader2, ShieldCheck, Trash2,
+  Loader2, ShieldCheck, Trash2, CheckCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
@@ -715,6 +715,13 @@ export default function MigrationPage() {
     { key: "summary",          label: "Done"      },
   ];
 
+  // Rows blocking "Confirm & Preview" (see the .some check on the button below) —
+  // almost always medicines with zero catalog suggestions, since anything with a
+  // suggestion is pre-selected on load. On a large CSV this can be hundreds of rows,
+  // each needing its own "+ Create New Medicine" click with no bulk path — this list
+  // backs that one bulk action instead.
+  const unmatchedMeds = medSuggestions.filter((s) => !confirmedMedMaps[s.csvValue]);
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -880,12 +887,30 @@ export default function MigrationPage() {
       {/* ── Step 4: Medicine mapping ─────────────────────────────────────────── */}
       {step === "medicine-map" && (
         <div className="bg-white rounded-xl border border-slate-200 flex flex-col" style={{ maxHeight: "calc(100vh - 220px)" }}>
-          <div className="px-6 pt-6 pb-3 flex-shrink-0">
-            <h2 className="font-semibold text-slate-800 mb-1">Map Medicines to Catalog</h2>
-            <p className="text-[12px] text-slate-500">
-              Confirm how each medicine from your old software maps to our catalog.
-              Previously confirmed medicines are pre-filled.
-            </p>
+          <div className="px-6 pt-6 pb-3 flex-shrink-0 flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-semibold text-slate-800 mb-1">Map Medicines to Catalog</h2>
+              <p className="text-[12px] text-slate-500">
+                Confirm how each medicine from your old software maps to our catalog.
+                Previously confirmed medicines are pre-filled.
+              </p>
+            </div>
+            {unmatchedMeds.length > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setConfirmedMedMaps((prev) => {
+                    const next = { ...prev };
+                    unmatchedMeds.forEach((s) => { next[s.csvValue] = { isNew: true }; });
+                    return next;
+                  })
+                }
+                className="flex items-center gap-1.5 text-[12px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100 px-3 py-2 rounded-lg whitespace-nowrap flex-shrink-0"
+              >
+                <CheckCheck className="w-3.5 h-3.5" />
+                Create New for all unmatched ({unmatchedMeds.length})
+              </button>
+            )}
           </div>
 
           <div className="flex-1 overflow-y-auto px-6 pb-2">
