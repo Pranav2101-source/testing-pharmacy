@@ -9,6 +9,8 @@ import com.checkup.pharmacy.common.sequence.DocumentSequenceService;
 import com.checkup.pharmacy.common.validation.ValidationPatterns;
 import com.checkup.pharmacy.modules.billing.Invoice;
 import com.checkup.pharmacy.modules.billing.InvoiceRepository;
+import com.checkup.pharmacy.modules.doctor.Doctor;
+import com.checkup.pharmacy.modules.doctor.DoctorRepository;
 import com.checkup.pharmacy.modules.integration.emr.dto.EmrMedicineMatchRequest;
 import com.checkup.pharmacy.modules.integration.emr.dto.EmrMedicineMatchResponse;
 import com.checkup.pharmacy.modules.integration.emr.dto.EmrPrescriptionIngestRequest;
@@ -51,19 +53,50 @@ public class EmrIntegrationService {
     private final MedicineRepository medicineRepository;
     private final InventoryRepository inventoryRepository;
     private final DocumentSequenceService sequenceService;
+    private final DoctorRepository doctorRepository;
 
     public EmrIntegrationService(PrescriptionRepository prescriptionRepository,
                                  PrescriptionItemRepository itemRepository,
                                  InvoiceRepository invoiceRepository,
                                  MedicineRepository medicineRepository,
                                  InventoryRepository inventoryRepository,
-                                 DocumentSequenceService sequenceService) {
+                                 DocumentSequenceService sequenceService,
+                                 DoctorRepository doctorRepository) {
         this.prescriptionRepository = prescriptionRepository;
         this.itemRepository = itemRepository;
         this.invoiceRepository = invoiceRepository;
         this.medicineRepository = medicineRepository;
         this.inventoryRepository = inventoryRepository;
         this.sequenceService = sequenceService;
+        this.doctorRepository = doctorRepository;
+    }
+
+    /**
+     * Links an EMR-pushed prescription to this pharmacy's own Doctor catalogue, auto-creating
+     * an entry the first time a given doctor is seen. Exact match on registrationNo ONLY — no
+     * name fallback, since two different doctors sharing a name (e.g. two "Dr. Sharma"s across
+     * different clinics) linking to the same catalogue entry would misattribute doctor-wise
+     * reports and the Schedule H1 register. A doctor with no regNo on the EMR payload is left
+     * unlinked (doctorId null) rather than guessed at.
+     *
+     * <p>Small residual race: two first-time prescriptions from the same brand-new doctor,
+     * pushed close enough together, could each miss the other's not-yet-committed insert and
+     * create two Doctor rows for the same regNo (no DB unique constraint on registrationNo
+     * today). Accepted as low-probability for now — one doctor's prescriptions arriving from
+     * one clinic are not genuinely concurrent in practice — rather than adding a constraint
+     * without first auditing existing data for pre-existing duplicates.
+     */
+    private String resolveDoctorId(String pharmacyId, String doctorName, String doctorRegNo, String doctorPhone) {
+        if (doctorRegNo == null || doctorRegNo.isBlank()) {
+            return null;
+        }
+        return doctorRepository.findByPharmacyIdAndRegistrationNo(pharmacyId, doctorRegNo)
+                .map(Doctor::getId)
+                .orElseGet(() -> {
+                    Doctor doctor = Doctor.create(pharmacyId, doctorName);
+                    doctor.applyFields(doctorName, doctorRegNo, null, null, doctorPhone, null, null);
+                    return doctorRepository.save(doctor).getId();
+                });
     }
 
     @Transactional
@@ -92,10 +125,14 @@ public class EmrIntegrationService {
 
         int sequence = sequenceService.next(pharmacyId, DocumentSequenceService.PRESCRIPTION,
                 DocumentSequenceService.PERIOD_ALL);
+        String doctorName = request.doctorName().trim();
+        String doctorRegNo = blankToNull(request.doctorRegNo());
+        String doctorPhone = ValidationPatterns.normalizeMobile(request.doctorPhone());
+        String doctorId = resolveDoctorId(pharmacyId, doctorName, doctorRegNo, doctorPhone);
         Prescription prescription = Prescription.createFromEmr(pharmacyId,
                 DocumentNumberFormat.prescription(sequence), externalTenantId, externalPrescriptionId,
-                blankToNull(request.externalPrescriptionNumber()), request.doctorName().trim(),
-                blankToNull(request.doctorRegNo()), ValidationPatterns.normalizeMobile(request.doctorPhone()),
+                blankToNull(request.externalPrescriptionNumber()), doctorId, doctorName,
+                doctorRegNo, doctorPhone,
                 ValidationPatterns.normalizeName(request.patientName()), request.patientAge(),
                 ValidationPatterns.normalizeMobile(request.patientPhone()), blankToNull(request.patientGender()),
                 request.prescribedDate(), request.validUntil(), blankToNull(request.notes()));
@@ -202,8 +239,18 @@ public class EmrIntegrationService {
             itemRepository.deleteAll(remainingByExternalItemId.values());
         }
 
-        existing.applyEmrAmendment(request.doctorName().trim(), blankToNull(request.doctorRegNo()),
-                ValidationPatterns.normalizeMobile(request.doctorPhone()),
+        String amendedDoctorName = request.doctorName().trim();
+        String amendedDoctorRegNo = blankToNull(request.doctorRegNo());
+        String amendedDoctorPhone = ValidationPatterns.normalizeMobile(request.doctorPhone());
+        // A pure retry — same regNo as what's already linked — needs no DoctorRepository
+        // round-trip at all. This is not a rare path: "a pure retry (identical data) is just
+        // an amendment that happens to change nothing" is this method's own stated contract
+        // (see the class doc above), so re-resolving on every retry would mean a DB hit on
+        // every re-push a flaky clinic connection retries, for an answer that never changes.
+        String amendedDoctorId = existing.getDoctorId() != null && Objects.equals(existing.getDoctorRegNo(), amendedDoctorRegNo)
+                ? existing.getDoctorId()
+                : resolveDoctorId(existing.getPharmacyId(), amendedDoctorName, amendedDoctorRegNo, amendedDoctorPhone);
+        existing.applyEmrAmendment(amendedDoctorId, amendedDoctorName, amendedDoctorRegNo, amendedDoctorPhone,
                 ValidationPatterns.normalizeName(request.patientName()), request.patientAge(),
                 ValidationPatterns.normalizeMobile(request.patientPhone()), blankToNull(request.patientGender()),
                 request.prescribedDate(), request.validUntil(), blankToNull(request.notes()));

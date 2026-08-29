@@ -174,11 +174,11 @@ public class Prescription extends BaseEntity {
 
     public static Prescription createFromEmr(String pharmacyId, String prescriptionNumber,
                                              String externalEmrTenantId, String externalEmrPrescriptionId,
-                                             String externalEmrPrescriptionNumber, String doctorName,
+                                             String externalEmrPrescriptionNumber, String doctorId, String doctorName,
                                              String doctorRegNo, String doctorPhone, String patientName,
                                              Integer patientAge, String patientPhone, String patientGender,
                                              Instant prescribedDate, Instant validUntil, String notes) {
-        Prescription rx = create(pharmacyId, prescriptionNumber, null, doctorName, doctorRegNo, doctorPhone,
+        Prescription rx = create(pharmacyId, prescriptionNumber, doctorId, doctorName, doctorRegNo, doctorPhone,
                 patientName, patientAge, patientPhone, patientGender, prescribedDate, validUntil, notes, null);
         rx.externalEmrTenantId = externalEmrTenantId;
         rx.externalEmrPrescriptionId = externalEmrPrescriptionId;
@@ -201,9 +201,10 @@ public class Prescription extends BaseEntity {
      * prescription is still ACTIVE first — nothing here re-checks that, because by the time
      * an amendment reaches an entity method the decision has already been made.
      */
-    public void applyEmrAmendment(String doctorName, String doctorRegNo, String doctorPhone, String patientName,
-                                  Integer patientAge, String patientPhone, String patientGender,
+    public void applyEmrAmendment(String doctorId, String doctorName, String doctorRegNo, String doctorPhone,
+                                  String patientName, Integer patientAge, String patientPhone, String patientGender,
                                   Instant prescribedDate, Instant validUntil, String notes) {
+        this.doctorId = doctorId;
         this.doctorName = doctorName;
         this.doctorRegNo = doctorRegNo;
         this.doctorPhone = doctorPhone;
