@@ -1,9 +1,14 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Search, Link2, AlertTriangle, Check, Sparkles, Loader2 } from "lucide-react";
+import { Search, Link2, AlertTriangle, Check, CheckCheck, Sparkles, Loader2 } from "lucide-react";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
+import { useMedicineCatalogSearch } from "@/lib/useMedicineCatalogSearch";
+
+/** Shared by a single row's "Yes, link it" and the panel's "Link all suggested" bulk action. */
+async function linkMedicine(prescriptionId: string, itemId: string, medicineId: string) {
+  await api.patch(`/prescriptions/${prescriptionId}/items/${itemId}/medicine`, { medicineId });
+}
 
 type MedicineSuggestion = {
   medicineId: string;
@@ -20,14 +25,6 @@ type UnmatchedItem = {
   quantity: number;
   dosage: string | null;
   suggestions: MedicineSuggestion[];
-};
-
-type MedicineHit = {
-  id: string;
-  name: string;
-  genericName: string | null;
-  strength: string | null;
-  form: string | null;
 };
 
 /**
@@ -57,6 +54,9 @@ export default function ReviewIngestedItemsPanel({
   }[];
   onLinked: () => void;
 }) {
+  const toast = useToast();
+  const [bulkLinking, setBulkLinking] = useState(false);
+
   const unmatched: UnmatchedItem[] = items
     .filter((i) => i.medicineId === null)
     .map((i) => ({
@@ -65,6 +65,36 @@ export default function ReviewIngestedItemsPanel({
     }));
 
   if (unmatched.length === 0) return null;
+
+  const withSuggestions = unmatched.filter((i) => i.suggestions.length > 0);
+
+  async function linkAllSuggested() {
+    setBulkLinking(true);
+    let linked = 0;
+    try {
+      // Sequential, not Promise.all: these PATCH the same prescription row one line at a
+      // time — a burst of parallel writes to the same record risks the backend seeing them
+      // out of order for no real time saving on a handful of lines.
+      for (const item of withSuggestions) {
+        try {
+          await linkMedicine(prescriptionId, item.id, item.suggestions[0]!.medicineId);
+          linked++;
+        } catch {
+          // One failure shouldn't stop the rest — report the count actually linked below,
+          // and whatever didn't link stays visible in the list for a manual retry.
+        }
+      }
+      if (linked > 0) {
+        toast.success(`Linked ${linked} medicine${linked === 1 ? "" : "s"}`);
+        onLinked();
+      }
+      if (linked < withSuggestions.length) {
+        toast.error(`${withSuggestions.length - linked} could not be linked — try those individually`);
+      }
+    } finally {
+      setBulkLinking(false);
+    }
+  }
 
   return (
     <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
@@ -81,6 +111,17 @@ export default function ReviewIngestedItemsPanel({
             each one is linked.
           </p>
         </div>
+        {withSuggestions.length > 1 && (
+          <button
+            type="button"
+            disabled={bulkLinking}
+            onClick={linkAllSuggested}
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-xs font-semibold text-violet-700 hover:bg-violet-100 disabled:opacity-60"
+          >
+            {bulkLinking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCheck className="h-3.5 w-3.5" />}
+            Link all suggested ({withSuggestions.length})
+          </button>
+        )}
       </div>
 
       <div className="mt-3 space-y-2">
@@ -113,19 +154,12 @@ function UnmatchedRow({
   const [term, setTerm] = useState(item.medicineName);
   const [linking, setLinking] = useState<string | null>(null);
 
-  const { data: hits = [], isFetching } = useQuery<MedicineHit[]>({
-    queryKey: ["medicine-search", term],
-    queryFn: async () => {
-      const { data } = await api.get("/medicines", { params: { search: term, limit: 8 } });
-      return data?.data?.items ?? data?.data ?? [];
-    },
-    enabled: open && term.trim().length >= 2,
-  });
+  const { data: hits = [], isFetching, isError } = useMedicineCatalogSearch(term, 8, open);
 
   async function link(medicineId: string) {
     setLinking(medicineId);
     try {
-      await api.patch(`/prescriptions/${prescriptionId}/items/${item.id}/medicine`, { medicineId });
+      await linkMedicine(prescriptionId, item.id, medicineId);
       toast.success(`Linked "${item.medicineName}"`);
       setOpen(false);
       onLinked();
@@ -203,6 +237,8 @@ function UnmatchedRow({
               <p className="px-1 py-2 text-xs text-slate-500">Type at least two letters.</p>
             ) : isFetching ? (
               <p className="px-1 py-2 text-xs text-slate-500">Searching…</p>
+            ) : isError ? (
+              <p className="px-1 py-2 text-xs text-red-600">Couldn't search — check your connection and try again.</p>
             ) : hits.length === 0 ? (
               <p className="px-1 py-2 text-xs text-slate-500">
                 Nothing matched. If you do not stock this medicine, leave the line unlinked and

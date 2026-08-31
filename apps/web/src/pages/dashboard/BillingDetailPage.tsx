@@ -63,6 +63,11 @@ type Invoice = {
   doctorRegNo: string | null;
   notes: string | null;
   customer: { name: string; phone: string | null; email: string | null } | null;
+  // Set only when the bill has no linked Customer record — a patient name/phone captured
+  // free-text (an EMR-sourced prescription, or a walk-in typed by hand). `customer` above
+  // wins when both exist; this is the fallback, not a duplicate to ignore.
+  customerName: string | null;
+  customerPhone: string | null;
   user: { name: string };
   items: InvoiceItem[];
 };
@@ -164,8 +169,8 @@ export default function BillDetailPage() {
   const printData: PrintInvoiceData = invoice ? {
     invoiceNumber:   invoice.invoiceNumber,
     createdAt:       invoice.createdAt,
-    customerName:    invoice.customer?.name    || undefined,
-    customerPhone:   invoice.customer?.phone   || undefined,
+    customerName:    invoice.customer?.name    || invoice.customerName  || undefined,
+    customerPhone:   invoice.customer?.phone   || invoice.customerPhone || undefined,
     prescriptionNo:  invoice.prescription?.prescriptionNumber || undefined,
     doctorName:      invoice.doctorName        || undefined,
     doctorRegNo:     invoice.doctorRegNo       || undefined,
@@ -342,7 +347,7 @@ export default function BillDetailPage() {
               <span className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">Patient</span>
             </div>
             <p className="text-[13px] font-semibold text-slate-800 truncate">
-              {invoice.customer?.name ?? <span className="text-slate-400 font-normal">Walk-in customer</span>}
+              {invoice.customer?.name ?? invoice.customerName ?? <span className="text-slate-400 font-normal">Walk-in customer</span>}
             </p>
           </div>
 
@@ -352,7 +357,7 @@ export default function BillDetailPage() {
               <span className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">Mobile</span>
             </div>
             <p className="text-[13px] font-semibold text-slate-800">
-              {invoice.customer?.phone ?? <span className="text-slate-400 font-normal">—</span>}
+              {invoice.customer?.phone ?? invoice.customerPhone ?? <span className="text-slate-400 font-normal">—</span>}
             </p>
           </div>
         </div>

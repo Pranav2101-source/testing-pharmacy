@@ -53,14 +53,31 @@ public interface GoodsReceiptNoteRepository extends JpaRepository<GoodsReceiptNo
                                                 @Param("supplierInvoiceNo") String supplierInvoiceNo,
                                                 @Param("excludeId") String excludeId);
 
+    /**
+     * The Purchase/Gate-Inward list. Ranged and ordered by the GRN's effective
+     * date — {@code COALESCE(confirmedAt, createdAt, supplierInvoiceDate)} — NOT
+     * {@code createdAt} alone:
+     *  - A confirmed GRN belongs in the register at its bill (confirm) date, not
+     *    the date its draft was first opened — the same axis every sibling figure
+     *    uses (month-spend {@code sumConfirmedInRange}, {@code countOverdue}).
+     *  - Goods receipts loaded straight into the table (historical data brought
+     *    over outside the app) can carry a junk {@code createdAt} — e.g. an
+     *    unparseable date that fell back to the epoch in IST lands at
+     *    1969-12-31T18:30Z, just before {@link com.checkup.pharmacy.common.util.DateRange#MIN}.
+     *    The old unconditional {@code g.createdAt >= :from} then silently dropped
+     *    every such row from this list while it still counted toward the summary
+     *    cards. {@code supplierInvoiceDate} is the last fallback because a
+     *    hand-loaded historical bill always carries one.
+     */
     @Query("""
             SELECT g FROM GoodsReceiptNote g LEFT JOIN FETCH g.supplier
             WHERE g.pharmacyId = :pharmacyId
               AND (:status IS NULL OR CAST(g.status AS string) = :status)
               AND (:supplierId IS NULL OR g.supplierId = :supplierId)
               AND (:overdue = false OR (g.paymentDueDate < :now AND CAST(g.status AS string) = 'CONFIRMED'))
-              AND g.createdAt >= :from AND g.createdAt <= :to
-            ORDER BY g.createdAt DESC
+              AND COALESCE(g.confirmedAt, g.createdAt, g.supplierInvoiceDate) >= :from
+              AND COALESCE(g.confirmedAt, g.createdAt, g.supplierInvoiceDate) <= :to
+            ORDER BY COALESCE(g.confirmedAt, g.createdAt, g.supplierInvoiceDate) DESC
             """)
     Page<GoodsReceiptNote> search(@Param("pharmacyId") String pharmacyId,
                                   @Param("status") String status,

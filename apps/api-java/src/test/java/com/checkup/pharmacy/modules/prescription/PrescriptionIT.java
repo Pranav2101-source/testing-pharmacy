@@ -107,7 +107,7 @@ class PrescriptionIT extends AbstractPostgresIT {
     }
 
     private CreateInvoiceRequest saleAgainst(String prescriptionId, String inventoryId, int quantity) {
-        return new CreateInvoiceRequest(null, null, null, prescriptionId, null, null, null, null, null,
+        return new CreateInvoiceRequest(null, null, null, null, null, prescriptionId, null, null, null, null, null,
                 null, null, null, null, null,
                 List.of(new InvoiceItemRequest(inventoryId, quantity, null, BigDecimal.ZERO, null)));
     }
@@ -244,7 +244,7 @@ class PrescriptionIT extends AbstractPostgresIT {
     void fullCollectionClosesPrescription() {
         String rxId = createTwoItemPrescription();
 
-        var bothItems = new CreateInvoiceRequest(null, null, null, rxId, null, null, null, null, null,
+        var bothItems = new CreateInvoiceRequest(null, null, null, null, null, rxId, null, null, null, null, null,
                 null, null, null, null, null,
                 List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO, null),
                         new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO, null)));
@@ -260,7 +260,7 @@ class PrescriptionIT extends AbstractPostgresIT {
     void dispensedPrescriptionCannotBeReused() {
         String rxId = createTwoItemPrescription();
 
-        var bothItems = new CreateInvoiceRequest(null, null, null, rxId, null, null, null, null, null,
+        var bothItems = new CreateInvoiceRequest(null, null, null, null, null, rxId, null, null, null, null, null,
                 null, null, null, null, null,
                 List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO, null),
                         new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO, null)));
@@ -354,7 +354,7 @@ class PrescriptionIT extends AbstractPostgresIT {
      */
     private String emrPrescriptionForAmoxicillin() {
         var rx = prescriptionRepository.save(Prescription.createFromEmr(pharmacyId, "RX-EMR-" + unique(),
-                "tenant-9", "ext-" + unique(), "EMR-1", "Dr Who", null, null,
+                "tenant-9", "ext-" + unique(), "EMR-1", null, "Dr Who", null, null,
                 "A Patient", 40, null, null, null, null, null));
         prescriptionItemRepository.save(PrescriptionItem.createFromEmr(pharmacyId, rx.getId(),
                 "ext-item-1", "Amoxicillin 250", amoxicillinId, null, 10, null, null, null));
@@ -370,7 +370,7 @@ class PrescriptionIT extends AbstractPostgresIT {
 
         // Paracetamol against an Amoxicillin line. Nothing matches these by medicine, so
         // without the explicit link the prescribed line would accrue nothing at all.
-        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, rxId, null, null, null,
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, rxId, null, null, null,
                 null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(paraBatchId, 10, null, BigDecimal.ZERO, itemId))));
         flushAndClear();
@@ -394,7 +394,7 @@ class PrescriptionIT extends AbstractPostgresIT {
 
         // Explicitly attributed, but to the medicine that was actually prescribed. Reporting
         // a "substitution" here would put a swap that never happened in front of a clinician.
-        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, rxId, null, null, null,
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, rxId, null, null, null,
                 null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(amoxBatchId, 10, null, BigDecimal.ZERO, itemId))));
         flushAndClear();

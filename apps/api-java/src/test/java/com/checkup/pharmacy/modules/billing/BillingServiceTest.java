@@ -95,7 +95,7 @@ class BillingServiceTest {
     }
 
     private static CreateInvoiceRequest requestWith(InvoiceItemRequest... items) {
-        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
+        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, List.of(items));
     }
 
@@ -182,7 +182,7 @@ class BillingServiceTest {
     @Test
     @DisplayName("idempotency: replaying a key returns the original invoice instead of billing twice")
     void idempotentReplayDoesNotCreateSecondInvoice() {
-        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
+        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, "idem-key-1", null, List.of(item("inv-1", 1)));
         when(invoiceRepository.findByPharmacyIdAndIdempotencyKey(PHARMACY_ID, "idem-key-1"))
                 .thenReturn(java.util.Optional.of(new Invoice()));

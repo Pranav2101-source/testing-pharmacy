@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronUp,
   Calculator, Loader2,
-  XCircle, BookmarkCheck, RotateCcw, X, MonitorSmartphone,
+  XCircle, BookmarkCheck, RotateCcw, X, MonitorSmartphone, FileText,
 } from "lucide-react";
 import { ACTION_DEF_MAP } from "@/lib/billingPreferences";
 import type { ActionId } from "@/lib/billingPreferences";
@@ -304,6 +304,15 @@ function NewBillInner() {
         // happening to equal idempotencyKey.
         sessionId:        idempotencyKeyRef.current,
         customerId:       (meta.customerId && meta.customerId !== "COUNTER") ? meta.customerId : undefined,
+        // Without a linked customerId (an EMR-sourced patient, or any walk-in with a name
+        // typed but no catalogue record), this is the ONLY place the patient's name reaches
+        // the saved invoice — printData below carries the same value but only for the
+        // receipt, never for the actual save. Omitting it here is exactly the "walk-in
+        // customer" bug: the banner and receipt would still show the real name while the
+        // invoice itself silently reverted to no name on file. Same "COUNTER" exclusion as
+        // printData's, so behavior stays identical between what's shown and what's saved.
+        customerName:     (meta.customerName && meta.customerId !== "COUNTER") ? meta.customerName : undefined,
+        customerPhone:    (meta.customerPhone && meta.customerId !== "COUNTER") ? meta.customerPhone : undefined,
         doctorId:         meta.doctorId         || undefined,
         doctorName:       meta.doctorName       || undefined,
         prescriptionId:   meta.prescriptionId   || undefined,
@@ -516,6 +525,25 @@ function NewBillInner() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Prescription identity banner — the patient's name is otherwise invisible on this
+            screen the whole time a prescription is being billed, only appearing after the
+            fact on the saved invoice. Stays up for the whole session, unlike the toasts
+            above, since it's context the pharmacist needs throughout, not a one-off event. */}
+        {meta.prescriptionId && (
+          <div className="flex items-center gap-3 bg-violet-50 border-b border-violet-200 px-5 py-2 flex-shrink-0">
+            <FileText className="w-4 h-4 text-violet-500 flex-shrink-0" />
+            <p className="text-[12px] text-violet-800 font-medium flex-1 min-w-0 truncate">
+              Billing {meta.prescriptionNumber || "prescription"}
+              {meta.customerName && <> for <strong>{meta.customerName}</strong></>}
+              {/* doctorName is free text a pharmacist (or a clinic's own field) may or may not
+                  have typed "Dr." into already — same convention the DOCTOR field elsewhere on
+                  this screen follows, showing it raw rather than forcing a prefix that would
+                  double up as "Dr. Dr. Mehta". */}
+              {meta.doctorName && <> · {meta.doctorName}</>}
+            </p>
+          </div>
+        )}
 
         {/* Multi-tab notice */}
         <AnimatePresence>

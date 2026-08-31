@@ -29,6 +29,14 @@ public interface DoctorRepository extends JpaRepository<Doctor, String> {
 
     Optional<Doctor> findByIdAndPharmacyId(String id, String pharmacyId);
 
+    /**
+     * Exact match only, deliberately not the name-OR-regNo fuzzy match {@link #search} and the
+     * migration-import dedup finders use — this backs EMR prescription auto-capture, where a
+     * name collision (two different "Dr. Sharma"s) linking to the wrong existing doctor is a
+     * real risk. registrationNo is the only field trustworthy enough to auto-link on.
+     */
+    Optional<Doctor> findByPharmacyIdAndRegistrationNo(String pharmacyId, String registrationNo);
+
     long countByPharmacyId(String pharmacyId);
 
     /** Batched (pharmacyId, count) for a set of tenants — avoids an N+1 in platform views. */

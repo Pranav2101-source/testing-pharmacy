@@ -11,6 +11,11 @@ import java.util.List;
 
 public record CreateInvoiceRequest(
         String customerId,
+        // Free-text fallback used only when customerId doesn't resolve to a saved Customer
+        // (e.g. an EMR-sourced prescription's patient, never linked to a Customer record).
+        // Mirrors doctorName's fallback below — see BillingService.createInvoice.
+        @Size(max = 200) String customerName,
+        @Size(max = 20) String customerPhone,
         String doctorId,
         @Size(max = 200) String doctorName,
         String prescriptionId,

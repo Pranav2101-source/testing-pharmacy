@@ -92,7 +92,7 @@ export function describeImportResolution(opts: {
     bits.push(`${lookupFailed} ${lookupFailed === 1 ? "row" : "rows"} couldn't be checked against your catalogue — this is usually a connection problem, not missing data. Use "Retry matching", or pick each highlighted row manually.`);
   }
   if (notInCatalogue > 0) {
-    bits.push(`${notInCatalogue} ${notInCatalogue === 1 ? "row isn't" : "rows aren't"} in your catalogue — pick a match for each highlighted row, or add ${notInCatalogue === 1 ? "it" : "them"} on the Medicines page first.`);
+    bits.push(`${notInCatalogue} ${notInCatalogue === 1 ? "row isn't" : "rows aren't"} in your catalogue — for each highlighted row, pick a match or use its "+ Add" button to create it.`);
   }
   return bits.length > 0 && (skipped || lookupFailed || notInCatalogue) ? bits.join(" ") : null;
 }

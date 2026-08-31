@@ -96,7 +96,7 @@ class InvoiceSettingsIT extends AbstractPostgresIT {
     }
 
     private CreateInvoiceRequest sale(int quantity) {
-        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
+        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, quantity, null, BigDecimal.ZERO, null)));
     }
@@ -296,8 +296,7 @@ class InvoiceSettingsIT extends AbstractPostgresIT {
             flushAndClear();
             authenticateAs(otherUser.getId(), other.getId(), Role.OWNER);
 
-            var invoice = billingService.createInvoice(new CreateInvoiceRequest(
-                    null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            var invoice = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                     List.of(new InvoiceItemRequest(otherBatch, 1, null, BigDecimal.ZERO, null))));
 
             assertThat(invoice.invoiceNumber()).startsWith("INV/");
@@ -309,7 +308,7 @@ class InvoiceSettingsIT extends AbstractPostgresIT {
     class FreeQuantity {
 
         private CreateInvoiceRequest saleWithFree(int quantity, int freeQty) {
-            return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
+            return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null,
                     List.of(new InvoiceItemRequest(batchId, quantity, freeQty, BigDecimal.ZERO, null)));
         }

@@ -47,6 +47,9 @@ export default function PurchasePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab,              setTab]         = useState<Tab>("purchase");
   const [mounted,          setMounted]     = useState<Set<Tab>>(() => new Set(["purchase"]));
+  // Bumped when the user clicks the red overdue badge on the Purchase tab —
+  // PurchaseTab watches it and switches itself to the "overdue payments only" view.
+  const [overdueFocusNonce, setOverdueFocusNonce] = useState(0);
   const [showCreate,       setShow]        = useState(false);
   const [activePanel,      setPanel]       = useState<PanelType>(null);
   const [reorderMedicine,  setReorderMed]  = useState<{ id: string; name: string; gstRate: number } | undefined>(undefined);
@@ -96,6 +99,11 @@ export default function PurchasePage() {
 
   function openCreateModal() {
     setShow(true);
+  }
+
+  function focusOverduePayments() {
+    handleTabChange("purchase");
+    setOverdueFocusNonce((n) => n + 1);
   }
 
   function handleSupplierAdded(s: FullSupplier) {
@@ -156,7 +164,16 @@ export default function PurchasePage() {
                 <span className="absolute top-2 right-2 w-4 h-4 rounded-full bg-orange-500 text-white text-[9px] font-black flex items-center justify-center">{pendingApprovals > 9 ? "9+" : pendingApprovals}</span>
               )}
               {t.key === "purchase" && overdueCount > 0 && (
-                <span className="absolute top-2 right-2 w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-black flex items-center justify-center">{overdueCount > 9 ? "9+" : overdueCount}</span>
+                <span
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`${overdueCount} bill${overdueCount === 1 ? "" : "s"} with overdue payment — click to view`}
+                  title={`${overdueCount} bill${overdueCount === 1 ? "" : "s"} with overdue payment — click to view`}
+                  onClick={(e) => { e.stopPropagation(); focusOverduePayments(); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); focusOverduePayments(); } }}
+                  className="absolute top-1 right-1 min-w-[16px] h-4 px-0.5 rounded-full bg-red-500 hover:bg-red-600 text-white text-[9px] font-black flex items-center justify-center cursor-pointer transition-colors">
+                  {overdueCount > 9 ? "9+" : overdueCount}
+                </span>
               )}
             </button>
           );
@@ -168,7 +185,7 @@ export default function PurchasePage() {
       <div className="flex-1 overflow-hidden min-h-0">
         {mounted.has("purchase") && (
           <div className={cn("h-full", tab !== "purchase" && "hidden")}>
-            <PurchaseTab suppliers={suppliers} />
+            <PurchaseTab suppliers={suppliers} overdueCount={overdueCount} focusOverdueNonce={overdueFocusNonce} />
           </div>
         )}
         {mounted.has("gate-inward") && (

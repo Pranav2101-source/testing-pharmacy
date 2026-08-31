@@ -405,9 +405,9 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
                             return (
                               <div className="mt-1">
                                 <p className={cn("text-[10px] font-semibold mb-1", failed ? "text-orange-700" : "text-amber-700")}>
-                                  {failed ? "Couldn't check catalogue — pick manually or Retry" : "Not in catalogue — pick a match"}
+                                  {failed ? "Couldn't check catalogue — pick manually or Retry" : "Not in catalogue — pick a match or add it"}
                                 </p>
-                                <MedicineCombobox onSelect={(m) => linkRow(idx, m)} />
+                                <MedicineCombobox onSelect={(m) => linkRow(idx, m)} gstRateHint={item.gstRate} />
                               </div>
                             );
                           })()}

@@ -6,6 +6,7 @@ import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.sequence.DocumentSequenceService;
 import com.checkup.pharmacy.modules.billing.InvoiceRepository;
+import com.checkup.pharmacy.modules.doctor.DoctorRepository;
 import com.checkup.pharmacy.modules.integration.emr.dto.EmrMedicineMatchRequest;
 import com.checkup.pharmacy.modules.integration.emr.dto.EmrPrescriptionIngestRequest;
 import com.checkup.pharmacy.modules.integration.emr.dto.EmrPrescriptionSnapshot;
@@ -82,8 +83,9 @@ class EmrIntegrationServiceTest {
         MedicineRepository medicineRepository = mock(MedicineRepository.class);
         InventoryRepository inventoryRepository = mock(InventoryRepository.class);
         DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
+        DoctorRepository doctorRepository = mock(DoctorRepository.class);
         EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
-                invoiceRepository, medicineRepository, inventoryRepository, sequenceService);
+                invoiceRepository, medicineRepository, inventoryRepository, sequenceService, doctorRepository);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new UserPrincipal("machine", "ph-1", Role.OWNER, "emr@machine.local"), null, List.of()));
 
@@ -115,8 +117,9 @@ class EmrIntegrationServiceTest {
         MedicineRepository medicineRepository = mock(MedicineRepository.class);
         InventoryRepository inventoryRepository = mock(InventoryRepository.class);
         DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
+        DoctorRepository doctorRepository = mock(DoctorRepository.class);
         EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
-                invoiceRepository, medicineRepository, inventoryRepository, sequenceService);
+                invoiceRepository, medicineRepository, inventoryRepository, sequenceService, doctorRepository);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new UserPrincipal("machine", "ph-1", Role.OWNER, "emr@machine.local"), null, List.of()));
 
@@ -147,8 +150,9 @@ class EmrIntegrationServiceTest {
         MedicineRepository medicineRepository = mock(MedicineRepository.class);
         InventoryRepository inventoryRepository = mock(InventoryRepository.class);
         DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
+        DoctorRepository doctorRepository = mock(DoctorRepository.class);
         EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
-                invoiceRepository, medicineRepository, inventoryRepository, sequenceService);
+                invoiceRepository, medicineRepository, inventoryRepository, sequenceService, doctorRepository);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new UserPrincipal("machine", "ph-1", Role.OWNER, "emr@machine.local"), null, List.of()));
         when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of());
@@ -170,8 +174,9 @@ class EmrIntegrationServiceTest {
         MedicineRepository medicineRepository = mock(MedicineRepository.class);
         InventoryRepository inventoryRepository = mock(InventoryRepository.class);
         DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
+        DoctorRepository doctorRepository = mock(DoctorRepository.class);
         EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
-                invoiceRepository, medicineRepository, inventoryRepository, sequenceService);
+                invoiceRepository, medicineRepository, inventoryRepository, sequenceService, doctorRepository);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new UserPrincipal("machine", "ph-1", Role.OWNER, "emr@machine.local"), null, List.of()));
 
@@ -467,6 +472,37 @@ class EmrIntegrationServiceTest {
     }
 
     @Test
+    @DisplayName("re-pushing with the SAME doctor regNo costs no DoctorRepository lookup — a retry storm shouldn't hammer it")
+    void amendmentWithUnchangedDoctorRegNoSkipsTheLookup() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        DoctorRepository doctorRepository = mock(DoctorRepository.class);
+        EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
+                mock(InvoiceRepository.class), mock(MedicineRepository.class), mock(InventoryRepository.class),
+                mock(DocumentSequenceService.class), doctorRepository);
+        authenticateAsMachine();
+
+        // Already resolved once before — doctorId and doctorRegNo both already set, exactly
+        // what a second push of the same prescription (a retry, or a genuinely unrelated
+        // field edit) would look like.
+        Prescription rx = Prescription.createFromEmr("ph-1", "RX-000001", "tenant-1", "rx-1", null,
+                "doc-1", "Dr. Rao", "MCI-123", null, "Asha Verma", null, null, null, null, null, null);
+        when(itemRepository.findByPrescriptionId(rx.getId())).thenReturn(List.of());
+
+        // Built directly, not via the ingestRequest() helper — that helper always sends a
+        // null regNo, which would take the SAME "nothing to resolve" fast path for a
+        // different reason (blank regNo) and not actually exercise the unchanged-regNo
+        // short-circuit this test is for.
+        var request = new EmrPrescriptionIngestRequest("tenant-1", "rx-1", null, "Dr. Rao", "MCI-123", null,
+                "Asha Verma", null, null, null, null, null, null, List.of());
+        service.applyAmendment(rx, request);
+
+        assertThat(rx.getDoctorId()).isEqualTo("doc-1");
+        verify(doctorRepository, never()).findByPharmacyIdAndRegistrationNo(any(), any());
+        verify(doctorRepository, never()).save(any());
+    }
+
+    @Test
     @DisplayName("amending a PARTIALLY dispensed prescription is rejected — stricter than cancel, which allows PARTIAL")
     void amendmentRejectsAPartiallyDispensedPrescription() {
         PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
@@ -542,7 +578,7 @@ class EmrIntegrationServiceTest {
     private static EmrIntegrationService serviceWith(PrescriptionRepository prescriptionRepository) {
         return new EmrIntegrationService(prescriptionRepository, mock(PrescriptionItemRepository.class),
                 mock(InvoiceRepository.class), mock(MedicineRepository.class), mock(InventoryRepository.class),
-                mock(DocumentSequenceService.class));
+                mock(DocumentSequenceService.class), mock(DoctorRepository.class));
     }
 
     private static EmrIntegrationService serviceWith(PrescriptionRepository prescriptionRepository,
@@ -550,7 +586,7 @@ class EmrIntegrationServiceTest {
                                                       MedicineRepository medicineRepository) {
         return new EmrIntegrationService(prescriptionRepository, itemRepository,
                 mock(InvoiceRepository.class), medicineRepository, mock(InventoryRepository.class),
-                mock(DocumentSequenceService.class));
+                mock(DocumentSequenceService.class), mock(DoctorRepository.class));
     }
 
     private static void authenticateAsMachine() {
@@ -559,7 +595,7 @@ class EmrIntegrationServiceTest {
     }
 
     private static Prescription emrPrescription() {
-        return Prescription.createFromEmr("ph-1", "RX-000001", "tenant-1", "rx-1", null,
+        return Prescription.createFromEmr("ph-1", "RX-000001", "tenant-1", "rx-1", null, null,
                 "Dr. Rao", null, null, "Asha Verma", null, null, null, null, null, null);
     }
 }

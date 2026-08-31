@@ -607,8 +607,8 @@ public class BillingService {
                 + (req.deliveryNotes() != null && !req.deliveryNotes().isBlank() ? "\n[Delivery] " + req.deliveryNotes() : "");
 
         Invoice invoice = Invoice.create(pharmacyId, invoiceNumber, userId,
-                customer == null ? null : customer.getId(), customer == null ? null : customer.getName(),
-                customer == null ? null : customer.getPhone(), doctor == null ? null : doctor.getId(),
+                customer == null ? null : customer.getId(), customer == null ? req.customerName() : customer.getName(),
+                customer == null ? req.customerPhone() : customer.getPhone(), doctor == null ? null : doctor.getId(),
                 doctor == null ? req.doctorName() : doctor.getName(), doctor == null ? null : doctor.getRegistrationNo(),
                 prescription == null ? null : prescription.getId(), paymentMode, paymentStatus, isInterstate,
                 combinedNotes.isBlank() ? null : combinedNotes, req.idempotencyKey(), itemTotals.subtotal(),

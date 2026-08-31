@@ -37,9 +37,19 @@ const SCHEDULE_TOOLTIP: Record<string, string> = {
  * — the second one is not a stock problem at all, and saying "not in stock" there would send
  * them looking for stock that was never the issue.
  */
-function emptyCartMessage(failures: string[], skipped: { medicineName: string; reason: "hold" | "remove" }[]): string {
-  if (failures.length === 0 && skipped.length > 0) {
+function emptyCartMessage(
+  failures: string[],
+  checkFailed: string[],
+  skipped: { medicineName: string; reason: "hold" | "remove" }[],
+): string {
+  if (failures.length === 0 && checkFailed.length === 0 && skipped.length > 0) {
     return "Every line was held or removed — nothing left to bill";
+  }
+  if (failures.length === 0 && checkFailed.length > 0) {
+    return "Couldn't check stock — check your connection and try again";
+  }
+  if (failures.length > 0 && checkFailed.length > 0) {
+    return "Some medicines are out of stock, and stock couldn't be checked for the rest — check your connection and try again";
   }
   return "None of these medicines are in stock right now";
 }
@@ -229,9 +239,9 @@ export default function ClinicPrescriptionTriage({
   async function handleBillNow() {
     setBusy("bill");
     try {
-      const { items, meta, failures, skipped } = await resolvePrescriptionToCart(rx, resolutions);
+      const { items, meta, failures, checkFailed, partials, skipped } = await resolvePrescriptionToCart(rx, resolutions);
       if (items.length === 0) {
-        toast.error(emptyCartMessage(failures, skipped));
+        toast.error(emptyCartMessage(failures, checkFailed, skipped));
         return;
       }
       // loadDraft (not addItem-per-line) so the cart is REPLACED. Appending would silently
@@ -239,6 +249,12 @@ export default function ClinicPrescriptionTriage({
       loadDraft(items, meta);
       if (failures.length > 0) {
         toast.error(`Not in stock: ${failures.join(", ")} — add manually or substitute`);
+      }
+      if (checkFailed.length > 0) {
+        toast.error(`Couldn't check stock for: ${checkFailed.join(", ")} — add manually if needed`);
+      }
+      if (partials.length > 0) {
+        toast.info(partials.map((p) => `${p.medicineName}: billed ${p.available} of ${p.requested}`).join(" · "));
       }
       if (skipped.length > 0) {
         toast.info(`Left off this bill: ${skipped.map((s) => s.medicineName).join(", ")}`);
@@ -254,14 +270,18 @@ export default function ClinicPrescriptionTriage({
   async function handleSaveDraft() {
     setBusy("draft");
     try {
-      const { items, meta, failures, skipped } = await resolvePrescriptionToCart(rx, resolutions);
+      const { items, meta, failures, checkFailed, partials, skipped } = await resolvePrescriptionToCart(rx, resolutions);
       if (items.length === 0) {
-        toast.error(emptyCartMessage(failures, skipped));
+        toast.error(emptyCartMessage(failures, checkFailed, skipped));
         return;
       }
       saveDraft(items, meta);
       const notes = [
         failures.length > 0 ? `${failures.join(", ")} not in stock` : null,
+        checkFailed.length > 0 ? `couldn't check stock for ${checkFailed.join(", ")}` : null,
+        partials.length > 0
+          ? partials.map((p) => `${p.medicineName} billed ${p.available}/${p.requested}`).join(", ")
+          : null,
         skipped.length > 0 ? `${skipped.map((s) => s.medicineName).join(", ")} left off` : null,
       ].filter(Boolean);
       toast.success(notes.length > 0 ? `Saved to Sales → Drafts (${notes.join("; ")})` : "Saved to Sales → Drafts");
