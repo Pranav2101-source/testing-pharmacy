@@ -50,6 +50,25 @@ public interface SupportTicketRepository extends JpaRepository<SupportTicket, St
 
     long countByStatus(com.checkup.pharmacy.common.enums.TicketStatus status);
 
+    /** Open-ticket load per agent — the round-robin tie-breaker. Only agents that actually hold a ticket appear. */
+    @Query("""
+            SELECT t.assignedAgentId AS agentId, COUNT(t) AS cnt FROM SupportTicket t
+            WHERE t.assignedAgentId IN :agentIds AND t.status IN :statuses
+            GROUP BY t.assignedAgentId
+            """)
+    java.util.List<AgentOpenCountRow> countByAssignedAgentIdInAndStatusIn(
+            @Param("agentIds") java.util.Collection<String> agentIds,
+            @Param("statuses") java.util.Collection<com.checkup.pharmacy.common.enums.TicketStatus> statuses);
+
+    interface AgentOpenCountRow {
+        String getAgentId();
+        long getCnt();
+    }
+
+    /** An agent's still-actionable tickets — the set to hand off when they are deactivated. */
+    java.util.List<SupportTicket> findByAssignedAgentIdAndStatusIn(
+            String assignedAgentId, java.util.Collection<com.checkup.pharmacy.common.enums.TicketStatus> statuses);
+
     long countByStatusInAndPriority(java.util.Collection<com.checkup.pharmacy.common.enums.TicketStatus> statuses,
                                     com.checkup.pharmacy.common.enums.TicketPriority priority);
 

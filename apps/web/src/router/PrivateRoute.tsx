@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { Navigate, Outlet } from "react-router-dom";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { clearUser, getAccessToken, getStoredUser } from "@/lib/auth";
 import { initAuth } from "@/lib/api-client";
 
 export function PrivateRoute() {
+  const location = useLocation();
   const hasStoredSession = !!getAccessToken() || !!getStoredUser();
 
   // If the access token is already in memory (just logged in), skip the refresh
@@ -38,7 +39,11 @@ export function PrivateRoute() {
 
   if (!authed) {
     clearUser();
-    return <Navigate to="/" replace />;
+    // Send them to login, remembering the page they asked for so they land back
+    // there after signing in (LoginPage reads ?next=). PrivateRoute only wraps
+    // /dashboard/* so this path is always safe to forward.
+    const here = location.pathname + location.search;
+    return <Navigate to={`/login?next=${encodeURIComponent(here)}`} replace />;
   }
 
   return <Outlet />;

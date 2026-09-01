@@ -101,7 +101,11 @@ export async function initAuth(): Promise<boolean> {
 function redirectToLogin(): void {
   clearSession();
   if (window.location.pathname !== "/login") {
-    window.location.href = "/login";
+    // Carry where the user was so login can send them back there (see LoginPage).
+    // Only dashboard paths are forwarded — anything else falls back to the role default.
+    const here = window.location.pathname + window.location.search;
+    const suffix = here.startsWith("/dashboard") ? `?next=${encodeURIComponent(here)}` : "";
+    window.location.href = `/login${suffix}`;
   }
 }
 

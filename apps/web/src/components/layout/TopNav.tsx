@@ -92,8 +92,10 @@ function useDropdown() {
 
 // ─── NavItem ──────────────────────────────────────────────────────
 // memo: pathname changes on every navigation, but most tabs aren't affected
-const NavItem = memo(function NavItem({ tab, pathname }: { tab: NavTab; pathname: string }) {
-  const active       = isActive(pathname, tab.href);
+const NavItem = memo(function NavItem(
+  { tab, pathname, active: activeOverride }: { tab: NavTab; pathname: string; active?: boolean },
+) {
+  const active       = activeOverride ?? isActive(pathname, tab.href);
   const Icon         = tab.icon;
   const queryClient  = useQueryClient();
 
@@ -671,6 +673,7 @@ function SupportNav() {
     { href: "/dashboard/tenants",        label: "Tenants",       icon: Building2 },
     { href: "/dashboard/subscriptions",  label: "Subscriptions", icon: CreditCard },
     { href: "/dashboard/support",        label: "Support",       icon: TicketCheck },
+    { href: "/dashboard/support/agents", label: "Agents",        icon: Users },
     { href: "/dashboard/analytics",      label: "Analytics",     icon: BarChart2 },
     { href: "/dashboard/audit",          label: "Audit",         icon: ShieldAlert },
     { href: "/dashboard/settings",       label: "Settings",      icon: Settings },
@@ -707,7 +710,13 @@ function SupportNav() {
       <div className="h-5 w-px bg-white/15 flex-shrink-0 mx-0.5" />
 
       <nav role="tablist" aria-label="Support navigation" className="hidden xl:flex items-center gap-0.5">
-        {tabs.map((tab) => <NavItem key={tab.href} tab={tab} pathname={pathname} />)}
+        {tabs.map((tab) => {
+          // "Most specific wins" — /dashboard/support/agents must not also light up the
+          // /dashboard/support (Tickets) tab, which is a prefix of it.
+          const active = isActive(pathname, tab.href)
+            && !tabs.some((other) => other.href.length > tab.href.length && isActive(pathname, other.href));
+          return <NavItem key={tab.href} tab={tab} pathname={pathname} active={active} />;
+        })}
       </nav>
 
       <div className="flex-1" />
