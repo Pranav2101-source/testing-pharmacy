@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -15,8 +15,13 @@ const schema = z.object({
 });
 type Form = z.infer<typeof schema>;
 
+/** support address — the domain verified for outbound mail (see application.yml / .env.example). */
+const SUPPORT_MAILTO =
+  "mailto:support@checkup.care?subject=Login%20help&body=I%27m%20having%20trouble%20signing%20in%20to%20Checkup%20Pharmacy.";
+
 export default function LoginPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [showPw,  setShowPw]  = useState(false);
   const [apiErr,  setApiErr]  = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -40,11 +45,16 @@ export default function LoginPage() {
       storeTokens(tokens.accessToken);
       storeUser(user);
       setSuccess(true);
-      const dest = user.role === "PLATFORM_ADMIN"
+      // Return the user to the page they were headed for before the session
+      // lapsed (PrivateRoute / the api-client 401 handler set ?next=). Only
+      // in-app dashboard paths are honoured — guards against open-redirect.
+      const next = searchParams.get("next");
+      const roleHome = user.role === "PLATFORM_ADMIN"
         ? "/dashboard/platform"
         : user.role === "SUPPORT_AGENT"
           ? "/dashboard/support"
           : "/dashboard";
+      const dest = next && next.startsWith("/dashboard") && !next.startsWith("//") ? next : roleHome;
       setTimeout(() => navigate(dest), 600);
     } catch (err) {
       // axios normalises the backend error message onto err.message via the
@@ -199,7 +209,7 @@ export default function LoginPage() {
 
           <p className="text-center text-sm text-slate-400 mt-6">
             Need help?{" "}
-            <a href="#" className="text-blue-600 hover:text-blue-700 font-semibold transition-colors">
+            <a href={SUPPORT_MAILTO} className="text-blue-600 hover:text-blue-700 font-semibold transition-colors">
               Contact Support
             </a>
           </p>

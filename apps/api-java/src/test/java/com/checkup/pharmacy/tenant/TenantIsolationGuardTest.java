@@ -160,6 +160,12 @@ class TenantIsolationGuardTest {
             "SupportTicketRepository#countByStatusIn",
             "SupportTicketRepository#countByStatusInAndPriority",
             "SupportTicketRepository#findTop3ByOrderByCreatedAtDesc",
+            // Round-robin assignment. The support team is a single platform-wide pool with no
+            // per-pharmacy agents, so "which agent is least loaded" and "what does this agent
+            // still hold" are cross-tenant questions by design. Both are reachable only from
+            // SupportService assignment paths behind hasAnyRole('SUPPORT_AGENT','PLATFORM_ADMIN').
+            "SupportTicketRepository#countByAssignedAgentIdInAndStatusIn",
+            "SupportTicketRepository#findByAssignedAgentIdAndStatusIn",
             // Take an explicit collection of pharmacy ids, so the caller still states
             // its scope even though the parameter is not literally named pharmacyId.
             "UserRepository#countByPharmacyIdIn",

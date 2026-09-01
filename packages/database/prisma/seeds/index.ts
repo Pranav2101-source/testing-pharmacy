@@ -8,8 +8,13 @@ config({ path: resolve(__dirname, "../../../../.env") });
 const { prisma }      = await import("../../src/client.js") as any;
 const { medicines }   = await import("./medicines.js") as any;
 const { seedInventory } = await import("./inventory.js") as any;
+const { seedPlatformAdmin } = await import("./platform-admin.js") as any;
 
 async function seed() {
+  // ── 0. Platform admin (local-dev login) ────────────────────────────────────
+  console.log("Seeding platform admin...");
+  await seedPlatformAdmin();
+
   // ── 1. Medicines (global catalogue) ────────────────────────────────────────
   console.log("Seeding medicines...");
   let medCount = 0;

@@ -32,7 +32,6 @@ import com.checkup.pharmacy.modules.support.dto.UpdateStatusRequest;
 import com.checkup.pharmacy.modules.user.User;
 import com.checkup.pharmacy.modules.user.UserRepository;
 import com.checkup.pharmacy.tenant.TenantContext;
-import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -42,6 +41,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.time.Instant;
+import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -61,6 +62,9 @@ public class SupportService {
     /** Fixed id of the platform-level pharmacy support staff belong to — seeded by the support_module migration. */
     private static final String PLATFORM_PHARMACY_ID = "platform_checkup_support";
     private static final Set<Role> SUPPORT_ROLES = Set.of(Role.SUPPORT_AGENT, Role.PLATFORM_ADMIN);
+    /** A ticket in one of these is still on someone's plate — it counts toward an agent's load and moves when they go inactive. */
+    private static final Set<TicketStatus> OPEN_STATUSES =
+            EnumSet.of(TicketStatus.OPEN, TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS, TicketStatus.PENDING_USER);
     private static final long MAX_ATTACHMENT_SIZE = 25L * 1024 * 1024;
     private static final Set<String> ALLOWED_MIME = Set.of(
             "image/jpeg", "image/png", "image/gif", "image/webp", "video/mp4", "video/webm", "application/pdf");
@@ -126,7 +130,9 @@ public class SupportService {
         long total = ticketRepository.count();
         long open = ticketRepository.countByStatusIn(Set.of(TicketStatus.OPEN, TicketStatus.ASSIGNED));
         long inProgress = ticketRepository.countByStatus(TicketStatus.IN_PROGRESS);
-        long resolved = ticketRepository.countByStatus(TicketStatus.RESOLVED);
+        // "Resolved" means "done" to the reader — a queue that jumps straight to CLOSED without the
+        // RESOLVED step would otherwise show 0 here forever.
+        long resolved = ticketRepository.countByStatusIn(Set.of(TicketStatus.RESOLVED, TicketStatus.CLOSED));
         return new StatsResponse(total, open, inProgress, resolved);
     }
 
@@ -154,9 +160,11 @@ public class SupportService {
             status = TicketStatus.ASSIGNED;
             markAgentAssigned(assignedAgentId);
         } else if (assignmentType != CreateTicketRequest.AssignmentType.UNASSIGNED) {
-            List<SupportAgent> candidates = agentRepository.findActiveOrderByLastAssigned(Limit.of(1));
-            if (!candidates.isEmpty()) {
-                assignedAgentId = candidates.get(0).getId();
+            // ROUND_ROBIN, or MANUAL with no agent picked — fall back to auto. A ticket with no active
+            // agent to take it is still created (it just stays OPEN and unassigned).
+            SupportAgent pick = pickNextAgent(null);
+            if (pick != null) {
+                assignedAgentId = pick.getId();
                 status = TicketStatus.ASSIGNED;
                 markAgentAssigned(assignedAgentId);
             }
@@ -370,34 +378,48 @@ public class SupportService {
                 .orElseThrow(() -> new NotFoundException("Ticket not found"));
 
         String oldAgentId = ticket.getAssignedAgentId();
-        if (req.agentId() != null) {
-            SupportAgent agent = agentRepository.findById(req.agentId())
-                    .orElseThrow(() -> new BadRequestException("Agent not found or inactive"));
-            if (!agent.isActive()) {
-                throw new BadRequestException("Agent not found or inactive");
-            }
-            markAgentAssigned(req.agentId());
+        String targetAgentId = resolveAssignmentTarget(req, principal.userId());
+
+        if (targetAgentId != null) {
+            markAgentAssigned(targetAgentId);
         }
-        ticket.assign(req.agentId());
+        ticket.assign(targetAgentId);
 
         notificationService.inAppNotify(ticket.getPharmacyId(),
-                "Ticket " + ticket.getTicketNumber() + (req.agentId() != null ? " Assigned" : " Unassigned"),
-                req.agentId() != null ? "Your ticket has been assigned to our support team."
+                "Ticket " + ticket.getTicketNumber() + (targetAgentId != null ? " Assigned" : " Unassigned"),
+                targetAgentId != null ? "Your ticket has been assigned to our support team."
                         : "Your ticket is awaiting assignment.");
+        eventBus.publishToAll("ticket:updated", Map.of("ticketId", id, "status", ticket.getStatus().name()));
 
+        Map<String, Object> newData = new java.util.HashMap<>();
+        newData.put("assignedAgentId", targetAgentId == null ? "" : targetAgentId);
+        if (req.strategy() != null) {
+            newData.put("strategy", req.strategy().name());
+        }
         auditService.log(AuditEntry.of(AuditModule.SUPPORT,
-                        req.agentId() != null ? "TICKET_ASSIGNED" : "TICKET_UNASSIGNED", "SUPPORT_TICKET")
+                        targetAgentId != null ? "TICKET_ASSIGNED" : "TICKET_UNASSIGNED", "SUPPORT_TICKET")
                 .pharmacyId(ticket.getPharmacyId()).userId(principal.userId()).entityId(id)
                 .oldData(Map.of("assignedAgentId", oldAgentId == null ? "" : oldAgentId))
-                .newData(Map.of("assignedAgentId", req.agentId() == null ? "" : req.agentId())));
+                .newData(newData));
 
-        return TicketResponse.from(ticket);
+        // The assignedAgent association is joined on assignedAgentId (read-only) — reload so the
+        // response carries the new agent's name, not the stale proxy from findByIdWithRelations.
+        entityManager.flush();
+        entityManager.clear();
+        return loadWithRelations(id);
     }
 
     @Transactional
     public AgentResponse toggleAgent(String id, boolean isActive) {
         SupportAgent agent = agentRepository.findById(id).orElseThrow(() -> new NotFoundException("Agent not found"));
+        boolean wasActive = agent.isActive();
         agent.setActive(isActive);
+        agentRepository.save(agent);
+
+        if (wasActive && !isActive) {
+            reassignOpenTicketsFrom(agent);
+        }
+
         long ticketCount = agentRepository.countTicketsByAgentIdIn(List.of(id)).stream()
                 .findFirst().map(SupportAgentRepository.AgentTicketCountRow::getCnt).orElse(0L);
         return AgentResponse.from(agent, ticketCount);
@@ -410,6 +432,94 @@ public class SupportService {
             a.markAssigned();
             agentRepository.save(a);
         });
+    }
+
+    /**
+     * Load-aware round-robin: the active agent holding the fewest still-open tickets, breaking ties
+     * toward whoever was assigned least recently, then a stable id order. Returns {@code null} when no
+     * active agent is available (optionally ignoring one who is on their way out). Locks the
+     * active-agent rows for the transaction so two auto-assignments running at once actually spread
+     * the load instead of both landing on the same person.
+     */
+    private SupportAgent pickNextAgent(String excludeAgentId) {
+        List<SupportAgent> active = agentRepository.findActiveForUpdate();
+        if (excludeAgentId != null) {
+            active = active.stream().filter(a -> !a.getId().equals(excludeAgentId)).toList();
+        }
+        if (active.isEmpty()) {
+            return null;
+        }
+        List<String> ids = active.stream().map(SupportAgent::getId).toList();
+        Map<String, Long> openLoad = ticketRepository.countByAssignedAgentIdInAndStatusIn(ids, OPEN_STATUSES).stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        SupportTicketRepository.AgentOpenCountRow::getAgentId,
+                        SupportTicketRepository.AgentOpenCountRow::getCnt));
+        return active.stream()
+                .min(Comparator
+                        .comparingLong((SupportAgent a) -> openLoad.getOrDefault(a.getId(), 0L))
+                        .thenComparing(SupportAgent::getLastAssignedAt, Comparator.nullsFirst(Comparator.naturalOrder()))
+                        .thenComparing(SupportAgent::getId))
+                .orElseThrow();
+    }
+
+    /** Resolves the agent a ticket should land on from the request — explicit id, round-robin, or the caller. */
+    private String resolveAssignmentTarget(AssignTicketRequest req, String callerUserId) {
+        if (req.strategy() == AssignTicketRequest.Strategy.ROUND_ROBIN) {
+            SupportAgent pick = pickNextAgent(null);
+            if (pick == null) {
+                throw new BadRequestException("No active support agents available");
+            }
+            return pick.getId();
+        }
+        if (req.strategy() == AssignTicketRequest.Strategy.SELF) {
+            SupportAgent self = agentRepository.findByUserId(callerUserId)
+                    .orElseThrow(() -> new BadRequestException("You are not a registered support agent"));
+            if (!self.isActive()) {
+                throw new BadRequestException("Your support agent account is inactive");
+            }
+            return self.getId();
+        }
+        if (req.agentId() == null) {
+            return null; // explicit unassign
+        }
+        SupportAgent agent = agentRepository.findById(req.agentId())
+                .orElseThrow(() -> new BadRequestException("Agent not found or inactive"));
+        if (!agent.isActive()) {
+            throw new BadRequestException("Agent not found or inactive");
+        }
+        return agent.getId();
+    }
+
+    /** Hands a deactivated agent's still-open tickets to the remaining active agents, or unassigns them. */
+    private void reassignOpenTicketsFrom(SupportAgent outgoing) {
+        List<SupportTicket> open = ticketRepository.findByAssignedAgentIdAndStatusIn(outgoing.getId(), OPEN_STATUSES);
+        if (open.isEmpty()) {
+            return;
+        }
+        int reassigned = 0;
+        int unassigned = 0;
+        for (SupportTicket ticket : open) {
+            SupportAgent next = pickNextAgent(outgoing.getId());
+            if (next != null) {
+                markAgentAssigned(next.getId());
+                ticket.assign(next.getId());
+                reassigned++;
+            } else {
+                ticket.assign(null);
+                unassigned++;
+            }
+            notificationService.inAppNotify(ticket.getPharmacyId(),
+                    "Ticket " + ticket.getTicketNumber() + (next != null ? " Reassigned" : " Unassigned"),
+                    next != null ? "Your ticket has been moved to another support agent."
+                            : "Your ticket is awaiting reassignment.");
+            eventBus.publishToAll("ticket:updated",
+                    Map.of("ticketId", ticket.getId(), "status", ticket.getStatus().name()));
+            // Flush so the next pickNextAgent's load count sees this reassignment.
+            entityManager.flush();
+        }
+        auditService.log(AuditEntry.of(AuditModule.SUPPORT, "AGENT_DEACTIVATED_REASSIGNED", "SUPPORT_AGENT")
+                .entityId(outgoing.getId())
+                .newData(Map.of("reassigned", reassigned, "unassigned", unassigned)));
     }
 
     private void assertCanAccess(SupportTicket ticket) {

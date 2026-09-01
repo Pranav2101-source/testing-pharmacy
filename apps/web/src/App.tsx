@@ -158,9 +158,13 @@ export function App() {
                 <Route path="/dashboard/audit"              element={<PlatformAuditPage />} />
               </Route>
 
-              {/* Support — static routes must come before the dynamic :id segment */}
+              {/* Support — static routes must come before the dynamic :id segment.
+                  Tickets + detail are open to pharmacy users (their own tickets); agent
+                  management is platform-admin only. */}
               <Route path="/dashboard/support"              element={<SupportTicketsPage />} />
-              <Route path="/dashboard/support/agents"       element={<AgentsPage />} />
+              <Route element={<RoleGuard allow={["PLATFORM_ADMIN"]} redirectTo="/dashboard/support" />}>
+                <Route path="/dashboard/support/agents"     element={<AgentsPage />} />
+              </Route>
               <Route path="/dashboard/support/:id"          element={<TicketDetailPage />} />
 
               {/* Settings nested layout — pharmacy-profile and change-password open to all;

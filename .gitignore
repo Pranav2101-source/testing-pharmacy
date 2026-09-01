@@ -32,6 +32,11 @@ logs/
 # Test coverage
 coverage
 
+# Playwright (e2e run artifacts)
+playwright-report/
+test-results/
+blob-report/
+
 # OS
 .DS_Store
 Thumbs.db

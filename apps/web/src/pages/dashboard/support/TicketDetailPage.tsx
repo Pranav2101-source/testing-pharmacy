@@ -7,7 +7,7 @@ import {
   ArrowLeft, Loader2, AlertTriangle, Send, Paperclip, X,
   ChevronDown, CheckCircle2, Monitor, FileText, User, Users,
   Building2, Phone, Mail, MapPin, UserPlus, Hash, Globe,
-  Calendar, Clock, Tag, ShieldCheck, ExternalLink, Activity
+  Calendar, Clock, Tag, ShieldCheck, ExternalLink, Activity, RefreshCw
 } from "lucide-react";
 import { api, API_BASE_URL } from "@/lib/api-client";
 import { ListSkeleton } from "@/components/Skeleton";
@@ -262,8 +262,8 @@ function AssignDropdown({
   });
 
   const mutation = useMutation({
-    mutationFn: (agentId: string) =>
-      api.patch(`/support/tickets/${ticketId}/assign`, { agentId }),
+    mutationFn: (body: { agentId?: string | null; strategy?: "ROUND_ROBIN" | "SELF" }) =>
+      api.patch(`/support/tickets/${ticketId}/assign`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["support-ticket", ticketId] });
       qc.invalidateQueries({ queryKey: ["support-tickets"] });
@@ -280,6 +280,9 @@ function AssignDropdown({
       <button
         onClick={() => setOpen((v) => !v)}
         disabled={mutation.isPending}
+        aria-label={isReassign ? "Reassign ticket" : "Assign ticket"}
+        aria-haspopup="menu"
+        aria-expanded={open}
         className={cn(
           "flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold transition-all border",
           isReassign
@@ -298,6 +301,8 @@ function AssignDropdown({
       <AnimatePresence>
         {open && (
           <motion.div
+            role="menu"
+            aria-label="Assign ticket to an agent"
             initial={{ opacity: 0, y: -6, scale: 0.97 }}
             animate={{ opacity: 1, y: 0,  scale: 1    }}
             exit={{   opacity: 0, y: -4, scale: 0.97 }}
@@ -323,32 +328,94 @@ function AssignDropdown({
                 </Link>
               </div>
             ) : (
-              active.map((agent) => (
+              <>
                 <button
-                  key={agent.id}
-                  onClick={() => mutation.mutate(agent.id)}
-                  disabled={agent.id === currentAgent?.id}
-                  className={cn(
-                    "w-full flex items-center gap-2.5 px-3 py-2 text-[12px] transition-colors text-left",
-                    agent.id === currentAgent?.id
-                      ? "bg-blue-50 cursor-default"
-                      : "hover:bg-slate-50",
-                  )}
+                  role="menuitem"
+                  onClick={() => mutation.mutate({ strategy: "ROUND_ROBIN" })}
+                  disabled={mutation.isPending}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-[12px] text-left hover:bg-slate-50 transition-colors border-b border-slate-100"
                 >
-                  <div className="w-6 h-6 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0">
-                    {agent.user.name.charAt(0).toUpperCase()}
+                  <div className="w-6 h-6 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white flex-shrink-0">
+                    <RefreshCw className="w-3 h-3" />
                   </div>
-                  <span className="font-medium text-slate-700 flex-1">{agent.user.name}</span>
-                  {agent.id === currentAgent?.id && (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-blue-500" />
-                  )}
+                  <span className="font-semibold text-slate-700 flex-1">Round-robin (auto-assign)</span>
                 </button>
-              ))
+                {active.map((agent) => (
+                  <button
+                    key={agent.id}
+                    role="menuitem"
+                    onClick={() => mutation.mutate({ agentId: agent.id })}
+                    disabled={agent.id === currentAgent?.id}
+                    className={cn(
+                      "w-full flex items-center gap-2.5 px-3 py-2 text-[12px] transition-colors text-left",
+                      agent.id === currentAgent?.id
+                        ? "bg-blue-50 cursor-default"
+                        : "hover:bg-slate-50",
+                    )}
+                  >
+                    <div className="w-6 h-6 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0">
+                      {agent.user.name.charAt(0).toUpperCase()}
+                    </div>
+                    <span className="font-medium text-slate-700 flex-1">{agent.user.name}</span>
+                    {agent.id === currentAgent?.id && (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-blue-500" />
+                    )}
+                  </button>
+                ))}
+              </>
             )}
           </motion.div>
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+// ── Agent-side assign control ("assign to me") ───────────────────────────────
+
+function AgentAssignControl({
+  ticketId,
+  assignedAgent,
+}: {
+  ticketId:      string;
+  assignedAgent?: { id: string; user: { id: string; name: string } } | null;
+}) {
+  const qc    = useQueryClient();
+  const toast = useToast();
+  const myUserId = getStoredUser()?.id;
+  const mine = !!assignedAgent && assignedAgent.user.id === myUserId;
+
+  const claim = useMutation({
+    mutationFn: () => api.patch(`/support/tickets/${ticketId}/assign`, { strategy: "SELF" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["support-ticket", ticketId] });
+      qc.invalidateQueries({ queryKey: ["support-tickets"] });
+      toast.success("Ticket assigned to you");
+    },
+    onError: (err: unknown) => toast.error((err as Error).message),
+  });
+
+  if (mine) {
+    return (
+      <div className="hidden sm:flex items-center gap-1.5 h-8 px-3 rounded-lg border border-blue-200 bg-blue-50 text-[12px] text-blue-700 font-semibold">
+        <div className="w-5 h-5 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-[9px] font-bold">
+          {assignedAgent!.user.name.charAt(0).toUpperCase()}
+        </div>
+        Assigned to you
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={() => claim.mutate()}
+      disabled={claim.isPending}
+      title={assignedAgent ? `Currently: ${assignedAgent.user.name}` : "Currently unassigned"}
+      className="flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold transition-all border bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100"
+    >
+      {claim.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <UserPlus className="w-3 h-3" />}
+      {assignedAgent ? "Reassign to me" : "Assign to me"}
+    </button>
   );
 }
 
@@ -385,6 +452,9 @@ function StatusSelector({ ticketId, current }: { ticketId: string; current: stri
       <button
         onClick={() => setOpen((v) => !v)}
         disabled={mutation.isPending}
+        aria-label="Change ticket status"
+        aria-haspopup="menu"
+        aria-expanded={open}
         className="flex items-center gap-2 h-8 px-3 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 transition-colors text-[12px] font-semibold text-slate-700"
       >
         {mutation.isPending
@@ -396,6 +466,8 @@ function StatusSelector({ ticketId, current }: { ticketId: string; current: stri
       <AnimatePresence>
         {open && (
           <motion.div
+            role="menu"
+            aria-label="Set ticket status"
             initial={{ opacity: 0, y: -6, scale: 0.97 }}
             animate={{ opacity: 1, y: 0,  scale: 1    }}
             exit={{   opacity: 0, y: -4, scale: 0.97 }}
@@ -405,6 +477,7 @@ function StatusSelector({ ticketId, current }: { ticketId: string; current: stri
             {ALL_STATUSES.map((s) => (
               <button
                 key={s}
+                role="menuitem"
                 onClick={() => mutation.mutate(s)}
                 className={cn(
                   "w-full flex items-center justify-between px-3 py-2 text-[12px] hover:bg-slate-50 transition-colors text-left",
@@ -726,6 +799,8 @@ export default function TicketDetailPage() {
         <div className="flex items-center gap-2 flex-shrink-0">
           {isAdmin ? (
             <AssignDropdown ticketId={ticket.id} currentAgent={ticket.assignedAgent} />
+          ) : isAgent ? (
+            <AgentAssignControl ticketId={ticket.id} assignedAgent={ticket.assignedAgent} />
           ) : ticket.assignedAgent ? (
             <div className="hidden sm:flex items-center gap-1.5 h-8 px-3 rounded-lg border border-slate-200 bg-slate-50 text-[12px] text-slate-600 font-medium">
               <div className="w-5 h-5 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-[9px] font-bold">
