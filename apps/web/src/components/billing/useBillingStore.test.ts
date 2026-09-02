@@ -673,3 +673,131 @@ describe("attributing a cart line to a prescribed line", () => {
     expect(line().prescriptionItemId).toBe("rx-item-1");
   });
 });
+
+// ─── Loose (cut-strip) selling ───────────────────────────────────────────────
+
+describe("loose selling", () => {
+  function looseItem(overrides: Partial<NewItem> = {}): NewItem {
+    return item({
+      mrp: 20, unitsPerPack: 10, baseUnit: "TABLET", allowLooseSale: true,
+      looseUnits: 0, availableStock: 10, ...overrides,
+    });
+  }
+
+  it("prices a loose line per piece (pack MRP / unitsPerPack)", () => {
+    store().addItem(looseItem({ quantity: 8, saleUnit: "LOOSE" }));
+
+    // 8 tablets at a per-piece MRP of 2.00, 12% GST — same as calcGstFromMrp(2, 8, …)
+    const expected = calcGstFromMrp(2, 8, 0, 12, false);
+    expect(line().saleUnit).toBe("LOOSE");
+    expect(line().rate).toBe(2);
+    expect(line().amount).toBe(expected.totalAmount);
+  });
+
+  it("caps a loose line at pieces available, not packs", () => {
+    // 10 packs + 0 loose = 100 pieces
+    store().addItem(looseItem({ quantity: 5, saleUnit: "LOOSE" }));
+    store().updateQty("inv-1", 250);
+    expect(line().quantity).toBe(100);
+  });
+
+  it("setSaleUnit converts the quantity between strips and pieces", () => {
+    store().addItem(looseItem({ quantity: 2, saleUnit: "PACK" }));   // 2 strips
+    store().setSaleUnit("inv-1", "LOOSE");
+    expect(line().saleUnit).toBe("LOOSE");
+    expect(line().quantity).toBe(20);                                // 2 * 10 tablets
+    expect(line().rate).toBe(2);
+
+    store().setSaleUnit("inv-1", "PACK");
+    expect(line().saleUnit).toBe("PACK");
+    expect(line().quantity).toBe(2);
+    expect(line().rate).toBe(20);
+  });
+
+  it("ignores a loose toggle when the medicine is not loose-enabled", () => {
+    store().addItem(item({ allowLooseSale: false, unitsPerPack: 10, quantity: 3 }));
+    store().setSaleUnit("inv-1", "LOOSE");
+    expect(line().saleUnit).toBe("PACK");
+    expect(line().quantity).toBe(3);
+  });
+
+  it("getTotals sums a loose line at its per-piece value", () => {
+    store().addItem(looseItem({ quantity: 8, saleUnit: "LOOSE" }));
+    const totals = store().getTotals();
+    // 8 * 2.00 inclusive ≈ 16.00 (a paisa either way is fine — CGST==SGST rounding)
+    expect(totals.taxableAmount + totals.totalGst).toBeCloseTo(16, 1);
+  });
+});
+
+// ─── Line issues caught in the cart (not at save) ────────────────────────────
+
+import { lineIssue, looseStripsOpened } from "./useBillingStore";
+
+describe("loose line issues", () => {
+  function looseItem(overrides: Partial<NewItem> = {}): NewItem {
+    return item({
+      mrp: 20, unitsPerPack: 10, baseUnit: "TABLET", allowLooseSale: true,
+      looseUnits: 0, availableStock: 10, saleUnit: "LOOSE", ...overrides,
+    });
+  }
+
+  it("no issue on a normal loose line or any pack line", () => {
+    store().addItem(looseItem({ quantity: 8 }));
+    expect(lineIssue(line())).toBeNull();
+    store().clear();
+    store().addItem(item({ quantity: 3 }));   // pack
+    expect(lineIssue(line())).toBeNull();
+  });
+
+  it("flags a whole strip asked for as loose, and the fix sells it as a strip", () => {
+    store().addItem(looseItem({ quantity: 20 }));   // 2 full strips of 10
+    const issue = lineIssue(line());
+    expect(issue?.code).toBe("WHOLE_PACK_LOOSE");
+    store().patchLine("inv-1", issue!.fix);
+    expect(line().saleUnit).toBe("PACK");
+    expect(line().quantity).toBe(2);
+    expect(lineIssue(line())).toBeNull();
+  });
+
+  it("allows a whole strip's worth of loose when the open remainder already covers it", () => {
+    store().addItem(looseItem({ quantity: 10, looseUnits: 12 }));
+    expect(lineIssue(line())).toBeNull();
+  });
+
+  it("offers a 'cut it anyway' override that clears the whole-strip flag", () => {
+    store().addItem(looseItem({ quantity: 20 }));
+    const issue = lineIssue(line());
+    expect(issue?.override?.patch).toEqual({ forceLoose: true });
+    store().patchLine("inv-1", issue!.override!.patch);
+    expect(line().saleUnit).toBe("LOOSE");
+    expect(line().quantity).toBe(20);
+    expect(lineIssue(line())).toBeNull();
+  });
+
+  it("drops the cut-anyway waiver when the line switches back to Strip", () => {
+    store().addItem(looseItem({ quantity: 20, forceLoose: true }));
+    store().setSaleUnit("inv-1", "PACK");
+    expect(line().forceLoose).toBeUndefined();
+  });
+
+  it("flags Schedule X sold loose", () => {
+    store().addItem(looseItem({ quantity: 5, schedule: "X" }));
+    expect(lineIssue(line())?.code).toBe("SCHEDULE_X_LOOSE");
+  });
+
+  it("flags a loose line whose medicine has loose selling turned off", () => {
+    // allowLooseSale false but the line is somehow still LOOSE (stale cart)
+    const it = looseItem({ quantity: 5 });
+    store().addItem({ ...it, allowLooseSale: true });
+    // simulate the flag going false after add
+    store().patchLine("inv-1", { allowLooseSale: false });
+    expect(lineIssue(line())?.code).toBe("LOOSE_NOT_ENABLED");
+  });
+
+  it("looseStripsOpened counts only sealed strips cut, net of the open remainder", () => {
+    expect(looseStripsOpened({ saleUnit: "LOOSE", quantity: 8, unitsPerPack: 10, looseUnits: 0 })).toBe(1);
+    expect(looseStripsOpened({ saleUnit: "LOOSE", quantity: 8, unitsPerPack: 10, looseUnits: 8 })).toBe(0);
+    expect(looseStripsOpened({ saleUnit: "LOOSE", quantity: 25, unitsPerPack: 10, looseUnits: 5 })).toBe(2);
+    expect(looseStripsOpened({ saleUnit: "PACK",  quantity: 3,  unitsPerPack: 10, looseUnits: 0 })).toBe(0);
+  });
+});

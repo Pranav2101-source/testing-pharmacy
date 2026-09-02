@@ -8,6 +8,9 @@ import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository;
+import com.checkup.pharmacy.modules.stockaudit.dto.VarianceSummaryResponse;
 import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
 import com.checkup.pharmacy.modules.pharmacy.PharmacyRepository;
 import com.checkup.pharmacy.modules.stockaudit.dto.ApproveSessionRequest;
@@ -51,6 +54,7 @@ class StockAuditIT extends AbstractPostgresIT {
     @Autowired private InventoryRepository inventoryRepository;
     @Autowired private PharmacyRepository pharmacyRepository;
     @Autowired private MedicineRepository medicineRepository;
+    @Autowired private PharmacyMedicineOverrideRepository overrideRepository;
     @Autowired private UserRepository userRepository;
     @Autowired private EntityManager entityManager;
 
@@ -94,6 +98,11 @@ class StockAuditIT extends AbstractPostgresIT {
 
     /** Creates a session, starts it, and records a physical count against the batch. */
     private String sessionCountedAt(int countedQty) {
+        return sessionCountedAt(countedQty, null);
+    }
+
+    /** As above, also recording a physically-counted loose remainder. */
+    private String sessionCountedAt(int countedQty, Integer countedLooseUnits) {
         String sessionId = stockAuditService.createSession(new CreateSessionRequest(null)).id();
         flushAndClear();
         stockAuditService.startSession(sessionId);
@@ -104,7 +113,7 @@ class StockAuditIT extends AbstractPostgresIT {
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("audit session did not include the seeded batch"))
                 .getId();
-        stockAuditService.updateItem(sessionId, itemId, new UpdateItemRequest(countedQty, null));
+        stockAuditService.updateItem(sessionId, itemId, new UpdateItemRequest(countedQty, countedLooseUnits, null));
         flushAndClear();
         return sessionId;
     }
@@ -232,5 +241,143 @@ class StockAuditIT extends AbstractPostgresIT {
 
         assertThatThrownBy(() -> stockAuditService.getSession(sessionId))
                 .isInstanceOf(NotFoundException.class);
+    }
+
+    // ── Loose (cut-strip) remainder ─────────────────────────────────────────
+
+    private String looseBatchId;
+    private String looseMedicineId;
+
+    /** A second, loose-capable batch (10 tablets/strip) — the shared seed medicine is pack-only. */
+    private void seedLooseBatch() {
+        Medicine medicine = Medicine.create("Paracetamol 500", new BigDecimal("12"));
+        medicine.setPackaging(10, "TABLET");
+        looseMedicineId = medicineRepository.save(medicine).getId();
+        // 10 packs on the shelf, 4 tablets already loose from an opened strip.
+        Inventory inv = Inventory.create(pharmacyId, medicine.getId(), "LOOSE-BATCH-1",
+                Instant.now().plus(365, ChronoUnit.DAYS), 10,
+                new BigDecimal("10.00"), new BigDecimal("20.00"), 10, 5);
+        inv.restockLoose(4);
+        looseBatchId = inventoryRepository.save(inv).getId();
+        flushAndClear();
+    }
+
+    private int looseStock() {
+        return inventoryRepository.findById(looseBatchId).orElseThrow().getLooseUnits();
+    }
+
+    @Test
+    @DisplayName("starting a session snapshots the loose remainder alongside the pack count")
+    void sessionSnapshotsLooseRemainder() {
+        seedLooseBatch();
+        String sessionId = stockAuditService.createSession(new CreateSessionRequest(null)).id();
+        flushAndClear();
+
+        var item = itemRepository.findBySessionIdOrderByCreatedAtAsc(sessionId).stream()
+                .filter(i -> looseBatchId.equals(i.getInventoryId())).findFirst().orElseThrow();
+        assertThat(item.getExpectedLooseUnits()).isEqualTo(4);
+        assertThat(item.getCountedLooseUnits()).isNull();
+        assertThat(item.getVarianceLooseUnits()).isNull();
+    }
+
+    @Test
+    @DisplayName("approving a loose-remainder shortfall corrects looseUnits without touching the pack count")
+    void approvalAppliesLooseShortfall() {
+        seedLooseBatch();
+        // Count the shared pack-only batch exactly too (no variance there) — every item in the
+        // session needs a countedQty before it can be completed, loose one included.
+        String sessionId = sessionCountedAt(100);
+        String itemId = itemRepository.findBySessionIdOrderByCreatedAtAsc(sessionId).stream()
+                .filter(i -> looseBatchId.equals(i.getInventoryId())).findFirst().orElseThrow().getId();
+        // Pack count matches exactly (10); only the loose remainder is short — 2 tablets
+        // physically missing from the 4 the system expected.
+        stockAuditService.updateItem(sessionId, itemId, new UpdateItemRequest(10, 2, null));
+        flushAndClear();
+        stockAuditService.completeSession(sessionId, new CompleteSessionRequest(null));
+        flushAndClear();
+
+        stockAuditService.approveSession(sessionId, new ApproveSessionRequest(null));
+        flushAndClear();
+
+        Inventory batch = inventoryRepository.findById(looseBatchId).orElseThrow();
+        assertThat(batch.getQuantity()).as("pack count matched — must not have moved").isEqualTo(10);
+        assertThat(batch.getLooseUnits()).as("2 loose tablets were missing").isEqualTo(2);
+
+        String moveBaseUnit = (String) entityManager.createQuery(
+                        "SELECT m.baseUnit FROM InventoryMovement m WHERE m.inventoryId = :id AND m.referenceType = 'STOCK_AUDIT'")
+                .setParameter("id", looseBatchId).getSingleResult();
+        assertThat(moveBaseUnit).as("the loose-variance ledger row is tagged in tablets, not packs").isEqualTo("TABLET");
+    }
+
+    @Test
+    @DisplayName("leaving the loose field uncounted does not wipe out a real loose remainder at approval")
+    void uncountedLooseFieldLeavesRemainderUntouched() {
+        seedLooseBatch();
+        // sessionCountedAt counts the shared pack-only batch exactly (no variance there —
+        // irrelevant to this test); separately, only the PACK count is entered for the loose
+        // batch below — its loose box is never touched, as it would not be for the
+        // overwhelming majority of a pharmacy's medicines.
+        String sessionId = sessionCountedAt(100);
+        String itemId = itemRepository.findBySessionIdOrderByCreatedAtAsc(sessionId).stream()
+                .filter(i -> looseBatchId.equals(i.getInventoryId())).findFirst().orElseThrow().getId();
+        stockAuditService.updateItem(sessionId, itemId, new UpdateItemRequest(10, null, null));
+        flushAndClear();
+        stockAuditService.completeSession(sessionId, new CompleteSessionRequest(null));
+        flushAndClear();
+
+        stockAuditService.approveSession(sessionId, new ApproveSessionRequest(null));
+        flushAndClear();
+
+        assertThat(looseStock())
+                .as("nobody counted the loose remainder, so it must be exactly what it was before")
+                .isEqualTo(4);
+    }
+
+    @Test
+    @DisplayName("a loose-only variance (packs matched exactly) still counts as a variance the audit must surface")
+    void looseOnlyVarianceIsSurfaced() {
+        seedLooseBatch();
+        String sessionId = stockAuditService.createSession(new CreateSessionRequest(null)).id();
+        flushAndClear();
+        stockAuditService.startSession(sessionId);
+        flushAndClear();
+        String itemId = itemRepository.findBySessionIdOrderByCreatedAtAsc(sessionId).stream()
+                .filter(i -> looseBatchId.equals(i.getInventoryId())).findFirst().orElseThrow().getId();
+        // Packs match (10); loose remainder is one MORE than expected (5 found, not 4) — a
+        // surplus with zero pack variance, which the old (pack-only) variance query would
+        // have missed entirely.
+        stockAuditService.updateItem(sessionId, itemId, new UpdateItemRequest(10, 5, null));
+        flushAndClear();
+
+        VarianceSummaryResponse summary = stockAuditService.getVarianceSummary(sessionId);
+        var adjustment = summary.adjustments().stream()
+                .filter(a -> looseBatchId.equals(a.inventoryId())).findFirst()
+                .orElseThrow(() -> new AssertionError("loose-only variance did not appear in the variance summary"));
+        assertThat(adjustment.varianceQty()).isEqualTo(0);
+        assertThat(adjustment.varianceLooseUnits()).isEqualTo(1);
+        assertThat(adjustment.looseDirection()).isEqualTo("IN");
+    }
+
+    @Test
+    @DisplayName("the audit item reports this pharmacy's unitsPerPack override, not the catalogue value")
+    void auditItemMedicineRefUsesEffectivePackSize() {
+        seedLooseBatch(); // catalogue unitsPerPack = 10
+        PharmacyMedicineOverride override = PharmacyMedicineOverride.create(pharmacyId, looseMedicineId);
+        override.applyLoosePos(true, 20); // this pharmacy counts 20 tablets to a strip
+        overrideRepository.save(override);
+        flushAndClear();
+
+        String sessionId = stockAuditService.createSession(new CreateSessionRequest(null)).id();
+        flushAndClear();
+
+        var looseItem = stockAuditService.getSession(sessionId).items().stream()
+                .filter(i -> i.inventory() != null && looseBatchId.equals(i.inventory().id()))
+                .findFirst().orElseThrow();
+        assertThat(looseItem.inventory().medicine().unitsPerPack())
+                .as("override pack size (20) wins over the catalogue's (10)")
+                .isEqualTo(20);
+        assertThat(looseItem.inventory().medicine().baseUnit())
+                .as("baseUnit is resolved, not left null")
+                .isEqualTo("TABLET");
     }
 }

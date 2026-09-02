@@ -10,6 +10,7 @@ import java.math.BigDecimal;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Money math. Tested first and hardest because every other billing assertion is
@@ -454,6 +455,102 @@ class GstCalculatorTest {
             assertThat(t.totalAmount()).isEqualByComparingTo(BigDecimal.ZERO);
             assertThat(t.totalGst()).isEqualByComparingTo(BigDecimal.ZERO);
             assertThat(t.taxableAmount()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
+    }
+
+    @Nested
+    @DisplayName("loose (cut-strip) dispensing — per-piece price out of a pack MRP")
+    class Loose {
+
+        @Test
+        @DisplayName("perPieceMrp is 2dp, rounded DOWN — the exact figure charged and printed")
+        void perPieceMrpIsTwoDpRoundedDown() {
+            // 33.50 / 15 = 2.2333... -> 2.23. The per-piece price is what the customer is
+            // charged and what prints on the bill, so tax is reverse-calculated from THIS
+            // figure and "qty x rate" reconciles with the line amount.
+            assertThat(GstCalculator.perPieceMrp(bd("33.50"), 15)).isEqualByComparingTo(bd("2.23"));
+            // Rounds DOWN, never up: 137 / 15 = 9.1333 -> 9.13, and 9.13 x 15 = 136.95 <= 137,
+            // so a cut tablet can never cost more per unit than its pro-rata printed MRP.
+            assertThat(GstCalculator.perPieceMrp(bd("137.00"), 15)).isEqualByComparingTo(bd("9.13"));
+            assertThat(GstCalculator.perPieceMrp(bd("137.00"), 15).multiply(bd("15")))
+                    .isLessThanOrEqualTo(bd("137.00"));
+            // Clean divisions are unchanged.
+            assertThat(GstCalculator.perPieceMrp(bd("45.00"), 15)).isEqualByComparingTo(bd("3.00"));
+            assertThat(GstCalculator.perPieceMrp(bd("90.00"), 10)).isEqualByComparingTo(bd("9.00"));
+        }
+
+        @Test
+        @DisplayName("perPieceMrp refuses a missing MRP or an unset pack multiple, with a readable message")
+        void perPieceMrpRejectsBadInput() {
+            assertThatThrownBy(() -> GstCalculator.perPieceMrp(null, 10))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("no MRP");
+            assertThatThrownBy(() -> GstCalculator.perPieceMrp(BigDecimal.ZERO, 10))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("no MRP");
+            assertThatThrownBy(() -> GstCalculator.perPieceMrp(bd("10"), 1))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("units-per-pack");
+        }
+
+        @Test
+        @DisplayName("selling a whole pack loose, piece by piece, equals selling it as one pack")
+        void looseWholePackEqualsPackSale() {
+            // A strip of 10 at MRP 90, 12% GST. 10 loose pieces must tax identically to 1 pack.
+            var asPack = GstCalculator.calcGstFromMrp(bd("90"), 1, BigDecimal.ZERO, bd("12"), false);
+            var asLoose = GstCalculator.calcLooseGstFromMrp(bd("90"), 10, 10, BigDecimal.ZERO, bd("12"),
+                    false, BigDecimal.ZERO);
+
+            assertThat(asLoose.taxableAmount()).isEqualByComparingTo(asPack.taxableAmount());
+            assertThat(asLoose.cgst()).isEqualByComparingTo(asPack.cgst());
+            assertThat(asLoose.sgst()).isEqualByComparingTo(asPack.sgst());
+            assertThat(asLoose.amount()).isEqualByComparingTo(asPack.amount());
+        }
+
+        @Test
+        @DisplayName("a partial cut-strip is MRP-inclusive on the pieces actually sold")
+        void partialCutStrip() {
+            // 8 tablets from a strip of 15 @ MRP 45, 5% GST, intra-state.
+            // per-piece MRP = 3.00 exactly; line = 24.00 inclusive; taxable = 24 / 1.05.
+            var loose = GstCalculator.calcLooseGstFromMrp(bd("45"), 15, 8, BigDecimal.ZERO, bd("5"),
+                    false, BigDecimal.ZERO);
+
+            assertThat(loose.taxableAmount().add(loose.totalGst())).isEqualByComparingTo(bd("24.00"));
+            assertThat(loose.cgst()).isEqualByComparingTo(loose.sgst());
+        }
+
+        @Test
+        @DisplayName("MrpLineInput.effectiveUnitMrp: pack line unchanged, loose line divided")
+        void effectiveUnitMrpResolves() {
+            var pack = new GstCalculator.MrpLineInput(bd("90"), 2, BigDecimal.ZERO, bd("12"));
+            var loose = new GstCalculator.MrpLineInput(bd("90"), 5, BigDecimal.ZERO, bd("12"), 10, true);
+
+            assertThat(pack.effectiveUnitMrp()).isEqualByComparingTo(bd("90"));
+            assertThat(loose.effectiveUnitMrp()).isEqualByComparingTo(bd("9"));
+        }
+
+        @Test
+        @DisplayName("calcInvoiceTotals: header still equals the sum of the lines with a loose line in the mix")
+        void invoiceTotalsWithLooseLine() {
+            List<GstCalculator.MrpLineInput> lines = List.of(
+                    new GstCalculator.MrpLineInput(bd("120.00"), 1, BigDecimal.ZERO, bd("12")),         // pack
+                    new GstCalculator.MrpLineInput(bd("45.00"), 8, BigDecimal.ZERO, bd("5"), 15, true), // 8 loose
+                    new GstCalculator.MrpLineInput(bd("30.00"), 2, bd("10"), bd("18")));                // pack, discounted
+
+            for (boolean interstate : new boolean[] {true, false}) {
+                var totals = GstCalculator.calcInvoiceTotals(lines, interstate);
+
+                BigDecimal taxable = BigDecimal.ZERO;
+                BigDecimal gst = BigDecimal.ZERO;
+                for (var line : lines) {
+                    var l = GstCalculator.calcGstFromMrp(line.effectiveUnitMrp(), line.quantity(),
+                            line.discountPct(), line.gstRate(), interstate, BigDecimal.ZERO);
+                    taxable = taxable.add(l.taxableAmount());
+                    gst = gst.add(l.totalGst());
+                }
+                assertThat(totals.taxableAmount()).as("taxable, interstate=" + interstate)
+                        .isEqualByComparingTo(taxable);
+                assertThat(totals.totalGst()).as("gst, interstate=" + interstate).isEqualByComparingTo(gst);
+                assertThat(totals.taxableAmount().add(totals.totalGst()))
+                        .isEqualByComparingTo(totals.totalAmount());
+            }
         }
     }
 
