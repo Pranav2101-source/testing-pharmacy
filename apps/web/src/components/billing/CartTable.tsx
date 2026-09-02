@@ -4,10 +4,11 @@ import { useCallback, memo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
 import { X, AlertTriangle, MapPin } from "lucide-react";
-import { useBillingStore, type CartItem } from "./useBillingStore";
+import { useBillingStore, type CartItem, type NewCartItem, lineIssue, looseStripsOpened } from "./useBillingStore";
 import { EmptyBillState } from "./EmptyBillState";
 import { RecentItemsCard } from "./RecentItemsCard";
 import { BatchPickerDialog, type InventoryBatch, expiryStatus, getLocationLabel } from "./BatchPickerDialog";
+import { baseUnitShort } from "@pharmacy/utils";
 import { api } from "@/lib/api-client";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,135 @@ const CONTROLLED_BADGE: Record<string, string> = {
   H1: "bg-orange-100 text-orange-700 border-orange-200",
   X:  "bg-red-100 text-red-600 border-red-200",
 };
+
+/** Pieces a batch can give a loose sale: unreserved sealed packs opened up, plus the loose remainder. */
+export function loosePiecesOf(b: InventoryBatch, upp: number): number {
+  const packs = Math.max(0, b.quantity - (b.reservedQuantity ?? 0));
+  return packs * upp + (b.looseUnits ?? 0);
+}
+
+/**
+ * Plan the extra cart lines for a loose quantity that overflowed its batch. Pure —
+ * given the fetched batches and what the cart already holds, it decides which
+ * batches to spill onto, FEFO first, without touching any store. Returns the lines
+ * to add and how many pieces still can't be filled.
+ */
+export function planLooseSplit(
+  template: CartItem,
+  wantedPieces: number,
+  cartItems: { inventoryId: string; medicineName: string; saleUnit?: string; quantity: number }[],
+  fetchedBatches: InventoryBatch[],
+  now = Date.now(),
+): { lines: NewCartItem[]; shortfall: number } {
+  const upp = template.unitsPerPack ?? 1;
+  if (upp <= 1 || !Number.isInteger(wantedPieces) || wantedPieces < 1) return { lines: [], shortfall: 0 };
+
+  const already = cartItems
+    .filter((i) => i.medicineName === template.medicineName && i.saleUnit === "LOOSE")
+    .reduce((n, i) => n + i.quantity, 0);
+  let remaining = wantedPieces - already;
+  if (remaining < 1) return { lines: [], shortfall: 0 };
+
+  const inCartIds = new Set(cartItems.map((i) => i.inventoryId));
+  const candidates = fetchedBatches
+    .filter((b) => b.medicine.name === template.medicineName   // /inventory search is fuzzy — pin the exact medicine
+      && !inCartIds.has(b.id)
+      && new Date(b.expiryDate).getTime() > now
+      && (b.medicine.allowLooseSale ?? false)
+      && loosePiecesOf(b, b.medicine.unitsPerPack ?? upp) > 0)
+    .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+
+  const lines: NewCartItem[] = [];
+  for (const b of candidates) {
+    if (remaining < 1) break;
+    const take = Math.min(remaining, loosePiecesOf(b, b.medicine.unitsPerPack ?? upp));
+    if (take < 1) continue;
+    lines.push(looseLineFromBatch(b, template, take));
+    remaining -= take;
+  }
+  return { lines, shortfall: Math.max(0, remaining) };
+}
+
+type LooseCartRow = { inventoryId: string; medicineName: string; saleUnit?: string; quantity: number };
+
+/**
+ * Fetch the medicine's other batches, plan the spill, add the lines, tell the
+ * cashier. Dependencies are injected so this is testable without a DOM — the React
+ * hook below is a thin wrapper that supplies `api`, the store's `addItem` and the
+ * toast.
+ */
+export async function runLooseOverflow(
+  item: CartItem,
+  typed: number,
+  cartItems: LooseCartRow[],
+  deps: {
+    fetchBatches: (medicineName: string) => Promise<InventoryBatch[]>;
+    addLine: (line: NewCartItem) => void;
+    notify: { info: (m: string) => void; warning: (m: string) => void; error: (m: string) => void };
+  },
+): Promise<void> {
+  if (item.saleUnit !== "LOOSE" || (item.unitsPerPack ?? 1) <= 1) return;
+  const unit = baseUnitShort(item.baseUnit);
+
+  let fetched: InventoryBatch[];
+  try {
+    fetched = await deps.fetchBatches(item.medicineName);
+  } catch {
+    deps.notify.error(`Couldn't check other batches of ${item.medicineName}.`);
+    return;
+  }
+
+  const { lines, shortfall } = planLooseSplit(item, typed, cartItems, fetched);
+  if (lines.length === 0) {
+    if (shortfall > 0) {
+      deps.notify.warning(`No other batch of ${item.medicineName} has loose stock — ${shortfall} ${unit} short.`);
+    }
+    return;
+  }
+
+  const summary = lines.map((l) => `${l.quantity} ${unit} from ${l.batchNumber}`).join(", ");
+  lines.forEach(deps.addLine);
+  if (shortfall > 0) {
+    deps.notify.warning(`Split across batches; still ${shortfall} ${unit} short: ${item.quantity} ${unit} here, ${summary}.`);
+  } else {
+    deps.notify.info(`Split across batches: ${item.quantity} ${unit} on this line, ${summary}.`);
+  }
+}
+
+/** A loose cart line drawn from one specific batch — the shape addItem() wants, money left to recompute(). */
+function looseLineFromBatch(b: InventoryBatch, template: CartItem, qty: number): NewCartItem {
+  return {
+    inventoryId:    b.id,
+    medicineName:   b.medicine.name,
+    hsnCode:        b.medicine.hsnCode,
+    schedule:       template.schedule,
+    packSize:       template.packSize,
+    location:       getLocationLabel(b) ?? undefined,
+    batchNumber:    b.batchNumber,
+    expiryDate:     b.expiryDate,
+    mrp:            b.mrp,
+    quantity:       qty,
+    discount:       template.discount,
+    gstRate:        b.medicine.gstRate,
+    availableStock: Math.max(0, b.quantity - (b.reservedQuantity ?? 0)),
+    saleUnit:       "LOOSE",
+    unitsPerPack:   b.medicine.unitsPerPack ?? template.unitsPerPack ?? undefined,
+    baseUnit:       b.medicine.baseUnit ?? template.baseUnit ?? undefined,
+    allowLooseSale: b.medicine.allowLooseSale ?? true,
+    looseUnits:     b.looseUnits ?? 0,
+  };
+}
+
+/** Title-case label for the loose toggle button ("Tab", "Ml"). */
+function baseUnitLabel(b?: string): string {
+  switch (b) {
+    case "TABLET":  return "Tab";
+    case "CAPSULE": return "Cap";
+    case "ML":      return "Ml";
+    case "GM":      return "Gm";
+    default:        return "Loose";
+  }
+}
 
 const TH = "text-[11px] font-bold text-slate-500 uppercase tracking-wider text-right px-2.5 select-none whitespace-nowrap";
 
@@ -148,7 +278,7 @@ function SkeletonRow({ idx }: { idx: number }) {
 // ─── Cart Row ─────────────────────────────────────────────────────
 const CartRow = memo(function CartRow({
   item, idx, hasConflict, onKeyNav, onRemove, onQtyChange, onFreeQtyChange, onDiscountChange, onSwapBatch,
-  onQtySettled, onFreeSettled,
+  onQtySettled, onFreeSettled, onSaleUnitChange, onFixIssue,
 }: {
   item: CartItem; idx: number; hasConflict: boolean;
   onKeyNav:         (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => void;
@@ -157,6 +287,8 @@ const CartRow = memo(function CartRow({
   onFreeQtyChange:  (id: string, freeQty: number) => void;
   onDiscountChange: (id: string, discount: number) => void;
   onSwapBatch:      (item: CartItem) => void;
+  onSaleUnitChange: (id: string, unit: "PACK" | "LOOSE") => void;
+  onFixIssue:       (id: string, patch: Partial<CartItem>) => void;
   /** Called when a quantity cell is left, with the number that was typed into it. */
   onQtySettled:     (item: CartItem, typed: number) => void;
   onFreeSettled:    (item: CartItem, typed: number) => void;
@@ -166,33 +298,45 @@ const CartRow = memo(function CartRow({
   const isExpired      = expiry < now;
   const isExpiringSoon = !isExpired && expiry < now + 90 * 86400_000;
 
+  const isLoose   = item.saleUnit === "LOOSE";
+  const upp       = item.unitsPerPack ?? 1;
+  const canLoose  = !!item.allowLooseSale && upp > 1;
+  const issue     = lineIssue(item);
+  const looseOpensStrips = looseStripsOpened(item);
+  // Everything on a loose line — quantity, the cap, the stock hint — is in pieces.
+  const effAvailable = item.availableStock == null
+    ? undefined
+    : isLoose ? item.availableStock * upp + (item.looseUnits ?? 0) : item.availableStock;
+
   const stockStatus: "ok" | "low" | "max" | "over" | null = (() => {
-    if (item.availableStock == null) return null;
+    if (effAvailable == null) return null;
     // "over" survives the entry cap in useBillingStore: a draft parked before the
     // stock moved, or another till selling the same batch, can both leave a line
     // above what is now on the shelf.
-    if (item.quantity > item.availableStock) return "over";
+    if (item.quantity > effAvailable) return "over";
     // The line is sitting exactly on the cap — say so, otherwise a cashier who
     // typed 50 and got 3 has no explanation for the number that appeared.
-    if (item.quantity === item.availableStock) return "max";
-    if (item.quantity >= item.availableStock * 0.8) return "low";
+    if (item.quantity === effAvailable) return "max";
+    if (item.quantity >= effAvailable * 0.8) return "low";
     return "ok";
   })();
 
   return (
+    <>
     <motion.div
       initial={{ opacity: 0, y: -6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, x: -16 }}
       transition={{ duration: 0.15, ease: [0.25, 0.1, 0.25, 1] }}
       className={cn(
-        "grid items-center border-b border-slate-100/80 group",
+        "grid items-center group",
         "transition-colors duration-75",
+        issue     ? "bg-amber-50/70 shadow-[inset_3px_0_0_0_#f59e0b] border-b border-amber-100" :
         hasConflict
-          ? "bg-red-50/70 shadow-[inset_3px_0_0_0_#ef4444]"
-          : "hover:bg-blue-50/35 hover:shadow-[inset_3px_0_0_0_#2563eb]",
+          ? "bg-red-50/70 shadow-[inset_3px_0_0_0_#ef4444] border-b border-slate-100/80"
+          : "hover:bg-blue-50/35 hover:shadow-[inset_3px_0_0_0_#2563eb] border-b border-slate-100/80",
         COL,
-        !hasConflict && (idx % 2 === 1 ? "bg-slate-50/25" : "bg-white")
+        !hasConflict && !issue && (idx % 2 === 1 ? "bg-slate-50/25" : "bg-white")
       )}
       style={{ minHeight: "var(--row-height, 42px)" }}
     >
@@ -216,7 +360,7 @@ const CartRow = memo(function CartRow({
           {item.hsnCode && (
             <p className="text-[10px] text-slate-400 font-mono">HSN {item.hsnCode}</p>
           )}
-          {stockStatus !== null && item.availableStock != null && (
+          {stockStatus !== null && effAvailable != null && (
             <p className={cn(
               "text-[10px] font-semibold",
               stockStatus === "over" ? "text-red-500" :
@@ -224,20 +368,24 @@ const CartRow = memo(function CartRow({
               stockStatus === "low"  ? "text-amber-500" : "text-slate-400"
             )}>
               {stockStatus === "over"
-                ? `⚠ Only ${item.availableStock} in stock`
+                ? `⚠ Only ${effAvailable} ${isLoose ? baseUnitShort(item.baseUnit) : ""} in stock`
                 : stockStatus === "max"
-                ? `⚠ Max — only ${item.availableStock} in stock`
+                ? `⚠ Max — only ${effAvailable} ${isLoose ? baseUnitShort(item.baseUnit) : ""} in stock`
                 : stockStatus === "low"
-                ? `${item.availableStock - item.quantity} left`
+                ? `${effAvailable - item.quantity} left`
                 : null}
             </p>
           )}
         </div>
       </div>
 
-      {/* Pack */}
-      <span className={cn("px-2.5 py-2 text-[13px] text-left truncate", item.packSize ? "text-slate-600 font-medium" : "text-slate-300")}>
-        {item.packSize ?? "—"}
+      {/* Pack — free-text label; the Strip/Tab choice lives on the Qty cell now */}
+      <span className={cn("px-2.5 py-2 text-[13px] text-left truncate flex items-center gap-1",
+        item.packSize ? "text-slate-600 font-medium" : "text-slate-300")}>
+        <span className="truncate">{item.packSize ?? (canLoose ? `${upp}/strip` : "—")}</span>
+        {canLoose && (
+          <span className="flex-shrink-0 text-[8px] font-bold px-1 py-px rounded bg-amber-100 text-amber-700 leading-none">LOOSE OK</span>
+        )}
       </span>
 
       {/* Batch + Loc + stock — click opens batch picker */}
@@ -283,27 +431,75 @@ const CartRow = memo(function CartRow({
         {isExpiringSoon && !isExpired && <span className="ml-0.5 text-[9px] bg-amber-100 text-amber-600 px-1 py-0.5 rounded font-bold">SOON</span>}
       </span>
 
-      {/* MRP */}
-      <span className="px-2.5 py-2 text-[14px] text-slate-700 text-right font-medium tabnum">
-        {item.mrp.toFixed(2)}
+      {/* MRP — for a loose line, the per-piece price under the printed pack MRP */}
+      <span className="px-2.5 py-2 text-right font-medium tabnum leading-tight">
+        <span className="text-[14px] text-slate-700 block">{item.mrp.toFixed(2)}</span>
+        {isLoose && (
+          <span className="text-[10px] text-amber-600 font-semibold block">
+            {(item.mrp / upp).toFixed(2)}/{baseUnitShort(item.baseUnit)}
+          </span>
+        )}
       </span>
 
-      {/* Qty */}
+      {/* Qty — for a loose-capable line, the unit sits right here so the cashier
+          just types the number the doctor wrote and picks tab / strip. Press "L"
+          in the field to flip the unit without the mouse. */}
       <div className="px-1.5 py-1.5">
-        <NumericCell
-          value={item.quantity}
-          onCommit={(n) => onQtyChange(item.inventoryId, n)}
-          onSettle={(typed) => onQtySettled(item, typed)}
-          dataRow={idx}
-          dataCol="qty"
-          onKeyDown={(e) => onKeyNav(e, idx, "qty")}
-          className={cn(
-            "w-full text-center text-[14px] font-bold tabnum",
-            "border border-slate-200 rounded-md px-1 py-1.5",
-            "focus:outline-none focus:ring-2 focus:ring-blue-500/25 focus:border-blue-400",
-            "bg-white hover:border-blue-300 transition-all duration-75"
+        <div className="flex items-stretch gap-1">
+          <NumericCell
+            value={item.quantity}
+            onCommit={(n) => onQtyChange(item.inventoryId, n)}
+            onSettle={(typed) => onQtySettled(item, typed)}
+            dataRow={idx}
+            dataCol="qty"
+            onKeyDown={(e) => {
+              if (canLoose && (e.key === "l" || e.key === "L")) {
+                e.preventDefault();
+                onSaleUnitChange(item.inventoryId, isLoose ? "PACK" : "LOOSE");
+                return;
+              }
+              onKeyNav(e, idx, "qty");
+            }}
+            className={cn(
+              "w-full text-center text-[14px] font-bold tabnum",
+              "border rounded-md px-1 py-1.5",
+              isLoose ? "border-amber-300 bg-amber-50/40" : "border-slate-200 bg-white",
+              "focus:outline-none focus:ring-2 focus:ring-blue-500/25 focus:border-blue-400",
+              "hover:border-blue-300 transition-all duration-75"
+            )}
+          />
+          {canLoose && (
+            <select
+              aria-label={`Sell ${item.medicineName} by strip or ${baseUnitShort(item.baseUnit)}`}
+              value={isLoose ? "LOOSE" : "PACK"}
+              onChange={(e) => {
+                onSaleUnitChange(item.inventoryId, e.target.value as "PACK" | "LOOSE");
+                // Let the cashier immediately retype the count in the new unit.
+                requestAnimationFrame(() => {
+                  const el = document.querySelector<HTMLInputElement>(`[data-row="${idx}"][data-col="qty"]`);
+                  el?.focus(); el?.select();
+                });
+              }}
+              className={cn(
+                "text-[10px] font-bold rounded-md border px-0.5 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/25",
+                isLoose ? "border-amber-300 bg-amber-100 text-amber-800" : "border-slate-200 bg-white text-slate-500",
+              )}
+            >
+              <option value="PACK">Strip</option>
+              <option value="LOOSE">{baseUnitLabel(item.baseUnit)}</option>
+            </select>
           )}
-        />
+        </div>
+        {looseOpensStrips > 0 && (
+          <p className="text-[9px] text-amber-600 font-semibold mt-0.5 text-center leading-none">
+            opens {looseOpensStrips} sealed strip{looseOpensStrips === 1 ? "" : "s"}
+          </p>
+        )}
+        {isLoose && (item.looseUnits ?? 0) > 0 && looseOpensStrips === 0 && (
+          <p className="text-[9px] text-emerald-600 font-semibold mt-0.5 text-center leading-none">
+            from {item.looseUnits} already open
+          </p>
+        )}
       </div>
 
       {/* Free (scheme qty) — zero shows as a muted placeholder rather than a hard
@@ -347,9 +543,9 @@ const CartRow = memo(function CartRow({
         />
       </div>
 
-      {/* Rate */}
+      {/* Rate — per piece for a loose line */}
       <span className="px-2.5 py-2 text-[13px] text-slate-600 text-right tabnum">
-        {item.rate.toFixed(2)}
+        {item.rate.toFixed(2)}{isLoose && <span className="text-[10px] text-slate-400">/{baseUnitShort(item.baseUnit)}</span>}
       </span>
 
       {/* GST% */}
@@ -376,6 +572,32 @@ const CartRow = memo(function CartRow({
         </button>
       </div>
     </motion.div>
+
+    {/* Line issue — the server would reject this at save; fix it here in one click.
+        WHOLE_PACK_LOOSE also offers a deliberate "cut it anyway" past the guard. */}
+    {issue && (
+      <div className="flex items-center gap-2 bg-amber-50/70 border-b border-amber-200 px-4 py-1.5">
+        <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
+        <span className="text-[12px] text-amber-800 flex-1">{issue.message}</span>
+        {issue.override && (
+          <button
+            type="button"
+            onClick={() => onFixIssue(item.inventoryId, issue.override!.patch)}
+            className="text-[11px] font-semibold px-2 py-1 rounded-md border border-amber-300 text-amber-700 hover:bg-amber-100 transition-colors flex-shrink-0"
+          >
+            {issue.override.label}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onFixIssue(item.inventoryId, issue.fix)}
+          className="text-[11px] font-bold px-2 py-1 rounded-md bg-amber-500 text-white hover:bg-amber-600 transition-colors flex-shrink-0"
+        >
+          {issue.fixLabel}
+        </button>
+      </div>
+    )}
+    </>
   );
 });
 
@@ -392,6 +614,8 @@ export function CartTableRows({
   const updateQty      = useBillingStore((s) => s.updateQty);
   const updateFreeQty  = useBillingStore((s) => s.updateFreeQty);
   const updateDiscount = useBillingStore((s) => s.updateDiscount);
+  const setSaleUnit    = useBillingStore((s) => s.setSaleUnit);
+  const patchLine      = useBillingStore((s) => s.patchLine);
   const replaceItem    = useBillingStore((s) => s.replaceItem);
 
   const [swapTarget,  setSwapTarget]  = useState<CartItem | null>(null);
@@ -427,7 +651,35 @@ export function CartTableRows({
     }
   }, [toast]);
 
-  const handleQtySettled  = useCallback((item: CartItem, typed: number) => reportClamp(item, typed, "quantity"), [reportClamp]);
+  const addItem = useBillingStore((s) => s.addItem);
+
+  /**
+   * A loose line the cashier sized past what its batch can cut — spill the rest onto
+   * the next FEFO batches of the same medicine, as visible extra lines. Draws down
+   * near-expiry remainders first, keeps every line single-batch (so the server stays
+   * a fortress), and shows the split so nothing is silent. See {@link runLooseOverflow}.
+   */
+  const handleLooseOverflow = useCallback((item: CartItem, typed: number) =>
+    runLooseOverflow(item, typed, useBillingStore.getState().items, {
+      fetchBatches: async (name) => {
+        const res = await api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
+          params: { search: name, inStock: true, limit: 40 },
+        });
+        return res.data?.data?.items ?? [];
+      },
+      addLine: addItem,
+      notify: toast,
+    }),
+  [addItem, toast]);
+
+  const handleQtySettled  = useCallback((item: CartItem, typed: number) => {
+    reportClamp(item, typed, "quantity");
+    // Only when the entry actually hit the batch ceiling — otherwise a normal typo cleanup would fetch batches.
+    const settled = useBillingStore.getState().items.find((i) => i.inventoryId === item.inventoryId)?.quantity;
+    if (settled != null && typed > settled && item.saleUnit === "LOOSE") {
+      void handleLooseOverflow(item, typed);
+    }
+  }, [reportClamp, handleLooseOverflow]);
   const handleFreeSettled = useCallback((item: CartItem, typed: number) => reportClamp(item, typed, "freeQty"), [reportClamp]);
 
   const handleSwapBatch = useCallback(async (item: CartItem) => {
@@ -446,6 +698,11 @@ export function CartTableRows({
 
   const handleBatchSelect = useCallback((batch: InventoryBatch) => {
     if (!swapTarget) return;
+    // Keep the line on the same unit (Strip / loose) across the batch swap; the new
+    // batch carries its own opened-pack remainder and pack size.
+    const nextUpp = batch.medicine.unitsPerPack ?? swapTarget.unitsPerPack ?? undefined;
+    const nextAllow = batch.medicine.allowLooseSale ?? swapTarget.allowLooseSale ?? false;
+    const keepLoose = swapTarget.saleUnit === "LOOSE" && nextAllow && (nextUpp ?? 0) > 1;
     replaceItem(swapTarget.inventoryId, {
       inventoryId:    batch.id,
       medicineName:   batch.medicine.name,
@@ -460,6 +717,11 @@ export function CartTableRows({
       discount:       swapTarget.discount,
       gstRate:        batch.medicine.gstRate,
       availableStock: batch.quantity - (batch.reservedQuantity ?? 0),
+      saleUnit:       keepLoose ? "LOOSE" : "PACK",
+      unitsPerPack:   nextUpp,
+      baseUnit:       batch.medicine.baseUnit ?? swapTarget.baseUnit ?? undefined,
+      allowLooseSale: nextAllow,
+      looseUnits:     batch.looseUnits ?? 0,
     });
     setSwapTarget(null);
     setSwapBatches([]);
@@ -527,6 +789,8 @@ export function CartTableRows({
                 onQtyChange={updateQty}
                 onFreeQtyChange={updateFreeQty}
                 onDiscountChange={updateDiscount}
+                onSaleUnitChange={setSaleUnit}
+                onFixIssue={(id, patch) => patchLine(id, patch)}
                 onSwapBatch={handleSwapBatch}
                 onQtySettled={handleQtySettled}
                 onFreeSettled={handleFreeSettled}

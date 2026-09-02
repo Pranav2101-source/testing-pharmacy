@@ -8,6 +8,7 @@ import {
   Minus, Plus, Info,
 } from "lucide-react";
 import { format } from "date-fns";
+import { baseUnitShort } from "@pharmacy/utils";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
@@ -20,6 +21,9 @@ type InvoiceItem = {
   batchNumber:  string;
   expiryDate:   string;
   quantity:     number;
+  /** "LOOSE" — quantity is pieces; a return refunds the money but never restocks. */
+  saleUnit?:    string;
+  baseUnit?:    string | null;
   mrp:          number;
   rate:         number;
   discount:     number;
@@ -315,6 +319,7 @@ export default function CreateReturnPage() {
                   const ratio       = item.quantity > 0 ? returnQty / item.quantity : 0;
                   const returnAmt   = parseFloat((item.amount * ratio).toFixed(2));
                   const isSelected  = returnQty > 0;
+                  const isLoose     = item.saleUnit === "LOOSE";
 
                   return (
                     <tr
@@ -322,15 +327,32 @@ export default function CreateReturnPage() {
                       className={cn("border-b border-slate-50 transition-colors", isSelected ? "bg-blue-50/70" : "bg-white")}
                     >
                       <td className="px-4 py-3 font-medium text-slate-800">
-                        <div>{item.medicineName}</div>
+                        <div className="flex items-center gap-1.5">
+                          {item.medicineName}
+                          {isLoose && (
+                            <span className="text-[9px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700">LOOSE</span>
+                          )}
+                        </div>
                         {item.hsnCode && <div className="text-[11px] text-slate-400 font-mono">HSN {item.hsnCode}</div>}
+                        {isLoose && isSelected && (
+                          <div className="text-[10px] text-amber-600 mt-0.5">Refund only — cut tablets aren't put back in stock.</div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-slate-600 font-mono text-[11px]">{item.batchNumber}</td>
                       <td className="px-4 py-3 text-slate-600">
                         {format(new Date(item.expiryDate), "MM/yy")}
                       </td>
-                      <td className="px-4 py-3 text-right text-slate-700 tabular-nums">{fmt(item.mrp)}</td>
-                      <td className="px-4 py-3 text-right text-slate-700 tabular-nums">{item.quantity}</td>
+                      <td className="px-4 py-3 text-right text-slate-700 tabular-nums">
+                        {fmt(item.mrp)}
+                        {isLoose && (
+                          <span className="block text-[10px] text-amber-600 font-semibold">
+                            {fmt(item.rate)}/{baseUnitShort(item.baseUnit)}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-right text-slate-700 tabular-nums">
+                        {item.quantity}{isLoose && item.baseUnit ? ` ${baseUnitShort(item.baseUnit)}` : ""}
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-center gap-1.5">
                           <button
@@ -366,9 +388,12 @@ export default function CreateReturnPage() {
                         </div>
                         <p className="text-[10px] text-slate-400 text-center mt-0.5">max {item.quantity}</p>
                       </td>
-                      {/* Disposition toggle — only shown when item is selected */}
+                      {/* Disposition toggle — only shown when item is selected.
+                          A loose line can only be written off, so the toggle is locked. */}
                       <td className="px-4 py-3">
-                        {isSelected ? (
+                        {isSelected && isLoose ? (
+                          <span className="text-[10px] font-bold text-red-500 text-center block">✕ Write-off (forced)</span>
+                        ) : isSelected ? (
                           <div className="flex rounded-lg border border-slate-200 overflow-hidden mx-auto w-fit">
                             {(["RESTOCK", "WRITEOFF"] as const).map((d) => (
                               <button

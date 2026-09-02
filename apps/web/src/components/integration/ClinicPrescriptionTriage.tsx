@@ -15,6 +15,7 @@ import { saveDraft } from "@/lib/draftStorage";
 import {
   resolvePrescriptionToCart,
   billableLines,
+  roundUpConfirmMessage,
   type BillablePrescription,
   type ItemResolution,
 } from "@/lib/prescriptionToCart";
@@ -239,11 +240,16 @@ export default function ClinicPrescriptionTriage({
   async function handleBillNow() {
     setBusy("bill");
     try {
-      const { items, meta, failures, checkFailed, partials, skipped } = await resolvePrescriptionToCart(rx, resolutions);
+      const { items, meta, failures, checkFailed, partials, roundedToPack, skipped } =
+        await resolvePrescriptionToCart(rx, resolutions);
       if (items.length === 0) {
         toast.error(emptyCartMessage(failures, checkFailed, skipped));
         return;
       }
+      // Rounding a course up to a full pack overcharges the patient — block until the
+      // pharmacist accepts it rather than relying on a toast they might miss.
+      const roundMsg = roundUpConfirmMessage(roundedToPack);
+      if (roundMsg && !window.confirm(roundMsg)) return;
       // loadDraft (not addItem-per-line) so the cart is REPLACED. Appending would silently
       // merge this patient's prescription into whatever half-finished sale was already open.
       loadDraft(items, meta);
@@ -270,17 +276,23 @@ export default function ClinicPrescriptionTriage({
   async function handleSaveDraft() {
     setBusy("draft");
     try {
-      const { items, meta, failures, checkFailed, partials, skipped } = await resolvePrescriptionToCart(rx, resolutions);
+      const { items, meta, failures, checkFailed, partials, roundedToPack, skipped } =
+        await resolvePrescriptionToCart(rx, resolutions);
       if (items.length === 0) {
         toast.error(emptyCartMessage(failures, checkFailed, skipped));
         return;
       }
+      const roundMsg = roundUpConfirmMessage(roundedToPack);
+      if (roundMsg && !window.confirm(roundMsg)) return;
       saveDraft(items, meta);
       const notes = [
         failures.length > 0 ? `${failures.join(", ")} not in stock` : null,
         checkFailed.length > 0 ? `couldn't check stock for ${checkFailed.join(", ")}` : null,
         partials.length > 0
           ? partials.map((p) => `${p.medicineName} billed ${p.available}/${p.requested}`).join(", ")
+          : null,
+        roundedToPack.length > 0
+          ? roundedToPack.map((r) => `${r.medicineName} rounded up to ${r.dispensed}/${r.requested}`).join(", ")
           : null,
         skipped.length > 0 ? `${skipped.map((s) => s.medicineName).join(", ")} left off` : null,
       ].filter(Boolean);

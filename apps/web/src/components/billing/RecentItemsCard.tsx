@@ -15,6 +15,7 @@ type FrequentBatch = {
   expiryDate:       string;
   mrp:              number;
   quantity:         number;
+  looseUnits?:      number;
   reservedQuantity: number;
   location:         string | null;
   shelf:            { code: string; rack: { code: string; name: string } } | null;
@@ -27,6 +28,10 @@ type FrequentBatch = {
     isActive:    boolean;
     schedule:    string | null;
     packSize:    string | null;
+    unitsPerPack?:   number | null;
+    baseUnit?:       string | null;
+    allowLooseSale?: boolean;
+    looseByDefault?: boolean;
   };
 };
 
@@ -111,6 +116,11 @@ export function RecentItemsCard() {
       discount:       0,
       gstRate:        batch.medicine.gstRate,
       availableStock: batch.quantity - (batch.reservedQuantity ?? 0),
+      saleUnit:       (batch.medicine.allowLooseSale && batch.medicine.looseByDefault) ? "LOOSE" : "PACK",
+      unitsPerPack:   batch.medicine.unitsPerPack ?? undefined,
+      baseUnit:       batch.medicine.baseUnit ?? undefined,
+      allowLooseSale: batch.medicine.allowLooseSale ?? false,
+      looseUnits:     batch.looseUnits ?? 0,
     });
 
     setAdded((prev) => new Set(prev).add(batch.id));

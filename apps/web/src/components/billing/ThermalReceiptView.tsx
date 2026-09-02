@@ -1,6 +1,6 @@
 import { format } from "date-fns";
 import { normalizeInvoiceSettings } from "@pharmacy/types";
-import { formatAmountInWords } from "@pharmacy/utils";
+import { formatAmountInWords, baseUnitShort } from "@pharmacy/utils";
 import type { InvoiceSettingsConfig } from "@pharmacy/types";
 import type { PrintInvoiceData, PharmacyProfile } from "./InvoicePrintView";
 
@@ -57,7 +57,11 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
   const pharmacy = pharmacyProp ?? PREVIEW_PHARMACY;
   const hdr      = cfg.header;
   const pat      = cfg.patient;
-  const col      = cfg.columns;
+  // A cut-strip line prices per piece, so the per-piece rate must print even when
+  // the pharmacy hides the rate column — otherwise "8 tab ... 73.04" cannot be
+  // checked against anything. Batch + expiry are forced on per line below.
+  const hasLoose = invoice.items.some((it) => it.saleUnit === "LOOSE");
+  const col      = hasLoose ? { ...cfg.columns, showRate: true, showMrp: true } : cfg.columns;
   const tot      = cfg.totals;
   const ftr      = cfg.footer;
   const br       = cfg.branding;
@@ -162,35 +166,42 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
       <div style={mono}>{line("-", W)}</div>
 
       {/* Items */}
-      {invoice.items.map((item, i) => (
+      {invoice.items.map((item, i) => {
+        // A loose (cut-strip) line: quantity is pieces, rate/MRP are per-piece, and
+        // batch + expiry MUST print regardless of the column toggles (Drug Rules —
+        // the customer needs them for cut tablets that no longer carry the foil).
+        const isLoose = item.saleUnit === "LOOSE";
+        const unit    = baseUnitShort(item.baseUnit);
+        return (
         <div key={i}>
           {/* Medicine name line */}
           <div style={{ fontWeight: 600, fontSize: "10px" }}>
             {i + 1}. {item.medicineName}
+            {isLoose && <span style={{ fontWeight: 400, fontSize: "9px" }}> (loose)</span>}
           </div>
           {/* Batch/expiry/HSN line */}
-          {(col.showBatch || col.showExpiry || (col.showHsn && item.hsnCode)) && (
+          {(isLoose || col.showBatch || col.showExpiry || (col.showHsn && item.hsnCode)) && (
             <div style={{ fontSize: "9px", color: "#444" }}>
-              {col.showBatch  && `Batch:${item.batchNumber} `}
-              {col.showExpiry && `Exp:${format(new Date(item.expiryDate), "MM/yy")} `}
+              {(isLoose || col.showBatch)  && `Batch:${item.batchNumber} `}
+              {(isLoose || col.showExpiry) && `Exp:${format(new Date(item.expiryDate), "MM/yy")} `}
               {col.showHsn && item.hsnCode && `HSN:${item.hsnCode}`}
             </div>
           )}
           {/* MRP line — only worth its own row when it differs from the sale rate,
               i.e. when a discount was applied. Printing "MRP 15.00 / Rate 15.00" on
               every line of a 58mm roll is noise and paper. */}
-          {col.showMrp && item.mrp > item.rate && (
+          {col.showMrp && (isLoose || item.mrp > item.rate) && (
             <div style={{ fontSize: "9px", color: "#444" }}>
-              {`  MRP:${item.mrp.toFixed(2)}`}
+              {isLoose ? `  MRP:${item.mrp.toFixed(2)}/pack` : `  MRP:${item.mrp.toFixed(2)}`}
             </div>
           )}
           {/* Qty × Rate = Amount line. Rate and the discount badge are each
               individually suppressible, matching the A4 column toggles; the
               quantity and the line amount always print — a receipt without them
-              is not a receipt. */}
+              is not a receipt. A loose line reads "8 tab x 2.23". */}
           <div style={mono}>
             {row(
-              `  ${item.quantity}${col.showRate ? ` x ${item.rate.toFixed(2)}` : ""}`
+              `  ${item.quantity}${isLoose && item.baseUnit ? ` ${unit}` : isLoose ? " loose" : ""}${col.showRate ? ` x ${item.rate.toFixed(2)}` : ""}`
                 + (col.showDiscount && item.discount > 0 ? ` (-${item.discount}%)` : ""),
               `${item.amount.toFixed(2)}`,
               W,
@@ -222,7 +233,8 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
 
       <div style={mono}>{line("=", W)}</div>
 

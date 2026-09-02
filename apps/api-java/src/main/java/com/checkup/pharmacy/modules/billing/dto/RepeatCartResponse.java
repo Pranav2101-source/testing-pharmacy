@@ -30,9 +30,25 @@ public record RepeatCartResponse(
             BigDecimal gstRate,
             BigDecimal discount,
             int quantity,
+            /**
+             * Unreserved SEALED packs on the batch — always a pack count, for both a
+             * PACK and a LOOSE line (the client multiplies by {@code unitsPerPack} and
+             * adds {@code looseUnits} to get the piece ceiling for a loose line). Only
+             * {@code quantity} is in pieces on a LOOSE line.
+             */
             int availableStock,
             int requestedQuantity,
-            boolean capped
+            boolean capped,
+            // Carried so a customer's regular loose order comes back as loose, not a
+            // full pack — and so a PACK line for a loose-capable medicine still offers
+            // the Strip / piece toggle. PACK for every ordinary line.
+            String saleUnit,
+            Integer unitsPerPack,
+            String baseUnit,
+            /** This pharmacy currently sells the medicine loose — shows the toggle even on a PACK repeat line. */
+            boolean allowLooseSale,
+            /** Loose pieces already open on the batch — part of what a LOOSE line can draw on. */
+            int looseUnits
     ) {
     }
 

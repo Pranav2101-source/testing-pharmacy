@@ -9,6 +9,7 @@ import com.checkup.pharmacy.modules.medicine.dto.AlternativeResponse;
 import com.checkup.pharmacy.modules.medicine.dto.BulkImportRequest;
 import com.checkup.pharmacy.modules.medicine.dto.BulkImportResponse;
 import com.checkup.pharmacy.modules.medicine.dto.CreateMedicineRequest;
+import com.checkup.pharmacy.modules.medicine.dto.LoosePosSettingsRequest;
 import com.checkup.pharmacy.modules.medicine.dto.MedicinePageResponse;
 import com.checkup.pharmacy.modules.medicine.dto.MedicineResponse;
 import com.checkup.pharmacy.modules.medicine.dto.OverrideResponse;
@@ -26,9 +27,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -98,8 +101,22 @@ public class MedicineService {
         Medicine medicine = Medicine.create(name, gstRate);
         medicine.applyFields(req.genericName(), req.manufacturer(), req.composition(), req.category(),
                 req.schedule(), req.hsnCode(), gstRate, req.form(), req.strength(), req.unit(), req.packSize());
+        medicine.setPackaging(req.unitsPerPack(), normalizeBaseUnit(req.baseUnit()));
         medicineRepository.save(medicine);
         return toResponse(medicine);
+    }
+
+    private static final Set<String> BASE_UNITS = Set.of("TABLET", "CAPSULE", "ML", "GM", "EACH");
+
+    private static String normalizeBaseUnit(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        String v = raw.trim().toUpperCase(Locale.ROOT);
+        if (!BASE_UNITS.contains(v)) {
+            throw new BadRequestException("Base unit must be one of TABLET, CAPSULE, ML, GM, EACH.");
+        }
+        return v;
     }
 
     @Transactional
@@ -113,6 +130,7 @@ public class MedicineService {
         medicine.rename(name);
         medicine.applyFields(req.genericName(), req.manufacturer(), req.composition(), req.category(),
                 req.schedule(), req.hsnCode(), gstRate, req.form(), req.strength(), req.unit(), req.packSize());
+        medicine.setPackaging(req.unitsPerPack(), normalizeBaseUnit(req.baseUnit()));
         return toResponse(medicine);
     }
 
@@ -227,15 +245,23 @@ public class MedicineService {
 
     @Transactional(readOnly = true)
     public List<OverrideResponse> listMyOverrides() {
-        return overrideRepository.findByIdPharmacyId(TenantContext.pharmacyId()).stream()
-                .map(this::toOverrideResponse)
+        List<PharmacyMedicineOverride> overrides = overrideRepository.findByIdPharmacyId(TenantContext.pharmacyId());
+        Map<String, Integer> catalogueUppById = new HashMap<>();
+        for (Medicine m : medicineRepository.findAllById(
+                overrides.stream().map(PharmacyMedicineOverride::getMedicineId).toList())) {
+            catalogueUppById.put(m.getId(), m.getUnitsPerPack());
+        }
+        return overrides.stream()
+                .map(o -> toOverrideResponse(o, catalogueUppById.get(o.getMedicineId())))
                 .toList();
     }
 
     @Transactional
     public OverrideResponse upsertOverride(String medicineId, UpsertOverrideRequest req) {
-        if (req.gstRate() == null && req.defaultDiscountPct() == null) {
-            throw new BadRequestException("Set a GST rate and/or a default discount — or remove the override");
+        if (req.isEmpty()) {
+            throw new BadRequestException(
+                    "Nothing to save — set a GST rate, a default discount, loose selling, or a pack size. "
+                    + "To clear an existing override, remove it instead.");
         }
         // The override's GST dropdown offers the same {0,5,12,18} set as the base
         // catalog (see OverrideModal on the frontend) — enforce it here too, not
@@ -245,20 +271,140 @@ public class MedicineService {
             validateGstRate(req.gstRate());
         }
         // Validates the medicine exists before allowing an override to be attached to it.
-        load(medicineId);
+        Medicine medicine = load(medicineId);
 
         String pharmacyId = TenantContext.pharmacyId();
         PharmacyMedicineOverride override = overrideRepository
                 .findByIdPharmacyIdAndIdMedicineId(pharmacyId, medicineId)
                 .orElseGet(() -> PharmacyMedicineOverride.create(pharmacyId, medicineId));
-        override.update(req.gstRate(), req.defaultDiscountPct(), req.notes());
+
+        // ── Loose-POS settings ────────────────────────────────────────────────
+        // A null field on the request means "leave as it was", so unrelated edits
+        // (a GST tweak) don't silently reset loose selling.
+        boolean allowLoose = req.allowLooseSale() != null ? req.allowLooseSale() : override.isAllowLooseSale();
+        Integer overrideUpp = req.unitsPerPack() != null ? req.unitsPerPack() : override.getUnitsPerPack();
+        Integer effectiveUpp = overrideUpp != null ? overrideUpp : medicine.getUnitsPerPack();
+        boolean looseByDefault = req.looseByDefault() != null ? req.looseByDefault() : override.isLooseByDefault();
+        boolean confirmed = Boolean.TRUE.equals(req.confirmed()) || override.getLooseConfirmedAt() != null;
+        // A default-to-loose flag is meaningless without loose selling on.
+        if (looseByDefault && !allowLoose) {
+            looseByDefault = false;
+        }
+
+        if (allowLoose && (effectiveUpp == null || effectiveUpp < 2)) {
+            throw new BadRequestException("\"" + medicine.getName() + "\" has no pack size on record, so it can't be "
+                    + "sold loose. Enter how many " + baseUnitLabel(medicine) + " are in one pack.");
+        }
+        String schedule = medicine.getSchedule() == null ? "" : medicine.getSchedule().trim().toUpperCase(Locale.ROOT);
+        if (allowLoose && schedule.equals("X")) {
+            throw new BadRequestException("Schedule X medicines must be sold in the original pack — loose selling "
+                    + "cannot be enabled for \"" + medicine.getName() + "\".");
+        }
+        // Turning loose ON for the first time needs the pack size to come from a
+        // trustworthy source — a wrong number silently over- or under-charges every
+        // loose sale of the medicine, forever. Trusted = the pharmacist confirming it
+        // against a real strip now (or having done so before), OR an existing
+        // pharmacy-set pack size, OR the platform-managed catalogue's own value
+        // (whether the request omits its own or supplies the same number). A
+        // caller-supplied number that DIFFERS from the catalogue, with no
+        // confirmation, is refused — the POS dialog requires the tick; this is the
+        // API-level backstop. Toggling other fields on an already-loose medicine is
+        // unaffected.
+        boolean trustedPackSize = confirmed
+                || override.getUnitsPerPack() != null
+                || (medicine.getUnitsPerPack() != null
+                    && (req.unitsPerPack() == null || req.unitsPerPack().equals(medicine.getUnitsPerPack())));
+        if (allowLoose && !override.isAllowLooseSale() && !trustedPackSize) {
+            throw new BadRequestException("Check the pack size for \"" + medicine.getName()
+                    + "\" against a real strip and confirm it before turning loose selling on.");
+        }
+
+        if (req.gstRate() != null || req.defaultDiscountPct() != null || req.notes() != null) {
+            override.update(
+                    req.gstRate() != null ? req.gstRate() : override.getGstRate(),
+                    req.defaultDiscountPct() != null ? req.defaultDiscountPct() : override.getDefaultDiscountPct(),
+                    req.notes() != null ? req.notes() : override.getNotes());
+        }
+        override.applyLoosePos(allowLoose, overrideUpp, looseByDefault, confirmed);
         overrideRepository.save(override);
-        return toOverrideResponse(override);
+        return toOverrideResponse(override, medicine.getUnitsPerPack());
+    }
+
+    private static String baseUnitLabel(Medicine m) {
+        String b = m.getBaseUnit();
+        if (b == null) {
+            return "units";
+        }
+        return switch (b) {
+            case "TABLET" -> "tablets";
+            case "CAPSULE" -> "capsules";
+            case "ML" -> "millilitres";
+            case "GM" -> "grams";
+            default -> "units";
+        };
     }
 
     @Transactional
     public void removeOverride(String medicineId) {
         overrideRepository.deleteByIdPharmacyIdAndIdMedicineId(TenantContext.pharmacyId(), medicineId);
+    }
+
+    /**
+     * Narrow POS action — turn loose selling on/off for one medicine at this
+     * pharmacy (OWNER/MANAGER only, see the controller). Reuses the override upsert
+     * so all the validation (needs a pack size, not Schedule X) lives in one place.
+     */
+    @Transactional
+    public OverrideResponse setLoosePosSettings(String medicineId, LoosePosSettingsRequest req) {
+        return upsertOverride(medicineId, new UpsertOverrideRequest(
+                null, null, null, req.allowLooseSale(), req.unitsPerPack(), req.looseByDefault(), req.confirmed()));
+    }
+
+    /**
+     * Turn loose selling on for many medicines in one go. Fails the whole batch on
+     * the first bad row (missing pack size, Schedule X) so the caller can fix and
+     * retry — a partial enable is worse than none.
+     *
+     * <p>Bulk is deliberately narrower than the per-medicine dialog: it NEVER trusts
+     * a client-supplied pack size and NEVER marks a size "confirmed". A wrong pack
+     * size silently misprices every loose sale of that medicine, and bulk has no
+     * strip to check it against — so it only flips the switch on for medicines whose
+     * size is already on record (the catalogue's, or one this pharmacy already
+     * entered and confirmed). Everything else is enabled one at a time, where the
+     * dialog shows the size and requires the "I checked a real strip" tick.
+     */
+    @Transactional
+    public List<OverrideResponse> bulkEnableLoose(List<BulkLooseRow> rows) {
+        String pharmacyId = TenantContext.pharmacyId();
+        List<String> ids = rows.stream().map(BulkLooseRow::medicineId).distinct().toList();
+        Map<String, Medicine> medicinesById = new HashMap<>();
+        for (Medicine m : medicineRepository.findAllById(ids)) {
+            medicinesById.put(m.getId(), m);
+        }
+        Map<String, PharmacyMedicineOverride> overridesById = overridesByMedicineId(ids);
+
+        List<OverrideResponse> out = new ArrayList<>();
+        for (BulkLooseRow row : rows) {
+            Medicine m = medicinesById.get(row.medicineId());
+            if (m == null) {
+                throw new NotFoundException("Medicine not found: " + row.medicineId());
+            }
+            PharmacyMedicineOverride ov = overridesById.get(row.medicineId());
+            Integer structuredUpp = ov != null && ov.getUnitsPerPack() != null
+                    ? ov.getUnitsPerPack() : m.getUnitsPerPack();
+            if (structuredUpp == null || structuredUpp < 2) {
+                throw new BadRequestException("\"" + m.getName() + "\" has no pack size on record. "
+                        + "Enable loose selling for it individually so you can enter and confirm the pack size.");
+            }
+            // unitsPerPack null → keep whatever is already on record; confirmed null → not stamped.
+            out.add(setLoosePosSettings(row.medicineId(), new LoosePosSettingsRequest(
+                    true, null, row.looseByDefault(), null)));
+        }
+        return out;
+    }
+
+    /** {@code unitsPerPack} is accepted for wire compatibility but ignored — see {@link #bulkEnableLoose}. */
+    public record BulkLooseRow(String medicineId, Integer unitsPerPack, Boolean looseByDefault) {
     }
 
     /** Quick fuzzy search for the billing/GRN combobox — active medicines only, capped by limit. */
@@ -269,17 +415,31 @@ public class MedicineService {
             return List.of();
         }
         int safeLimit = Math.min(Math.max(limit, 1), 50);
-        return medicineRepository.quickSearch(trimmed, PageRequest.of(0, safeLimit)).stream()
-                .map(this::toResponse).toList();
+        List<Medicine> hits = medicineRepository.quickSearch(trimmed, PageRequest.of(0, safeLimit));
+        Map<String, PharmacyMedicineOverride> overrides = overridesByMedicineId(hits.stream().map(Medicine::getId).toList());
+        return hits.stream().map(m -> toResponse(m, overrides.get(m.getId()))).toList();
     }
 
     /** Exact barcode lookup — returns any status (active or not) so the caller can surface a
      *  specific "discontinued" message rather than a misleading "not found". */
     @Transactional(readOnly = true)
     public MedicineResponse findByBarcode(String barcode) {
-        return medicineRepository.findByBarcode(barcode)
-                .map(this::toResponse)
+        Medicine m = medicineRepository.findByBarcode(barcode)
                 .orElseThrow(() -> new NotFoundException("No medicine is linked to barcode \"" + barcode + "\""));
+        return toResponse(m, overridesByMedicineId(List.of(m.getId())).get(m.getId()));
+    }
+
+    /** This pharmacy's overrides for the given medicines, keyed by medicineId. Empty outside a tenant context. */
+    private Map<String, PharmacyMedicineOverride> overridesByMedicineId(List<String> medicineIds) {
+        if (medicineIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, PharmacyMedicineOverride> byId = new HashMap<>();
+        for (PharmacyMedicineOverride o : overrideRepository
+                .findByIdPharmacyIdAndIdMedicineIdIn(TenantContext.pharmacyId(), medicineIds)) {
+            byId.put(o.getMedicineId(), o);
+        }
+        return byId;
     }
 
     /**
@@ -344,7 +504,9 @@ public class MedicineService {
         // cart, and the unbounded variant read every override the pharmacy had set to
         // use at most a handful.
         java.util.Map<String, BigDecimal> overrideGst = new java.util.HashMap<>();
+        java.util.Map<String, PharmacyMedicineOverride> overridesById = new java.util.HashMap<>();
         for (PharmacyMedicineOverride o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, medicineIds)) {
+            overridesById.put(o.getMedicineId(), o);
             if (o.getGstRate() != null) {
                 overrideGst.put(o.getMedicineId(), o.getGstRate());
             }
@@ -371,13 +533,21 @@ public class MedicineService {
 
             List<AlternativeResponse.Batch> batchDtos = batches.stream()
                     .map(b -> new AlternativeResponse.Batch(b.getId(), b.getBatchNumber(), b.getExpiryDate(),
-                            b.getQuantity(), b.getReservedQuantity(), b.getMrp(), b.getPurchaseRate(), b.getLocation()))
+                            b.getQuantity(), b.getLooseUnits(), b.getReservedQuantity(), b.getMrp(), b.getPurchaseRate(),
+                            b.getLocation()))
                     .toList();
+
+            PharmacyMedicineOverride ov = overridesById.get(med.getId());
+            Integer effUpp = ov != null && ov.getUnitsPerPack() != null ? ov.getUnitsPerPack() : med.getUnitsPerPack();
+            boolean allowLoose = ov != null && ov.isAllowLooseSale() && effUpp != null && effUpp > 1;
+            boolean looseDefault = allowLoose && ov.isLooseByDefault();
 
             result.add(new AlternativeResponse(med.getId(), med.getName(), med.getManufacturer(), med.getGenericName(),
                     med.getStrength(), med.getForm(), med.getPackSize(), med.getHsnCode(),
                     overrideGst.getOrDefault(med.getId(), med.getGstRate()), med.getSchedule(),
-                    null, totalStock, mrp, margin, stockStatus, batchDtos));
+                    null, totalStock, mrp, margin, stockStatus, effUpp,
+                    com.checkup.pharmacy.common.util.BaseUnits.resolve(med.getBaseUnit(), med.getForm()),
+                    allowLoose, looseDefault, batchDtos));
         }
         return result;
     }
@@ -403,13 +573,30 @@ public class MedicineService {
     }
 
     private MedicineResponse toResponse(Medicine m) {
+        return toResponse(m, (PharmacyMedicineOverride) null);
+    }
+
+    /**
+     * {@code override} is this pharmacy's row for the medicine (or null). Only the
+     * POS-facing callers resolve it; the catalogue views pass null and get
+     * {@code allowLooseSale = false} with the catalogue's own pack size.
+     */
+    private MedicineResponse toResponse(Medicine m, PharmacyMedicineOverride override) {
+        boolean allowLoose = override != null && override.isAllowLooseSale();
+        boolean looseDefault = allowLoose && override.isLooseByDefault();
+        Integer effectiveUpp = override != null && override.getUnitsPerPack() != null
+                ? override.getUnitsPerPack() : m.getUnitsPerPack();
         return new MedicineResponse(
                 m.getId(), m.getName(), m.getGenericName(), m.getManufacturer(), m.getComposition(),
                 m.getCategory(), m.getSchedule(), m.getHsnCode(), m.getGstRate(), m.getForm(),
-                m.getStrength(), m.getUnit(), m.getPackSize(), m.isActive());
+                m.getStrength(), m.getUnit(), m.getPackSize(), m.isActive(),
+                effectiveUpp, com.checkup.pharmacy.common.util.BaseUnits.resolve(m.getBaseUnit(), m.getForm()),
+                allowLoose, looseDefault);
     }
 
-    private OverrideResponse toOverrideResponse(PharmacyMedicineOverride o) {
-        return new OverrideResponse(o.getMedicineId(), o.getGstRate(), o.getDefaultDiscountPct(), o.getNotes());
+    private OverrideResponse toOverrideResponse(PharmacyMedicineOverride o, Integer catalogueUnitsPerPack) {
+        Integer effective = o.getUnitsPerPack() != null ? o.getUnitsPerPack() : catalogueUnitsPerPack;
+        return new OverrideResponse(o.getMedicineId(), o.getGstRate(), o.getDefaultDiscountPct(), o.getNotes(),
+                o.isAllowLooseSale(), o.isLooseByDefault(), o.getLooseConfirmedAt(), o.getUnitsPerPack(), effective);
     }
 }

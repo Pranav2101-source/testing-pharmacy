@@ -68,13 +68,27 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
      * to exclude cancelled sales: a SALE/OUT movement is never deleted when its invoice is later
      * cancelled (the ledger keeps the original entry plus a reversing ADJUSTMENT/IN one), so without
      * this filter a cancelled sale would still inflate both velocity and popularity.
+     *
+     * <p>{@code totalQuantity} is in WHOLE PACKS. A loose (cut-strip) SALE movement records its
+     * quantity in pieces and carries a non-null {@code baseUnit}; those rows are folded back to a
+     * pack-equivalent fraction ({@code pieces / unitsPerPack} — this pharmacy's override, else the
+     * catalogue) so a medicine sold both ways doesn't read as "2 packs + 8 tablets = 10". The
+     * result is therefore fractional — the interface returns {@code double}.
      */
     @Query("""
-            SELECT m.inventory.medicineId AS medicineId, COUNT(m) AS transactionCount, COALESCE(SUM(m.quantity), 0) AS totalQuantity
-            FROM InventoryMovement m, Invoice i
+            SELECT m.inventory.medicineId AS medicineId, COUNT(m) AS transactionCount,
+                   COALESCE(SUM(
+                       CAST(m.quantity AS double)
+                       / (CASE WHEN m.baseUnit IS NULL THEN 1
+                               ELSE COALESCE(o.unitsPerPack, med.unitsPerPack, 1) END)
+                   ), 0) AS totalQuantity
+            FROM InventoryMovement m
+            JOIN Invoice i ON i.id = m.referenceId
+            JOIN Medicine med ON med.id = m.inventory.medicineId
+            LEFT JOIN PharmacyMedicineOverride o ON o.id.pharmacyId = m.pharmacyId AND o.id.medicineId = m.inventory.medicineId
             WHERE m.pharmacyId = :pharmacyId
               AND CAST(m.type AS string) = 'SALE' AND CAST(m.direction AS string) = 'OUT'
-              AND m.referenceType = 'INVOICE' AND m.referenceId = i.id
+              AND m.referenceType = 'INVOICE'
               AND i.isCancelled = false
               AND m.createdAt >= :from AND m.createdAt <= :to
             GROUP BY m.inventory.medicineId
@@ -86,7 +100,8 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
     interface MedicineSalesAggregateRow {
         String getMedicineId();
         long getTransactionCount();
-        long getTotalQuantity();
+        /** Whole packs sold in the window — loose sales folded to a pack-equivalent fraction, so not an integer. */
+        double getTotalQuantity();
     }
 
     /** Most recent SALE movement per inventory batch — powers the dead-stock report's "last sale" column. */
@@ -133,15 +148,34 @@ public interface InventoryMovementRepository extends JpaRepository<InventoryMove
      * the quantity is zeroed), and the rate from the medicine. Both are current values; see
      * {@code InventoryRepository.expiredStockOnBooks} for the same caveat about which tax head
      * the credit was originally claimed under.
+     *
+     * <p>A cut-strip remainder is written off as its own movement whose {@code quantity} is in
+     * PIECES and whose {@code baseUnit} is non-null. {@code purchaseRate} is per PACK, so those
+     * rows are divided by the effective pack size (this pharmacy's override, else the
+     * catalogue's) before costing — otherwise a handful of leftover tablets would reverse a
+     * whole pack's worth of credit. A loose row whose medicine has since lost its pack size
+     * contributes nothing (it stays costed at zero, the same stance as an uncosted migrated
+     * batch — never a guessed reversal). {@code batches} counts distinct batches (a batch
+     * written off with both sealed packs and a loose remainder produces two movement rows);
+     * {@code units} mixes packs and the piece count and is not read by any caller.
      */
     @Query("""
-            SELECT COUNT(m) AS batches,
+            SELECT COUNT(DISTINCT m.inventoryId) AS batches,
                    COALESCE(SUM(m.quantity), 0) AS units,
-                   COALESCE(SUM(i.purchaseRate * m.quantity), 0) AS cost,
-                   COALESCE(SUM(i.purchaseRate * m.quantity * med.gstRate / 100), 0) AS itc
+                   COALESCE(SUM(CASE
+                       WHEN m.baseUnit IS NULL THEN i.purchaseRate * m.quantity
+                       WHEN COALESCE(o.unitsPerPack, med.unitsPerPack, 0) > 1
+                            THEN i.purchaseRate * m.quantity / COALESCE(o.unitsPerPack, med.unitsPerPack, 1)
+                       ELSE 0 END), 0) AS cost,
+                   COALESCE(SUM((CASE
+                       WHEN m.baseUnit IS NULL THEN i.purchaseRate * m.quantity
+                       WHEN COALESCE(o.unitsPerPack, med.unitsPerPack, 0) > 1
+                            THEN i.purchaseRate * m.quantity / COALESCE(o.unitsPerPack, med.unitsPerPack, 1)
+                       ELSE 0 END) * med.gstRate / 100), 0) AS itc
             FROM InventoryMovement m
             JOIN Inventory i ON i.id = m.inventoryId
             JOIN Medicine med ON med.id = i.medicineId
+            LEFT JOIN PharmacyMedicineOverride o ON o.id.pharmacyId = m.pharmacyId AND o.id.medicineId = i.medicineId
             WHERE m.pharmacyId = :pharmacyId
               AND CAST(m.type AS string) = 'EXPIRY_REMOVAL'
               AND m.createdAt >= :from AND m.createdAt <= :to

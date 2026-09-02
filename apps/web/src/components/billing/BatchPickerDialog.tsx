@@ -11,6 +11,8 @@ export type InventoryBatch = {
   expiryDate:       string;
   mrp:              number;
   quantity:         number;
+  /** Loose pieces from an opened pack (cut-strip selling). 0 for pack-only stock. */
+  looseUnits?:      number;
   reservedQuantity?: number;
   location?:        string;
   shelf?:           { code: string; rack: { code: string; name: string } };
@@ -19,6 +21,12 @@ export type InventoryBatch = {
     hsnCode:  string | null;
     gstRate:  number;
     isActive: boolean;
+    /** Effective pack size (this pharmacy's override, else the catalogue's). */
+    unitsPerPack?:   number | null;
+    baseUnit?:       string | null;
+    /** This pharmacy has enabled cut-strip selling for this medicine. */
+    allowLooseSale?: boolean;
+    looseByDefault?: boolean;
   };
 };
 
@@ -87,14 +95,16 @@ export const BatchPickerDialog = memo(function BatchPickerDialog({
           </button>
         </div>
 
-        {/* Batch list */}
+        {/* Batch list — a batch that already has cut tablets is floated to the top,
+            so a loose sale draws from the open strip instead of cutting a new one. */}
         <div className="p-2 max-h-[420px] overflow-y-auto">
-          {batches.map((batch) => {
+          {[...batches].sort((a, b) => (b.looseUnits ?? 0 ? 1 : 0) - (a.looseUnits ?? 0 ? 1 : 0)).map((batch) => {
             const status       = expiryStatus(batch.expiryDate);
             const discontinued = !batch.medicine.isActive;
             const isDisabled   = status.color === "red" || discontinued;
             const locationLabel = getLocationLabel(batch);
             const available     = batch.quantity - (batch.reservedQuantity ?? 0);
+            const open          = batch.looseUnits ?? 0;
 
             return (
               <button
@@ -171,6 +181,9 @@ export const BatchPickerDialog = memo(function BatchPickerDialog({
                   )}>
                     {available} avail.
                   </div>
+                  {open > 0 && (
+                    <div className="text-[10px] font-bold text-amber-600 mt-0.5">{open} open</div>
+                  )}
                 </div>
               </button>
             );

@@ -115,10 +115,11 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
                    OR LOWER(i.medicine.genericName) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%'))
                    OR LOWER(i.batchNumber) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%')))
               AND (:medicineId IS NULL OR i.medicineId = :medicineId)
-              AND (:inStock = false OR i.quantity > 0)
+              AND (:inStock = false OR i.quantity > 0 OR i.looseUnits > 0)
               AND (:nearExpiry = false OR i.expiryDate <= :nearExpiryThreshold)
               AND (:status IS NULL OR CAST(i.status AS string) = :status)
               AND (:lowStock = false OR (i.quantity > 0 AND i.quantity <= i.minimumStock))
+              AND (:hasLoose = false OR i.looseUnits > 0)
             """)
     Page<Inventory> search(@Param("pharmacyId") String pharmacyId,
                            @Param("search") String search,
@@ -128,11 +129,13 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
                            @Param("nearExpiryThreshold") Instant nearExpiryThreshold,
                            @Param("status") String status,
                            @Param("lowStock") boolean lowStock,
+                           @Param("hasLoose") boolean hasLoose,
                            Pageable pageable);
 
     @Query("""
             SELECT COUNT(i) FROM Inventory i
-            WHERE i.pharmacyId = :pharmacyId AND i.expiryDate <= :threshold AND i.quantity > 0
+            WHERE i.pharmacyId = :pharmacyId AND i.expiryDate <= :threshold
+              AND (i.quantity > 0 OR i.looseUnits > 0)
               AND CAST(i.status AS string) IN ('ACTIVE', 'EXPIRED')
             """)
     long countExpiryAlerts(@Param("pharmacyId") String pharmacyId, @Param("threshold") Instant threshold);
@@ -144,11 +147,21 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
             """)
     long countLowStockAlerts(@Param("pharmacyId") String pharmacyId);
 
-    /** Dashboard low-stock count — ACTIVE, in-stock (quantity &gt; 0), at/below minimum (matches the old Node stat exactly). */
+    /**
+     * Dashboard low-stock count — ACTIVE, in-stock (quantity &gt; 0, or nothing but a loose
+     * remainder left), at/below minimum (matches the old Node stat, extended for loose stock).
+     *
+     * <p>Only the "has anything at all" gate is broadened here — the threshold comparison
+     * itself ({@code quantity <= minimumStock}) is untouched, since {@code minimumStock} is
+     * still denominated in packs and reinterpreting THAT is Track B's bigger, deferred piece.
+     * A batch down to nothing but an opened strip's remainder (quantity 0, looseUnits &gt; 0)
+     * used to fall through this count entirely — neither "low" nor "out" — because the old
+     * gate only looked at packs.
+     */
     @Query("""
             SELECT COUNT(i) FROM Inventory i
             WHERE i.pharmacyId = :pharmacyId AND CAST(i.status AS string) = 'ACTIVE'
-              AND i.quantity > 0 AND i.quantity <= i.minimumStock
+              AND (i.quantity > 0 OR i.looseUnits > 0) AND i.quantity <= i.minimumStock
             """)
     long countLowStockInStock(@Param("pharmacyId") String pharmacyId);
 
@@ -168,7 +181,8 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
      */
     @Query("""
             SELECT i FROM Inventory i LEFT JOIN FETCH i.medicine
-            WHERE i.pharmacyId = :pharmacyId AND i.expiryDate <= :threshold AND i.quantity > 0
+            WHERE i.pharmacyId = :pharmacyId AND i.expiryDate <= :threshold
+              AND (i.quantity > 0 OR i.looseUnits > 0)
               AND CAST(i.status AS string) IN ('ACTIVE', 'EXPIRED')
             ORDER BY i.expiryDate ASC
             """)
@@ -265,10 +279,15 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
     List<Inventory> findByIdInWithMedicine(@Param("pharmacyId") String pharmacyId,
                                            @Param("ids") java.util.Collection<String> ids);
 
-    /** Active, in-stock batches — candidates for the dead-stock report (last-sale lookup happens separately). */
+    /**
+     * Active, in-stock batches — candidates for the dead-stock report (last-sale lookup
+     * happens separately). "In stock" includes a batch down to nothing but an opened
+     * strip's loose remainder — it is still real, sellable, at-risk stock.
+     */
     @Query("""
             SELECT i FROM Inventory i LEFT JOIN FETCH i.medicine
-            WHERE i.pharmacyId = :pharmacyId AND CAST(i.status AS string) = 'ACTIVE' AND i.quantity > 0
+            WHERE i.pharmacyId = :pharmacyId AND CAST(i.status AS string) = 'ACTIVE'
+              AND (i.quantity > 0 OR i.looseUnits > 0)
             """)
     List<Inventory> findActiveInStockWithMedicine(@Param("pharmacyId") String pharmacyId);
 
@@ -300,15 +319,21 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
      * is destroyed by definition — so the credit claimed when it was bought has to be reversed
      * in the period it is written off, under Table 4(B)(1).
      *
-     * <p>Nothing in this system ever writes expired stock off. {@code BatchStatus.EXPIRED} is
-     * set by no code path at all — the only reference to it REFUSES to let anyone assign it,
-     * saying it "is set automatically", which is not true — and {@code MovementType.EXPIRY_REMOVAL}
-     * is declared and never used. So expired batches keep their quantity and their full cost
-     * forever: they inflate the inventory valuation, and their ITC is never reversed.
+     * <p>This reports what is STILL on the books, unwritten-off — {@code InventoryService}'s
+     * expiry write-off flow (which sets {@code BatchStatus.EXPIRED} and records an
+     * {@code EXPIRY_REMOVAL} movement) is what moves a batch out of this figure, and a pharmacy
+     * that never runs it will see this grow every period.
      *
-     * <p>This query cannot fix that, and deliberately does not try. It reports the exposure so
-     * the 3B sheet can state a number the filer has to act on by hand, instead of reporting an
-     * automatic 4(B)(1) of nil that reads as "nothing to reverse".
+     * <p>A batch's loose remainder is included and priced at its per-piece share of the same
+     * purchase rate the sealed packs are valued at — cut tablets from an expired strip are
+     * still real, still-unreversed input credit, and (per the pharmacy's own override where one
+     * is set, else the catalogue's units-per-pack) the same effective pack size everything else
+     * in this app resolves it as. {@code units} is a count of individual base units (sealed
+     * packs multiplied out by their effective pack size, plus any loose remainder) — deliberately
+     * NOT packs, so a batch that is nothing but a cut-strip remainder still shows a real number
+     * here rather than rounding to zero. For a medicine that has never been sold loose it equals
+     * the plain pack count times the pack size; {@code cost} and {@code embeddedItc} are
+     * unchanged from the pack-only figures in that case.
      *
      * <p>The ITC is an ESTIMATE and the sheet says so: it applies the medicine's CURRENT GST
      * rate to the batch's recorded purchase rate. It does not know which tax head the credit
@@ -318,13 +343,16 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
      */
     @Query("""
             SELECT COUNT(i) AS batches,
-                   COALESCE(SUM(i.quantity), 0) AS units,
-                   COALESCE(SUM(i.purchaseRate * i.quantity), 0) AS cost,
-                   COALESCE(SUM(i.purchaseRate * i.quantity * m.gstRate / 100), 0) AS embeddedItc
+                   COALESCE(SUM(i.quantity * COALESCE(o.unitsPerPack, m.unitsPerPack, 1) + i.looseUnits), 0) AS units,
+                   COALESCE(SUM(i.purchaseRate * i.quantity
+                       + (i.purchaseRate * i.looseUnits) / COALESCE(o.unitsPerPack, m.unitsPerPack, 1)), 0) AS cost,
+                   COALESCE(SUM((i.purchaseRate * i.quantity
+                       + (i.purchaseRate * i.looseUnits) / COALESCE(o.unitsPerPack, m.unitsPerPack, 1)) * m.gstRate / 100), 0) AS embeddedItc
             FROM Inventory i
             JOIN Medicine m ON m.id = i.medicineId
+            LEFT JOIN PharmacyMedicineOverride o ON o.id.pharmacyId = i.pharmacyId AND o.id.medicineId = i.medicineId
             WHERE i.pharmacyId = :pharmacyId
-              AND i.quantity > 0
+              AND (i.quantity > 0 OR i.looseUnits > 0)
               AND i.expiryDate < :asOf
             """)
     ExpiredStockRow expiredStockOnBooks(@Param("pharmacyId") String pharmacyId,

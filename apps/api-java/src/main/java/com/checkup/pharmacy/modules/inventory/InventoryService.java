@@ -93,6 +93,7 @@ public class InventoryService {
     private final StockReservationRepository reservationRepository;
     private final BatchRecallRepository batchRecallRepository;
     private final MedicineRepository medicineRepository;
+    private final com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository;
     private final ShelfRepository shelfRepository;
     private final RackRepository rackRepository;
     private final UserRepository userRepository;
@@ -103,6 +104,7 @@ public class InventoryService {
                             StockReservationRepository reservationRepository,
                             BatchRecallRepository batchRecallRepository,
                             MedicineRepository medicineRepository,
+                            com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository,
                             ShelfRepository shelfRepository,
                             RackRepository rackRepository,
                             UserRepository userRepository,
@@ -112,6 +114,7 @@ public class InventoryService {
         this.reservationRepository = reservationRepository;
         this.batchRecallRepository = batchRecallRepository;
         this.medicineRepository = medicineRepository;
+        this.overrideRepository = overrideRepository;
         this.shelfRepository = shelfRepository;
         this.rackRepository = rackRepository;
         this.userRepository = userRepository;
@@ -122,7 +125,7 @@ public class InventoryService {
 
     @Transactional(readOnly = true)
     public InventoryPageResponse list(String search, String medicineId, boolean inStock, boolean lowStock,
-                                      boolean nearExpiry, String status, int page, int limit) {
+                                      boolean nearExpiry, String status, boolean hasLoose, int page, int limit) {
         String pharmacyId = TenantContext.pharmacyId();
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), 100);
@@ -131,7 +134,7 @@ public class InventoryService {
 
         Instant nearExpiryThreshold = Instant.now().plus(EXPIRY_WINDOW_DAYS, ChronoUnit.DAYS);
         Page<Inventory> result = inventoryRepository.search(pharmacyId, blankToNull(search), blankToNull(medicineId),
-                inStock, nearExpiry, nearExpiryThreshold, blankToNull(status), lowStock, pageable);
+                inStock, nearExpiry, nearExpiryThreshold, blankToNull(status), lowStock, hasLoose, pageable);
 
         List<InventoryResponse> items = enrich(result.getContent());
         var alertCounts = new InventoryPageResponse.AlertCounts(
@@ -339,7 +342,7 @@ public class InventoryService {
 
         return new LedgerPageResponse.Entry(m.getId(), m.getInventoryId(), m.getType().name(),
                 m.getDirection().name(), m.getQuantity(), m.getQuantityBefore(), m.getQuantityAfter(),
-                m.getReferenceType(), m.getReferenceId(), m.getNotes(), invRef, userRef, m.getCreatedAt());
+                m.getReferenceType(), m.getReferenceId(), m.getNotes(), m.getBaseUnit(), invRef, userRef, m.getCreatedAt());
     }
 
     // ── Alerts ───────────────────────────────────────────────────────────────
@@ -529,6 +532,48 @@ public class InventoryService {
             }
         }
 
+        // Reservations are counted in PACKS everywhere (StockReservation.quantity,
+        // Inventory.reservedQuantity, and how BillingService reads them back). A LOOSE
+        // line asks in pieces; it only needs to hold the SEALED strips it would
+        // actually cut — the batch's already-open remainder covers the rest and is
+        // not separately reservable. So a 3-tablet cart against a batch with 8 loose
+        // open holds nothing, instead of locking a whole pack from the other tills.
+        //
+        // Effective pack size = this pharmacy's override, else the catalogue's — the
+        // SAME resolution BillingService.doCreateInvoice uses to decrement the batch.
+        // Reading only the catalogue value here meant a pharmacy that set the pack
+        // size via its override (the common case — most of the shared catalogue is
+        // unclassified) fell back to u = 1 and tried to hold one whole pack PER
+        // PIECE, either conflicting outright or locking the shelf from every other
+        // till.
+        Map<String, Integer> looseUppByMedicineId = new HashMap<>();
+        boolean anyLoose = req.items().stream().anyMatch(ReserveStockRequest.Item::isLoose);
+        if (anyLoose) {
+            List<String> medicineIds = byId.values().stream()
+                    .map(Inventory::getMedicineId).filter(java.util.Objects::nonNull).distinct().toList();
+            if (!medicineIds.isEmpty()) {
+                for (var o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, medicineIds)) {
+                    if (o.getUnitsPerPack() != null) {
+                        looseUppByMedicineId.put(o.getMedicineId(), o.getUnitsPerPack());
+                    }
+                }
+            }
+        }
+        Map<String, Integer> packsToHold = new HashMap<>();
+        for (ReserveStockRequest.Item item : req.items()) {
+            int packs = item.quantity();
+            if (item.isLoose()) {
+                Inventory inv = byId.get(item.inventoryId());
+                Integer catalogueUpp = inv != null && inv.getMedicine() != null ? inv.getMedicine().getUnitsPerPack() : null;
+                Integer upp = inv != null ? looseUppByMedicineId.getOrDefault(inv.getMedicineId(), catalogueUpp) : catalogueUpp;
+                int u = upp != null && upp > 1 ? upp : 1;
+                int loose = inv != null ? inv.getLooseUnits() : 0;
+                int fromSealed = Math.max(0, item.quantity() - loose);
+                packs = (fromSealed + u - 1) / u; // ceil the SEALED pieces only
+            }
+            packsToHold.put(item.inventoryId(), packs);
+        }
+
         List<ReservationItemResult> results = new ArrayList<>();
         List<String> conflicts = new ArrayList<>();
         for (ReserveStockRequest.Item item : req.items()) {
@@ -536,12 +581,13 @@ public class InventoryService {
             if (inv == null) {
                 throw new NotFoundException("Inventory item not found or not active: " + item.inventoryId());
             }
+            int wanted = packsToHold.get(item.inventoryId());
             int thisSessionQty = existingBySelf.getOrDefault(item.inventoryId(), 0);
             int reservedByOthers = Math.max(0, inv.getReservedQuantity() - thisSessionQty);
             int available = inv.getQuantity() - reservedByOthers;
             results.add(new ReservationItemResult(item.inventoryId(), available));
-            if (item.quantity() > available) {
-                conflicts.add(item.inventoryId() + " (requested " + item.quantity() + ", available " + available + ")");
+            if (wanted > available) {
+                conflicts.add(item.inventoryId() + " (requested " + wanted + ", available " + available + ")");
             }
         }
         if (!conflicts.isEmpty()) {
@@ -577,9 +623,14 @@ public class InventoryService {
 
         Instant expiresAt = now.plus(reservationTtlMinutes, ChronoUnit.MINUTES);
         for (ReserveStockRequest.Item item : req.items()) {
+            int packs = packsToHold.get(item.inventoryId());
+            // A loose line covered entirely by the open remainder needs no hold.
+            if (packs <= 0) {
+                continue;
+            }
             reservationRepository.save(StockReservation.create(pharmacyId, item.inventoryId(), req.sessionId(),
-                    item.quantity(), expiresAt));
-            byId.get(item.inventoryId()).reserve(item.quantity());
+                    packs, expiresAt));
+            byId.get(item.inventoryId()).reserve(packs);
         }
 
         return results;
@@ -676,7 +727,7 @@ public class InventoryService {
         Instant to = Instant.now();
         Instant from = to.minus(CALIBRATE_WINDOW_DAYS, ChronoUnit.DAYS);
 
-        Map<String, Long> qtyByMedicine = new HashMap<>();
+        Map<String, Double> qtyByMedicine = new HashMap<>();
         for (InventoryMovementRepository.MedicineSalesAggregateRow row
                 : movementRepository.aggregateSalesByMedicine(pharmacyId, from, to)) {
             qtyByMedicine.put(row.getMedicineId(), row.getTotalQuantity());
@@ -693,7 +744,7 @@ public class InventoryService {
 
         for (Map.Entry<String, List<Inventory>> entry : batchesByMedicine.entrySet()) {
             List<Inventory> batches = entry.getValue();
-            long totalQty = qtyByMedicine.getOrDefault(entry.getKey(), 0L);
+            double totalQty = qtyByMedicine.getOrDefault(entry.getKey(), 0.0);
             if (totalQty == 0) {
                 skipped++;
                 continue;
@@ -757,6 +808,11 @@ public class InventoryService {
             }
         }
 
+        Map<String, com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride> freqOverrides = new HashMap<>();
+        for (var o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, shortlist)) {
+            freqOverrides.put(o.getMedicineId(), o);
+        }
+
         List<FrequentItemResponse> out = new ArrayList<>();
         for (InventoryMovementRepository.MedicineSalesAggregateRow row : ranked) {
             if (out.size() >= FREQUENT_LIMIT) {
@@ -770,6 +826,10 @@ public class InventoryService {
             if (medicine == null) {
                 continue;
             }
+            var fov = freqOverrides.get(medicine.getId());
+            Integer effUpp = fov != null && fov.getUnitsPerPack() != null ? fov.getUnitsPerPack() : medicine.getUnitsPerPack();
+            boolean allowLoose = fov != null && fov.isAllowLooseSale() && effUpp != null && effUpp > 1;
+            boolean looseDefault = allowLoose && fov.isLooseByDefault();
             InventoryResponse.ShelfRef shelfRef = null;
             if (batch.getShelf() != null) {
                 Rack rack = batch.getShelf().getRack();
@@ -778,11 +838,13 @@ public class InventoryService {
                 shelfRef = new InventoryResponse.ShelfRef(batch.getShelf().getId(), batch.getShelf().getCode(), rackRef);
             }
             out.add(new FrequentItemResponse(batch.getId(), batch.getBatchNumber(), batch.getExpiryDate(),
-                    batch.getMrp(), batch.getQuantity(), batch.getReservedQuantity(), batch.getLocation(), shelfRef,
-                    row.getTransactionCount(),
+                    batch.getMrp(), batch.getQuantity(), batch.getLooseUnits(), batch.getReservedQuantity(),
+                    batch.getLocation(), shelfRef, row.getTransactionCount(),
                     new FrequentItemResponse.MedicineRef(medicine.getName(), medicine.getGenericName(),
                             medicine.getHsnCode(), medicine.getGstRate(), medicine.isActive(),
-                            medicine.getSchedule(), medicine.getPackSize())));
+                            medicine.getSchedule(), medicine.getPackSize(),
+                            effUpp, com.checkup.pharmacy.common.util.BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm()),
+                            allowLoose, looseDefault)));
         }
         return out;
     }
@@ -846,6 +908,18 @@ public class InventoryService {
         Map<String, Medicine> medicines = medicineRepository
                 .findAllById(batches.stream().map(Inventory::getMedicineId).distinct().toList())
                 .stream().collect(java.util.stream.Collectors.toMap(Medicine::getId, m -> m));
+        // Effective pack size (this pharmacy's override, else the catalogue's) — needed to
+        // price a cut-strip remainder per piece, the same resolution billing and the
+        // reports use.
+        Map<String, Integer> effUpp = new HashMap<>();
+        if (!medicines.isEmpty()) {
+            for (var o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(
+                    pharmacyId, new ArrayList<>(medicines.keySet()))) {
+                if (o.getUnitsPerPack() != null) {
+                    effUpp.put(o.getMedicineId(), o.getUnitsPerPack());
+                }
+            }
+        }
 
         long batchesWritten = 0;
         long unitsWritten = 0;
@@ -853,21 +927,21 @@ public class InventoryService {
         BigDecimal itc = BigDecimal.ZERO;
 
         for (Inventory batch : batches) {
-            int before = batch.getQuantity();
-            if (before <= 0) {
+            int packsBefore = batch.getQuantity();
+            int looseBefore = batch.getLooseUnits();
+            if (packsBefore <= 0 && looseBefore <= 0) {
                 continue; // nothing left to write off; not an error
             }
-            batch.writeOffExpired();
 
-            BigDecimal batchCost = batch.getPurchaseRate().multiply(BigDecimal.valueOf(before));
             Medicine medicine = medicines.get(batch.getMedicineId());
             BigDecimal gstRate = medicine != null && medicine.getGstRate() != null
                     ? medicine.getGstRate() : BigDecimal.ZERO;
+            Integer upp = effUpp.getOrDefault(batch.getMedicineId(),
+                    medicine != null ? medicine.getUnitsPerPack() : null);
 
+            batch.writeOffExpired(); // zeroes quantity AND looseUnits, marks the batch EXPIRED
             batchesWritten++;
-            unitsWritten += before;
-            cost = cost.add(batchCost);
-            itc = itc.add(batchCost.multiply(gstRate).divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP));
+            unitsWritten += packsBefore;
 
             // EXPIRY_REMOVAL, not ADJUSTMENT: this is the movement type GSTR-3B Table 4(B)(1)
             // is derived from, and burying it among ordinary adjustments would make the tax
@@ -878,10 +952,39 @@ public class InventoryService {
             // 20260619000017), and this value was already in the list, reserved for exactly
             // this operation years before anything wrote it. Spell it any other way and the
             // insert is rejected at the database.
-            movementRepository.save(InventoryMovement.record(pharmacyId, batch.getId(), userId,
-                    MovementType.EXPIRY_REMOVAL, MovementDirection.OUT, before, before, 0,
-                    "EXPIRY_WRITEOFF", null,
-                    "Expired stock written off: " + req.reason()));
+            if (packsBefore > 0) {
+                BigDecimal packCost = batch.getPurchaseRate().multiply(BigDecimal.valueOf(packsBefore));
+                cost = cost.add(packCost);
+                itc = itc.add(packCost.multiply(gstRate).divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP));
+                movementRepository.save(InventoryMovement.record(pharmacyId, batch.getId(), userId,
+                        MovementType.EXPIRY_REMOVAL, MovementDirection.OUT, packsBefore, packsBefore, 0,
+                        "EXPIRY_WRITEOFF", null,
+                        "Expired stock written off: " + req.reason()));
+            }
+
+            // An opened strip's leftover pieces expire with the batch just like the sealed
+            // packs do — real, still-unreversed input credit. Without this branch the batch
+            // was silently skipped whenever its packs were already zero (quantity 0,
+            // looseUnits > 0): it stayed on the expiry report and the 3B exposure with no
+            // way to clear it. Priced per piece (pack purchase rate / effective pack size),
+            // recorded as its own EXPIRY_REMOVAL movement in pieces and tagged with the base
+            // unit, exactly as loose sales and cancellations are.
+            if (looseBefore > 0) {
+                String looseBaseUnit = com.checkup.pharmacy.common.util.BaseUnits.resolve(
+                        medicine != null ? medicine.getBaseUnit() : null,
+                        medicine != null ? medicine.getForm() : null);
+                if (upp != null && upp > 1) {
+                    BigDecimal perPieceCost = batch.getPurchaseRate()
+                            .divide(BigDecimal.valueOf(upp), 6, RoundingMode.HALF_UP);
+                    BigDecimal looseCost = perPieceCost.multiply(BigDecimal.valueOf(looseBefore));
+                    cost = cost.add(looseCost);
+                    itc = itc.add(looseCost.multiply(gstRate).divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP));
+                }
+                movementRepository.save(InventoryMovement.record(pharmacyId, batch.getId(), userId,
+                        MovementType.EXPIRY_REMOVAL, MovementDirection.OUT, looseBefore, looseBefore, 0,
+                        "EXPIRY_WRITEOFF", null,
+                        "Expired cut-strip remainder written off: " + req.reason()).inBaseUnit(looseBaseUnit));
+            }
         }
 
         return new WriteOffExpiredResponse(batchesWritten, unitsWritten,
@@ -955,6 +1058,11 @@ public class InventoryService {
         for (Medicine m : medicineRepository.findAllById(medicineIds)) {
             medicinesById.put(m.getId(), m);
         }
+        // This pharmacy's loose-selling opt-in and pack-size override, per medicine.
+        Map<String, com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride> overridesById = new HashMap<>();
+        for (var o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(TenantContext.pharmacyId(), medicineIds)) {
+            overridesById.put(o.getMedicineId(), o);
+        }
 
         List<String> shelfIds = rows.stream().map(Inventory::getShelfId).filter(java.util.Objects::nonNull).distinct().toList();
         Map<String, Shelf> shelvesById = new HashMap<>();
@@ -972,9 +1080,18 @@ public class InventoryService {
         List<InventoryResponse> out = new ArrayList<>(rows.size());
         for (Inventory inv : rows) {
             Medicine m = medicinesById.get(inv.getMedicineId());
+            var ov = overridesById.get(inv.getMedicineId());
+            Integer effectiveUpp = ov != null && ov.getUnitsPerPack() != null
+                    ? ov.getUnitsPerPack()
+                    : (m != null ? m.getUnitsPerPack() : null);
+            boolean allowLoose = ov != null && ov.isAllowLooseSale()
+                    && effectiveUpp != null && effectiveUpp > 1;
+            boolean looseDefault = allowLoose && ov.isLooseByDefault();
             InventoryResponse.MedicineRef medRef = m == null ? null : new InventoryResponse.MedicineRef(
                     m.getId(), m.getName(), m.getGenericName(), m.getForm(), m.getStrength(), m.getUnit(),
-                    m.isActive(), m.getGstRate(), m.getHsnCode());
+                    m.isActive(), m.getGstRate(), m.getHsnCode(),
+                    effectiveUpp, com.checkup.pharmacy.common.util.BaseUnits.resolve(m.getBaseUnit(), m.getForm()),
+                    allowLoose, looseDefault);
 
             InventoryResponse.ShelfRef shelfRef = null;
             if (inv.getShelfId() != null) {
@@ -988,7 +1105,8 @@ public class InventoryService {
             }
 
             out.add(new InventoryResponse(inv.getId(), medRef, inv.getBatchNumber(), inv.getExpiryDate(),
-                    inv.getQuantity(), inv.getReservedQuantity(), inv.getQuantity() - inv.getReservedQuantity(),
+                    inv.getQuantity(), inv.getLooseUnits(), inv.getReservedQuantity(),
+                    inv.getQuantity() - inv.getReservedQuantity(),
                     inv.getPurchaseRate(), inv.getMrp(), inv.getLocation(), shelfRef, inv.getMinimumStock(),
                     inv.getReorderLevel(), inv.getStatus().name(), inv.getCreatedAt(), inv.getUpdatedAt()));
         }

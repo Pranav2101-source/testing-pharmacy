@@ -16,6 +16,8 @@ type RepeatItem = {
   batchNumber: string; expiryDate: string; mrp: number; gstRate: number;
   discount: number; quantity: number; availableStock: number;
   requestedQuantity: number; capped: boolean;
+  saleUnit?: "PACK" | "LOOSE"; unitsPerPack?: number | null; baseUnit?: string | null;
+  allowLooseSale?: boolean; looseUnits?: number;
 };
 type RepeatResp = {
   invoiceNumber: string; invoiceDate: string;
@@ -179,6 +181,7 @@ export function CustomerSearchCombobox() {
       const { data } = await api.get<{ data: RepeatResp }>(`/billing/repeat/${customerId}`);
       const r = data.data;
       for (const it of r.items) {
+        const loose = it.saleUnit === "LOOSE";
         addItem({
           inventoryId:    it.inventoryId,
           medicineName:   it.medicineName,
@@ -192,7 +195,16 @@ export function CustomerSearchCombobox() {
           quantity:       it.quantity,
           discount:       it.discount,
           gstRate:        it.gstRate,
+          // Unreserved sealed packs — for a loose line the store rebuilds the piece
+          // ceiling as availableStock*unitsPerPack + looseUnits.
           availableStock: it.availableStock,
+          // A regular loose order comes back as loose (quantity is pieces); a pack line
+          // for a loose-capable medicine still carries the fields so the toggle shows.
+          saleUnit:       loose ? "LOOSE" : "PACK",
+          unitsPerPack:   it.unitsPerPack ?? undefined,
+          baseUnit:       it.baseUnit ?? undefined,
+          allowLooseSale: it.allowLooseSale ?? loose,
+          looseUnits:     it.looseUnits ?? 0,
         });
       }
       if (r.items.length > 0) {

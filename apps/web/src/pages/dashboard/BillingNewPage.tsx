@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronUp,
   Calculator, Loader2,
-  XCircle, BookmarkCheck, RotateCcw, X, MonitorSmartphone, FileText,
+  XCircle, BookmarkCheck, RotateCcw, X, MonitorSmartphone, FileText, Scissors,
 } from "lucide-react";
 import { ACTION_DEF_MAP } from "@/lib/billingPreferences";
 import type { ActionId } from "@/lib/billingPreferences";
@@ -15,7 +15,7 @@ import { BillHeader } from "@/components/billing/BillHeader";
 import { CartTableHeader, CartTableRows } from "@/components/billing/CartTable";
 import { MedicineSearchCombobox } from "@/components/billing/MedicineSearchCombobox";
 import { AlternativesDrawer } from "@/components/billing/AlternativesDrawer";
-import { useBillingStore } from "@/components/billing/useBillingStore";
+import { useBillingStore, lineIssue } from "@/components/billing/useBillingStore";
 import { InvoiceBreakdownModal } from "@/components/billing/InvoiceBreakdownModal";
 import type { MedicineSearchResult } from "@pharmacy/types";
 import { useQueryClient } from "@tanstack/react-query";
@@ -27,6 +27,7 @@ import { saveDraft, getDraft, deleteDraft } from "@/lib/draftStorage";
 import { saveSession, loadSession, clearSession, type AutoSaveSession } from "@/lib/autoSave";
 import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
 import { useInvoicePrintConfig } from "@/lib/useInvoicePrintConfig";
+import { LooseLabelModal } from "@/components/LooseLabelModal";
 
 const InvoicePrintView = lazy(() =>
   import("@/components/billing/InvoicePrintView").then((m) => ({ default: m.InvoicePrintView }))
@@ -108,6 +109,7 @@ function NewBillInner() {
   const [conflictInventoryIds, setConflictInventoryIds] = useState<Set<string>>(new Set());
   const [invoice,              setInvoice]              = useState<PrintInvoiceData | null>(null);
   const [showPrint,            setShowPrint]            = useState(false);
+  const [showLabels,           setShowLabels]           = useState(false);
   const [showBreakdown,        setShowBreakdown]        = useState(false);
   const [lifa,                 setLifa]                 = useState(true);
   const [savedInvoiceId,       setSavedInvoiceId]       = useState<string | null>(null);
@@ -162,8 +164,14 @@ function NewBillInner() {
   //
   // Reserve the full dispensed amount: free units come off the same batch, so
   // reserving only the paid quantity would under-hold stock against another till.
+  // A loose line's quantity is in pieces; the server rounds it up to whole packs so
+  // the hold lines up with how reservedQuantity is counted. We just pass saleUnit.
   const reservationPayload = useMemo(
-    () => items.map((i) => ({ inventoryId: i.inventoryId, quantity: i.quantity + (i.freeQty || 0) })),
+    () => items.map((i) => ({
+      inventoryId: i.inventoryId,
+      quantity:    i.quantity + (i.freeQty || 0),
+      saleUnit:    i.saleUnit === "LOOSE" ? "LOOSE" : "PACK",
+    })),
     [items],
   );
   // Serialised so the effect below compares by VALUE. `items` gets a new array
@@ -175,7 +183,7 @@ function NewBillInner() {
   const reservationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (reservationTimer.current) clearTimeout(reservationTimer.current);
-    const payload = JSON.parse(reservationKey) as { inventoryId: string; quantity: number }[];
+    const payload = JSON.parse(reservationKey) as { inventoryId: string; quantity: number; saleUnit: string }[];
     if (payload.length === 0) return;
     reservationTimer.current = setTimeout(() => {
       api.post("/inventory/reserve", {
@@ -291,6 +299,17 @@ function NewBillInner() {
       return;
     }
 
+    // A loose line the server would 422 (whole strip, Schedule X, loose turned off).
+    // Stop here and point at it — no wasted round trip, and the cart already shows a
+    // one-click fix on the line.
+    const badLine = items.find((i) => lineIssue(i) !== null);
+    if (badLine) {
+      setConflictInventoryIds(new Set([badLine.inventoryId]));
+      setError(lineIssue(badLine)!.message + " — fix the highlighted line, then save.");
+      document.querySelector(`[data-row]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+
     setSubmitting(true);
     setError(null);
     setConflictInventoryIds(new Set());
@@ -329,6 +348,11 @@ function NewBillInner() {
           quantity:    i.quantity,
           freeQty:     i.freeQty || undefined,
           discount:    i.discount,
+          // LOOSE — quantity is individual pieces cut from a strip. Omitted (PACK)
+          // for every normal line so an older bill shape is unchanged.
+          saleUnit:    i.saleUnit === "LOOSE" ? "LOOSE" : undefined,
+          // Cashier chose "cut it anyway" past the whole-pack guard for this line.
+          forceLoose:  i.saleUnit === "LOOSE" && i.forceLoose ? true : undefined,
           // Only ever set for a substitution; the server attributes everything else
           // by matching the medicine.
           prescriptionItemId: i.prescriptionItemId,
@@ -423,6 +447,7 @@ function NewBillInner() {
 
   function closePrint() {
     setShowPrint(false);
+    setShowLabels(false);
     setInvoice(null);
     setSavedInvoiceId(null);
     setCancelConfirm(false);
@@ -773,6 +798,15 @@ function NewBillInner() {
                     </div>
                   )}
 
+                  {invoice.items.some((i) => i.saleUnit === "LOOSE") && (
+                    <button
+                      onClick={() => setShowLabels(true)}
+                      className="flex items-center gap-1.5 px-4 py-2 text-amber-700 hover:bg-amber-50 border border-amber-200 text-[13px] font-medium rounded-lg transition-colors"
+                    >
+                      <Scissors className="w-4 h-4" />
+                      Print Label
+                    </button>
+                  )}
                   <button
                     onClick={() => window.print()}
                     className="flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold rounded-lg transition-colors"
@@ -796,6 +830,22 @@ function NewBillInner() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {showLabels && invoice && (
+        <LooseLabelModal
+          items={invoice.items
+            .filter((i) => i.saleUnit === "LOOSE")
+            .map((i) => ({
+              medicineName: i.medicineName,
+              quantity: i.quantity,
+              baseUnit: i.baseUnit,
+              batchNumber: i.batchNumber,
+              expiryDate: i.expiryDate,
+            }))}
+          pharmacy={printPharmacy && { name: printPharmacy.name, drugLicense: printPharmacy.drugLicense, phone: printPharmacy.phone }}
+          onClose={() => setShowLabels(false)}
+        />
+      )}
     </>
   );
 }

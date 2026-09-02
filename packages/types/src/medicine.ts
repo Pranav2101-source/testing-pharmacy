@@ -15,6 +15,16 @@ export type MedicineForm =
 
 export type GstRate = 0 | 5 | 12;
 
+/** The smallest unit a medicine is dispensed in when sold loose. */
+export type MedicineBaseUnit = "TABLET" | "CAPSULE" | "ML" | "GM" | "EACH";
+
+/**
+ * How a billed line's quantity is counted.
+ * PACK  — whole strips/bottles; mrp/rate are the printed pack price.
+ * LOOSE — individual pieces cut from a strip; mrp/rate are per-piece.
+ */
+export type SaleUnit = "PACK" | "LOOSE";
+
 export type MedicineSearchResult = {
   id: string;
   name: string;
@@ -31,6 +41,14 @@ export type MedicineSearchResult = {
   category?: string | null;
   unit?: string | null;
   hasAlternatives?: boolean;
+  // ── Loose dispensing ──────────────────────────────────────────────────────
+  // Base units in one pack (Crocin strip = 15). Null = not classified.
+  unitsPerPack?: number | null;
+  baseUnit?: string | null;
+  // This pharmacy has enabled cut-strip sales for this medicine (needs unitsPerPack > 1).
+  allowLooseSale?: boolean;
+  // New bill lines for this medicine start as loose.
+  looseByDefault?: boolean;
 };
 
 export type AlternativeBatch = {
@@ -38,6 +56,7 @@ export type AlternativeBatch = {
   batchNumber: string;
   expiryDate: string;
   quantity: number;
+  looseUnits?: number;
   reservedQuantity: number;
   mrp: number;
   purchaseRate: number;
@@ -61,5 +80,10 @@ export type AlternativeResult = {
   mrp: number;
   margin: number | null;
   stockStatus: "in_stock" | "low_stock" | "out_of_stock";
+  // Loose dispensing: effective pack size + this pharmacy's opt-in.
+  unitsPerPack?: number | null;
+  baseUnit?: string | null;
+  allowLooseSale?: boolean;
+  looseByDefault?: boolean;
   batches: AlternativeBatch[];
 };

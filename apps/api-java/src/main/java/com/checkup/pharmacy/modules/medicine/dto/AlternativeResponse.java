@@ -25,6 +25,12 @@ public record AlternativeResponse(
         BigDecimal mrp,
         BigDecimal margin,
         String stockStatus,
+        // Effective pack size + this pharmacy's loose opt-in, so a substitute can be
+        // added to the cart as a loose line straight from the drawer.
+        Integer unitsPerPack,
+        String baseUnit,
+        boolean allowLooseSale,
+        boolean looseByDefault,
         List<Batch> batches
 ) {
     public record BrandRef(String id, String name) {
@@ -35,6 +41,7 @@ public record AlternativeResponse(
             String batchNumber,
             Instant expiryDate,
             int quantity,
+            int looseUnits,
             int reservedQuantity,
             BigDecimal mrp,
             BigDecimal purchaseRate,

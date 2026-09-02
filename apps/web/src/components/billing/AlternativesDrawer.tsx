@@ -292,6 +292,11 @@ export function AlternativesDrawer({
       discount:       0,
       gstRate:        alt.gstRate,
       availableStock: batch.quantity - batch.reservedQuantity,
+      saleUnit:       (alt.allowLooseSale && alt.looseByDefault) ? "LOOSE" : "PACK",
+      unitsPerPack:   alt.unitsPerPack ?? undefined,
+      baseUnit:       alt.baseUnit ?? undefined,
+      allowLooseSale: alt.allowLooseSale ?? false,
+      looseUnits:     batch.looseUnits ?? 0,
     });
     onClose();
   }

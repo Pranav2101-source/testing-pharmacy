@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { queryKeys } from "@/lib/queryKeys";
 import { BarcodeLabelModal } from "@/components/BarcodeLabelModal";
+import { LooseTag } from "@/components/LooseTag";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
@@ -37,6 +38,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   const [inStock,    setInStock]    = useState(false);
   const [lowStock,   setLowStock]   = useState(false);
   const [nearExpiry, setNearExpiry] = useState(false);
+  const [hasLoose,   setHasLoose]   = useState(false);
   const [statusModal,      setStatusModal]      = useState<InventoryItem | null>(null);
   const [adjustModal,      setAdjustModal]      = useState<InventoryItem | null>(null);
   const [locationModal,    setLocationModal]    = useState<InventoryItem | null>(null);
@@ -68,7 +70,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   }, [search]);
 
   type ListResponse = { items: InventoryItem[]; total: number; alertCounts: AlertCounts };
-  const queryParams = { page, search: debouncedSearch, status, inStock, lowStock, nearExpiry };
+  const queryParams = { page, search: debouncedSearch, status, inStock, lowStock, nearExpiry, hasLoose };
   const { data, isFetching: loading, error: queryError, refetch: load } = useQuery({
     queryKey:        queryKeys.inventory.list(queryParams),
     queryFn:         () => {
@@ -78,6 +80,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
       if (inStock)         p.inStock    = true;
       if (lowStock)        p.lowStock   = true;
       if (nearExpiry)      p.nearExpiry = true;
+      if (hasLoose)        p.hasLoose   = true;
       return api.get("/inventory", { params: p }).then((r) => r.data.data as ListResponse);
     },
     staleTime:       30_000,
@@ -112,13 +115,14 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
           ))}
         </select>
         {([
-          { label: "In Stock",    val: inStock,    set: setInStock    },
-          { label: "Low Stock",   val: lowStock,   set: setLowStock   },
-          { label: "Near Expiry", val: nearExpiry, set: setNearExpiry },
-        ] as const).map(({ label, val, set }) => (
+          { label: "In Stock",    val: inStock,    set: setInStock,    on: "bg-blue-600 border-blue-600" },
+          { label: "Low Stock",   val: lowStock,   set: setLowStock,   on: "bg-blue-600 border-blue-600" },
+          { label: "Near Expiry", val: nearExpiry, set: setNearExpiry, on: "bg-blue-600 border-blue-600" },
+          { label: "Opened strips", val: hasLoose, set: setHasLoose,   on: "bg-amber-500 border-amber-500" },
+        ] as const).map(({ label, val, set, on }) => (
           <button key={label} onClick={() => { set((v) => !v); setPage(1); }}
             className={cn("h-[30px] px-3 rounded-md text-[12px] font-semibold border transition-all shadow-sm",
-              val ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:border-blue-300"
+              val ? `${on} text-white` : "bg-white text-slate-600 border-slate-200 hover:border-blue-300"
             )}>
             {label}
           </button>
@@ -234,12 +238,13 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                     {isEx && <p className="text-[10px] text-red-500">Expired</p>}
                   </td>
                   <td className="px-4 py-3">
-                    {item.quantity === 0
+                    {item.quantity === 0 && (item.looseUnits ?? 0) === 0
                       ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">Out of stock</span>
                       : item.quantity <= item.minimumStock
                         ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">Low: {item.quantity}</span>
                         : <span className="text-[13px] font-semibold text-slate-800 tabular-nums">{item.quantity}</span>
                     }
+                    <LooseTag units={item.looseUnits} />
                   </td>
                   <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{item.reservedQuantity || "—"}</td>
                   <td className="px-4 py-3 text-[13px] text-slate-700 tabular-nums">₹{item.mrp.toFixed(2)}</td>
@@ -339,11 +344,12 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                       <div>
                         <span className="text-slate-400">Stock</span>
                         <p>
-                          {item.quantity === 0
+                          {item.quantity === 0 && (item.looseUnits ?? 0) === 0
                             ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">Out of stock</span>
                             : item.quantity <= item.minimumStock
                               ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">Low: {item.quantity}</span>
                               : <span className="font-semibold text-slate-800 tabular-nums">{item.quantity}</span>}
+                          <LooseTag units={item.looseUnits} />
                         </p>
                       </div>
                       <div><span className="text-slate-400">Reserved</span><p className="text-slate-600 tabular-nums">{item.reservedQuantity || "—"}</p></div>

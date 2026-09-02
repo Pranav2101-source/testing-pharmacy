@@ -113,7 +113,12 @@ export default function StockActionPanel({
         toast.error(`${topAlt.name} has no sellable batch right now`);
         return;
       }
-      onResolve({ action: "replace", cartItem: buildAlternativeCartItem(topAlt, batch, schedule, remaining, prescriptionItemId) });
+      const cartItem = buildAlternativeCartItem(topAlt, batch, schedule, remaining, prescriptionItemId);
+      if (!cartItem) {
+        toast.error(`${topAlt.name} has no sellable batch right now`);
+        return;
+      }
+      onResolve({ action: "replace", cartItem });
     } finally {
       setUsingTop(false);
     }
@@ -277,7 +282,12 @@ function InlineAlternativesPanel({
       toast.error(`${alt.name} has no sellable batch right now`);
       return;
     }
-    onUse(buildAlternativeCartItem(alt, batch, schedule, remaining, prescriptionItemId));
+    const cartItem = buildAlternativeCartItem(alt, batch, schedule, remaining, prescriptionItemId);
+    if (!cartItem) {
+      toast.error(`${alt.name} has no sellable batch right now`);
+      return;
+    }
+    onUse(cartItem);
   }
 
   async function useSearched(hit: MedicineHit) {
@@ -291,8 +301,12 @@ function InlineAlternativesPanel({
         toast.error(`${hit.name} is also out of stock`);
         return;
       }
-      const cartItem = { ...buildCartItem(data.data, schedule, remaining), prescriptionItemId };
-      onUse(cartItem);
+      const built = buildCartItem(data.data, schedule, remaining);
+      if (!built) {
+        toast.error(`${hit.name} is also out of stock`);
+        return;
+      }
+      onUse({ ...built, prescriptionItemId });
     } catch (err) {
       toast.error(getErrorMessage(err, "Could not check that medicine's stock"));
     } finally {

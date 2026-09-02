@@ -70,8 +70,71 @@ public final class GstCalculator {
                 round2(lineTotal.add(totalGst)));
     }
 
-    /** One line item's MRP, quantity, discount %, and GST rate — the shared input shape for billing GST math. */
-    public record MrpLineInput(BigDecimal mrp, int quantity, BigDecimal discountPct, BigDecimal gstRate) {
+    /**
+     * One line item's MRP, quantity, discount %, and GST rate — the shared input
+     * shape for billing GST math.
+     *
+     * <p>For a LOOSE (cut-strip) line, {@code mrp} is still the printed PACK MRP and
+     * {@code quantity} is the number of individual pieces; {@code unitsPerPack} then
+     * carries the pack multiple and {@code loose} is true. {@link #effectiveUnitMrp()}
+     * resolves the per-piece price the tax is actually computed on. A pack line uses
+     * the 4-arg constructor and is unchanged.
+     */
+    public record MrpLineInput(BigDecimal mrp, int quantity, BigDecimal discountPct, BigDecimal gstRate,
+                               int unitsPerPack, boolean loose) {
+
+        /** Pack sale — the common case. */
+        public MrpLineInput(BigDecimal mrp, int quantity, BigDecimal discountPct, BigDecimal gstRate) {
+            this(mrp, quantity, discountPct, gstRate, 1, false);
+        }
+
+        /** Per-piece MRP the tax is derived from: pack MRP / unitsPerPack for a loose line, else the MRP as given. */
+        public BigDecimal effectiveUnitMrp() {
+            return loose ? perPieceMrp(mrp, unitsPerPack) : mrp;
+        }
+    }
+
+    /**
+     * The per-piece price a cut-strip sale is billed at: the printed pack MRP
+     * divided by the pack multiple, at <b>two decimal places, rounded DOWN</b>.
+     *
+     * <p>This is the exact figure the customer is charged per tablet and the exact
+     * figure that prints on the bill, so the tax is reverse-calculated from it — a
+     * higher-precision internal price would make {@code quantity x rate} stop
+     * reconciling with the line amount on the printed invoice (a ~10-30 paisa gap a
+     * customer checking the bill would notice).
+     *
+     * <p>Rounded DOWN, not half-up: it guarantees {@code perPiece x unitsPerPack <=}
+     * pack MRP, so a cut tablet can never cost more per unit than its pro-rata
+     * printed MRP (DPCO / consumer law). The pharmacy absorbs at most
+     * {@code unitsPerPack} paise on a broken strip, always in the customer's favour.
+     *
+     * @throws IllegalArgumentException if the pack has no MRP or a non-positive pack
+     *         multiple — a loose sale cannot be priced from either, and the caller
+     *         should surface that rather than divide by a bad number.
+     */
+    public static BigDecimal perPieceMrp(BigDecimal packMrp, int unitsPerPack) {
+        if (packMrp == null || packMrp.signum() <= 0) {
+            throw new IllegalArgumentException("Cannot price a loose sale: the batch has no MRP.");
+        }
+        if (unitsPerPack <= 1) {
+            throw new IllegalArgumentException(
+                    "Cannot price a loose sale: the medicine's units-per-pack is not set (got " + unitsPerPack + ").");
+        }
+        return packMrp.divide(BigDecimal.valueOf(unitsPerPack), 2, RoundingMode.DOWN);
+    }
+
+    /**
+     * LOOSE-line convenience: reverse-calculates GST for {@code pieceQty} individual
+     * units cut from a pack whose printed MRP is {@code packMrp}. Identical in every
+     * downstream respect to {@link #calcGstFromMrp(BigDecimal, int, BigDecimal, BigDecimal, boolean, BigDecimal)} —
+     * it only substitutes {@link #perPieceMrp(BigDecimal, int)} for the MRP.
+     */
+    public static MrpGstBreakdown calcLooseGstFromMrp(BigDecimal packMrp, int unitsPerPack, int pieceQty,
+                                                      BigDecimal discountPct, BigDecimal gstRate,
+                                                      boolean isInterstate, BigDecimal billDiscountPct) {
+        return calcGstFromMrp(perPieceMrp(packMrp, unitsPerPack), pieceQty, discountPct, gstRate,
+                isInterstate, billDiscountPct);
     }
 
     public record MrpGstBreakdown(BigDecimal taxableAmount, BigDecimal cgst, BigDecimal sgst,
@@ -204,10 +267,15 @@ public final class GstCalculator {
             // The SAME call the caller makes per line when it builds the stored line items,
             // so the header cannot drift from them. Anything else here — however carefully
             // reasoned — reintroduces the two-sources-of-truth problem this method had.
-            MrpGstBreakdown line = calcGstFromMrp(item.mrp(), item.quantity(), item.discountPct(),
+            //
+            // effectiveUnitMrp() is the MRP as given for a pack line (unchanged), and the
+            // per-piece price for a loose line — so a cut-strip line contributes its real
+            // piece-priced total here and nowhere needs a separate branch.
+            BigDecimal unitMrp = item.effectiveUnitMrp();
+            MrpGstBreakdown line = calcGstFromMrp(unitMrp, item.quantity(), item.discountPct(),
                     item.gstRate(), isInterstate, billDiscountPct);
 
-            BigDecimal lineTotal = item.mrp().multiply(BigDecimal.valueOf(item.quantity()));
+            BigDecimal lineTotal = unitMrp.multiply(BigDecimal.valueOf(item.quantity()));
             BigDecimal lineDiscount = divide(lineTotal.multiply(item.discountPct()), BigDecimal.valueOf(100));
             BigDecimal afterLineDiscount = lineTotal.subtract(lineDiscount);
             // What the bill discount took off THIS line, so the invoice's single

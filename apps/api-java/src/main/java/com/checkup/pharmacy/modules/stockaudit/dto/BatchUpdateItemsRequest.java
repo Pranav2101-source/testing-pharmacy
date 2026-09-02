@@ -13,7 +13,9 @@ public record BatchUpdateItemsRequest(
 ) {
     public record Item(
             @NotBlank String itemId,
-            @NotNull @Min(0) Integer countedQty
+            @NotNull @Min(0) Integer countedQty,
+            /** Loose remainder counted, in pieces — optional, and never defaulted to zero when absent. */
+            @Min(0) Integer countedLooseUnits
     ) {
     }
 }

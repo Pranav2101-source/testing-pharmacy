@@ -8,12 +8,13 @@ import {
   Loader2, Package2, Flame, TrendingDown, Archive,
   ShoppingCart, FileCheck, CheckCircle2,
   BadgePercent, BookOpen, ArrowUpDown, Banknote,
-  ClipboardList, ArrowRight, Users, PhoneCall,
+  ClipboardList, ArrowRight, Users, PhoneCall, Scissors,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { ListSkeleton } from "@/components/Skeleton";
 import { LoadErrorState } from "@/components/LoadErrorState";
+import { LooseTag } from "@/components/LooseTag";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { downloadCsv, downloadXlsx, type CellValue } from "@/lib/export";
 
@@ -87,6 +88,8 @@ interface LapsedReport {
 interface MarginReport {
   revenueExGst: number; cogs: number; grossProfit: number; marginPct: number; unitsSold: number;
   returns: { refundExGst: number; restockedCost: number; writtenOffCost: number; unitsReturned: number };
+  // Null when nothing was sold loose (cut-strip) in the period — most pharmacies, most periods.
+  looseSales: { revenueExGst: number; piecesSold: number; lineCount: number; billCount: number } | null;
   dataQuality: { costedRevenuePct: number; linesMissingCost: number; revenueMissingCost: number; totalLines: number };
   topContributors: MarginItem[];
   lossMakers: MarginItem[];
@@ -99,6 +102,9 @@ interface FastMovingItem {
 }
 interface DeadStockItem {
   id: string; batchNumber: string; expiryDate: string; quantity: number;
+  // Loose pieces from an opened strip — a batch can sit at quantity 0 and still be worth
+  // the costAtRisk/retailValue shown, entirely from this remainder.
+  looseUnits: number;
   costAtRisk: number; retailValue: number; lastSaleDate: string | null;
   medicine: { id: string; name: string; genericName: string | null; form: string | null; category: string | null };
 }
@@ -139,7 +145,7 @@ interface GstData {
   _count: number;
 }
 interface ExpiryItem {
-  id: string; quantity: number; expiryDate: string; batchNumber: string; mrp: number;
+  id: string; quantity: number; looseUnits: number; expiryDate: string; batchNumber: string; mrp: number;
   medicine: { name: string };
 }
 
@@ -767,6 +773,25 @@ function MarginSection({ from, to, active }: { from: string; to: string; active:
                   {fmtK(data.returns.writtenOffCost)} written off — refunded and the stock destroyed
                 </span>
               )}
+            </div>
+          )}
+
+          {/* Cut-strip selling folded in as one line, not a whole extra panel — it is a
+              slice of the same revenue above, not a separate figure to reconcile. Absent
+              entirely (not a zeroed bar) for the common case of a pharmacy that has never
+              turned loose selling on. */}
+          {data.looseSales && (
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-1 px-5 py-2.5 bg-amber-50/60 border-b border-amber-100 text-[11px]">
+              <span className="flex items-center gap-1 font-bold text-amber-700">
+                <Scissors className="w-3 h-3" /> Loose sales
+              </span>
+              <span className="text-amber-700" title="Total individual units across every loose line — tablets, capsules, mL and grams counted together">
+                {fmt(data.looseSales.piecesSold)} loose unit{data.looseSales.piecesSold === 1 ? "" : "s"} sold ·{" "}
+                <span className="tabular-nums font-semibold">{fmtK(data.looseSales.revenueExGst)}</span>
+              </span>
+              <span className="text-amber-600">
+                across {data.looseSales.billCount} bill{data.looseSales.billCount === 1 ? "" : "s"}
+              </span>
             </div>
           )}
 
@@ -1445,8 +1470,8 @@ function InventoryTab() {
 
   function expiryExport() {
     downloadXlsx("expiry-report.xlsx", [
-      ["Medicine","Batch","Expiry Date","Days Left","Qty","MRP"],
-      ...expiryItems.map(i => [i.medicine.name, i.batchNumber, i.expiryDate.slice(0,10), daysUntil(i.expiryDate), i.quantity, i.mrp]),
+      ["Medicine","Batch","Expiry Date","Days Left","Qty (packs)","Loose","MRP"],
+      ...expiryItems.map(i => [i.medicine.name, i.batchNumber, i.expiryDate.slice(0,10), daysUntil(i.expiryDate), i.quantity, i.looseUnits, i.mrp]),
     ], "Expiring Stock");
   }
 
@@ -1459,7 +1484,7 @@ function InventoryTab() {
    * stock left are sent — an empty expired batch is already off the books.
    */
   async function writeOffExpired() {
-    const ids = expired.filter(i => i.quantity > 0).map(i => i.id);
+    const ids = expired.filter(i => i.quantity > 0 || i.looseUnits > 0).map(i => i.id);
     if (ids.length === 0) return;
     setWriteOffBusy(true);
     setWriteOffError(null);
@@ -1480,12 +1505,14 @@ function InventoryTab() {
     } finally { setWriteOffBusy(false); }
   }
 
-  const expiredWithStock = expiryItems.filter(i => daysUntil(i.expiryDate) <= 0 && i.quantity > 0);
+  // A batch cut down to nothing but a loose remainder is still real stock to write off —
+  // see the `expired` filter above and the matching `writeOffExpired` id list.
+  const expiredWithStock = expiryItems.filter(i => daysUntil(i.expiryDate) <= 0 && (i.quantity > 0 || i.looseUnits > 0));
   const canWriteOff = role === "OWNER" && expiredWithStock.length > 0;
   function deadExport() {
     downloadXlsx("dead-stock.xlsx", [
-      ["Medicine","Batch","Last Sale","Qty","Cost at Risk","Retail Value"],
-      ...deadItems.map(i => [i.medicine.name, i.batchNumber, i.lastSaleDate ? i.lastSaleDate.slice(0,10) : "Never", i.quantity, i.costAtRisk, i.retailValue]),
+      ["Medicine","Batch","Last Sale","Qty (packs)","Loose","Cost at Risk","Retail Value"],
+      ...deadItems.map(i => [i.medicine.name, i.batchNumber, i.lastSaleDate ? i.lastSaleDate.slice(0,10) : "Never", i.quantity, i.looseUnits, i.costAtRisk, i.retailValue]),
     ], "Dead Stock");
   }
 
@@ -1608,7 +1635,10 @@ function InventoryTab() {
                     <p className={cn("text-[12px] text-right", days <= 0 ? "text-red-600 font-black" : days <= 30 ? "text-orange-600 font-bold" : "text-amber-600 font-semibold")}>
                       {days <= 0 ? "Expired" : `${days}d`}
                     </p>
-                    <p className="text-[12px] text-slate-700 text-right">{item.quantity}</p>
+                    <p className="text-[12px] text-slate-700 text-right">
+                      {item.quantity}
+                      <LooseTag units={item.looseUnits} />
+                    </p>
                     <p className="text-[12px] text-slate-700 text-right">₹{item.mrp}</p>
                   </div>
                 );
@@ -1676,7 +1706,10 @@ function InventoryTab() {
                   </div>
                   <p className="text-[11px] text-slate-500 font-mono">{item.batchNumber}</p>
                   <p className="text-[11px] text-slate-600">{item.lastSaleDate ? item.lastSaleDate.slice(0,10) : "Never sold"}</p>
-                  <p className="text-[12px] text-slate-700 text-right">{item.quantity}</p>
+                  <p className="text-[12px] text-slate-700 text-right">
+                    {item.quantity}
+                    <LooseTag units={item.looseUnits} />
+                  </p>
                   <p className="text-[12px] font-semibold text-red-600 text-right">₹{fmt(item.costAtRisk)}</p>
                 </div>
               ))}

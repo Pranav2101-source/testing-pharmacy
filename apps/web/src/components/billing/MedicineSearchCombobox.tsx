@@ -159,6 +159,8 @@ export function MedicineSearchCombobox({
       return;
     }
 
+    const allowLooseSale = batch.medicine.allowLooseSale ?? med.allowLooseSale ?? false;
+    const looseByDefault = batch.medicine.looseByDefault ?? med.looseByDefault ?? false;
     addItem({
       inventoryId:    batch.id,
       medicineName:   batch.medicine.name,
@@ -173,6 +175,12 @@ export function MedicineSearchCombobox({
       discount:       0,
       gstRate:        batch.medicine.gstRate,
       availableStock: batch.quantity - (batch.reservedQuantity ?? 0),
+      // Starts loose only if the pharmacy set this medicine to default that way.
+      saleUnit:       allowLooseSale && looseByDefault ? "LOOSE" : "PACK",
+      unitsPerPack:   batch.medicine.unitsPerPack ?? med.unitsPerPack ?? undefined,
+      baseUnit:       batch.medicine.baseUnit ?? med.baseUnit ?? undefined,
+      allowLooseSale,
+      looseUnits:     batch.looseUnits ?? 0,
     });
 
     if (status.color !== "green") {

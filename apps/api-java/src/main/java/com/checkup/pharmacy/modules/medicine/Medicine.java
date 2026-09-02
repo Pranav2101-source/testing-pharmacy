@@ -60,6 +60,19 @@ public class Medicine extends BaseEntity {
     @Column(name = "packSize")
     private String packSize;
 
+    /**
+     * Structured pack multiple — base units (tablets/capsules/mL) in one sellable
+     * pack. The authoritative figure for loose ("cut strip") dispensing and
+     * per-piece pricing; {@link #packSize} stays as the free-text label. NULL until
+     * a platform admin classifies the medicine — loose sale is refused without it.
+     */
+    @Column(name = "unitsPerPack")
+    private Integer unitsPerPack;
+
+    /** TABLET | CAPSULE | ML | GM | EACH — the smallest dispensable unit. Label only for now. */
+    @Column(name = "baseUnit")
+    private String baseUnit;
+
     @Column(name = "isActive")
     private boolean isActive = true;
 
@@ -117,6 +130,29 @@ public class Medicine extends BaseEntity {
         this.unit = unit;
     }
 
+    /**
+     * Sets the pack multiple and base unit used for loose dispensing. Platform-admin
+     * only (this is a shared catalogue row). {@code unitsPerPack} null clears it,
+     * which disables loose sale for the medicine everywhere.
+     *
+     * @throws IllegalArgumentException if {@code unitsPerPack} is given but not a
+     *         sane count (1..100000). A pack of one is allowed as "the base unit is
+     *         the pack"; loose sale still needs &gt; 1 (see {@link #isLooseCapable()}).
+     */
+    public void setPackaging(Integer unitsPerPack, String baseUnit) {
+        if (unitsPerPack != null && (unitsPerPack < 1 || unitsPerPack > 100_000)) {
+            throw new IllegalArgumentException(
+                    "Units per pack must be between 1 and 100000 (got " + unitsPerPack + ").");
+        }
+        this.unitsPerPack = unitsPerPack;
+        this.baseUnit = baseUnit;
+    }
+
+    /** True when this medicine can be broken into individual pieces (a real pack multiple exists). */
+    public boolean isLooseCapable() {
+        return unitsPerPack != null && unitsPerPack > 1;
+    }
+
     public String getName() { return name; }
 
     public String getGenericName() { return genericName; }
@@ -140,6 +176,10 @@ public class Medicine extends BaseEntity {
     public String getUnit() { return unit; }
 
     public String getPackSize() { return packSize; }
+
+    public Integer getUnitsPerPack() { return unitsPerPack; }
+
+    public String getBaseUnit() { return baseUnit; }
 
     public boolean isActive() { return isActive; }
 

@@ -130,19 +130,24 @@ public record Gstr3bResponse(String periodLabel, Identity identity,
     /**
      * Expired stock still on the books, and the input tax credit sitting inside it.
      *
-     * <p>This is what Table 4(B)(1) would be built from, if the system recorded expiry as a
-     * disposal. It does not: nothing ever sets {@code BatchStatus.EXPIRED} or writes an
-     * {@code EXPIRY_REMOVAL} movement, so expired batches keep their quantity and their cost
-     * indefinitely. Section 17(5)(h) blocks credit on destroyed goods, so this credit is
-     * reversible and has not been reversed.
+     * <p>This is what Table 4(B)(1) would be built from, if this figure had been derived rather
+     * than reported as an exposure — it hasn't, because whether a given expired batch has
+     * actually been disposed of (which sets {@code BatchStatus.EXPIRED} and writes an
+     * {@code EXPIRY_REMOVAL} movement — {@code InventoryService}'s expiry write-off flow) is a
+     * pharmacist decision this report cannot make for them. Every batch counted here has NOT
+     * been through that flow, so Section 17(5)(h)'s credit reversal is still outstanding on it.
      *
      * <p>Reported as an exposure the filer must act on rather than folded into 4(B)(1) as if it
      * had been derived. The amount is an estimate at the medicine's current GST rate — see
      * {@code InventoryRepository.expiredStockOnBooks} for exactly what it does and does not know.
      *
      * @param batches      how many batches are past their expiry date with stock remaining
-     * @param units        total units
-     * @param cost         what they cost, at the batch's recorded purchase rate
+     * @param units        count of individual base units (sealed packs multiplied out by their
+     *                     effective pack size, plus any loose remainder) — NOT a pack count, so
+     *                     a batch that is only a cut-strip remainder still shows a real number.
+     *                     {@code cost}/{@code embeddedItc} are unchanged for a pack-only batch.
+     * @param cost         what they cost, at the batch's recorded purchase rate — a loose
+     *                     remainder priced at its per-piece share of the same rate
      * @param embeddedItc  the credit claimed on them, which section 17(5)(h) says you cannot keep
      */
     public record ExpiredStock(long batches, long units, BigDecimal cost, BigDecimal embeddedItc) {

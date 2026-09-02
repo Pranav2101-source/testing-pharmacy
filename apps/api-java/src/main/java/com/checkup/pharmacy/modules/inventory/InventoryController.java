@@ -65,9 +65,10 @@ public class InventoryController {
             @RequestParam(defaultValue = "false") boolean lowStock,
             @RequestParam(defaultValue = "false") boolean nearExpiry,
             @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "false") boolean hasLoose,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int limit) {
-        return ApiResponse.ok(inventoryService.list(search, medicineId, inStock, lowStock, nearExpiry, status, page, limit));
+        return ApiResponse.ok(inventoryService.list(search, medicineId, inStock, lowStock, nearExpiry, status, hasLoose, page, limit));
     }
 
     @GetMapping("/{id}")

@@ -21,7 +21,7 @@ import ReviewIngestedItemsPanel from "@/components/integration/ReviewIngestedIte
 import ConfirmQuantityPanel from "@/components/integration/ConfirmQuantityPanel";
 import ClinicPrescriptionTriage from "@/components/integration/ClinicPrescriptionTriage";
 import { useBillingStore } from "@/components/billing/useBillingStore";
-import { resolvePrescriptionToCart, canBill } from "@/lib/prescriptionToCart";
+import { resolvePrescriptionToCart, canBill, roundUpConfirmMessage } from "@/lib/prescriptionToCart";
 import {
   normalizeIndianMobile,
   sanitizeProfessionalName,
@@ -770,7 +770,7 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
   async function billNow() {
     setBilling(true);
     try {
-      const { items, meta, failures, checkFailed, partials } = await resolvePrescriptionToCart(rx);
+      const { items, meta, failures, checkFailed, partials, roundedToPack } = await resolvePrescriptionToCart(rx);
       if (items.length === 0) {
         toast.error(
           failures.length === 0 && checkFailed.length > 0
@@ -779,6 +779,10 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
         );
         return;
       }
+      // Rounding a course up to a full pack overcharges the patient — block until the
+      // pharmacist accepts it, don't rely on a toast they might miss.
+      const roundMsg = roundUpConfirmMessage(roundedToPack);
+      if (roundMsg && !window.confirm(roundMsg)) return;
       loadDraft(items, meta);
       if (failures.length > 0) {
         toast.error(`Not in stock: ${failures.join(", ")} — add manually or substitute`);

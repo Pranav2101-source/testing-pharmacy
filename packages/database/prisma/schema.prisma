@@ -367,6 +367,12 @@ model Medicine {
   strength     String? // 500mg, 5ml
   unit         String? // strip, bottle, vial, tube
   packSize     String? // 10 tablets, 100ml
+  // Structured pack multiple: base units (tablets/capsules/mL) in one sellable pack.
+  // Authoritative for loose ("cut strip") dispensing and per-piece pricing; packSize
+  // above stays the free-text label. NULL = not classified — no loose sale without it.
+  unitsPerPack Int?
+  // TABLET | CAPSULE | ML | GM | EACH — the smallest dispensable unit. Label only for now.
+  baseUnit     String?
   isActive     Boolean @default(true)
 
   createdAt DateTime @default(now())
@@ -412,6 +418,18 @@ model PharmacyMedicineOverride {
   medicineId         String
   gstRate            Decimal? @db.Decimal(12, 2) // null = catalog gstRate
   defaultDiscountPct Decimal? @db.Decimal(12, 2) // standing % discount pre-filled at POS
+  // This pharmacy may break a pack of this medicine and sell loose pieces at the
+  // POS. Needs an effective unitsPerPack > 1. Per-pharmacy on purpose: one shop
+  // cuts strips, another only sells sealed.
+  allowLooseSale     Boolean  @default(false)
+  // A shop that breaks every strip: new POS lines for this medicine start as LOOSE.
+  looseByDefault     Boolean  @default(false)
+  // Set once the pharmacist has eyeballed the pack size against a real strip
+  // (per-piece price x pack should equal the MRP). Lets a report flag the rest.
+  looseConfirmedAt   DateTime?
+  // Per-pharmacy pack size, for a medicine the shared catalogue hasn't classified
+  // (or got wrong). Billing uses COALESCE(this, medicine.unitsPerPack).
+  unitsPerPack       Int?
   notes              String?
 
   createdAt DateTime @default(now())
@@ -472,6 +490,10 @@ model Inventory {
   batchNumber      String
   expiryDate       DateTime
   quantity         Int
+  // Loose pieces left over from a pack broken open for a cut-strip sale. Always
+  // < the medicine's unitsPerPack. Total pieces on hand =
+  // quantity * unitsPerPack + looseUnits. 0 for every legacy / pack-only batch.
+  looseUnits       Int         @default(0)
   reservedQuantity Int         @default(0)
   purchaseRate     Decimal     @db.Decimal(12, 2)
   mrp              Decimal     @db.Decimal(12, 2)
@@ -892,6 +914,14 @@ model InvoiceItem {
   batchNumber   String
   expiryDate    DateTime
   quantity      Int
+  // PACK (default, every legacy row) — quantity is whole strips/bottles; mrp/rate
+  // are the printed pack price. LOOSE — quantity is individual pieces cut from a
+  // strip; mrp/rate are per-piece (pack MRP / unitsPerPack) and the batch was
+  // decremented in pieces. batch/expiry are still carried on a loose line.
+  saleUnit      String   @default("PACK")
+  // Snapshot of the medicine's base unit at sale time (TABLET|CAPSULE|ML|GM|EACH),
+  // for the "8 tab" label on a re-printed bill. Only set for a LOOSE line.
+  baseUnit      String?
   // Scheme quantity handed over free with this line (10+1, buy-100-get-10).
   // NOT charged: taxableAmount/amount are derived from `quantity` alone. It IS
   // deducted from stock, because the goods physically leave the shelf — the batch
@@ -1036,6 +1066,12 @@ model InventoryMovement {
   referenceType  String?
   referenceId    String?
   notes          String?
+  // Set only on a loose (cut-strip) movement: the base unit ("TABLET" | "CAPSULE" |
+  // "ML" | "GM" | "EACH") that quantity/quantityBefore/quantityAfter are counted in
+  // for THIS row. NULL everywhere else (and on every legacy row) means the row is in
+  // whole packs, exactly as before. Lets the ledger label each row and lets sales-
+  // velocity fold pack and piece rows onto one scale.
+  baseUnit       String?
 
   createdAt DateTime @default(now())
 
@@ -1575,9 +1611,16 @@ model StockAuditItem {
   pharmacyId  String
   sessionId   String
   inventoryId String
-  expectedQty Int // snapshot of inventory.quantity at session creation
+  expectedQty Int // snapshot of inventory.quantity (packs) at session creation
   countedQty  Int? // staff enters this during count
   varianceQty Int? // computed: countedQty - expectedQty
+  // Loose (cut-strip) remainder — same three-field shape as the pack columns above, snapshot
+  // of inventory.looseUnits. Always 0 for a pack-only medicine. countedLooseUnits stays null
+  // until staff explicitly count it; a null count is NEVER treated as "counted zero" — see
+  // StockAuditItem.recordCount (Java) for why that distinction matters at approval time.
+  expectedLooseUnits Int  @default(0)
+  countedLooseUnits  Int?
+  varianceLooseUnits Int?
   notes       String?
 
   createdAt DateTime @default(now())
