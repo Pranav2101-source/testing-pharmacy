@@ -8,6 +8,8 @@ import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository;
 import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
 import com.checkup.pharmacy.modules.pharmacy.PharmacyRepository;
 import com.checkup.pharmacy.modules.prescription.Prescription;
@@ -59,6 +61,7 @@ class ReportsIT extends AbstractPostgresIT {
     @Autowired private com.checkup.pharmacy.modules.purchase.PurchasesService purchasesService;
     @Autowired private com.checkup.pharmacy.modules.supplierreturn.SupplierReturnsService supplierReturnsService;
     @Autowired private com.checkup.pharmacy.modules.inventory.InventoryService inventoryService;
+    @Autowired private PharmacyMedicineOverrideRepository overrideRepository;
     @Autowired private EntityManager entityManager;
 
     private String pharmacyId;
@@ -735,6 +738,180 @@ class ReportsIT extends AbstractPostgresIT {
         assertThat(margin.topContributors()).isEmpty();
     }
 
+    @Test
+    @DisplayName("cut-strip sales are broken out from the rest of the period's revenue")
+    void looseSalesAreBrokenOutSeparately() {
+        cashSale(2); // an ordinary whole-pack sale — must not leak into the loose figure
+
+        String looseMedicineId = seedLooseMedicine();
+        String looseBatchId = seedLooseBatch(looseMedicineId);
+        flushAndClear();
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID",
+                null, null, null, null, null, null, null, null,
+                List.of(new InvoiceItemRequest(looseBatchId, 8, null, BigDecimal.ZERO, null, "LOOSE"))));
+        flushAndClear();
+
+        var margin = reportsService.marginReport(hourAgo(), Instant.now(), null);
+
+        assertThat(margin.looseSales()).isNotNull();
+        assertThat(margin.looseSales().piecesSold()).isEqualTo(8);
+        assertThat(margin.looseSales().billCount()).isEqualTo(1);
+        assertThat(margin.looseSales().lineCount()).isEqualTo(1);
+        // 8 tablets at a per-piece MRP of Rs.2.00 (Rs.20/strip of 10), 12% GST-inclusive.
+        assertThat(margin.looseSales().revenueExGst()).isEqualByComparingTo(new BigDecimal("14.29"));
+        // The whole-pack sale's Rs.169.49 must not be folded into the loose figure.
+        assertThat(margin.looseSales().revenueExGst()).isLessThan(margin.revenueExGst());
+    }
+
+    @Test
+    @DisplayName("the HSN summary folds a loose line to a pack-equivalent, not raw pieces")
+    void hsnSummaryFoldsLooseToPackEquivalent() {
+        String looseMedicineId = seedLooseMedicine();
+        String looseBatchId = seedLooseBatch(looseMedicineId);
+        flushAndClear();
+
+        // 2 whole packs + 8 loose tablets of the SAME medicine (strip of 10).
+        // Raw, that would total 10 "units" (2 + 8). Folded, it is 2 + 0.8 = 2.8 -> 3
+        // strips — the unit valuation and every prior GSTR-1 filing use, not a mix.
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID",
+                null, null, null, null, null, null, null, null,
+                List.of(new InvoiceItemRequest(looseBatchId, 2, null, BigDecimal.ZERO, null))));
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID",
+                null, null, null, null, null, null, null, null,
+                List.of(new InvoiceItemRequest(looseBatchId, 8, null, BigDecimal.ZERO, null, "LOOSE"))));
+        flushAndClear();
+
+        var summary = reportsService.hsnSummary(hourAgo(), Instant.now());
+        assertThat(summary.rows()).hasSize(1); // one (HSN, rate) group — same medicine both times
+        assertThat(summary.rows().get(0).totalQty())
+                .as("2 packs + 0.8 pack-equivalent, rounded — not 2 + 8 raw pieces")
+                .isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("a period with nothing sold loose reports no loose-sales figure at all")
+    void looseSalesIsNullWhenNoneSold() {
+        cashSale(2);
+
+        var margin = reportsService.marginReport(hourAgo(), Instant.now(), null);
+
+        assertThat(margin.looseSales()).isNull();
+    }
+
+    @Test
+    @DisplayName("a loose line's cost of goods converts per piece, not per pack")
+    void looseLineCostsPerPieceNotPerPack() {
+        // purchaseRate 10.00 is for the WHOLE strip of 10 — per-piece cost is 1.00. Storing
+        // the pack rate against a piece quantity would report Rs.80 of cost for 8 tablets
+        // that actually cost the pharmacy Rs.8.
+        String looseMedicineId = seedLooseMedicine();
+        String looseBatchId = seedLooseBatch(looseMedicineId);
+        flushAndClear();
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID",
+                null, null, null, null, null, null, null, null,
+                List.of(new InvoiceItemRequest(looseBatchId, 8, null, BigDecimal.ZERO, null, "LOOSE"))));
+        flushAndClear();
+
+        var margin = reportsService.marginReport(hourAgo(), Instant.now(), null);
+
+        assertThat(margin.cogs()).isEqualByComparingTo(new BigDecimal("8.00"));
+    }
+
+    @Test
+    @DisplayName("valuation and dead-stock price a batch's loose remainder, not just its sealed packs")
+    void looseRemainderIsValuedNotIgnored() {
+        // Down to nothing but 8 loose tablets from a 10-pack strip: MRP 20.00/purchaseRate
+        // 10.00 per pack means those 8 tablets are worth Rs.16.00 retail / Rs.8.00 cost —
+        // not zero, which is what reading `quantity` (0 packs) alone would report.
+        String looseMedicineId = seedLooseMedicine();
+        Inventory looseOnly = Inventory.create(pharmacyId, looseMedicineId, "LOOSE-REMAINDER-1",
+                Instant.now().plus(365, ChronoUnit.DAYS), 0,
+                new BigDecimal("10.00"), new BigDecimal("20.00"), 10, 5);
+        looseOnly.restockLoose(8);
+        inventoryRepository.save(looseOnly);
+        flushAndClear();
+
+        var deadStock = reportsService.deadStock(90);
+        var deadItem = deadStock.items().stream()
+                .filter(i -> i.medicine() != null && i.medicine().name().equals("Paracetamol 500"))
+                .findFirst().orElseThrow(() -> new AssertionError("loose-remainder batch missing from dead-stock —"
+                        + " a batch with 0 packs must still be visible when it has a loose remainder"));
+        assertThat(deadItem.quantity()).isEqualTo(0);
+        assertThat(deadItem.looseUnits()).isEqualTo(8);
+        assertThat(deadItem.costAtRisk()).isEqualByComparingTo(new BigDecimal("8.00"));
+        assertThat(deadItem.retailValue()).isEqualByComparingTo(new BigDecimal("16.00"));
+
+        var valuation = reportsService.inventoryValuation(null);
+        var valuationItem = valuation.items().stream()
+                .filter(i -> i.medicineName().equals("Paracetamol 500"))
+                .findFirst().orElseThrow(() -> new AssertionError("loose-remainder batch missing from valuation"));
+        assertThat(valuationItem.costValue()).isEqualByComparingTo(new BigDecimal("8.00"));
+        assertThat(valuationItem.retailValue()).isEqualByComparingTo(new BigDecimal("16.00"));
+    }
+
+    @Test
+    @DisplayName("a batch down to just a loose remainder still counts toward the dashboard's low-stock and expiry alerts")
+    void looseRemainderStillTriggersDashboardAlerts() {
+        String looseMedicineId = seedLooseMedicine();
+        // 0 packs, 4 loose tablets, minimumStock 10 — clearly "low", and expiring next week.
+        Inventory lowLoose = Inventory.create(pharmacyId, looseMedicineId, "LOOSE-LOW-1",
+                Instant.now().plus(7, ChronoUnit.DAYS), 0,
+                new BigDecimal("10.00"), new BigDecimal("20.00"), 10, 5);
+        lowLoose.restockLoose(4);
+        inventoryRepository.save(lowLoose);
+        flushAndClear();
+
+        var stats = billingService.getDashboardStats();
+
+        assertThat(stats.lowStockCount()).isGreaterThanOrEqualTo(1);
+        assertThat(stats.nearExpiryCount()).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("fast-moving sums a medicine's pack and loose sales in one coherent unit: pieces")
+    void fastMovingNormalizesPacksAndLooseToPieces() {
+        // 1 whole strip (10 pieces) sold as a PACK line, plus 3 loose tablets sold separately
+        // on the SAME medicine in the same period. Summing the raw `quantity` columns would
+        // read "4 sold" (1 pack + 3 pieces) — meaningless. The correct answer is 13 pieces.
+        String looseMedicineId = seedLooseMedicine();
+        String looseBatchId = seedLooseBatch(looseMedicineId);
+        flushAndClear();
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID",
+                null, null, null, null, null, null, null, null,
+                List.of(new InvoiceItemRequest(looseBatchId, 1, null, BigDecimal.ZERO, null, "PACK"))));
+        flushAndClear();
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID",
+                null, null, null, null, null, null, null, null,
+                List.of(new InvoiceItemRequest(looseBatchId, 3, null, BigDecimal.ZERO, null, "LOOSE"))));
+        flushAndClear();
+
+        var fastMoving = reportsService.fastMoving(hourAgo(), Instant.now(), null);
+
+        var row = fastMoving.items().stream()
+                .filter(i -> i.medicine() != null && i.medicine().name().equals("Paracetamol 500"))
+                .findFirst().orElseThrow();
+        assertThat(row.qtySold()).isEqualTo(13);
+    }
+
+    /** A second, loose-capable medicine (10 tablets/strip) — the shared seed medicine is pack-only. */
+    private String seedLooseMedicine() {
+        Medicine medicine = Medicine.create("Paracetamol 500", new BigDecimal("12"));
+        medicine.setPackaging(10, "TABLET");
+        medicineRepository.save(medicine);
+
+        PharmacyMedicineOverride override = PharmacyMedicineOverride.create(pharmacyId, medicine.getId());
+        override.setAllowLooseSale(true);
+        overrideRepository.save(override);
+        return medicine.getId();
+    }
+
+    private String seedLooseBatch(String medicineId) {
+        // 10 packs @ MRP 20.00 => 100 pieces, per-piece MRP 2.00.
+        return inventoryRepository.save(Inventory.create(pharmacyId, medicineId, "LOOSE-BATCH-1",
+                Instant.now().plus(365, ChronoUnit.DAYS), 10,
+                new BigDecimal("10.00"), new BigDecimal("20.00"), 10, 5)).getId();
+    }
+
     // ── Customer analytics ───────────────────────────────────────────────────
 
     @Test
@@ -1142,9 +1319,11 @@ class ReportsIT extends AbstractPostgresIT {
     }
 
     /**
-     * The credit behind Table 4(B)(1), which this system cannot derive because nothing ever
-     * writes expired stock off — {@code BatchStatus.EXPIRED} is set by no code path and
-     * {@code MovementType.EXPIRY_REMOVAL} is unused. Reporting 4(B)(1) as a bare nil would read
+     * The credit behind Table 4(B)(1), which this system cannot derive automatically because
+     * whether a specific expired batch has actually been disposed of (the write-off flow that
+     * sets {@code BatchStatus.EXPIRED} and records an {@code EXPIRY_REMOVAL} movement) is a
+     * pharmacist decision — this batch, seeded straight past its expiry date, has not been
+     * through it. Reporting 4(B)(1) as a bare nil would read
      * as "nothing to reverse"; the exposure is reported instead so the filer can act on it.
      */
     @Test
@@ -1167,6 +1346,48 @@ class ReportsIT extends AbstractPostgresIT {
                 .isEqualByComparingTo(new BigDecimal("120.00"));
         assertThat(quality.untrackedNotes())
                 .anySatisfy(n -> assertThat(n).contains("17(5)(h)"));
+    }
+
+    @Test
+    @DisplayName("expired stock exposure prices a loose remainder too, not just sealed packs")
+    void gstr3bExpiredStockIncludesLooseRemainder() {
+        String looseMedicineId = seedLooseMedicine();
+        // 2 sealed packs (10 tablets each) + 4 loose tablets, all expired 10 days ago.
+        // Pack rate 10.00 => per-piece 1.00. Cost = 2*10.00 + 4*1.00 = 24.00. Units (pieces) = 2*10+4 = 24.
+        Inventory expiredLoose = Inventory.create(pharmacyId, looseMedicineId, "EXPIRED-LOOSE-1",
+                Instant.now().minus(10, ChronoUnit.DAYS), 2,
+                new BigDecimal("10.00"), new BigDecimal("20.00"), 10, 5);
+        expiredLoose.restockLoose(4);
+        inventoryRepository.save(expiredLoose);
+        flushAndClear();
+
+        var quality = reportsService.gstr3b(hourAgo(), Instant.now()).dataQuality();
+
+        assertThat(quality.expiredStock().batches()).isEqualTo(1);
+        assertThat(quality.expiredStock().units()).isEqualTo(24);
+        assertThat(quality.expiredStock().cost()).isEqualByComparingTo(new BigDecimal("24.00"));
+        // 12% GST on Rs.24.00 of cost.
+        assertThat(quality.expiredStock().embeddedItc()).isEqualByComparingTo(new BigDecimal("2.88"));
+    }
+
+    @Test
+    @DisplayName("a batch down to just a loose remainder still counts as expired-stock exposure")
+    void gstr3bExpiredStockVisibleWithNoSealedPacksLeft() {
+        String looseMedicineId = seedLooseMedicine();
+        Inventory looseOnlyExpired = Inventory.create(pharmacyId, looseMedicineId, "EXPIRED-LOOSE-ONLY-1",
+                Instant.now().minus(10, ChronoUnit.DAYS), 0,
+                new BigDecimal("10.00"), new BigDecimal("20.00"), 10, 5);
+        looseOnlyExpired.restockLoose(4);
+        inventoryRepository.save(looseOnlyExpired);
+        flushAndClear();
+
+        var quality = reportsService.gstr3b(hourAgo(), Instant.now()).dataQuality();
+
+        assertThat(quality.expiredStock().batches())
+                .as("a batch with 0 sealed packs but a real loose remainder must not be invisible")
+                .isEqualTo(1);
+        assertThat(quality.expiredStock().units()).isEqualTo(4);
+        assertThat(quality.expiredStock().cost()).isEqualByComparingTo(new BigDecimal("4.00"));
     }
 
     /**

@@ -4,14 +4,16 @@ import { useState, useEffect, Suspense, lazy } from "react";
 import { Link, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
-  ArrowLeft, Printer, XCircle, Loader2, AlertCircle,
+  ArrowLeft, Printer, XCircle, Loader2, AlertCircle, Scissors,
   User, Phone, Stethoscope, CreditCard, Calendar, RefreshCcw, MapPin,
 } from "lucide-react";
+import { baseUnitShort } from "@pharmacy/utils";
 import { api } from "@/lib/api-client";
 import { ListSkeleton } from "@/components/Skeleton";
 import { cn } from "@/lib/utils";
 import { useInvoicePrintConfig } from "@/lib/useInvoicePrintConfig";
 import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
+import { LooseLabelModal } from "@/components/LooseLabelModal";
 
 const InvoicePrintView  = lazy(() => import("@/components/billing/InvoicePrintView").then(m => ({ default: m.InvoicePrintView })));
 const ThermalReceiptView = lazy(() => import("@/components/billing/ThermalReceiptView").then(m => ({ default: m.ThermalReceiptView })));
@@ -28,6 +30,9 @@ type InvoiceItem = {
   quantity: number;
   /** Scheme quantity given free — not charged, but dispensed. */
   freeQty?: number;
+  /** "LOOSE" — quantity is individual pieces cut from a strip; mrp/rate are per-piece. */
+  saleUnit?: string;
+  baseUnit?: string | null;
   mrp: number;
   rate: number;
   discount: number;
@@ -117,6 +122,7 @@ export default function BillDetailPage() {
   const [cancelReason, setCancelReason] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [labelModalOpen, setLabelModalOpen] = useState(false);
 
   const { config: printConfig, pharmacy: printPharmacy } = useInvoicePrintConfig();
 
@@ -164,6 +170,11 @@ export default function BillDetailPage() {
     );
   }
 
+  // Cut-strip lines on this bill — each needs its own small adhesive label for the pouch
+  // it goes out in, separate from the full invoice print. Absent for the common bill with
+  // no loose lines at all, so the button below only ever appears when there is something to print.
+  const looseItems = invoice.items.filter((i) => i.saleUnit === "LOOSE");
+
   // ─── Map invoice to PrintInvoiceData for the print view ──────
   const isThermal = printConfig.paper.size === "thermal80" || printConfig.paper.size === "thermal58";
   const printData: PrintInvoiceData = invoice ? {
@@ -186,6 +197,8 @@ export default function BillDetailPage() {
       mrp:           i.mrp,
       quantity:      i.quantity,
       freeQty:       i.freeQty,
+      saleUnit:      i.saleUnit,
+      baseUnit:      i.baseUnit,
       discount:      i.discount,
       gstRate:       i.gstRate,
       rate:          i.rate,
@@ -260,6 +273,15 @@ export default function BillDetailPage() {
               </button>
             </>
           )}
+          {looseItems.length > 0 && (
+            <button
+              onClick={() => setLabelModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-amber-700 hover:bg-amber-50 border border-amber-200 text-[12px] font-medium rounded-lg transition-colors"
+            >
+              <Scissors className="w-3.5 h-3.5" />
+              Print Label{looseItems.length !== 1 ? "s" : ""}
+            </button>
+          )}
           <button
             onClick={() => window.print()}
             className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[12px] font-semibold rounded-lg transition-colors"
@@ -269,6 +291,20 @@ export default function BillDetailPage() {
           </button>
         </div>
       </div>
+
+      {labelModalOpen && (
+        <LooseLabelModal
+          items={looseItems.map((i) => ({
+            medicineName: i.medicineName,
+            quantity: i.quantity,
+            baseUnit: i.baseUnit,
+            batchNumber: i.batchNumber,
+            expiryDate: i.expiryDate,
+          }))}
+          pharmacy={printPharmacy && { name: printPharmacy.name, drugLicense: printPharmacy.drugLicense, phone: printPharmacy.phone }}
+          onClose={() => setLabelModalOpen(false)}
+        />
+      )}
 
       {/* ── Cancel confirmation bar ───────────────────────────── */}
       {cancelOpen && (
@@ -409,10 +445,16 @@ export default function BillDetailPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {invoice.items.map((item, i) => (
+                {invoice.items.map((item, i) => {
+                  const isLoose = item.saleUnit === "LOOSE";
+                  const unit    = baseUnitShort(item.baseUnit);
+                  return (
                   <tr key={item.id} className="hover:bg-slate-50/60 transition-colors">
                     <td className="px-4 py-2.5 text-slate-400">{i + 1}</td>
-                    <td className="px-4 py-2.5 font-medium text-slate-800">{item.medicineName}</td>
+                    <td className="px-4 py-2.5 font-medium text-slate-800">
+                      {item.medicineName}
+                      {isLoose && <span className="ml-1.5 text-[10px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700">LOOSE</span>}
+                    </td>
                     <td className="px-4 py-2.5">
                       <p className="text-slate-600 font-mono text-[11px]">{item.batchNumber}</p>
                       {item.location && (
@@ -425,13 +467,21 @@ export default function BillDetailPage() {
                     <td className="px-4 py-2.5 text-slate-600">
                       {new Date(item.expiryDate).toLocaleDateString("en-IN", { month: "short", year: "numeric" })}
                     </td>
-                    <td className="px-4 py-2.5 text-right text-slate-700">{item.quantity}</td>
-                    <td className="px-4 py-2.5 text-right text-slate-700 tabular-nums">{fmt(item.mrp)}</td>
+                    <td className="px-4 py-2.5 text-right text-slate-700">
+                      {item.quantity}{isLoose && item.baseUnit ? ` ${unit}` : ""}
+                    </td>
+                    <td className="px-4 py-2.5 text-right text-slate-700 tabular-nums">
+                      {fmt(item.mrp)}
+                      {isLoose && (
+                        <span className="block text-[10px] text-amber-600 font-semibold">{fmt(item.rate)}/{unit}</span>
+                      )}
+                    </td>
                     <td className="px-4 py-2.5 text-right text-slate-600">{item.discount > 0 ? `${item.discount}%` : "—"}</td>
                     <td className="px-4 py-2.5 text-right text-slate-600">{item.gstRate}%</td>
                     <td className="px-4 py-2.5 text-right font-semibold text-slate-900 tabular-nums">{fmt(item.amount)}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

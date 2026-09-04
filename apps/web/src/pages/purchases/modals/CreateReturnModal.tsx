@@ -132,8 +132,8 @@ export function CreateReturnModal({ suppliers: initialSuppliers, onClose, onDone
   return (
     <ModalShell icon={<RotateCcw className="w-4 h-4 text-red-500" />} iconBg="bg-red-50"
       title="New Supplier Return" desc="DRAFT — confirm to deduct inventory stock" onClose={onClose}>
-      <form onSubmit={submit} className="flex flex-col flex-1 overflow-hidden">
-        <div className="overflow-y-auto flex-1 px-6 py-4 space-y-4">
+      <form onSubmit={submit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+        <div className="overflow-y-auto flex-1 min-h-0 px-6 py-4 space-y-4">
           <div className="grid grid-cols-3 gap-3">
             <div>
               <FieldLabel>Distributor / Supplier *</FieldLabel>

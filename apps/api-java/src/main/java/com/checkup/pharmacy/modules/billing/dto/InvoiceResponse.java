@@ -56,9 +56,15 @@ public record InvoiceResponse(
     public record ReturnRef(String id, String returnNumber, BigDecimal totalAmount, Instant createdAt) {
     }
 
-    /** {@code freeQty} is scheme quantity given free — not charged, but dispensed. */
+    /**
+     * {@code freeQty} is scheme quantity given free — not charged, but dispensed.
+     * {@code saleUnit} is {@code PACK} (every normal line) or {@code LOOSE} (a
+     * cut-strip line, where {@code quantity} is pieces and {@code mrp}/{@code rate}
+     * are per-piece).
+     */
     public record Item(String id, String inventoryId, String medicineName, String hsnCode, String batchNumber,
-                       Instant expiryDate, int quantity, int freeQty, BigDecimal mrp, BigDecimal rate,
+                       Instant expiryDate, int quantity, int freeQty, String saleUnit, String baseUnit,
+                       BigDecimal mrp, BigDecimal rate,
                        BigDecimal purchaseRate,
                        BigDecimal discount, BigDecimal gstRate, BigDecimal cgst, BigDecimal sgst, BigDecimal igst,
                        BigDecimal taxableAmount, BigDecimal amount, String location) {

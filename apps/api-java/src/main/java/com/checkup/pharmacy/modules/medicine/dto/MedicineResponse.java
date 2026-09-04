@@ -17,6 +17,15 @@ public record MedicineResponse(
         String strength,
         String unit,
         String packSize,
-        boolean isActive
+        boolean isActive,
+        // ── Loose dispensing ────────────────────────────────────────────────
+        // unitsPerPack / baseUnit are catalogue-global. allowLooseSale is
+        // per-pharmacy and only populated on the POS-facing paths (quick search,
+        // barcode lookup); it is false on the global catalogue views.
+        Integer unitsPerPack,
+        String baseUnit,
+        boolean allowLooseSale,
+        // New POS lines for this medicine start as loose (per-pharmacy; POS paths only).
+        boolean looseByDefault
 ) {
 }

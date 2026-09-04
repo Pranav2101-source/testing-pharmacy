@@ -9,6 +9,9 @@ public record InventoryResponse(
         String batchNumber,
         Instant expiryDate,
         int quantity,
+        // Loose pieces from an opened pack (cut-strip selling). 0 for pack-only stock.
+        // Total pieces on hand = quantity * medicine.unitsPerPack + looseUnits.
+        int looseUnits,
         int reservedQuantity,
         int available,
         BigDecimal purchaseRate,
@@ -28,9 +31,22 @@ public record InventoryResponse(
      * medicine, and {@code batch.medicine.gstRate} to compute the line
      * amount (missing, it silently computes NaN rather than erroring, since
      * `undefined * x` is NaN, not a thrown exception).
+     *
+     * <p>{@code unitsPerPack} is the EFFECTIVE pack size (this pharmacy's override,
+     * else the catalogue's); {@code allowLooseSale} is this pharmacy's opt-in. The
+     * POS uses both to offer the Strip/Tab toggle and compute per-piece availability.
+     *
+     * <p>{@code schedule} and {@code packSize} are the catalogue's raw values (not
+     * pharmacy-specific) — added so the Inventory screen can offer its own "enable
+     * loose selling" entry point without a second round trip: {@code schedule} is
+     * required to keep blocking Schedule X the same way the Medicines page does,
+     * and {@code packSize} (free text like "10s") is what a units-per-pack guess is
+     * parsed from when the catalogue has no structured {@code unitsPerPack}.
      */
     public record MedicineRef(String id, String name, String genericName, String form, String strength, String unit,
-                              boolean isActive, java.math.BigDecimal gstRate, String hsnCode) {
+                              boolean isActive, java.math.BigDecimal gstRate, String hsnCode,
+                              Integer unitsPerPack, String baseUnit, boolean allowLooseSale, boolean looseByDefault,
+                              String schedule, String packSize) {
     }
 
     public record ShelfRef(String id, String code, RackRef rack) {

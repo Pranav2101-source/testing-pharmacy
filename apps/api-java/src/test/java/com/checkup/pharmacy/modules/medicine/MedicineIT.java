@@ -98,6 +98,31 @@ class MedicineIT extends AbstractPostgresIT {
     }
 
     @Test
+    @DisplayName("the platform admin can set units-per-pack and base unit on a catalogue medicine")
+    void catalogueTakesPackaging() {
+        var req = new CreateMedicineRequest("Crocin 500 " + unique(), "Paracetamol", "GSK", null, null, null, null,
+                new BigDecimal("12"), "Tablet", "500mg", "strip", "15 tablets", 15, "tablet");
+        var created = medicineService.create(req);
+        assertThat(created.unitsPerPack()).isEqualTo(15);
+        assertThat(created.baseUnit()).isEqualTo("TABLET");   // normalised to upper-case
+
+        var upd = new UpdateMedicineRequest(created.name(), "Paracetamol", "GSK", null, null, null, null,
+                new BigDecimal("12"), "Tablet", "500mg", "strip", "10 tablets", 10, "TABLET");
+        var updated = medicineService.update(created.id(), upd);
+        assertThat(updated.unitsPerPack()).isEqualTo(10);
+    }
+
+    @Test
+    @DisplayName("an unrecognised base unit is rejected")
+    void badBaseUnitRejected() {
+        var req = new CreateMedicineRequest("Bad Unit Med " + unique(), null, "Mfr", null, null, null, null,
+                new BigDecimal("12"), "Tablet", "500mg", "strip", "10", 10, "PILLS");
+        assertThatThrownBy(() -> medicineService.create(req))
+                .isInstanceOf(com.checkup.pharmacy.common.exception.BadRequestException.class)
+                .hasMessageContaining("Base unit");
+    }
+
+    @Test
     @DisplayName("creating a medicine with an unsupported GST rate is rejected")
     void invalidGstRateRejectedOnCreate() {
         assertThatThrownBy(() -> medicineService.create(createReq("Bad Rate Med", "Cipla", new BigDecimal("9"))))

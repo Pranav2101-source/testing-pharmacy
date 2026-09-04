@@ -174,7 +174,7 @@ export function GateInwardTab({ suppliers }: { suppliers: Supplier[] }) {
                 <td className="px-4 py-3 text-[13px] font-bold text-slate-900 tabular-nums">{currency(grn.totalAmount)}</td>
                 <td className="px-4 py-3 text-[12px] text-slate-500">{fmtDate(grn.createdAt)}</td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-1.5">
                     <ActionBtn onClick={() => confirm(grn.id)} disabled={actionId === grn.id}
                       icon={actionId === grn.id ? Loader2 : Check} label="Confirm"
                       cls="text-emerald-600 border-emerald-200 hover:bg-emerald-50" />

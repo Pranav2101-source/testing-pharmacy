@@ -6,6 +6,7 @@ import com.checkup.pharmacy.modules.medicine.dto.AlternativeResponse;
 import com.checkup.pharmacy.modules.medicine.dto.BulkImportRequest;
 import com.checkup.pharmacy.modules.medicine.dto.BulkImportResponse;
 import com.checkup.pharmacy.modules.medicine.dto.CreateMedicineRequest;
+import com.checkup.pharmacy.modules.medicine.dto.LoosePosSettingsRequest;
 import com.checkup.pharmacy.modules.medicine.dto.MedicinePageResponse;
 import com.checkup.pharmacy.modules.medicine.dto.MedicineResponse;
 import com.checkup.pharmacy.modules.medicine.dto.OverrideResponse;
@@ -146,5 +147,26 @@ public class MedicineController {
     public ApiResponse<Void> removeOverride(@PathVariable String id) {
         medicineService.removeOverride(id);
         return ApiResponse.ok(null);
+    }
+
+    /**
+     * Turn cut-strip (loose) selling on/off for one medicine at the caller's pharmacy.
+     * OWNER/MANAGER only — enabling it changes how the medicine is priced at the POS.
+     */
+    @PatchMapping("/{id}/loose-settings")
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER')")
+    public ApiResponse<OverrideResponse> setLooseSettings(
+            @PathVariable String id, @Valid @RequestBody LoosePosSettingsRequest req) {
+        return ApiResponse.ok(medicineService.setLoosePosSettings(id, req));
+    }
+
+    /** Enable loose selling for several medicines at once. OWNER/MANAGER only. */
+    @PostMapping("/loose-settings/bulk")
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER')")
+    public ApiResponse<List<OverrideResponse>> bulkEnableLoose(
+            @Valid @RequestBody com.checkup.pharmacy.modules.medicine.dto.BulkEnableLooseRequest req) {
+        return ApiResponse.ok(medicineService.bulkEnableLoose(req.items().stream()
+                .map(r -> new MedicineService.BulkLooseRow(r.medicineId(), r.unitsPerPack(), r.looseByDefault()))
+                .toList()));
     }
 }

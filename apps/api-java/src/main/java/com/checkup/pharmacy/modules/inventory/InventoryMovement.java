@@ -59,6 +59,15 @@ public class InventoryMovement extends CreatedAtEntity {
     @Column(name = "notes")
     private String notes;
 
+    /**
+     * Set only on a loose (cut-strip) movement — the base unit ("TABLET" | "CAPSULE" |
+     * "ML" | "GM" | "EACH") that {@code quantity}/{@code quantityBefore}/{@code
+     * quantityAfter} are counted in for this row. {@code null} (every legacy row, every
+     * pack movement) means the row is in whole packs.
+     */
+    @Column(name = "baseUnit")
+    private String baseUnit;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "inventoryId", insertable = false, updatable = false)
     private Inventory inventory;
@@ -91,6 +100,16 @@ public class InventoryMovement extends CreatedAtEntity {
         return m;
     }
 
+    /**
+     * Marks this as a loose (cut-strip) movement whose quantities are counted in {@code baseUnit}
+     * pieces, not packs. Chainable off {@link #record}; a no-op (row stays pack-scale) when
+     * {@code baseUnit} is null.
+     */
+    public InventoryMovement inBaseUnit(String baseUnit) {
+        this.baseUnit = baseUnit;
+        return this;
+    }
+
     public String getPharmacyId() { return pharmacyId; }
 
     public String getInventoryId() { return inventoryId; }
@@ -112,6 +131,9 @@ public class InventoryMovement extends CreatedAtEntity {
     public String getReferenceId() { return referenceId; }
 
     public String getNotes() { return notes; }
+
+    /** Loose-movement base unit, or {@code null} when this row's quantities are in whole packs. */
+    public String getBaseUnit() { return baseUnit; }
 
     public Inventory getInventory() { return inventory; }
 

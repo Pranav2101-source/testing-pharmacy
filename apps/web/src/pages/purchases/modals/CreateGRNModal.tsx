@@ -408,8 +408,8 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
   return (
     <ModalShell icon={<Truck className="w-4 h-4 text-emerald-600" />} iconBg="bg-emerald-50"
       title="Gate Inward — New GRN" desc="DRAFT — confirm later to update stock" onClose={onClose}>
-      <form onSubmit={submit} className="flex flex-col flex-1 overflow-hidden">
-        <div className="overflow-y-auto flex-1 px-6 py-4 space-y-4">
+      <form onSubmit={submit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+        <div className="overflow-y-auto flex-1 min-h-0 px-6 py-4 space-y-4">
 
           {/* ── Header fields ──────────────────────────────────────────── */}
           <div className="grid grid-cols-4 gap-3">

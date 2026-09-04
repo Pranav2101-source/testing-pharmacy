@@ -2,10 +2,23 @@ import { useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { Loader2, FileX, AlertCircle, ArrowUp, ArrowDown } from "lucide-react";
 import { api, getErrorMessage } from "@/lib/api-client";
+import { baseUnitShort } from "@pharmacy/utils";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { REFERENCE_TYPE_LABEL, MOVEMENT_TYPE_CFG } from "../types";
 import type { LedgerEntry } from "../types";
+
+/** Amber unit suffix for a loose (cut-strip) row, whose numbers are in pieces not packs. */
+function UnitTag({ baseUnit }: { baseUnit: string | null }) {
+  if (!baseUnit) return null;
+  return <span className="ml-1 text-[10px] font-semibold text-amber-600">{baseUnitShort(baseUnit)}</span>;
+}
+
+/** A loose row counts pieces, not packs — tint it so the Qty / Before→After columns
+ *  don't read as one broken running total against the pack rows above and below. */
+const looseRowTint = (baseUnit: string | null) => (baseUnit ? "bg-amber-50/50" : "");
+const looseBeforeAfterTitle = (baseUnit: string | null) =>
+  baseUnit ? `Counted in ${baseUnitShort(baseUnit)} (individual pieces), not whole packs` : undefined;
 
 export function LedgerTab() {
   const [page,      setPage]      = useState(1);
@@ -92,7 +105,7 @@ export function LedgerTab() {
             ) : entries.length === 0 ? (
               <tr><td colSpan={9} className="py-24 text-center"><FileX className="w-10 h-10 text-slate-200 mx-auto mb-3" /><p className="text-slate-500 text-[14px] font-medium">No movements yet</p></td></tr>
             ) : entries.map((e) => (
-              <tr key={e.id} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
+              <tr key={e.id} className={cn("border-b border-slate-100 hover:bg-slate-50/50 transition-colors", looseRowTint(e.baseUnit))}>
                 <td className="px-4 py-3 text-[11px] text-slate-500 whitespace-nowrap">
                   {new Date(e.createdAt).toLocaleDateString("en-IN",{day:"2-digit",month:"short"})}<br />
                   <span className="text-slate-400">{new Date(e.createdAt).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</span>
@@ -111,8 +124,8 @@ export function LedgerTab() {
                     {e.direction}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-[13px] font-bold tabular-nums text-slate-800">{e.quantity}</td>
-                <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{e.quantityBefore} → {e.quantityAfter}</td>
+                <td className="px-4 py-3 text-[13px] font-bold tabular-nums text-slate-800">{e.quantity}<UnitTag baseUnit={e.baseUnit} /></td>
+                <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums" title={looseBeforeAfterTitle(e.baseUnit)}>{e.quantityBefore} → {e.quantityAfter}<UnitTag baseUnit={e.baseUnit} /></td>
                 <td className="px-4 py-3" title={e.notes ?? undefined}>
                   <span className="text-[11px] text-slate-500 font-medium">{e.referenceType ? (REFERENCE_TYPE_LABEL[e.referenceType] ?? e.referenceType) : "—"}</span>
                   {e.notes && (
@@ -154,7 +167,7 @@ export function LedgerTab() {
           ) : (
             <div className="divide-y divide-slate-100">
               {entries.map((e) => (
-                <div key={e.id} className="p-4">
+                <div key={e.id} className={cn("p-4", looseRowTint(e.baseUnit))}>
                   <div className="flex items-start justify-between gap-2 mb-1.5">
                     <div className="min-w-0">
                       <p className="text-[13px] font-semibold text-slate-800 truncate">{e.inventory?.medicine?.name ?? "—"}</p>
@@ -162,7 +175,7 @@ export function LedgerTab() {
                     </div>
                     <span className={cn("inline-flex items-center gap-1 text-[12px] font-bold flex-shrink-0", e.direction === "IN" ? "text-emerald-600" : "text-red-600")}>
                       {e.direction === "IN" ? <ArrowUp className="w-3 h-3" /> : <ArrowDown className="w-3 h-3" />}
-                      {e.quantity}
+                      {e.quantity}<UnitTag baseUnit={e.baseUnit} />
                     </span>
                   </div>
                   <div className="flex items-center gap-2 text-[11px] mb-1.5">
@@ -170,7 +183,7 @@ export function LedgerTab() {
                     <span className="text-slate-300">·</span>
                     <span className="font-mono text-slate-500">{e.inventory?.batchNumber ?? "—"}</span>
                     <span className="text-slate-300">·</span>
-                    <span className="text-slate-400 tabular-nums">{e.quantityBefore} → {e.quantityAfter}</span>
+                    <span className="text-slate-400 tabular-nums">{e.quantityBefore} → {e.quantityAfter}<UnitTag baseUnit={e.baseUnit} /></span>
                   </div>
                   <div className="flex items-center justify-between text-[11px] text-slate-400">
                     <span>{e.referenceType ? (REFERENCE_TYPE_LABEL[e.referenceType] ?? e.referenceType) : "—"} · {e.user?.name ?? "—"}</span>

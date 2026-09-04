@@ -71,7 +71,7 @@ export function GRNViewModal({ grnId, onClose }: { grnId: string; onClose: () =>
       desc={grn ? `${grn.supplier.name} · Goods Receipt Note` : "Loading…"}
       onClose={onClose}
     >
-      <div className="px-6 py-5 overflow-y-auto flex-1 space-y-4">
+      <div className="px-6 py-5 overflow-y-auto flex-1 min-h-0 space-y-4">
         {loading && (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-7 h-7 text-blue-400 animate-spin" />

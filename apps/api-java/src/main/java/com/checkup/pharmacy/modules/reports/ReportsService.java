@@ -122,6 +122,7 @@ public class ReportsService {
     private final PharmacyRepository pharmacyRepository;
     private final SupplierReturnRepository supplierReturnRepository;
     private final com.checkup.pharmacy.modules.supplier.SupplierRepository supplierRepository;
+    private final com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository;
 
     public ReportsService(InvoiceRepository invoiceRepository, InvoiceItemRepository invoiceItemRepository,
                           SalesReturnItemRepository salesReturnItemRepository,
@@ -132,7 +133,8 @@ public class ReportsService {
                           com.checkup.pharmacy.modules.purchase.PurchaseOrderRepository purchaseOrderRepository,
                           PharmacyRepository pharmacyRepository,
                           SupplierReturnRepository supplierReturnRepository,
-                          com.checkup.pharmacy.modules.supplier.SupplierRepository supplierRepository) {
+                          com.checkup.pharmacy.modules.supplier.SupplierRepository supplierRepository,
+                          com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository) {
         this.supplierRepository = supplierRepository;
         this.pharmacyRepository = pharmacyRepository;
         this.supplierReturnRepository = supplierReturnRepository;
@@ -145,6 +147,7 @@ public class ReportsService {
         this.grnRepository = grnRepository;
         this.grnItemRepository = grnItemRepository;
         this.purchaseOrderRepository = purchaseOrderRepository;
+        this.overrideRepository = overrideRepository;
     }
 
     // ── Sales ────────────────────────────────────────────────────────────────
@@ -314,6 +317,15 @@ public class ReportsService {
         var quality = new MarginReportResponse.DataQuality(round2(costedRevenuePct),
                 nzLong(totals.getLinesMissingCost()), round2(revenueMissingCost), nzLong(totals.getLineCount()));
 
+        // Null, not a zeroed record, when this pharmacy has never sold anything loose in the
+        // period — the panel below only renders the bar when there is something to show.
+        var looseTotals = invoiceItemRepository.looseSalesTotals(pharmacyId, f, t);
+        MarginReportResponse.LooseSales looseSales = nzLong(looseTotals.getBillCount()) > 0
+                ? new MarginReportResponse.LooseSales(round2(nz(looseTotals.getRevenueExGst())),
+                        nzLong(looseTotals.getPiecesSold()), nzLong(looseTotals.getLineCount()),
+                        nzLong(looseTotals.getBillCount()))
+                : null;
+
         // Both lists are enriched from ONE batch lookup — two calls to
         // findByIdInWithMedicine would be two round trips for overlapping ids.
         var contributorRows = invoiceItemRepository.marginByInventory(pharmacyId, f, t, Limit.of(limit));
@@ -333,6 +345,7 @@ public class ReportsService {
                 round2(grossProfit),
                 round2(percentOf(grossProfit, netRevenue)),
                 nzLong(totals.getUnitsSold()),
+                looseSales,
                 quality,
                 toMarginItems(contributorRows, byId),
                 toMarginItems(lossRows, byId));
@@ -806,8 +819,8 @@ public class ReportsService {
         // of them away. The endpoint already advertised a limit; now it actually has one.
         return inventoryRepository.findExpiryAlerts(TenantContext.pharmacyId(), threshold,
                         PageRequest.of(0, limit)).stream()
-                .map(i -> new ExpiryItemResponse(i.getId(), i.getQuantity(), i.getExpiryDate(), i.getBatchNumber(),
-                        i.getMrp(), new ExpiryItemResponse.MedicineRef(
+                .map(i -> new ExpiryItemResponse(i.getId(), i.getQuantity(), i.getLooseUnits(), i.getExpiryDate(),
+                        i.getBatchNumber(), i.getMrp(), new ExpiryItemResponse.MedicineRef(
                                 i.getMedicine() != null ? i.getMedicine().getName() : null)))
                 .toList();
     }
@@ -961,7 +974,9 @@ public class ReportsService {
                             // silently disagree with the GST totals beside it.
                             r.getHsnCode() != null ? r.getHsnCode() : "UNCLASSIFIED",
                             r.getGstRate() != null ? r.getGstRate() : BigDecimal.ZERO,
-                            r.getQuantity() != null ? r.getQuantity() : 0L,
+                            // Loose lines are summed as fractional pack-equivalents; round the
+                            // period total to a whole strip count for the return.
+                            r.getQuantity() != null ? Math.round(r.getQuantity()) : 0L,
                             round2(nz(r.getTaxableAmount())), round2(cgst), round2(sgst), round2(igst),
                             round2(cgst.add(sgst).add(igst)), round2(nz(r.getAmount())));
                 })
@@ -1024,6 +1039,7 @@ public class ReportsService {
                         .collect(java.util.stream.Collectors.toMap(
                                 InventoryMovementRepository.LastSaleRow::getInventoryId,
                                 InventoryMovementRepository.LastSaleRow::getLastSale));
+        Map<String, Integer> effectiveUpp = effectiveUnitsPerPackByMedicineId(pharmacyId, activeItems);
 
         List<DeadStockResponse.Item> items = new ArrayList<>();
         for (Inventory inv : activeItems) {
@@ -1031,7 +1047,9 @@ public class ReportsService {
             if (lastSale != null && !lastSale.isBefore(threshold)) {
                 continue; // sold since the threshold — not dead stock
             }
-            BigDecimal qty = BigDecimal.valueOf(inv.getQuantity());
+            // Values a batch down to nothing but an opened strip's remainder correctly — see
+            // packEquivalentQty. A batch's `quantity` field itself stays a pack count, unchanged.
+            BigDecimal qty = packEquivalentQty(inv, effectiveUpp.getOrDefault(inv.getMedicineId(), 1));
             BigDecimal costAtRisk = round2(qty.multiply(inv.getPurchaseRate()));
             BigDecimal retailValue = round2(qty.multiply(inv.getMrp()));
             var m = inv.getMedicine();
@@ -1039,7 +1057,7 @@ public class ReportsService {
                     ? new DeadStockResponse.MedicineRef(m.getId(), m.getName(), m.getGenericName(), m.getForm(), m.getCategory())
                     : null;
             items.add(new DeadStockResponse.Item(inv.getId(), inv.getBatchNumber(), inv.getExpiryDate(),
-                    inv.getQuantity(), costAtRisk, retailValue, lastSale, medicineRef));
+                    inv.getQuantity(), inv.getLooseUnits(), costAtRisk, retailValue, lastSale, medicineRef));
         }
         items.sort((a, b) -> b.costAtRisk().compareTo(a.costAtRisk()));
 
@@ -1051,7 +1069,9 @@ public class ReportsService {
     @Transactional(readOnly = true)
     public ValuationResponse inventoryValuation(String groupByParam) {
         String groupBy = "category".equals(groupByParam) ? "category" : "medicine";
-        List<Inventory> items = inventoryRepository.findActiveWithMedicine(TenantContext.pharmacyId());
+        String pharmacyId = TenantContext.pharmacyId();
+        List<Inventory> items = inventoryRepository.findActiveWithMedicine(pharmacyId);
+        Map<String, Integer> effectiveUpp = effectiveUnitsPerPackByMedicineId(pharmacyId, items);
 
         record Agg(String medicineName, String category, BigDecimal costValue, BigDecimal retailValue, int totalQty) {
         }
@@ -1061,7 +1081,10 @@ public class ReportsService {
             String key = "category".equals(groupBy)
                     ? (m != null && m.getCategory() != null ? m.getCategory() : "Uncategorized")
                     : (m != null ? m.getName() : "Unknown");
-            BigDecimal qty = BigDecimal.valueOf(inv.getQuantity());
+            // See packEquivalentQty — folds a batch's loose remainder into its value instead of
+            // pricing it at nothing. `totalQty` below is still the plain pack count (unchanged
+            // meaning); only the money is corrected.
+            BigDecimal qty = packEquivalentQty(inv, effectiveUpp.getOrDefault(inv.getMedicineId(), 1));
             BigDecimal cost = qty.multiply(inv.getPurchaseRate());
             BigDecimal retail = qty.multiply(inv.getMrp());
             Agg existing = grouped.get(key);
@@ -1115,6 +1138,53 @@ public class ReportsService {
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /**
+     * A batch's value multiplier, in pack-equivalent units: whole packs plus whatever the
+     * loose remainder is worth as a fraction of a pack. Identical to {@code quantity} for a
+     * batch with no loose remainder — the overwhelming majority — so this only changes an
+     * answer for a batch that has had a strip cut open for cut-strip selling.
+     *
+     * <p>Reports used to read {@code Inventory.quantity} alone for every cost/valuation
+     * figure, which priced a batch reduced to nothing but a loose remainder (0 packs, some
+     * pieces) at exactly zero — real, sellable stock that had simply become invisible to
+     * valuation and dead-stock exposure. This is the fix, kept local to the money
+     * calculations: {@code quantity} itself keeps meaning "sealed packs" everywhere else.
+     */
+    private static BigDecimal packEquivalentQty(Inventory inv, int effectiveUnitsPerPack) {
+        if (inv.getLooseUnits() <= 0 || effectiveUnitsPerPack <= 1) {
+            return BigDecimal.valueOf(inv.getQuantity());
+        }
+        return BigDecimal.valueOf(inv.getQuantity())
+                .add(BigDecimal.valueOf(inv.getLooseUnits())
+                        .divide(BigDecimal.valueOf(effectiveUnitsPerPack), 10, RoundingMode.HALF_UP));
+    }
+
+    /**
+     * The effective (this pharmacy's override, else the catalogue's) units-per-pack for every
+     * medicine behind a list of batches — one batched lookup rather than a query per row.
+     * Medicines with no pack size on record are absent from the map; callers default to 1.
+     */
+    private Map<String, Integer> effectiveUnitsPerPackByMedicineId(String pharmacyId, List<Inventory> batches) {
+        List<String> medicineIds = batches.stream().map(Inventory::getMedicineId).distinct().toList();
+        if (medicineIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Integer> byId = new java.util.HashMap<>();
+        for (Inventory inv : batches) {
+            var m = inv.getMedicine();
+            if (m != null && m.getUnitsPerPack() != null) {
+                byId.put(inv.getMedicineId(), m.getUnitsPerPack());
+            }
+        }
+        // Overrides win over the catalogue value, exactly as billing resolves it.
+        for (var override : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, medicineIds)) {
+            if (override.getUnitsPerPack() != null) {
+                byId.put(override.getMedicineId(), override.getUnitsPerPack());
+            }
+        }
+        return byId;
+    }
 
     private static int clamp(Integer value, int def, int min, int max) {
         int v = value != null ? value : def;

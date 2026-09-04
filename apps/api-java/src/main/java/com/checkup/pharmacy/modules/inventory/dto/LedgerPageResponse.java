@@ -16,6 +16,12 @@ import java.util.List;
  */
 public record LedgerPageResponse(List<Entry> items, long total, int page, int limit) {
 
+    /**
+     * {@code baseUnit} is set only on a loose (cut-strip) row — the unit ("TABLET" | "CAPSULE" |
+     * "ML" | "GM" | "EACH") that {@code quantity}/{@code quantityBefore}/{@code quantityAfter}
+     * are counted in for that row. {@code null} means the row is in whole packs, as every
+     * legacy and pack row is.
+     */
     public record Entry(
             String id,
             String inventoryId,
@@ -27,6 +33,7 @@ public record LedgerPageResponse(List<Entry> items, long total, int page, int li
             String referenceType,
             String referenceId,
             String notes,
+            String baseUnit,
             InventoryRef inventory,
             UserRef user,
             Instant createdAt

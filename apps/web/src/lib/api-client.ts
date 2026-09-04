@@ -188,6 +188,14 @@ export function getErrorMessage(err: unknown, fallback: string): string {
   if (status === 403) {
     return "You don't have permission to do this. Ask an owner or manager for access.";
   }
+  // GlobalExceptionHandler.handleNoResource emits exactly this prefix for any URL with
+  // no matching route — unlike a domain 404 ("Medicine not found: …"), it is never a
+  // legitimate business outcome, only a frontend built against a newer API than the
+  // server is actually running. The raw path is meaningless to a pharmacist; what they
+  // need is "this isn't ready yet", not a stack of unfamiliar punctuation.
+  if (status === 404 && serverMsg?.startsWith("No such endpoint:")) {
+    return "This feature isn't available yet on this server — it needs an update. Nothing was changed.";
+  }
   if (status && status >= 500 && (!serverMsg || serverMsg === "Internal server error")) {
     // A bare "something went wrong" is a dead end for everyone: the pharmacist has
     // nothing to report, and support has no way to find the one request that failed

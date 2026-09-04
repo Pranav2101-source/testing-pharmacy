@@ -11,6 +11,8 @@ export type InventoryItem = {
   batchNumber:      string;
   expiryDate:       string;
   quantity:         number;
+  /** Loose pieces from an opened pack (cut-strip selling). 0 for pack-only stock. */
+  looseUnits?:      number;
   reservedQuantity: number;
   purchaseRate:     number;
   mrp:              number;
@@ -31,6 +33,13 @@ export type InventoryItem = {
     gstRate:     number;
     isActive:    boolean;
     brand:       { id: string; name: string } | null;
+    unitsPerPack?:   number | null;
+    baseUnit?:       string | null;
+    allowLooseSale?: boolean;
+    looseByDefault?: boolean;
+    /** Catalogue values (not pharmacy-specific) — drive the Inventory "enable loose selling" flow. */
+    schedule?:       string | null;
+    packSize?:       string | null;
   };
   shelf: { id: string; code: string; rack: { id: string; code: string; name: string } } | null;
 };
@@ -44,6 +53,9 @@ export type LedgerEntry = {
   quantityAfter:  number;
   referenceType:  string | null;
   notes:          string | null;
+  // Set only on a loose (cut-strip) row: the unit ("TABLET" | "CAPSULE" | "ML" | "GM" | "EACH")
+  // that quantity / before / after are counted in for that row. null → the row is in whole packs.
+  baseUnit:       string | null;
   createdAt:      string;
   inventory: { batchNumber: string; medicine: { name: string; genericName: string | null } };
   user:       { id: string; name: string };

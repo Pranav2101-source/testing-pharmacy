@@ -1,6 +1,89 @@
 "use client";
 import { create } from "zustand";
-import { calcGstFromMrp, calcInvoiceTotals } from "@pharmacy/utils";
+import { calcGstFromMrp, calcInvoiceTotals, perPieceMrp } from "@pharmacy/utils";
+
+export type SaleUnit = "PACK" | "LOOSE";
+
+/**
+ * A problem with one cart line that the server WILL reject at save. Caught here so
+ * the cashier fixes it in the cart with one click, not after a bounced round-trip
+ * mid-queue. Messages mirror BillingService's own 422s.
+ */
+export type LineIssue = {
+  code: "WHOLE_PACK_LOOSE" | "SCHEDULE_X_LOOSE" | "LOOSE_NOT_ENABLED" | "NO_PACK_SIZE";
+  message:  string;
+  fixLabel: string;
+  /** The exact patch that clears it — applied verbatim by patchLine(). */
+  fix: Partial<CartItem>;
+  /**
+   * A second, deliberate way past the issue — only WHOLE_PACK_LOOSE has one:
+   * "cut it anyway" when the pharmacist really does want to open a sealed strip.
+   * Applied verbatim by patchLine() just like {@link fix}.
+   */
+  override?: { label: string; patch: Partial<CartItem> };
+};
+
+/** How many SEALED strips a loose line will cut open (0 if the open remainder covers it). */
+export function looseStripsOpened(item: Pick<CartItem, "saleUnit" | "quantity" | "unitsPerPack" | "looseUnits">): number {
+  if (item.saleUnit !== "LOOSE") return 0;
+  const upp = item.unitsPerPack ?? 1;
+  if (upp <= 1) return 0;
+  const fromSealed = Math.max(0, item.quantity - (item.looseUnits ?? 0));
+  return Math.ceil(fromSealed / upp);
+}
+
+/**
+ * Returns the blocking issue on a line, or null. Pure — safe to call in render and
+ * from the save handler.
+ */
+export function lineIssue(item: CartItem): LineIssue | null {
+  if (item.saleUnit !== "LOOSE") return null;
+  const upp = item.unitsPerPack ?? 1;
+  const name = item.medicineName;
+
+  if (upp <= 1) {
+    return {
+      code: "NO_PACK_SIZE",
+      message: `"${name}" has no pack size on record, so it can't be sold loose.`,
+      fixLabel: "Sell as Strip",
+      fix: { saleUnit: "PACK", quantity: 1 },
+    };
+  }
+  if (!item.allowLooseSale) {
+    return {
+      code: "LOOSE_NOT_ENABLED",
+      message: `Loose selling is off for "${name}".`,
+      fixLabel: "Sell as Strip",
+      fix: { saleUnit: "PACK", quantity: Math.max(1, Math.ceil(item.quantity / upp)) },
+    };
+  }
+  if ((item.schedule ?? "").trim().toUpperCase() === "X") {
+    return {
+      code: "SCHEDULE_X_LOOSE",
+      message: `"${name}" is Schedule X — it must be sold in the original pack.`,
+      fixLabel: "Sell as Strip",
+      fix: { saleUnit: "PACK", quantity: Math.max(1, Math.ceil(item.quantity / upp)) },
+    };
+  }
+  // Whole packs asked for as loose — only a problem if it would cut SEALED strips
+  // AND there are enough sealed strips on the batch to sell as packs instead. If
+  // stock falls short, cutting is the only way to fill the line (mirrors
+  // BillingService's guard) — flagging it would send the cashier to a dead end.
+  // A line the cashier has explicitly chosen to cut anyway (forceLoose) is fine.
+  const q = item.quantity;
+  const packs = q / upp;
+  const enoughSealedStrips = item.availableStock == null || item.availableStock >= packs;
+  if (q >= upp && q % upp === 0 && (item.looseUnits ?? 0) < q && enoughSealedStrips && !item.forceLoose) {
+    return {
+      code: "WHOLE_PACK_LOOSE",
+      message: `That's ${packs} full strip${packs === 1 ? "" : "s"} of "${name}" — sell it as Strip so the foil stays sealed.`,
+      fixLabel: `Sell ${packs} Strip${packs === 1 ? "" : "s"}`,
+      fix: { saleUnit: "PACK", quantity: packs },
+      override: { label: "Cut it anyway", patch: { forceLoose: true } },
+    };
+  }
+  return null;
+}
 
 export type CartItem = {
   inventoryId:    string;
@@ -11,6 +94,7 @@ export type CartItem = {
   location?:      string;
   batchNumber:    string;
   expiryDate:     string;
+  /** Always the printed PACK MRP. Per-piece price for a loose line is derived, never stored here. */
   mrp:            number;
   quantity:       number;
   /** Scheme quantity given free (10+1). Not charged; still leaves the shelf. */
@@ -18,6 +102,18 @@ export type CartItem = {
   discount:       number;
   gstRate:        number;
   availableStock?: number;
+  // ── Loose (cut-strip) selling ─────────────────────────────────────────────
+  /** PACK (default) — quantity is strips/bottles. LOOSE — quantity is individual pieces. */
+  saleUnit?:      SaleUnit;
+  /** Effective pack size for this medicine (from the batch's medicine.unitsPerPack). */
+  unitsPerPack?:  number;
+  baseUnit?:      string;
+  /** This pharmacy has enabled cut-strip selling for the medicine — shows the Strip/Tab toggle. */
+  allowLooseSale?: boolean;
+  /** Loose pieces already open on the batch — part of what a LOOSE line can draw on. */
+  looseUnits?:    number;
+  /** Cashier waived the "that's N full strips" guard for this line — see LineIssue.override. */
+  forceLoose?:    boolean;
   /**
    * The prescribed line this sale fulfils. Only ever set for a substitution: the
    * server attributes everything else by matching the medicine, which cannot work
@@ -59,7 +155,7 @@ export type BillingMeta = {
  * and freeQty is optional because most sales have no scheme — recompute() fills
  * in 0. The stored CartItem always carries a concrete freeQty.
  */
-type NewCartItem =
+export type NewCartItem =
   Omit<CartItem, "rate" | "taxableAmount" | "cgst" | "sgst" | "igst" | "amount" | "freeQty">
   & { freeQty?: number };
 
@@ -72,6 +168,10 @@ type BillingStore = {
   updateQty: (inventoryId: string, qty: number) => void;
   updateFreeQty: (inventoryId: string, freeQty: number) => void;
   updateDiscount: (inventoryId: string, discount: number) => void;
+  /** Switch a line between whole-pack and loose (cut-strip) selling. Re-clamps the quantity to the new unit. */
+  setSaleUnit: (inventoryId: string, saleUnit: SaleUnit) => void;
+  /** Apply a verbatim patch to one line (used by the one-click "Fix" on a line issue). */
+  patchLine: (inventoryId: string, patch: Partial<CartItem>) => void;
   /** Attributes a cart line to a prescribed line. Pass null to clear. */
   linkToPrescriptionItem: (inventoryId: string, prescriptionItemId: string | null) => void;
   setMeta: (patch: Partial<BillingMeta>) => void;
@@ -155,16 +255,36 @@ function clampLine(quantity: number, freeQty: number, availableStock?: number): 
   return { quantity: paid, freeQty: Math.min(free, Math.max(0, availableStock - paid)) };
 }
 
+/**
+ * Individual pieces a LOOSE line may draw on: the unreserved packs, opened into
+ * pieces, plus whatever is already loose on the batch. Undefined when stock was
+ * never resolved (same non-cap rule as {@link clampQuantity}).
+ */
+function loosePiecesAvailable(item: Pick<CartItem, "availableStock" | "unitsPerPack" | "looseUnits">): number | undefined {
+  if (item.availableStock == null || !item.unitsPerPack || item.unitsPerPack <= 1) return undefined;
+  return item.availableStock * item.unitsPerPack + (item.looseUnits ?? 0);
+}
+
 function recompute(item: NewCartItem & Partial<CartItem>): CartItem {
   const isInterstate = false; // item-level calc is always intra-state; IGST toggled at invoice level
+  const saleUnit: SaleUnit = item.saleUnit === "LOOSE" ? "LOOSE" : "PACK";
+  const isLoose = saleUnit === "LOOSE";
+
+  // Loose lines are counted, priced and capped in individual pieces; pack lines
+  // are unchanged. effMrp is the per-piece price for a loose line (pack MRP /
+  // unitsPerPack) and the pack MRP otherwise — the SAME split the Java billing
+  // service does, so the cart preview matches the committed bill.
+  const effMrp = isLoose ? perPieceMrp(item.mrp, item.unitsPerPack) : item.mrp;
+  const cap    = isLoose ? loosePiecesAvailable(item) : item.availableStock;
+
   // Clamped here rather than at each call site: addItem, the addItem merge branch,
-  // updateQty and replaceItem all funnel through this function, so a future entry
-  // path cannot accidentally skip the cap.
-  const { quantity, freeQty } = clampLine(item.quantity, item.freeQty ?? 0, item.availableStock);
+  // updateQty, setSaleUnit and replaceItem all funnel through this function, so a
+  // future entry path cannot accidentally skip the cap.
+  const { quantity, freeQty } = clampLine(item.quantity, item.freeQty ?? 0, cap);
   // Free units are NOT charged: every money figure below is derived from the paid
   // quantity alone. Only the stock cap above and the backend's decrement see the sum.
   const { taxableAmount, cgst, sgst, igst, totalAmount } = calcGstFromMrp(
-    item.mrp,
+    effMrp,
     quantity,
     item.discount,
     item.gstRate,
@@ -186,7 +306,15 @@ function recompute(item: NewCartItem & Partial<CartItem>): CartItem {
     discount:       item.discount,
     gstRate:        item.gstRate,
     availableStock: item.availableStock,
-    rate:           Math.round(item.mrp * (1 - item.discount / 100) * 100) / 100,
+    saleUnit,
+    unitsPerPack:   item.unitsPerPack,
+    baseUnit:       item.baseUnit,
+    allowLooseSale: item.allowLooseSale,
+    looseUnits:     item.looseUnits,
+    // Cleared whenever the line leaves loose selling — the waiver is specific to
+    // cutting a sealed strip for this exact quantity.
+    forceLoose:     saleUnit === "LOOSE" ? item.forceLoose : undefined,
+    rate:           Math.round(effMrp * (1 - item.discount / 100) * 100) / 100,
     taxableAmount,
     cgst,
     sgst,
@@ -263,6 +391,31 @@ export const useBillingStore = create<BillingStore>((set, get) => ({
     }));
   },
 
+  setSaleUnit(inventoryId, saleUnit) {
+    set((s) => ({
+      items: s.items.map((i) => {
+        if (i.inventoryId !== inventoryId) return i;
+        if (saleUnit === "LOOSE" && !(i.allowLooseSale && (i.unitsPerPack ?? 0) > 1)) return i;
+        // Switching to loose: seed the quantity from the strips already on the line
+        // so "2 strips" becomes "20 tablets", not "2 tablets". Switching back divides.
+        const upp = i.unitsPerPack ?? 1;
+        const nextQty = i.saleUnit === saleUnit
+          ? i.quantity
+          : saleUnit === "LOOSE"
+            ? i.quantity * upp
+            : Math.max(1, Math.round(i.quantity / upp));
+        // recompute() re-clamps against the new unit's ceiling and re-prices per piece.
+        return recompute({ ...i, saleUnit, quantity: nextQty, freeQty: 0 });
+      }),
+    }));
+  },
+
+  patchLine(inventoryId, patch) {
+    set((s) => ({
+      items: s.items.map((i) => (i.inventoryId === inventoryId ? recompute({ ...i, ...patch }) : i)),
+    }));
+  },
+
   linkToPrescriptionItem(inventoryId, prescriptionItemId) {
     set((s) => ({
       items: s.items.map((i) => {
@@ -304,7 +457,14 @@ export const useBillingStore = create<BillingStore>((set, get) => ({
     // (s.15(3) CGST Act), so the tax shown in the cart is the tax that will be charged.
     // The server computes the same way — see GstCalculator.calcInvoiceTotals.
     return calcInvoiceTotals(
-      items.map((i) => ({ mrp: i.mrp, quantity: i.quantity, discount: i.discount, gstRate: i.gstRate })),
+      items.map((i) => ({
+        // A loose line contributes its per-piece price × pieces — the same figure
+        // the server stores per line, so the header equals the sum of the lines.
+        mrp:      i.saleUnit === "LOOSE" ? perPieceMrp(i.mrp, i.unitsPerPack) : i.mrp,
+        quantity: i.quantity,
+        discount: i.discount,
+        gstRate:  i.gstRate,
+      })),
       meta.isInterstate,
       meta.billDiscountPct,
     );

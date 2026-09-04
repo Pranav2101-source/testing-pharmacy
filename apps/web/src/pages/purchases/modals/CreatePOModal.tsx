@@ -295,8 +295,8 @@ export function CreatePOModal({ suppliers: initialSuppliers, onClose, onDone, in
   return (
     <ModalShell icon={<FileText className="w-4 h-4 text-blue-600" />} iconBg="bg-blue-50"
       title="New Purchase Order" desc="Created as DRAFT — send to supplier when ready" onClose={onClose}>
-      <form onSubmit={submit} className="flex flex-col flex-1 overflow-hidden">
-        <div className="overflow-y-auto flex-1 px-6 py-4 space-y-4">
+      <form onSubmit={submit} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+        <div className="overflow-y-auto flex-1 min-h-0 px-6 py-4 space-y-4">
           <div className="grid grid-cols-4 gap-3">
             <div className="col-span-2">
               <FieldLabel>Distributor / Supplier *</FieldLabel>

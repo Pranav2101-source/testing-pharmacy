@@ -35,7 +35,7 @@ function SupplierHistoryModal({ supplier, onClose }: { supplier: FullSupplier; o
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
       <motion.div initial={{ opacity: 0, scale: 0.96, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.96, y: 8 }} transition={{ duration: 0.16 }}
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[86vh] flex flex-col">
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
           <div>
             <h2 className="text-[15px] font-bold text-slate-900">Purchase History</h2>
@@ -60,7 +60,7 @@ function SupplierHistoryModal({ supplier, onClose }: { supplier: FullSupplier; o
           </div>
           <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-slate-100 flex items-center justify-center flex-shrink-0"><X className="w-4 h-4 text-slate-400" /></button>
         </div>
-        <div className="flex-1 overflow-y-auto p-5">
+        <div className="flex-1 min-h-0 overflow-y-auto p-5">
           {loading ? (
             <div className="flex items-center justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-blue-400" /></div>
           ) : !data ? (
@@ -249,7 +249,7 @@ export function DistributorsTab({ onSupplierAdded }: { onSupplierAdded: (s: Full
                 <td className="px-4 py-3 text-[12px] text-slate-500">{s.paymentTerms ?? "—"}</td>
                 <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{(s._count as any)?.purchaseOrders ?? 0}</td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-1.5">
                     <button onClick={() => { setEditing(s); setModal("edit"); }}
                       className="flex items-center gap-1 text-[11px] font-semibold text-blue-600 border border-blue-200 hover:bg-blue-50 rounded-md px-2 py-1 transition-colors">
                       <Edit2 className="w-3 h-3" />Edit

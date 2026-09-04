@@ -152,7 +152,7 @@ export function PurchaseTab({ suppliers, overdueCount = 0, focusOverdueNonce = 0
                     <button
                       onClick={() => setViewGrnId(grn.id)}
                       title="View GRN details"
-                      className="w-7 h-7 rounded-lg hover:bg-blue-100 flex items-center justify-center text-slate-400 hover:text-blue-600 hover:scale-110 active:scale-95 transition-all opacity-0 group-hover:opacity-100"
+                      className="w-7 h-7 rounded-lg hover:bg-blue-100 flex items-center justify-center text-slate-400 hover:text-blue-600 hover:scale-110 active:scale-95 transition-all"
                     >
                       <Eye className="w-3.5 h-3.5" />
                     </button>

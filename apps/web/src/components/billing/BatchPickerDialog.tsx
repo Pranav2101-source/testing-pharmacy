@@ -1,6 +1,6 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { X, Clock, Layers, MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,8 @@ export type InventoryBatch = {
   expiryDate:       string;
   mrp:              number;
   quantity:         number;
+  /** Loose pieces from an opened pack (cut-strip selling). 0 for pack-only stock. */
+  looseUnits?:      number;
   reservedQuantity?: number;
   location?:        string;
   shelf?:           { code: string; rack: { code: string; name: string } };
@@ -19,6 +21,12 @@ export type InventoryBatch = {
     hsnCode:  string | null;
     gstRate:  number;
     isActive: boolean;
+    /** Effective pack size (this pharmacy's override, else the catalogue's). */
+    unitsPerPack?:   number | null;
+    baseUnit?:       string | null;
+    /** This pharmacy has enabled cut-strip selling for this medicine. */
+    allowLooseSale?: boolean;
+    looseByDefault?: boolean;
   };
 };
 
@@ -55,6 +63,47 @@ export const BatchPickerDialog = memo(function BatchPickerDialog({
   onSelect:     (batch: InventoryBatch) => void;
   onClose:      () => void;
 }) {
+  // Batch that already has cut tablets floats to the top, so a loose sale draws
+  // from the open strip instead of cutting a new one.
+  const sorted = [...batches].sort((a, b) => (b.looseUnits ?? 0 ? 1 : 0) - (a.looseUnits ?? 0 ? 1 : 0));
+  const selectable = sorted.map((b) => expiryStatus(b.expiryDate).color !== "red" && b.medicine.isActive);
+  const firstSelectable = selectable.findIndex(Boolean);
+
+  // Keyboard-first, same as the search combobox that opens this dialog: a medicine
+  // with more than one batch is the pharmacy norm (restocked constantly), not the
+  // exception, so forcing a reach for the mouse here broke the keyboard flow on
+  // exactly the common case.
+  const [cursor, setCursor] = useState(Math.max(0, firstSelectable));
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    listRef.current?.focus();
+  }, []);
+
+  function move(delta: 1 | -1) {
+    setCursor((c) => {
+      let next = c;
+      for (let i = 0; i < sorted.length; i++) {
+        next = (next + delta + sorted.length) % sorted.length;
+        if (selectable[next]) return next;
+      }
+      return c;
+    });
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      const batch = sorted[cursor];
+      if (batch && selectable[cursor]) onSelect(batch);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      onClose();
+    }
+  }
+
   return (
     <motion.div
       className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 backdrop-blur-sm p-4"
@@ -76,7 +125,7 @@ export const BatchPickerDialog = memo(function BatchPickerDialog({
             <p className="text-[10px] font-bold text-blue-500 uppercase tracking-wider mb-0.5">Select a Batch</p>
             <p className="font-bold text-slate-900 text-[15px] truncate">{medicineName}</p>
             <p className="text-[11px] text-slate-400">
-              {batches.length} batch{batches.length !== 1 ? "es" : ""} available · FIFO order
+              {batches.length} batch{batches.length !== 1 ? "es" : ""} available · FIFO order · ↑↓ then Enter
             </p>
           </div>
           <button
@@ -88,24 +137,37 @@ export const BatchPickerDialog = memo(function BatchPickerDialog({
         </div>
 
         {/* Batch list */}
-        <div className="p-2 max-h-[420px] overflow-y-auto">
-          {batches.map((batch) => {
+        <div
+          ref={listRef}
+          role="listbox"
+          tabIndex={0}
+          onKeyDown={handleKeyDown}
+          className="p-2 max-h-[420px] overflow-y-auto focus:outline-none"
+        >
+          {sorted.map((batch, i) => {
             const status       = expiryStatus(batch.expiryDate);
             const discontinued = !batch.medicine.isActive;
             const isDisabled   = status.color === "red" || discontinued;
             const locationLabel = getLocationLabel(batch);
             const available     = batch.quantity - (batch.reservedQuantity ?? 0);
+            const open          = batch.looseUnits ?? 0;
+            const isCursor      = i === cursor;
 
             return (
               <button
                 key={batch.id}
+                role="option"
+                aria-selected={isCursor}
+                onMouseEnter={() => !isDisabled && setCursor(i)}
                 onClick={() => !isDisabled && onSelect(batch)}
                 disabled={isDisabled}
                 className={cn(
                   "w-full flex items-start gap-3 px-4 py-3 rounded-xl transition-colors text-left mb-0.5",
                   isDisabled
                     ? "opacity-50 cursor-not-allowed bg-slate-50"
-                    : "hover:bg-blue-50 active:bg-blue-100 cursor-pointer"
+                    : isCursor
+                      ? "bg-blue-100/70 ring-1 ring-blue-300"
+                      : "hover:bg-blue-50 active:bg-blue-100 cursor-pointer"
                 )}
               >
                 {/* Expiry colour bar */}
@@ -141,6 +203,9 @@ export const BatchPickerDialog = memo(function BatchPickerDialog({
                         {status.days}d left
                       </span>
                     )}
+                    {isCursor && !isDisabled && (
+                      <span className="text-[9px] font-bold bg-blue-600 text-white px-1.5 py-0.5 rounded-full uppercase tracking-wide">↵</span>
+                    )}
                   </div>
 
                   {/* Expiry + location row */}
@@ -171,6 +236,9 @@ export const BatchPickerDialog = memo(function BatchPickerDialog({
                   )}>
                     {available} avail.
                   </div>
+                  {open > 0 && (
+                    <div className="text-[10px] font-bold text-amber-600 mt-0.5">{open} open</div>
+                  )}
                 </div>
               </button>
             );

@@ -65,9 +65,15 @@ public class InventoryController {
             @RequestParam(defaultValue = "false") boolean lowStock,
             @RequestParam(defaultValue = "false") boolean nearExpiry,
             @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "false") boolean hasLoose,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int limit) {
-        return ApiResponse.ok(inventoryService.list(search, medicineId, inStock, lowStock, nearExpiry, status, page, limit));
+            @RequestParam(defaultValue = "20") int limit,
+            // Two extra COUNT queries the dashboard's alert badge needs — every other
+            // caller (batch pickers, loose-sale setup, the loose-overflow split) fetches
+            // this same endpoint purely for its item rows and never reads alertCounts, so
+            // defaulting this off for them cuts two unconditional round trips per call.
+            @RequestParam(defaultValue = "true") boolean includeAlertCounts) {
+        return ApiResponse.ok(inventoryService.list(search, medicineId, inStock, lowStock, nearExpiry, status, hasLoose, page, limit, includeAlertCounts));
     }
 
     @GetMapping("/{id}")

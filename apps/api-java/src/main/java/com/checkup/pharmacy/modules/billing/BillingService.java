@@ -462,15 +462,28 @@ public class BillingService {
         // had ever set — thousands of rows on a customised catalogue — and discard all
         // but the few on this bill, on every single sale.
         Map<String, BigDecimal> gstOverrideByMedicineId = new HashMap<>();
+        Set<String> looseAllowedMedicineIds = new HashSet<>();
+        Map<String, Integer> looseUppOverrideByMedicineId = new HashMap<>();
         for (PharmacyMedicineOverride o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, medicineIds)) {
             if (o.getGstRate() != null) {
                 gstOverrideByMedicineId.put(o.getMedicineId(), o.getGstRate());
             }
+            if (o.isAllowLooseSale()) {
+                looseAllowedMedicineIds.add(o.getMedicineId());
+            }
+            if (o.getUnitsPerPack() != null) {
+                looseUppOverrideByMedicineId.put(o.getMedicineId(), o.getUnitsPerPack());
+            }
         }
 
         Instant now = Instant.now();
+        // unitsPerPack: 1 for a pack line. loose: this line sells pieces, so gst/rate/
+        // storedPurchaseRate are per-piece and the batch is decremented in pieces below.
+        // The line's stored `mrp` is ALWAYS the printed pack MRP (a reprint of a loose
+        // sale then shows the real strip MRP); the per-piece price charged is `rate`.
         record ResolvedLine(Inventory batch, InvoiceItemRequest req, BigDecimal gstRate, GstCalculator.MrpGstBreakdown gst,
-                            BigDecimal rate, String location) {
+                            BigDecimal rate, BigDecimal storedPurchaseRate, int unitsPerPack,
+                            boolean loose, String location) {
         }
         List<ResolvedLine> lines = new ArrayList<>();
         List<GstCalculator.MrpLineInput> totalsInput = new ArrayList<>();
@@ -490,17 +503,97 @@ public class BillingService {
                         "Batch \"" + batch.getBatchNumber() + "\" of \"" + batch.getMedicine().getName() + "\" expired on " + batch.getExpiryDate());
             }
 
+            // ── Loose (cut-strip) line: validate it is permitted, then price per piece ──
+            boolean loose = item.isLoose();
+            int unitsPerPack = 1;
+            if (loose) {
+                if (!looseAllowedMedicineIds.contains(batch.getMedicineId())) {
+                    throw new UnprocessableEntityException(
+                            "Loose selling is not enabled for \"" + batch.getMedicine().getName() + "\" at this pharmacy. "
+                            + "Turn it on in the medicine's POS settings, or sell it as a full pack.");
+                }
+                // Effective pack size: this pharmacy's override wins over the catalogue.
+                Integer upp = looseUppOverrideByMedicineId.getOrDefault(
+                        batch.getMedicineId(), batch.getMedicine().getUnitsPerPack());
+                if (upp == null || upp <= 1) {
+                    throw new UnprocessableEntityException(
+                            "\"" + batch.getMedicine().getName() + "\" has no pack size on record, so it cannot be sold loose. "
+                            + "Set how many units are in a pack in its POS settings, or sell it as a full pack.");
+                }
+                // Schedule X cannot be broken out of its original packaging (Drug Rules).
+                String schedule = batch.getMedicine().getSchedule() == null ? ""
+                        : batch.getMedicine().getSchedule().trim().toUpperCase();
+                if (schedule.equals("X")) {
+                    throw new UnprocessableEntityException("\"" + batch.getMedicine().getName()
+                            + "\" is a Schedule X medicine and must be sold in its original pack, not loose.");
+                }
+                // A whole number of packs asked for as loose would needlessly cut sealed
+                // strips — but only refuse it when the pharmacist actually HAS that many
+                // sealed packs to sell instead. If the open remainder covers it, or there
+                // are not enough full packs on the batch, cutting is the only way to fill
+                // the line and blocking it would be a dead end (the "sell it as a pack"
+                // advice would then fail the pack availability check).
+                int wanted = item.quantity() + item.freeQtyOrZero();
+                int packsNeeded = wanted / upp;
+                boolean wholeMultiple = wanted >= upp && wanted % upp == 0;
+                if (wholeMultiple && !item.isForceLoose()
+                        && batch.getLooseUnits() < wanted && batch.getQuantity() >= packsNeeded) {
+                    throw new UnprocessableEntityException("That is " + packsNeeded + " full pack"
+                            + (packsNeeded == 1 ? "" : "s") + " of \"" + batch.getMedicine().getName()
+                            + "\" and there " + (batch.getQuantity() == 1 ? "is 1 sealed pack" : "are "
+                            + batch.getQuantity() + " sealed packs") + " on this batch. "
+                            + "Bill it as a pack sale so the strips stay sealed.");
+                }
+                // A loose price is derived from the pack MRP; without one there is nothing
+                // to divide. Surface it as a clear 422 rather than letting perPieceMrp
+                // throw an IllegalArgumentException that would surface as a 500.
+                if (batch.getMrp() == null || batch.getMrp().signum() <= 0) {
+                    throw new UnprocessableEntityException("\"" + batch.getMedicine().getName() + "\" (batch "
+                            + batch.getBatchNumber() + ") has no MRP on record, so it cannot be priced for a "
+                            + "loose sale. Set the batch MRP, or sell it as a full pack.");
+                }
+                unitsPerPack = upp;
+            }
+
             BigDecimal gstRate = gstOverrideByMedicineId.getOrDefault(batch.getMedicineId(), batch.getMedicine().getGstRate());
+            // Per-piece MRP for a loose line: pack MRP / unitsPerPack at 2dp rounded DOWN —
+            // the exact figure charged and printed, so the tax below reverse-calculates
+            // from it and "qty x rate" reconciles with the line amount on the bill. The
+            // pack MRP is used unchanged for a normal line.
+            BigDecimal unitMrp = loose ? GstCalculator.perPieceMrp(batch.getMrp(), unitsPerPack) : batch.getMrp();
+
+            // A cut strip may not cost more per tablet than its printed pro-rata MRP —
+            // consumer-law / DPCO. perPieceMrp already rounds DOWN so unitMrp is at or
+            // below pro-rata; this only trips on a bad discount that somehow went
+            // negative, but it is cheap and worth stating.
+            BigDecimal rate = GstCalculator.round2(unitMrp.multiply(
+                    BigDecimal.ONE.subtract(item.discountOrZero().divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_UP))));
+            if (loose && rate.compareTo(unitMrp) > 0) {
+                throw new UnprocessableEntityException(
+                        "Loose price for \"" + batch.getMedicine().getName() + "\" (Rs." + rate
+                        + "/unit) exceeds the pro-rata MRP of Rs." + unitMrp + "/unit.");
+            }
+
             // The bill discount is folded into the LINE, so the stored per-line tax is
             // the tax actually charged — which is what the GSTR-1 HSN summary sums.
-            GstCalculator.MrpGstBreakdown gst = GstCalculator.calcGstFromMrp(batch.getMrp(), item.quantity(),
+            GstCalculator.MrpGstBreakdown gst = GstCalculator.calcGstFromMrp(unitMrp, item.quantity(),
                     item.discountOrZero(), gstRate, isInterstate, req.billDiscountPctOrZero());
-            BigDecimal rate = GstCalculator.round2(batch.getMrp().multiply(
-                    BigDecimal.ONE.subtract(item.discountOrZero().divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_UP))));
+            // Cost of goods must convert the same way the price does — a loose line's
+            // `quantity` is pieces, so a cost per PACK stored against it would overstate COGS
+            // by a factor of unitsPerPack (this was previously unconverted and wrong; see
+            // packEquivalentQty in ReportsService for the read-side counterpart of the same
+            // pack/piece distinction). Not GstCalculator.perPieceMrp — that throws on a zero
+            // rate, and a batch with no recorded purchase rate is an existing, expected case
+            // (see MarginReportResponse.DataQuality) that must stay costed at zero, not block
+            // the sale outright.
+            BigDecimal storedPurchaseRate = (loose && batch.getPurchaseRate() != null && batch.getPurchaseRate().signum() > 0)
+                    ? batch.getPurchaseRate().divide(BigDecimal.valueOf(unitsPerPack), 10, RoundingMode.HALF_UP)
+                    : batch.getPurchaseRate();
             String location = null; // shelf/rack location display is a Tier 2 inventory-list concern; not resolved here to avoid an extra join per line
 
-            lines.add(new ResolvedLine(batch, item, gstRate, gst, rate, location));
-            totalsInput.add(new GstCalculator.MrpLineInput(batch.getMrp(), item.quantity(), item.discountOrZero(), gstRate));
+            lines.add(new ResolvedLine(batch, item, gstRate, gst, rate, storedPurchaseRate, unitsPerPack, loose, location));
+            totalsInput.add(new GstCalculator.MrpLineInput(batch.getMrp(), item.quantity(), item.discountOrZero(),
+                    gstRate, unitsPerPack, loose));
         }
 
         // The bill discount is already inside these totals — it reduced the taxable
@@ -626,38 +719,75 @@ public class BillingService {
             // availability check and the decrement work on the total. Checking only
             // the paid quantity would let a 100+10 sale drive a 105-unit batch to -5.
             int dispensed = quantity + freeQty;
-            int quantityBefore = batch.getQuantity();
             // Only LIVE stock held by OTHER sessions reduces what this sale may take.
             // Our own hold is released a few lines below as part of this same
             // transaction, so counting it here would mean a till competing with itself.
             int reservedByOthers = liveOtherReserved.getOrDefault(batch.getId(), 0);
-            int available = quantityBefore - reservedByOthers;
-            if (dispensed > available) {
-                // "open" is load-bearing: expired holds are excluded above, so if this
-                // number is non-zero another till really is holding the stock right now
-                // and waiting will clear it.
-                String reservedNote = reservedByOthers > 0
-                        ? " (" + reservedByOthers + " reserved by another open billing session)" : "";
-                String freeNote = freeQty > 0 ? " (" + quantity + " + " + freeQty + " free)" : "";
-                throw new ConflictException("Insufficient stock for \"" + batch.getMedicine().getName() + "\": "
-                        + Math.max(0, available) + " available" + reservedNote + ", " + dispensed + " requested" + freeNote);
+
+            // ledgerBefore/After are what the movement records: pack counts for a pack
+            // line (unchanged), individual pieces for a loose line so the ledger still
+            // reconciles against a physical count of (packs * unitsPerPack + loose).
+            long ledgerBefore;
+            long ledgerAfter;
+            if (line.loose()) {
+                int upp = line.unitsPerPack();
+                // A hold by another till is a reservation row counted in PACKS; each such
+                // pack is unavailable to this loose sale in full.
+                long availablePieces = batch.availablePieces(upp) - (long) reservedByOthers * upp;
+                if (dispensed > availablePieces) {
+                    String reservedNote = reservedByOthers > 0
+                            ? " (" + reservedByOthers + " pack(s) reserved by another open billing session)" : "";
+                    String freeNote = freeQty > 0 ? " (" + quantity + " + " + freeQty + " free)" : "";
+                    throw new ConflictException("Insufficient stock for \"" + batch.getMedicine().getName() + "\": "
+                            + Math.max(0, availablePieces) + " piece(s) available" + reservedNote + ", " + dispensed + " requested" + freeNote);
+                }
+                ledgerBefore = batch.availablePieces(upp);
+                batch.dispenseLoose(dispensed, upp);
+                ledgerAfter = batch.availablePieces(upp);
+            } else {
+                int quantityBefore = batch.getQuantity();
+                int available = quantityBefore - reservedByOthers;
+                if (dispensed > available) {
+                    // "open" is load-bearing: expired holds are excluded above, so if this
+                    // number is non-zero another till really is holding the stock right now
+                    // and waiting will clear it.
+                    String reservedNote = reservedByOthers > 0
+                            ? " (" + reservedByOthers + " reserved by another open billing session)" : "";
+                    String freeNote = freeQty > 0 ? " (" + quantity + " + " + freeQty + " free)" : "";
+                    throw new ConflictException("Insufficient stock for \"" + batch.getMedicine().getName() + "\": "
+                            + Math.max(0, available) + " available" + reservedNote + ", " + dispensed + " requested" + freeNote);
+                }
+                batch.setQuantity(quantityBefore - dispensed);
+                ledgerBefore = quantityBefore;
+                ledgerAfter = quantityBefore - dispensed;
             }
-            batch.setQuantity(quantityBefore - dispensed);
 
             InvoiceItem item = InvoiceItem.create(pharmacyId, invoice.getId(), batch.getId(), batch.getMedicine().getName(),
                     batch.getMedicine().getHsnCode(), batch.getBatchNumber(), batch.getExpiryDate(), quantity, freeQty,
                     batch.getMrp(),
-                    line.rate(), batch.getPurchaseRate(), line.req().discountOrZero(), line.gstRate(), line.gst().cgst(),
+                    line.rate(), line.storedPurchaseRate(), line.req().discountOrZero(), line.gstRate(), line.gst().cgst(),
                     line.gst().sgst(), line.gst().igst(), line.gst().taxableAmount(), line.gst().amount(), line.location());
+            String looseBaseUnit = line.loose()
+                    ? com.checkup.pharmacy.common.util.BaseUnits.resolve(
+                            batch.getMedicine().getBaseUnit(), batch.getMedicine().getForm())
+                    : null;
+            if (line.loose()) {
+                item.asLooseSale(looseBaseUnit);
+            }
             invoiceItemRepository.save(item);
             savedItems.add(item);
 
             // Records the DISPENSED total, not the charged quantity — the ledger has to
             // reconcile against the batch decrement above, and a physical stock count
             // reflects goods handed over regardless of what was billed for them.
+            // A loose row's quantities are in pieces (see ledgerBefore/After); inBaseUnit
+            // tags it so the ledger reads "8 tab", not a bare "8".
+            String moveNote = line.loose()
+                    ? (freeQty > 0 ? quantity + " sold + " + freeQty + " free, loose" : dispensed + " loose (cut strip)")
+                    : (freeQty > 0 ? quantity + " sold + " + freeQty + " free" : null);
             movementRepository.save(InventoryMovement.record(pharmacyId, batch.getId(), userId, MovementType.SALE,
-                    MovementDirection.OUT, dispensed, quantityBefore, quantityBefore - dispensed, "INVOICE", invoice.getId(),
-                    freeQty > 0 ? quantity + " sold + " + freeQty + " free" : null));
+                    MovementDirection.OUT, dispensed, (int) ledgerBefore, (int) ledgerAfter, "INVOICE", invoice.getId(),
+                    moveNote).inBaseUnit(looseBaseUnit));
         }
 
         // The sale is the end of this billing session, so its hold on the shelf goes
@@ -775,6 +905,13 @@ public class BillingService {
                 fefoByMedicineId.putIfAbsent(candidate.getMedicineId(), candidate);
             }
         }
+        // This pharmacy's loose opt-in / pack-size override, so a regular loose order
+        // repeats as loose only while the pharmacy still sells that medicine that way.
+        Map<String, PharmacyMedicineOverride> repeatOverrides = new HashMap<>();
+        for (PharmacyMedicineOverride o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(
+                pharmacyId, new HashSet<>(medicineIdByBatchId.values()))) {
+            repeatOverrides.put(o.getMedicineId(), o);
+        }
 
         for (InvoiceItem original : originalItems) {
             String medicineId = medicineIdByBatchId.get(original.getInventoryId());
@@ -787,14 +924,56 @@ public class BillingService {
                 unavailable.add(new RepeatCartResponse.Unavailable(original.getMedicineName(), "Out of stock"));
                 continue;
             }
+            var medicine = batch.getMedicine();
+
+            if (original.isLooseSale()) {
+                PharmacyMedicineOverride ov = repeatOverrides.get(medicineId);
+                Integer effUpp = ov != null && ov.getUnitsPerPack() != null ? ov.getUnitsPerPack() : medicine.getUnitsPerPack();
+                boolean stillLoose = ov != null && ov.isAllowLooseSale() && effUpp != null && effUpp > 1;
+                if (!stillLoose) {
+                    unavailable.add(new RepeatCartResponse.Unavailable(original.getMedicineName(),
+                            "Loose selling is off for this now — add it as a strip if needed"));
+                    continue;
+                }
+                long availPieces = batch.availablePieces(effUpp) - (long) batch.getReservedQuantity() * effUpp;
+                int requestedPieces = original.getQuantity();
+                int qtyPieces = (int) Math.min(Math.max(0, availPieces), requestedPieces);
+                if (qtyPieces <= 0) {
+                    unavailable.add(new RepeatCartResponse.Unavailable(original.getMedicineName(), "Out of stock"));
+                    continue;
+                }
+                // availableStock is the unreserved SEALED pack count (as for a pack line);
+                // the client rebuilds the piece ceiling as packs*upp + looseUnits.
+                int unreservedPacks = Math.max(0, batch.getQuantity() - batch.getReservedQuantity());
+                items.add(new RepeatCartResponse.Item(batch.getId(), medicine.getName(), medicine.getHsnCode(),
+                        medicine.getSchedule(), medicine.getPackSize(), batch.getLocation(), batch.getBatchNumber(),
+                        batch.getExpiryDate(), batch.getMrp(), medicine.getGstRate(), original.getDiscount(),
+                        qtyPieces, unreservedPacks, requestedPieces, qtyPieces < requestedPieces,
+                        "LOOSE", effUpp,
+                        com.checkup.pharmacy.common.util.BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm()),
+                        true, batch.getLooseUnits()));
+                continue;
+            }
+
             int available = batch.getQuantity() - batch.getReservedQuantity();
             int requested = original.getQuantity();
             int quantity = Math.min(available, requested);
-            var medicine = batch.getMedicine();
+            // A PACK repeat line still offers the Strip / piece toggle if this pharmacy
+            // sells the medicine loose — so a customer who wants a few loose this time is
+            // one click away, not a remove-and-re-add.
+            PharmacyMedicineOverride packOv = repeatOverrides.get(medicineId);
+            Integer packEffUpp = packOv != null && packOv.getUnitsPerPack() != null
+                    ? packOv.getUnitsPerPack() : medicine.getUnitsPerPack();
+            boolean packAllowsLoose = packOv != null && packOv.isAllowLooseSale()
+                    && packEffUpp != null && packEffUpp > 1
+                    && !"X".equalsIgnoreCase(medicine.getSchedule() == null ? "" : medicine.getSchedule().trim());
             items.add(new RepeatCartResponse.Item(batch.getId(), medicine.getName(), medicine.getHsnCode(),
                     medicine.getSchedule(), medicine.getPackSize(), batch.getLocation(), batch.getBatchNumber(),
                     batch.getExpiryDate(), batch.getMrp(), medicine.getGstRate(), original.getDiscount(),
-                    quantity, available, requested, available < requested));
+                    quantity, available, requested, available < requested,
+                    "PACK", packAllowsLoose ? packEffUpp : null,
+                    packAllowsLoose ? com.checkup.pharmacy.common.util.BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm()) : null,
+                    packAllowsLoose, batch.getLooseUnits()));
         }
 
         return new RepeatCartResponse(invoice.getInvoiceNumber(), invoice.getCreatedAt(), items, unavailable);
@@ -902,6 +1081,22 @@ public class BillingService {
                 items.stream().map(InvoiceItem::getInventoryId).distinct().toList(), pharmacyId)) {
             batchMap.put(inv.getId(), inv);
         }
+        // Effective pack size per medicine (this pharmacy's override, else the
+        // catalogue's) — the SAME resolution the sale used, so a loose line's
+        // reversing movement records the same total-piece before/after the sale did
+        // and the ledger still reconciles. Only loaded when a loose line is present.
+        Map<String, Integer> cancelLooseUpp = new HashMap<>();
+        if (items.stream().anyMatch(InvoiceItem::isLooseSale)) {
+            List<String> medIds = batchMap.values().stream().map(Inventory::getMedicineId)
+                    .filter(java.util.Objects::nonNull).distinct().toList();
+            if (!medIds.isEmpty()) {
+                for (PharmacyMedicineOverride o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, medIds)) {
+                    if (o.getUnitsPerPack() != null) {
+                        cancelLooseUpp.put(o.getMedicineId(), o.getUnitsPerPack());
+                    }
+                }
+            }
+        }
         for (InvoiceItem item : items) {
             Inventory inv = batchMap.get(item.getInventoryId());
             if (inv == null) {
@@ -914,13 +1109,34 @@ public class BillingService {
             // a movement row that recorded the wrong figure — so the ledger reconciled
             // against itself and quietly stopped matching the shelf.
             int restored = item.getQuantity() + item.getFreeQty();
-            int before = inv.getQuantity();
-            inv.setQuantity(before + restored);
-            movementRepository.save(InventoryMovement.record(pharmacyId, inv.getId(), userId, MovementType.ADJUSTMENT,
-                    MovementDirection.IN, restored, before, before + restored, "INVOICE_CANCEL",
-                    invoice.getId(), item.getFreeQty() > 0
-                            ? "Cancellation: " + reason + " (" + item.getQuantity() + " sold + " + item.getFreeQty() + " free)"
-                            : "Cancellation: " + reason));
+            String note = item.getFreeQty() > 0
+                    ? "Cancellation: " + reason + " (" + item.getQuantity() + " sold + " + item.getFreeQty() + " free)"
+                    : "Cancellation: " + reason;
+            if (item.isLooseSale()) {
+                // A loose line's quantity is pieces, and the strip it came from is
+                // already cut — the pieces return LOOSE, not as a sealed pack. Adding
+                // them to `quantity` (packs) would inflate the shelf by unitsPerPack
+                // times over. The movement is recorded in pieces so the ledger still
+                // reconciles against a physical count.
+                Integer catUpp = inv.getMedicine() != null ? inv.getMedicine().getUnitsPerPack() : null;
+                Integer upp = cancelLooseUpp.getOrDefault(inv.getMedicineId(), catUpp);
+                int piecesUpp = upp != null && upp > 1 ? upp : Math.max(2, restored);
+                long piecesBefore = inv.availablePieces(piecesUpp);
+                inv.restockLoose(restored);
+                // Prefer the unit snapshotted on the line at sale time; fall back to the medicine's.
+                String looseBaseUnit = item.getBaseUnit() != null ? item.getBaseUnit()
+                        : com.checkup.pharmacy.common.util.BaseUnits.resolve(
+                                inv.getMedicine() != null ? inv.getMedicine().getBaseUnit() : null,
+                                inv.getMedicine() != null ? inv.getMedicine().getForm() : null);
+                movementRepository.save(InventoryMovement.record(pharmacyId, inv.getId(), userId, MovementType.ADJUSTMENT,
+                        MovementDirection.IN, restored, (int) piecesBefore, (int) (piecesBefore + restored),
+                        "INVOICE_CANCEL", invoice.getId(), note + " [loose]").inBaseUnit(looseBaseUnit));
+            } else {
+                int before = inv.getQuantity();
+                inv.setQuantity(before + restored);
+                movementRepository.save(InventoryMovement.record(pharmacyId, inv.getId(), userId, MovementType.ADJUSTMENT,
+                        MovementDirection.IN, restored, before, before + restored, "INVOICE_CANCEL", invoice.getId(), note));
+            }
         }
 
         boolean wasCreditSale = invoice.getCustomerId() != null && invoice.getPaymentMode() == PaymentMode.CREDIT
@@ -1016,7 +1232,13 @@ public class BillingService {
             BigDecimal sgst = GstCalculator.round2(original.getSgst().multiply(ratio));
             BigDecimal igst = GstCalculator.round2(original.getIgst().multiply(ratio));
             BigDecimal taxableAmount = GstCalculator.round2(original.getTaxableAmount().multiply(ratio));
-            ReturnDisposition disposition = parseDisposition(ri.dispositionOrDefault());
+            // A loose (cut-strip) line is ALWAYS a write-off — the tablets were
+            // separated from their foil and cannot be dispensed to anyone else. The
+            // money and tax are still reversed here (the customer gets their refund);
+            // only the stock is not put back. The caller's disposition is ignored.
+            ReturnDisposition disposition = original.isLooseSale()
+                    ? ReturnDisposition.WRITEOFF
+                    : parseDisposition(ri.dispositionOrDefault());
 
             lines.add(new ResolvedReturnLine(original, ri.quantity(), amount, cgst, sgst, igst, taxableAmount, disposition));
         }
@@ -1416,8 +1638,8 @@ public class BillingService {
 
         List<InvoiceResponse.Item> itemResponses = items.stream()
                 .map(i -> new InvoiceResponse.Item(i.getId(), i.getInventoryId(), i.getMedicineName(), i.getHsnCode(),
-                        i.getBatchNumber(), i.getExpiryDate(), i.getQuantity(), i.getFreeQty(),
-                        i.getMrp(), i.getRate(), i.getPurchaseRate(),
+                        i.getBatchNumber(), i.getExpiryDate(), i.getQuantity(), i.getFreeQty(), i.getSaleUnit(),
+                        i.getBaseUnit(), i.getMrp(), i.getRate(), i.getPurchaseRate(),
                         i.getDiscount(), i.getGstRate(), i.getCgst(), i.getSgst(), i.getIgst(), i.getTaxableAmount(),
                         i.getAmount(), i.getLocation()))
                 .toList();

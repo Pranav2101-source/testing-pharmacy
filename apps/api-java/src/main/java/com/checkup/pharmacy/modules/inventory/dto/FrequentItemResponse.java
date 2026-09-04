@@ -11,13 +11,16 @@ public record FrequentItemResponse(
         Instant expiryDate,
         BigDecimal mrp,
         int quantity,
+        int looseUnits,
         int reservedQuantity,
         String location,
         InventoryResponse.ShelfRef shelf,
         long freq,
         MedicineRef medicine
 ) {
+    /** {@code unitsPerPack} is the effective pack size, {@code allowLooseSale} this pharmacy's opt-in. */
     public record MedicineRef(String name, String genericName, String hsnCode, BigDecimal gstRate,
-                              boolean isActive, String schedule, String packSize) {
+                              boolean isActive, String schedule, String packSize,
+                              Integer unitsPerPack, String baseUnit, boolean allowLooseSale, boolean looseByDefault) {
     }
 }

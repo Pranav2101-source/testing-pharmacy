@@ -3,6 +3,7 @@ import { forwardRef } from "react";
 import { format } from "date-fns";
 import { formatCurrency, formatAmountInWords } from "@pharmacy/utils";
 import { defaultInvoiceSettings, normalizeInvoiceSettings } from "@pharmacy/types";
+import { baseUnitShort } from "@pharmacy/utils";
 import type { InvoiceSettingsConfig } from "@pharmacy/types";
 
 // ─── Data shape ───────────────────────────────────────────────────────────────
@@ -31,6 +32,10 @@ export type PrintInvoiceData = {
     quantity:      number;
     /** Scheme quantity given free (10+1). Not charged; still dispensed. 0/absent when none. */
     freeQty?:      number;
+    /** "LOOSE" — quantity is individual pieces cut from a strip; mrp/rate are per-piece. Absent/"PACK" otherwise. */
+    saleUnit?:     string;
+    /** Base unit for a loose line ("TABLET" | "CAPSULE" | "ML" | "GM" | "EACH"), for the "/tab" label. */
+    baseUnit?:     string | null;
     discount:      number;
     gstRate:       number;
     rate:          number;
@@ -94,7 +99,14 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
   function InvoicePrintView({ invoice, config: configProp, pharmacy: pharmacyProp }, ref) {
     const cfg      = normalizeInvoiceSettings(configProp);
     const pharmacy = pharmacyProp ?? PREVIEW_PHARMACY;
-    const col      = cfg.columns;
+    // A cut-strip line legally needs batch + expiry on the bill regardless of the
+    // pharmacy's column toggles. It also needs the pack MRP and the per-piece rate
+    // shown together — otherwise the line amount (priced per piece) cannot be
+    // reconciled against the quantity (in pieces) by anyone reading the bill.
+    const hasLoose = invoice.items.some((it) => it.saleUnit === "LOOSE");
+    const col      = hasLoose
+      ? { ...cfg.columns, showBatch: true, showExpiry: true, showMrp: true, showRate: true }
+      : cfg.columns;
     const tot      = cfg.totals;
     const hdr      = cfg.header;
     const pat      = cfg.patient;
@@ -278,20 +290,28 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
               </tr>
             </thead>
             <tbody>
-              {invoice.items.map((item, i) => (
+              {invoice.items.map((item, i) => {
+                // A loose (cut-strip) line: quantity is pieces, mrp/rate are per-piece.
+                // Batch + expiry are forced on — a customer needs them for cut tablets.
+                const isLoose = item.saleUnit === "LOOSE";
+                const unit    = baseUnitShort(item.baseUnit);
+                return (
                 <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#f9f9f9" }}>
                   <td style={{ ...tdStyle(), textAlign: "center" }}>{i + 1}</td>
-                  <td style={{ ...tdStyle(), fontWeight: 500 }}>{item.medicineName}</td>
+                  <td style={{ ...tdStyle(), fontWeight: 500 }}>
+                    {item.medicineName}
+                    {isLoose && <span style={{ fontWeight: 400, color: "#a16207", fontSize: "8.5px" }}> · loose</span>}
+                  </td>
                   {col.showHsn      && <td style={tdStyle()}>{item.hsnCode || "—"}</td>}
                   {col.showBatch    && <td style={{ ...tdStyle(), fontFamily: "monospace" }}>{item.batchNumber}</td>}
                   {col.showExpiry   && <td style={{ ...tdStyle(), whiteSpace: "nowrap" }}>{format(new Date(item.expiryDate), "MM/yy")}</td>}
-                  {col.showMrp      && <td style={tdStyle(true)}>₹{item.mrp.toFixed(2)}</td>}
-                  <td style={{ ...tdStyle(), textAlign: "center" }}>{item.quantity}</td>
+                  {col.showMrp      && <td style={tdStyle(true)}>₹{item.mrp.toFixed(2)}{isLoose ? "/pack" : ""}</td>}
+                  <td style={{ ...tdStyle(), textAlign: "center" }}>{item.quantity}{isLoose && item.baseUnit ? ` ${unit}` : ""}</td>
                   {/* Real scheme quantity. Blank-dashed when the line has none, so a
                       10+1 row stands out against ordinary ones. */}
                   {col.showFreeQty  && <td style={{ ...tdStyle(), textAlign: "center" }}>{item.freeQty ? item.freeQty : "—"}</td>}
                   {col.showDiscount && <td style={tdStyle(true)}>{item.discount > 0 ? `${item.discount}%` : "—"}</td>}
-                  {col.showRate     && <td style={tdStyle(true)}>₹{item.rate.toFixed(2)}</td>}
+                  {col.showRate     && <td style={tdStyle(true)}>₹{item.rate.toFixed(2)}{isLoose ? `/${unit}` : ""}</td>}
                   {col.showTaxable  && <td style={tdStyle(true)}>₹{item.taxableAmount.toFixed(2)}</td>}
                   {col.showGstRate  && <td style={{ ...tdStyle(), textAlign: "center" }}>{item.gstRate}%</td>}
                   {showCgstCol && <td style={tdStyle(true)}>₹{item.cgst.toFixed(2)}</td>}
@@ -299,7 +319,8 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
                   {showIgstCol && <td style={tdStyle(true)}>₹{(item.igst || item.cgst + item.sgst).toFixed(2)}</td>}
                   <td style={{ ...tdStyle(true), fontWeight: 600 }}>₹{item.amount.toFixed(2)}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
 

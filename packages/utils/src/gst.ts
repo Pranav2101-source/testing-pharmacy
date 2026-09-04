@@ -24,6 +24,34 @@ export type InvoiceItemInput = {
   isInterstate?: boolean;
 };
 
+/**
+ * Per-piece price for a loose (cut-strip) sale: the printed pack MRP divided by
+ * the pack size, at TWO DECIMAL PLACES ROUNDED DOWN. Mirrors
+ * `GstCalculator.perPieceMrp` in the Java API exactly — the per-piece price is
+ * charged and printed, so tax is reverse-calculated from it and `qty x rate` must
+ * reconcile with the line amount; rounding down keeps
+ * `perPiece x unitsPerPack <= pack MRP` (never above pro-rata MRP). Returns the
+ * pack MRP unchanged when there is no real pack size, so a caller can apply it
+ * unconditionally.
+ */
+export function perPieceMrp(packMrp: number, unitsPerPack: number | null | undefined): number {
+  if (!unitsPerPack || unitsPerPack <= 1) return packMrp;
+  // Round to 6dp first to shed binary-float noise, THEN floor to paise, so a value
+  // like 2.2999999998 does not floor to 2.29.
+  return Math.floor(Math.round((packMrp / unitsPerPack) * 1e6) / 1e4) / 100;
+}
+
+/** Short label for a loose line's unit — "tab", "cap", "ml", "gm", "u". */
+export function baseUnitShort(baseUnit: string | null | undefined): string {
+  switch (baseUnit) {
+    case "TABLET":  return "tab";
+    case "CAPSULE": return "cap";
+    case "ML":      return "ml";
+    case "GM":      return "gm";
+    default:        return "u";
+  }
+}
+
 export function calcGstFromMrp(
   mrp:             number,
   quantity:        number,

@@ -3,16 +3,18 @@ import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { AnimatePresence } from "framer-motion";
 import {
-  Search, Loader2, FileX, AlertCircle, Sparkles, Printer, MapPin, Info, PackagePlus, Pencil, Tag,
+  Search, Loader2, FileX, AlertCircle, Sparkles, Printer, MapPin, Info, PackagePlus, Pencil, Tag, Scissors,
 } from "lucide-react";
 import { queryKeys } from "@/lib/queryKeys";
 import { BarcodeLabelModal } from "@/components/BarcodeLabelModal";
+import { LooseTag } from "@/components/LooseTag";
+import { LooseSetupModal, candidateFrom, type LooseCandidate } from "@/components/inventory/LooseSetupModal";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
 import { getStoredUser } from "@/lib/auth";
 import { StatusBadge } from "../components/shared";
-import { fmt, daysUntil } from "../utils";
+import { fmt, daysUntil, packNoun } from "../utils";
 import { TableSkeletonRows, ListSkeleton } from "@/components/Skeleton";
 import { ProductTag } from "@/lib/product-taxonomy";
 import { ClassifyModal, type ClassifyTarget } from "@/components/ClassifyModal";
@@ -37,6 +39,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   const [inStock,    setInStock]    = useState(false);
   const [lowStock,   setLowStock]   = useState(false);
   const [nearExpiry, setNearExpiry] = useState(false);
+  const [hasLoose,   setHasLoose]   = useState(false);
   const [statusModal,      setStatusModal]      = useState<InventoryItem | null>(null);
   const [adjustModal,      setAdjustModal]      = useState<InventoryItem | null>(null);
   const [locationModal,    setLocationModal]    = useState<InventoryItem | null>(null);
@@ -44,6 +47,8 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   const [showCalibrate,    setShowCalibrate]    = useState(false);
   const [showAddStock,     setShowAddStock]     = useState(false);
   const [classifyTarget,   setClassifyTarget]   = useState<ClassifyTarget | null>(null);
+  // undefined = closed; null = open scoped to everything you stock; a candidate = open for just that row.
+  const [looseSetup, setLooseSetup] = useState<LooseCandidate | null | undefined>(undefined);
 
   const isOwnerOrManager = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
 
@@ -68,7 +73,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   }, [search]);
 
   type ListResponse = { items: InventoryItem[]; total: number; alertCounts: AlertCounts };
-  const queryParams = { page, search: debouncedSearch, status, inStock, lowStock, nearExpiry };
+  const queryParams = { page, search: debouncedSearch, status, inStock, lowStock, nearExpiry, hasLoose };
   const { data, isFetching: loading, error: queryError, refetch: load } = useQuery({
     queryKey:        queryKeys.inventory.list(queryParams),
     queryFn:         () => {
@@ -78,6 +83,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
       if (inStock)         p.inStock    = true;
       if (lowStock)        p.lowStock   = true;
       if (nearExpiry)      p.nearExpiry = true;
+      if (hasLoose)        p.hasLoose   = true;
       return api.get("/inventory", { params: p }).then((r) => r.data.data as ListResponse);
     },
     staleTime:       30_000,
@@ -112,13 +118,14 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
           ))}
         </select>
         {([
-          { label: "In Stock",    val: inStock,    set: setInStock    },
-          { label: "Low Stock",   val: lowStock,   set: setLowStock   },
-          { label: "Near Expiry", val: nearExpiry, set: setNearExpiry },
-        ] as const).map(({ label, val, set }) => (
+          { label: "In Stock",    val: inStock,    set: setInStock,    on: "bg-blue-600 border-blue-600" },
+          { label: "Low Stock",   val: lowStock,   set: setLowStock,   on: "bg-blue-600 border-blue-600" },
+          { label: "Near Expiry", val: nearExpiry, set: setNearExpiry, on: "bg-blue-600 border-blue-600" },
+          { label: "Opened strips", val: hasLoose, set: setHasLoose,   on: "bg-amber-500 border-amber-500" },
+        ] as const).map(({ label, val, set, on }) => (
           <button key={label} onClick={() => { set((v) => !v); setPage(1); }}
             className={cn("h-[30px] px-3 rounded-md text-[12px] font-semibold border transition-all shadow-sm",
-              val ? "bg-blue-600 text-white border-blue-600" : "bg-white text-slate-600 border-slate-200 hover:border-blue-300"
+              val ? `${on} text-white` : "bg-white text-slate-600 border-slate-200 hover:border-blue-300"
             )}>
             {label}
           </button>
@@ -147,11 +154,32 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
             Smart Stock Levels
           </button>
         )}
+        {isOwnerOrManager && (
+          <button
+            onClick={() => setLooseSetup(null)}
+            title="Enable cut-strip (loose) selling for the medicines you stock"
+            className="flex items-center gap-1.5 h-[30px] px-3 rounded-md text-[12px] font-semibold border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors shadow-sm whitespace-nowrap"
+          >
+            <Scissors className="w-3.5 h-3.5" />
+            Set up loose selling
+          </button>
+        )}
       </div>
       {showCalibrate && (
         <CalibrateModal
           onClose={() => setShowCalibrate(false)}
           onApplied={invalidateInventory}
+        />
+      )}
+      {looseSetup !== undefined && (
+        <LooseSetupModal
+          only={looseSetup ?? undefined}
+          onClose={() => setLooseSetup(undefined)}
+          onDone={(count) => {
+            setLooseSetup(undefined);
+            invalidateInventory();
+            if (count > 0) toast.success(`Loose selling enabled for ${count} medicine${count === 1 ? "" : "s"}`);
+          }}
         />
       )}
       <AnimatePresence>
@@ -169,9 +197,17 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
         <table className="w-full border-collapse hidden md:table">
           <thead className="sticky top-0 bg-white z-10">
             <tr className="border-b border-slate-200">
-              {["Medicine","Batch No.","Expiry","Stock"].map((h) => (
+              {["Medicine","Batch No.","Expiry"].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-[12px] font-semibold text-blue-600 whitespace-nowrap">{h}</th>
               ))}
+              <th className="px-4 py-3 text-left text-[12px] font-semibold text-blue-600 whitespace-nowrap">
+                <span className="inline-flex items-center gap-1">
+                  Stock
+                  <span title="Counted in the medicine's pack unit — strips, bottles, vials (set it via Categorize). '+N tablets/ml' = loose pieces from an opened pack." className="cursor-help">
+                    <Info className="w-3 h-3 text-slate-400" />
+                  </span>
+                </span>
+              </th>
               <th className="px-4 py-3 text-left text-[12px] font-semibold text-blue-600 whitespace-nowrap">
                 <span className="inline-flex items-center gap-1">
                   Reserved
@@ -234,12 +270,18 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                     {isEx && <p className="text-[10px] text-red-500">Expired</p>}
                   </td>
                   <td className="px-4 py-3">
-                    {item.quantity === 0
+                    {item.quantity === 0 && (item.looseUnits ?? 0) === 0
                       ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">Out of stock</span>
                       : item.quantity <= item.minimumStock
-                        ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">Low: {item.quantity}</span>
-                        : <span className="text-[13px] font-semibold text-slate-800 tabular-nums">{item.quantity}</span>
+                        ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                            Low: {item.quantity} {packNoun(item.medicine.unit, item.quantity)}
+                          </span>
+                        : <>
+                            <span className="text-[13px] font-semibold text-slate-800 tabular-nums">{item.quantity}</span>
+                            <span className="text-[11px] text-slate-400 ml-1">{packNoun(item.medicine.unit, item.quantity)}</span>
+                          </>
                     }
+                    <LooseTag units={item.looseUnits} baseUnit={item.medicine.baseUnit} />
                   </td>
                   <td className="px-4 py-3 text-[12px] text-slate-500 tabular-nums">{item.reservedQuantity || "—"}</td>
                   <td className="px-4 py-3 text-[13px] text-slate-700 tabular-nums">₹{item.mrp.toFixed(2)}</td>
@@ -262,6 +304,14 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                         className="text-[11px] font-semibold text-blue-600 hover:text-blue-700 border border-blue-200 hover:border-blue-300 bg-blue-50/50 hover:bg-blue-50 rounded-md px-2 py-1 transition-colors">
                         Status
                       </button>
+                      {isOwnerOrManager && !item.medicine.allowLooseSale
+                        && (item.medicine.schedule ?? "").trim().toUpperCase() !== "X" && (
+                        <button onClick={() => { const c = candidateFrom(item.medicine); if (c) setLooseSetup(c); }}
+                          title="Enable loose (cut-strip) selling"
+                          className="p-1 rounded-md hover:bg-amber-100 text-slate-400 hover:text-amber-600 transition-colors">
+                          <Scissors className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                       <button onClick={() => setLocationModal(item)} title="Assign location"
                         className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-teal-600 transition-colors">
                         <MapPin className="w-3.5 h-3.5" />
@@ -339,11 +389,12 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                       <div>
                         <span className="text-slate-400">Stock</span>
                         <p>
-                          {item.quantity === 0
+                          {item.quantity === 0 && (item.looseUnits ?? 0) === 0
                             ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200">Out of stock</span>
                             : item.quantity <= item.minimumStock
-                              ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">Low: {item.quantity}</span>
-                              : <span className="font-semibold text-slate-800 tabular-nums">{item.quantity}</span>}
+                              ? <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">Low: {item.quantity} {packNoun(item.medicine.unit, item.quantity)}</span>
+                              : <><span className="font-semibold text-slate-800 tabular-nums">{item.quantity}</span><span className="text-[11px] text-slate-400 ml-1">{packNoun(item.medicine.unit, item.quantity)}</span></>}
+                          <LooseTag units={item.looseUnits} baseUnit={item.medicine.baseUnit} />
                         </p>
                       </div>
                       <div><span className="text-slate-400">Reserved</span><p className="text-slate-600 tabular-nums">{item.reservedQuantity || "—"}</p></div>
@@ -368,6 +419,14 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                         className="text-[12px] font-semibold text-blue-600 border border-blue-200 bg-blue-50/50 active:bg-blue-100 rounded-md px-3 py-1.5">
                         Status
                       </button>
+                      {isOwnerOrManager && !item.medicine.allowLooseSale
+                        && (item.medicine.schedule ?? "").trim().toUpperCase() !== "X" && (
+                        <button onClick={() => { const c = candidateFrom(item.medicine); if (c) setLooseSetup(c); }}
+                          title="Enable loose (cut-strip) selling"
+                          className="p-2 rounded-md border border-slate-200 text-slate-400 active:bg-amber-100">
+                          <Scissors className="w-4 h-4" />
+                        </button>
+                      )}
                       <button onClick={() => setLocationModal(item)} title="Assign location"
                         className="p-2 rounded-md border border-slate-200 text-slate-400 active:bg-slate-100">
                         <MapPin className="w-4 h-4" />

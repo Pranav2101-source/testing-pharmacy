@@ -43,6 +43,20 @@ public class InvoiceItem extends IdOnlyEntity {
     private int quantity;
 
     /**
+     * {@code PACK} (default, every legacy line) — {@link #quantity} is whole
+     * strips/bottles and {@link #mrp}/{@link #rate} are the printed pack price.
+     * {@code LOOSE} — {@link #quantity} is individual pieces and mrp/rate are
+     * per-piece (pack MRP / unitsPerPack). {@link #batchNumber}/{@link #expiryDate}
+     * are still carried; a cut-strip sale must show them.
+     */
+    @Column(name = "saleUnit")
+    private String saleUnit = "PACK";
+
+    /** Base-unit snapshot for a loose line ("TABLET" etc.) — the "8 tab" label on a re-print. */
+    @Column(name = "baseUnit")
+    private String baseUnit;
+
+    /**
      * Scheme quantity given free with this line (10+1, buy-100-get-10).
      *
      * <p>Not charged — {@code taxableAmount} and {@code amount} are derived from
@@ -128,6 +142,18 @@ public class InvoiceItem extends IdOnlyEntity {
         return item;
     }
 
+    /**
+     * Marks this line as a loose (cut-strip) sale — {@code quantity} is pieces and
+     * the money figures on it are per-piece. Chainable off {@link #create}; the
+     * default without it is {@code PACK}. {@code baseUnit} is the piece unit at sale
+     * time, snapshotted for the re-print label.
+     */
+    public InvoiceItem asLooseSale(String baseUnit) {
+        this.saleUnit = "LOOSE";
+        this.baseUnit = baseUnit;
+        return this;
+    }
+
     public String getPharmacyId() { return pharmacyId; }
 
     public String getInvoiceId() { return invoiceId; }
@@ -143,6 +169,12 @@ public class InvoiceItem extends IdOnlyEntity {
     public Instant getExpiryDate() { return expiryDate; }
 
     public int getQuantity() { return quantity; }
+
+    public String getSaleUnit() { return saleUnit; }
+
+    public String getBaseUnit() { return baseUnit; }
+
+    public boolean isLooseSale() { return "LOOSE".equals(saleUnit); }
 
     public int getFreeQty() { return freeQty; }
 

@@ -19,12 +19,15 @@ import java.util.List;
  *                       month with a large return is legible rather than merely lower
  * @param grossProfit    revenueExGst − cogs, after the returns adjustment
  * @param marginPct      grossProfit as a percentage of net revenue
+ * @param looseSales     what share of the period was cut-strip (loose) selling — null when
+ *                       none, so a pharmacy that has never turned it on sees nothing about it
  * @param dataQuality    how much of the period can actually be costed — see the record
  * @param topContributors where the profit came from, biggest first
  * @param lossMakers     sold below cost, worst first: a worklist, not a statistic
  */
 public record MarginReportResponse(BigDecimal revenueExGst, BigDecimal cogs, Returns returns,
                                    BigDecimal grossProfit, BigDecimal marginPct, long unitsSold,
+                                   LooseSales looseSales,
                                    DataQuality dataQuality,
                                    List<Item> topContributors, List<Item> lossMakers) {
 
@@ -36,6 +39,15 @@ public record MarginReportResponse(BigDecimal revenueExGst, BigDecimal cogs, Ret
      */
     public record Returns(BigDecimal refundExGst, BigDecimal restockedCost, BigDecimal writtenOffCost,
                           long unitsReturned) {
+    }
+
+    /**
+     * @param revenueExGst what cut-strip lines earned in the period, net of GST
+     * @param piecesSold   individual pieces sold loose — not packs, and not the same unit as
+     *                     {@link MarginReportResponse#unitsSold}
+     * @param billCount    how many separate bills carried at least one loose line
+     */
+    public record LooseSales(BigDecimal revenueExGst, long piecesSold, long lineCount, long billCount) {
     }
 
     /**

@@ -20,6 +20,13 @@ type AuditItem = {
   expectedQty: number;
   countedQty:  number | null;
   varianceQty: number | null;
+  // Loose (cut-strip) remainder — same three-field shape as the pack fields above, snapshot
+  // of the batch's opened-strip pieces. 0/null for the overwhelming majority of medicines
+  // (no pack size on record). countedLooseUnits stays null until explicitly counted — never
+  // read that as "counted zero", see the count-saving code below.
+  expectedLooseUnits: number;
+  countedLooseUnits:  number | null;
+  varianceLooseUnits: number | null;
   notes:       string | null;
   inventory: {
     id:           string;
@@ -29,10 +36,42 @@ type AuditItem = {
     location:     string | null;
     mrp:          number;
     purchaseRate: number;
-    medicine: { id: string; name: string; genericName: string | null; form: string | null; strength: string | null };
+    medicine: { id: string; name: string; genericName: string | null; form: string | null; strength: string | null;
+                unitsPerPack: number | null; baseUnit: string | null };
     shelf: { id: string; code: string; level: number; rack: { id: string; code: string; name: string } } | null;
   };
 };
+
+/** True when a batch is worth showing a separate loose-count box for — either it already has
+ *  a recorded loose remainder, or the medicine is packaged in multiples at all. Keeps the
+ *  count sheet uncluttered for the vast majority of rows, which have neither.
+ *  `unitsPerPack` here is the effective (override-aware) pack size the backend resolves. */
+function isLooseRelevant(item: AuditItem): boolean {
+  return item.expectedLooseUnits > 0 || (item.inventory.medicine.unitsPerPack ?? 1) > 1;
+}
+
+/**
+ * Net MRP value of this item's variance — packs plus loose remainder folded into one signed
+ * number (positive = surplus found, negative = shortfall). A loose piece is valued at its
+ * share of the same MRP the pack is valued at (mrp / unitsPerPack), mirroring how the
+ * backend's own audit P&L report prices a loose variance at the per-piece purchase rate.
+ * `unitsPerPack` is the effective pack size (this pharmacy's override, else the catalogue),
+ * resolved server-side — the same figure the recorded P&L uses.
+ */
+function itemVarianceValue(item: AuditItem): number {
+  const packValue = (item.varianceQty ?? 0) * Number(item.inventory.mrp);
+  const upp = item.inventory.medicine.unitsPerPack ?? 1;
+  const looseValue = upp > 1 && item.varianceLooseUnits ? item.varianceLooseUnits * (Number(item.inventory.mrp) / upp) : 0;
+  return packValue + looseValue;
+}
+
+/** True when this item has ANY variance to report — pack, loose, or both. A batch whose
+ *  sealed-pack count matched exactly but whose opened strip's remainder didn't (or the
+ *  reverse) is still a real discrepancy, not a silent match. */
+function hasVariance(item: AuditItem): boolean {
+  return (item.varianceQty !== null && item.varianceQty !== 0)
+      || (item.varianceLooseUnits !== null && item.varianceLooseUnits !== 0);
+}
 
 type AuditSession = {
   id:            string;
@@ -117,14 +156,14 @@ function buildGroups(items: AuditItem[]): RackGroup[] {
 // ─── Post-Approval Summary ────────────────────────────────────────────────────
 
 function PostApprovalSummary({ session }: { session: AuditSession }) {
-  const matched   = session.items.filter((i) => i.varianceQty === 0);
-  const gained    = session.items.filter((i) => (i.varianceQty ?? 0) > 0);
-  const lost      = session.items.filter((i) => (i.varianceQty ?? 0) < 0);
+  const matched   = session.items.filter((i) => !hasVariance(i));
+  const gained    = session.items.filter((i) => hasVariance(i) && itemVarianceValue(i) > 0);
+  const lost      = session.items.filter((i) => hasVariance(i) && itemVarianceValue(i) < 0);
 
   const gainUnits  = gained.reduce((s, i) => s + (i.varianceQty ?? 0), 0);
   const lossUnits  = lost.reduce((s, i) => s + (i.varianceQty ?? 0), 0);
-  const gainValue  = gained.reduce((s, i) => s + Math.abs(i.varianceQty ?? 0) * Number(i.inventory.mrp), 0);
-  const lossValue  = lost.reduce((s, i) => s + Math.abs(i.varianceQty ?? 0) * Number(i.inventory.mrp), 0);
+  const gainValue  = gained.reduce((s, i) => s + itemVarianceValue(i), 0);
+  const lossValue  = lost.reduce((s, i) => s + Math.abs(itemVarianceValue(i)), 0);
   const netValue   = gainValue - lossValue;
   const elapsed    = session.startedAt ? dur(session.startedAt, session.approvedAt) : null;
 
@@ -246,9 +285,9 @@ function ApproveModal({ session, onClose, onDone }: { session: AuditSession; onC
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState<string | null>(null);
 
-  const variances  = session.items.filter((i) => i.varianceQty !== null && i.varianceQty !== 0);
-  const gainValue  = variances.filter((i) => (i.varianceQty ?? 0) > 0).reduce((s, i) => s + (i.varianceQty ?? 0) * Number(i.inventory.mrp), 0);
-  const lossValue  = variances.filter((i) => (i.varianceQty ?? 0) < 0).reduce((s, i) => s + Math.abs(i.varianceQty ?? 0) * Number(i.inventory.mrp), 0);
+  const variances  = session.items.filter(hasVariance);
+  const gainValue  = variances.filter((i) => itemVarianceValue(i) > 0).reduce((s, i) => s + itemVarianceValue(i), 0);
+  const lossValue  = variances.filter((i) => itemVarianceValue(i) < 0).reduce((s, i) => s + Math.abs(itemVarianceValue(i)), 0);
   const gainUnits  = variances.filter((i) => (i.varianceQty ?? 0) > 0).reduce((s, i) => s + (i.varianceQty ?? 0), 0);
   const lossUnits  = variances.filter((i) => (i.varianceQty ?? 0) < 0).reduce((s, i) => s + (i.varianceQty ?? 0), 0);
   const net        = gainValue - lossValue;
@@ -336,6 +375,7 @@ export default function StockAuditDetailPage() {
   const [showApprove,       setShowApprove]       = useState(false);
   const [showSmartComplete, setShowSmartComplete] = useState(false);
   const [counts,            setCounts]            = useState<Record<string, string>>({});
+  const [looseCounts,       setLooseCounts]       = useState<Record<string, string>>({});
   const [savingItem,        setSavingItem]        = useState<string | null>(null);
   const [error,             setError]             = useState<string | null>(null);
   const [search,            setSearch]            = useState("");
@@ -375,6 +415,18 @@ export default function StockAuditDetailPage() {
             return next;
           },
       );
+      setLooseCounts(forceRefreshCounts
+        ? () => {
+            const next: Record<string, string> = {};
+            s.items.forEach((item) => { if (item.countedLooseUnits !== null) next[item.id] = String(item.countedLooseUnits); });
+            return next;
+          }
+        : (prev) => {
+            const next = { ...prev };
+            s.items.forEach((item) => { if (item.countedLooseUnits !== null && !(item.id in next)) next[item.id] = String(item.countedLooseUnits); });
+            return next;
+          },
+      );
       setNotesDraft((prev) => {
         const next = { ...prev };
         s.items.forEach((item) => { if (item.notes && !(item.id in next)) next[item.id] = item.notes; });
@@ -402,7 +454,7 @@ export default function StockAuditDetailPage() {
             if (!item.inventory.medicine.name.toLowerCase().includes(q) && !item.inventory.batchNumber.toLowerCase().includes(q)) return false;
           }
           if (filterMode === "uncounted") return item.countedQty === null;
-          if (filterMode === "variance")  return item.varianceQty !== null && item.varianceQty !== 0;
+          if (filterMode === "variance")  return hasVariance(item);
           return true;
         }),
       })).filter((sg) => sg.items.length > 0),
@@ -435,13 +487,13 @@ export default function StockAuditDetailPage() {
   const stats = useMemo(() => {
     const items        = session?.items ?? [];
     const counted      = items.filter((i) => i.countedQty !== null).length;
-    const varItems     = items.filter((i) => i.varianceQty !== null && i.varianceQty !== 0);
-    const gainItems    = varItems.filter((i) => (i.varianceQty ?? 0) > 0);
-    const lossItems    = varItems.filter((i) => (i.varianceQty ?? 0) < 0);
+    const varItems     = items.filter(hasVariance);
+    const gainItems    = varItems.filter((i) => itemVarianceValue(i) > 0);
+    const lossItems    = varItems.filter((i) => itemVarianceValue(i) < 0);
     const gainUnits    = gainItems.reduce((s, i) => s + (i.varianceQty ?? 0), 0);
     const lossUnits    = lossItems.reduce((s, i) => s + (i.varianceQty ?? 0), 0);
-    const gainValue    = gainItems.reduce((s, i) => s + (i.varianceQty ?? 0) * Number(i.inventory.mrp), 0);
-    const lossValue    = lossItems.reduce((s, i) => s + Math.abs(i.varianceQty ?? 0) * Number(i.inventory.mrp), 0);
+    const gainValue    = gainItems.reduce((s, i) => s + itemVarianceValue(i), 0);
+    const lossValue    = lossItems.reduce((s, i) => s + Math.abs(itemVarianceValue(i)), 0);
     return { total: items.length, counted, uncounted: items.length - counted, varianceCount: varItems.length, gainUnits, lossUnits, gainValue, lossValue };
   }, [session]);
 
@@ -573,6 +625,24 @@ export default function StockAuditDetailPage() {
     finally { setSavingItem(null); }
   }
 
+  /**
+   * Same shape as {@link saveCountValue}, for the loose (cut-strip) remainder — a separate
+   * field, separate save, so leaving it untouched never gets confused with "counted zero".
+   */
+  async function saveLooseCountValue(item: AuditItem, value: number) {
+    if (isNaN(value) || value < 0) return;
+    setSavingItem(item.id);
+    try {
+      await api.patch(`/stock-audit/${id}/items/${item.id}`, { countedLooseUnits: value });
+      setSession((prev) => {
+        if (!prev) return prev;
+        return { ...prev, items: prev.items.map((i) => i.id === item.id
+          ? { ...i, countedLooseUnits: value, varianceLooseUnits: value - i.expectedLooseUnits } : i) };
+      });
+    } catch (err: any) { setError((err as Error).message || "Failed to save loose count"); }
+    finally { setSavingItem(null); }
+  }
+
   async function saveNote(item: AuditItem) {
     const note = notesDraft[item.id] ?? "";
     if (note === (item.notes ?? "")) return;
@@ -633,7 +703,7 @@ export default function StockAuditDetailPage() {
 
   // When approved: show variance items by default (matched items are noise)
   const approvedDisplayItems = isApproved
-    ? (showAllItems ? session.items : session.items.filter((i) => i.varianceQty !== null && i.varianceQty !== 0))
+    ? (showAllItems ? session.items : session.items.filter(hasVariance))
     : null;
 
   return (
@@ -858,7 +928,7 @@ export default function StockAuditDetailPage() {
           <div className="flex items-center gap-2">
             <ShieldAlert className="w-4 h-4 text-amber-500" />
             <span className="text-[13px] font-semibold text-slate-700">
-              {showAllItems ? `All ${session.items.length} items` : `${session.items.filter((i) => i.varianceQty !== null && i.varianceQty !== 0).length} items with variance`}
+              {showAllItems ? `All ${session.items.length} items` : `${session.items.filter(hasVariance).length} items with variance`}
             </span>
           </div>
           <button onClick={() => setShowAllItems((v) => !v)}
@@ -888,9 +958,10 @@ export default function StockAuditDetailPage() {
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {approvedDisplayItems!.map((item) => {
-                  const val = Math.abs(item.varianceQty ?? 0) * Number(item.inventory.mrp);
+                  const val = itemVarianceValue(item);
+                  const looseRelevant = isLooseRelevant(item);
                   return (
-                    <tr key={item.id} className={cn("hover:bg-slate-50 transition-colors", (item.varianceQty ?? 0) < 0 && "bg-red-50/20", (item.varianceQty ?? 0) > 0 && "bg-emerald-50/20")}>
+                    <tr key={item.id} className={cn("hover:bg-slate-50 transition-colors", val < 0 && "bg-red-50/20", val > 0 && "bg-emerald-50/20")}>
                       <td className="px-4 py-3">
                         <div className="font-semibold text-slate-800">{item.inventory.medicine.name}</div>
                         {(item.inventory.medicine.form || item.inventory.medicine.strength) && (
@@ -906,13 +977,28 @@ export default function StockAuditDetailPage() {
                           <span className="font-mono text-[11px] bg-slate-100 px-1.5 py-0.5 rounded">{item.inventory.shelf.rack.code}/{item.inventory.shelf.code}</span>
                         ) : item.inventory.location || "—"}
                       </td>
-                      <td className="px-4 py-3 text-center font-semibold text-slate-700 tabular-nums">{item.expectedQty}</td>
-                      <td className="px-4 py-3 text-center font-semibold text-slate-700 tabular-nums">{item.countedQty ?? "—"}</td>
-                      <td className="px-4 py-3"><VarianceBadge v={item.varianceQty} /></td>
+                      <td className="px-4 py-3 text-center font-semibold text-slate-700 tabular-nums">
+                        {item.expectedQty}
+                        {looseRelevant && <span className="block text-[10px] text-amber-600 font-semibold">+{item.expectedLooseUnits} loose</span>}
+                      </td>
+                      <td className="px-4 py-3 text-center font-semibold text-slate-700 tabular-nums">
+                        {item.countedQty ?? "—"}
+                        {looseRelevant && item.countedLooseUnits !== null && (
+                          <span className="block text-[10px] text-amber-600 font-semibold">+{item.countedLooseUnits} loose</span>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
-                        {val > 0 ? (
-                          <span className={cn("font-semibold text-[12px]", (item.varianceQty ?? 0) < 0 ? "text-red-600" : "text-emerald-600")}>
-                            {(item.varianceQty ?? 0) < 0 ? "-" : "+"}{inr(val)}
+                        <VarianceBadge v={item.varianceQty} />
+                        {item.varianceLooseUnits !== null && item.varianceLooseUnits !== 0 && (
+                          <div className={cn("text-[10px] font-semibold mt-0.5", item.varianceLooseUnits < 0 ? "text-red-500" : "text-emerald-600")}>
+                            {item.varianceLooseUnits < 0 ? "" : "+"}{item.varianceLooseUnits} loose
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        {val !== 0 ? (
+                          <span className={cn("font-semibold text-[12px]", val < 0 ? "text-red-600" : "text-emerald-600")}>
+                            {val < 0 ? "-" : "+"}{inr(Math.abs(val))}
                           </span>
                         ) : <span className="text-slate-300">—</span>}
                         {item.notes && <div className="text-[10px] text-slate-400 mt-0.5 italic truncate max-w-[120px]">{item.notes}</div>}
@@ -1042,6 +1128,11 @@ export default function StockAuditDetailPage() {
                             const varVal       = Math.abs(item.varianceQty ?? 0) * Number(item.inventory.mrp);
                             const noteExpanded = expandedNotes.has(item.id);
                             const hasNote      = !!(notesDraft[item.id] ?? item.notes);
+                            const looseRelevant  = isLooseRelevant(item);
+                            const localLooseVal  = looseCounts[item.id] ?? "";
+                            const localLooseNum  = localLooseVal !== "" ? parseInt(localLooseVal) : null;
+                            const looseIsDirty   = localLooseNum !== null && localLooseNum !== item.countedLooseUnits;
+                            const looseUncounted = item.countedLooseUnits === null;
 
                             return (
                               <Fragment key={item.id}>
@@ -1071,24 +1162,54 @@ export default function StockAuditDetailPage() {
                                   {/* Counted */}
                                   <td className="px-3 py-2.5 text-center">
                                     {canEdit ? (
-                                      <div className="flex items-center justify-center gap-1">
-                                        <input
-                                          ref={(el) => { if (el) inputRefs.current.set(item.id, el); else inputRefs.current.delete(item.id); }}
-                                          type="number" min={0} value={localVal}
-                                          onChange={(e) => setCounts((prev) => ({ ...prev, [item.id]: e.target.value }))}
-                                          onBlur={() => { if (isDirty) saveCountValue(item, parseInt(localVal)); }}
-                                          onKeyDown={(e) => handleKeyDown(e, item)}
-                                          placeholder="—"
-                                          className={cn("w-20 text-center border rounded-lg px-2 py-1.5 text-[14px] font-bold focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all tabular-nums",
-                                            uncounted ? "border-amber-300 bg-amber-50 text-amber-800 placeholder-amber-400 ring-1 ring-amber-200" : "border-slate-200 text-slate-800",
-                                          )}
-                                        />
-                                        {savingItem === item.id && <Loader2 className="w-3 h-3 text-blue-400 animate-spin flex-shrink-0" />}
+                                      <div className="flex flex-col items-center gap-1">
+                                        <div className="flex items-center justify-center gap-1">
+                                          <input
+                                            ref={(el) => { if (el) inputRefs.current.set(item.id, el); else inputRefs.current.delete(item.id); }}
+                                            type="number" min={0} value={localVal}
+                                            onChange={(e) => setCounts((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                                            onBlur={() => { if (isDirty) saveCountValue(item, parseInt(localVal)); }}
+                                            onKeyDown={(e) => handleKeyDown(e, item)}
+                                            placeholder="—"
+                                            className={cn("w-20 text-center border rounded-lg px-2 py-1.5 text-[14px] font-bold focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400 transition-all tabular-nums",
+                                              uncounted ? "border-amber-300 bg-amber-50 text-amber-800 placeholder-amber-400 ring-1 ring-amber-200" : "border-slate-200 text-slate-800",
+                                            )}
+                                          />
+                                          {savingItem === item.id && <Loader2 className="w-3 h-3 text-blue-400 animate-spin flex-shrink-0" />}
+                                        </div>
+                                        {/* Loose (cut-strip) remainder — only for a batch that actually has one, or a
+                                            medicine packaged in multiples at all. Left blank, it does not touch
+                                            looseUnits at approval (see saveLooseCountValue / the backend's own note). */}
+                                        {looseRelevant && (
+                                          <input
+                                            type="number" min={0} value={localLooseVal}
+                                            onChange={(e) => setLooseCounts((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                                            onBlur={() => { if (looseIsDirty) saveLooseCountValue(item, parseInt(localLooseVal)); }}
+                                            onKeyDown={(e) => {
+                                              if (e.key !== "Enter") return;
+                                              e.preventDefault();
+                                              const v = parseInt(localLooseVal);
+                                              if (!isNaN(v) && v >= 0) saveLooseCountValue(item, v);
+                                            }}
+                                            placeholder={`exp. ${item.expectedLooseUnits}`}
+                                            title={`Loose remainder (${item.inventory.medicine.baseUnit?.toLowerCase() ?? "pieces"}) — expected ${item.expectedLooseUnits}`}
+                                            className={cn("w-20 text-center border rounded-lg px-2 py-1 text-[11px] font-semibold focus:outline-none focus:ring-2 focus:ring-amber-100 focus:border-amber-400 transition-all tabular-nums",
+                                              looseUncounted ? "border-amber-200 bg-amber-50/40 text-amber-700 placeholder-amber-400" : "border-slate-200 text-slate-600",
+                                            )}
+                                          />
+                                        )}
                                       </div>
                                     ) : (
-                                      <span className={cn("font-semibold tabular-nums", item.countedQty === null ? "text-slate-300" : "text-slate-700")}>
-                                        {item.countedQty ?? "—"}
-                                      </span>
+                                      <div className="flex flex-col items-center">
+                                        <span className={cn("font-semibold tabular-nums", item.countedQty === null ? "text-slate-300" : "text-slate-700")}>
+                                          {item.countedQty ?? "—"}
+                                        </span>
+                                        {looseRelevant && (
+                                          <span className="text-[10px] text-amber-600 font-semibold tabular-nums">
+                                            +{item.countedLooseUnits ?? item.expectedLooseUnits} loose
+                                          </span>
+                                        )}
+                                      </div>
                                     )}
                                   </td>
 
@@ -1098,6 +1219,11 @@ export default function StockAuditDetailPage() {
                                     {item.varianceQty !== null && item.varianceQty !== 0 && varVal > 0 && (
                                       <div className={cn("text-[10px] font-semibold mt-0.5", item.varianceQty < 0 ? "text-red-400" : "text-emerald-500")}>
                                         {item.varianceQty < 0 ? "-" : "+"}{inr(varVal)}
+                                      </div>
+                                    )}
+                                    {item.varianceLooseUnits !== null && item.varianceLooseUnits !== 0 && (
+                                      <div className={cn("text-[10px] font-semibold mt-0.5", item.varianceLooseUnits < 0 ? "text-red-400" : "text-emerald-500")}>
+                                        {item.varianceLooseUnits < 0 ? "" : "+"}{item.varianceLooseUnits} loose
                                       </div>
                                     )}
                                   </td>

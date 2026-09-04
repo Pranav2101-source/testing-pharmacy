@@ -12,12 +12,15 @@ import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.exception.UnprocessableEntityException;
 import com.checkup.pharmacy.common.sequence.DocumentNumberFormat;
 import com.checkup.pharmacy.common.sequence.DocumentSequenceService;
+import com.checkup.pharmacy.common.util.BaseUnits;
 import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryMovement;
 import com.checkup.pharmacy.modules.inventory.InventoryMovementRepository;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository;
 import com.checkup.pharmacy.modules.stockaudit.dto.ApproveSessionRequest;
 import com.checkup.pharmacy.modules.stockaudit.dto.AuditItemResponse;
 import com.checkup.pharmacy.modules.stockaudit.dto.AuditOverviewResponse;
@@ -45,9 +48,12 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Physical stock-count sessions, scoped to the caller's pharmacy. A session
@@ -66,11 +72,13 @@ public class StockAuditService {
     private final InventoryMovementRepository movementRepository;
     private final UserRepository userRepository;
     private final MedicineRepository medicineRepository;
+    private final PharmacyMedicineOverrideRepository overrideRepository;
     private final DocumentSequenceService sequenceService;
 
     public StockAuditService(StockAuditSessionRepository sessionRepository, StockAuditItemRepository itemRepository,
                              InventoryRepository inventoryRepository, InventoryMovementRepository movementRepository,
                              UserRepository userRepository, MedicineRepository medicineRepository,
+                             PharmacyMedicineOverrideRepository overrideRepository,
                              DocumentSequenceService sequenceService) {
         this.sessionRepository = sessionRepository;
         this.itemRepository = itemRepository;
@@ -78,6 +86,7 @@ public class StockAuditService {
         this.movementRepository = movementRepository;
         this.userRepository = userRepository;
         this.medicineRepository = medicineRepository;
+        this.overrideRepository = overrideRepository;
         this.sequenceService = sequenceService;
     }
 
@@ -95,7 +104,8 @@ public class StockAuditService {
         sessionRepository.save(session);
 
         List<StockAuditItem> items = activeInventory.stream()
-                .map(inv -> StockAuditItem.create(pharmacyId, session.getId(), inv.getId(), inv.getQuantity()))
+                .map(inv -> StockAuditItem.create(pharmacyId, session.getId(), inv.getId(), inv.getQuantity(),
+                        inv.getLooseUnits()))
                 .toList();
         itemRepository.saveAll(items);
 
@@ -114,7 +124,9 @@ public class StockAuditService {
                 activeInventory.stream().map(Inventory::getMedicineId).distinct().toList())) {
             medicineById.put(m.getId(), m);
         }
-        return toResponse(session, items, inventoryById, medicineById);
+        Map<String, PharmacyMedicineOverride> overridesById = loadOverrides(
+                activeInventory.stream().map(Inventory::getMedicineId).distinct().toList());
+        return toResponse(session, items, inventoryById, medicineById, overridesById);
     }
 
     @Transactional
@@ -127,8 +139,8 @@ public class StockAuditService {
 
     @Transactional
     public AuditItemResponse updateItem(String sessionId, String itemId, UpdateItemRequest req) {
-        if (req.countedQty() == null && (req.notes() == null)) {
-            throw new BadRequestException("At least one of countedQty or notes is required");
+        if (req.countedQty() == null && req.countedLooseUnits() == null && req.notes() == null) {
+            throw new BadRequestException("At least one of countedQty, countedLooseUnits or notes is required");
         }
         StockAuditSession session = load(sessionId);
         if (session.getStatus() != AuditSessionStatus.IN_PROGRESS) {
@@ -136,7 +148,7 @@ public class StockAuditService {
         }
         StockAuditItem item = itemRepository.findByIdAndSessionId(itemId, sessionId)
                 .orElseThrow(() -> new NotFoundException("Audit item not found"));
-        item.recordCount(req.countedQty(), req.notes());
+        item.recordCount(req.countedQty(), req.countedLooseUnits(), req.notes());
         return toItemResponse(item);
     }
 
@@ -156,9 +168,10 @@ public class StockAuditService {
             throw new NotFoundException("Audit items not found: " + String.join(", ", missing));
         }
         for (BatchUpdateItemsRequest.Item update : req.items()) {
-            byId.get(update.itemId()).recordCount(update.countedQty(), null);
+            byId.get(update.itemId()).recordCount(update.countedQty(), update.countedLooseUnits(), null);
         }
-        return itemIds.stream().map(id -> toItemResponse(byId.get(id))).toList();
+        Map<String, PharmacyMedicineOverride> overridesById = loadOverrides(medicineIdsOf(byId.values(), Map.of()));
+        return itemIds.stream().map(id -> toItemResponse(byId.get(id), Map.of(), Map.of(), overridesById)).toList();
     }
 
     @Transactional
@@ -222,14 +235,40 @@ public class StockAuditService {
                 if (inv == null || inv.getStatus() != BatchStatus.ACTIVE || item.getCountedQty() == null) {
                     continue;
                 }
-                int quantityBefore = inv.getQuantity();
-                int quantityAfter = Math.max(0, item.getCountedQty());
-                inv.setQuantity(quantityAfter);
+                // variantItems now also includes an item whose ONLY variance is in the loose
+                // remainder (pack count matched exactly) — guard each adjustment separately so
+                // a zero pack-variance item does not write a spurious zero-quantity movement.
                 int variance = item.getVarianceQty();
-                movementRepository.save(InventoryMovement.record(session.getPharmacyId(), inv.getId(), userId,
-                        MovementType.ADJUSTMENT, variance > 0 ? MovementDirection.IN : MovementDirection.OUT,
-                        Math.abs(variance), quantityBefore, quantityAfter, "STOCK_AUDIT", session.getId(),
-                        "Stock audit " + session.getSessionNumber() + ": variance " + (variance > 0 ? "+" : "") + variance));
+                if (variance != 0) {
+                    int quantityBefore = inv.getQuantity();
+                    int quantityAfter = Math.max(0, item.getCountedQty());
+                    inv.setQuantity(quantityAfter);
+                    movementRepository.save(InventoryMovement.record(session.getPharmacyId(), inv.getId(), userId,
+                            MovementType.ADJUSTMENT, variance > 0 ? MovementDirection.IN : MovementDirection.OUT,
+                            Math.abs(variance), quantityBefore, quantityAfter, "STOCK_AUDIT", session.getId(),
+                            "Stock audit " + session.getSessionNumber() + ": variance " + (variance > 0 ? "+" : "") + variance));
+                }
+
+                // Independent of the pack adjustment above: a batch's loose remainder is
+                // corrected only when staff actually counted it. countedLooseUnits == null
+                // means "not counted separately" and must leave looseUnits exactly as it was —
+                // reading it as zero would erase a real remainder nobody miscounted.
+                Integer looseVariance = item.getVarianceLooseUnits();
+                if (item.getCountedLooseUnits() != null && looseVariance != null && looseVariance != 0) {
+                    int looseBefore = inv.getLooseUnits();
+                    int looseAfter = Math.max(0, item.getCountedLooseUnits());
+                    inv.setLooseUnits(looseAfter);
+                    // This row's quantities are pieces, not packs — tag it so the ledger says so
+                    // (item.getInventory() is fetch-joined with its medicine by findVarianceItems).
+                    Medicine looseMed = item.getInventory() == null ? null : item.getInventory().getMedicine();
+                    String looseBaseUnit = looseMed == null ? null
+                            : BaseUnits.resolve(looseMed.getBaseUnit(), looseMed.getForm());
+                    movementRepository.save(InventoryMovement.record(session.getPharmacyId(), inv.getId(), userId,
+                            MovementType.ADJUSTMENT, looseVariance > 0 ? MovementDirection.IN : MovementDirection.OUT,
+                            Math.abs(looseVariance), looseBefore, looseAfter, "STOCK_AUDIT", session.getId(),
+                            "Stock audit " + session.getSessionNumber() + ": loose variance "
+                            + (looseVariance > 0 ? "+" : "") + looseVariance + " (cut strip)").inBaseUnit(looseBaseUnit));
+                }
             }
         }
 
@@ -284,11 +323,19 @@ public class StockAuditService {
             Inventory inv = item.getInventory();
             String direction = item.getVarianceQty() > 0 ? "IN" : "OUT";
             int resultQty = Math.max(0, item.getCountedQty() == null ? 0 : item.getCountedQty());
+            // Loose fields are only ever a preview when this item's loose remainder was
+            // actually counted — see StockAuditItem's null-vs-zero note.
+            Integer looseVariance = item.getVarianceLooseUnits();
+            boolean looseCounted = item.getCountedLooseUnits() != null;
+            String looseDirection = looseCounted && looseVariance != null ? (looseVariance > 0 ? "IN" : "OUT") : null;
+            Integer resultLooseUnits = looseCounted ? Math.max(0, item.getCountedLooseUnits()) : null;
             return new VarianceSummaryResponse.Adjustment(item.getInventoryId(),
                     inv == null || inv.getMedicine() == null ? null : inv.getMedicine().getName(),
                     inv == null ? null : inv.getBatchNumber(), inv == null ? null : inv.getExpiryDate(),
                     inv == null ? 0 : inv.getQuantity(), item.getExpectedQty(), item.getCountedQty(),
-                    item.getVarianceQty(), direction, resultQty);
+                    item.getVarianceQty(), direction, resultQty,
+                    inv == null ? 0 : inv.getLooseUnits(), item.getExpectedLooseUnits(), item.getCountedLooseUnits(),
+                    looseVariance, looseDirection, resultLooseUnits);
         }).toList();
 
         int totalIn = adjustments.stream().filter(a -> "IN".equals(a.direction())).mapToInt(a -> a.varianceQty() == null ? 0 : a.varianceQty()).sum();
@@ -403,8 +450,41 @@ public class StockAuditService {
         return (s == null || s.isBlank()) ? null : s.trim();
     }
 
+    /** This pharmacy's overrides for the given medicines, keyed by medicineId — empty entries mean "use the catalogue value". */
+    private Map<String, PharmacyMedicineOverride> loadOverrides(Collection<String> medicineIds) {
+        if (medicineIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, PharmacyMedicineOverride> map = new HashMap<>();
+        for (PharmacyMedicineOverride o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(
+                TenantContext.pharmacyId(), medicineIds)) {
+            map.put(o.getMedicineId(), o);
+        }
+        return map;
+    }
+
+    /** Distinct medicineIds behind these audit items, resolved via the fetch-joined inventory (or the map, for createSession). */
+    private static Set<String> medicineIdsOf(Collection<StockAuditItem> items, Map<String, Inventory> inventoryById) {
+        Set<String> ids = new HashSet<>();
+        for (StockAuditItem item : items) {
+            Inventory inv = item.getInventory() != null ? item.getInventory() : inventoryById.get(item.getInventoryId());
+            if (inv != null && inv.getMedicineId() != null) {
+                ids.add(inv.getMedicineId());
+            }
+        }
+        return ids;
+    }
+
+    /** The pack size the POS actually bills at — this pharmacy's override when set, else the catalogue's. */
+    private static Integer effectiveUnitsPerPack(Medicine medicine, PharmacyMedicineOverride override) {
+        if (override != null && override.getUnitsPerPack() != null) {
+            return override.getUnitsPerPack();
+        }
+        return medicine.getUnitsPerPack();
+    }
+
     private SessionResponse toResponse(StockAuditSession session, List<StockAuditItem> items) {
-        return toResponse(session, items, Map.of(), Map.of());
+        return toResponse(session, items, Map.of(), Map.of(), loadOverrides(medicineIdsOf(items, Map.of())));
     }
 
     /**
@@ -412,12 +492,19 @@ public class StockAuditService {
      * just persisted in this same transaction — see its call site for why
      * item.getInventory() can't be trusted there. Every other caller loads items
      * via a query (fetch-joining inventory+medicine) and passes empty maps,
-     * falling back to the relation on the entity itself.
+     * falling back to the relation on the entity itself. overridesById is always
+     * populated by the caller (it has no entity relation to fall back to).
      */
     private SessionResponse toResponse(StockAuditSession session, List<StockAuditItem> items,
-                                       Map<String, Inventory> inventoryById, Map<String, Medicine> medicineById) {
+                                       Map<String, Inventory> inventoryById, Map<String, Medicine> medicineById,
+                                       Map<String, PharmacyMedicineOverride> overridesById) {
         long counted = items.stream().filter(i -> i.getCountedQty() != null).count();
-        long variance = items.stream().filter(i -> i.getVarianceQty() != null && i.getVarianceQty() != 0).count();
+        // A variance in EITHER the pack count or the loose remainder counts — see
+        // StockAuditItemRepository's matching queries for why the pack-only check used to miss
+        // a batch whose sealed packs matched exactly but whose opened strip's remainder didn't.
+        long variance = items.stream().filter(i ->
+                (i.getVarianceQty() != null && i.getVarianceQty() != 0)
+                || (i.getVarianceLooseUnits() != null && i.getVarianceLooseUnits() != 0)).count();
         SessionResponse.ApproverRef approverRef = null;
         if (session.getApprovedBy() != null) {
             approverRef = userRepository.findById(session.getApprovedBy())
@@ -426,26 +513,40 @@ public class StockAuditService {
         return new SessionResponse(session.getId(), session.getSessionNumber(), session.getStatus().name(),
                 session.getNotes(), session.getStartedAt(), session.getCompletedAt(), session.getApprovedAt(),
                 approverRef, new SessionResponse.CountRef(items.size()), (int) counted, (int) variance,
-                items.stream().map(i -> toItemResponse(i, inventoryById, medicineById)).toList(), session.getCreatedAt());
+                items.stream().map(i -> toItemResponse(i, inventoryById, medicineById, overridesById)).toList(),
+                session.getCreatedAt());
     }
 
     private AuditItemResponse toItemResponse(StockAuditItem item) {
-        return toItemResponse(item, Map.of(), Map.of());
+        Inventory inv = item.getInventory();
+        Map<String, PharmacyMedicineOverride> overridesById = inv != null && inv.getMedicineId() != null
+                ? loadOverrides(List.of(inv.getMedicineId())) : Map.of();
+        return toItemResponse(item, Map.of(), Map.of(), overridesById);
     }
 
     private AuditItemResponse toItemResponse(StockAuditItem item, Map<String, Inventory> inventoryById,
-                                             Map<String, Medicine> medicineById) {
+                                             Map<String, Medicine> medicineById,
+                                             Map<String, PharmacyMedicineOverride> overridesById) {
         Inventory inv = item.getInventory() != null ? item.getInventory() : inventoryById.get(item.getInventoryId());
         AuditItemResponse.InventoryRef invRef = null;
         if (inv != null) {
             Medicine medicine = inv.getMedicine() != null ? inv.getMedicine() : medicineById.get(inv.getMedicineId());
-            AuditItemResponse.MedicineRef medRef = medicine == null ? null
-                    : new AuditItemResponse.MedicineRef(medicine.getId(), medicine.getName(),
-                            medicine.getGenericName(), medicine.getForm(), medicine.getStrength());
+            AuditItemResponse.MedicineRef medRef = null;
+            if (medicine != null) {
+                // unitsPerPack/baseUnit are what the POS actually bills at — this pharmacy's override
+                // when set, else the catalogue — so the count screen's loose-count box and the
+                // on-page variance-₹ preview line up with the recorded audit P&L (which resolves the
+                // pack size the same way).
+                Integer effectiveUpp = effectiveUnitsPerPack(medicine, overridesById.get(medicine.getId()));
+                medRef = new AuditItemResponse.MedicineRef(medicine.getId(), medicine.getName(),
+                        medicine.getGenericName(), medicine.getForm(), medicine.getStrength(),
+                        effectiveUpp, BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm()));
+            }
             invRef = new AuditItemResponse.InventoryRef(inv.getId(), inv.getBatchNumber(), inv.getExpiryDate(),
                     inv.getQuantity(), inv.getMrp(), medRef);
         }
         return new AuditItemResponse(item.getId(), invRef, item.getExpectedQty(), item.getCountedQty(),
-                item.getVarianceQty(), item.getNotes());
+                item.getVarianceQty(), item.getExpectedLooseUnits(), item.getCountedLooseUnits(),
+                item.getVarianceLooseUnits(), item.getNotes());
     }
 }

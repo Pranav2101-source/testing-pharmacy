@@ -33,37 +33,70 @@ public interface InvoiceItemRepository extends JpaRepository<InvoiceItem, String
         BigDecimal getRevenue();
     }
 
+    // A medicine sold loose can appear on two kinds of line in the same range: a PACK line
+    // (quantity = whole strips) and a LOOSE line (quantity = individual pieces). Summing
+    // `i.quantity` straight, as this used to, added strips to tablets — "7 sold" meaning
+    // nothing coherent. This CASE folds every line to pieces before summing, which is a
+    // no-op for the vast majority of medicines (no pack size on record, or never sold
+    // loose): COALESCE(..., 1) leaves a PACK line's quantity unchanged when there is no
+    // pack multiple to convert by.
+    //
+    // The pack multiple is THIS PHARMACY'S override when it has set one, else the
+    // catalogue's — the ad-hoc join matches how billing itself resolves it
+    // (BillingService's looseUppOverrideByMedicineId). A wrong pack size here would
+    // misreport a fast-mover as slow (or the reverse) for exactly the pharmacies that
+    // bothered to correct the catalogue's default.
+
     @Query("""
-            SELECT i.inventoryId AS inventoryId, COALESCE(SUM(i.quantity), 0) AS qty, COALESCE(SUM(i.amount), 0) AS revenue
+            SELECT i.inventoryId AS inventoryId,
+                   COALESCE(SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
+                                      ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END), 0) AS qty,
+                   COALESCE(SUM(i.amount), 0) AS revenue
             FROM InvoiceItem i
+            LEFT JOIN PharmacyMedicineOverride o
+              ON o.id.pharmacyId = i.invoice.pharmacyId AND o.id.medicineId = i.inventory.medicineId
             WHERE i.invoice.pharmacyId = :pharmacyId AND i.invoice.isCancelled = false
               AND i.invoice.createdAt >= :from AND i.invoice.createdAt <= :to
             GROUP BY i.inventoryId
-            ORDER BY SUM(i.quantity) DESC
+            ORDER BY SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
+                               ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END) DESC
             """)
     List<MovementGroupRow> fastMovingInRange(@Param("pharmacyId") String pharmacyId,
                                              @Param("from") Instant from, @Param("to") Instant to, Limit limit);
 
     @Query("""
-            SELECT i.inventoryId AS inventoryId, COALESCE(SUM(i.quantity), 0) AS qty, COALESCE(SUM(i.amount), 0) AS revenue
+            SELECT i.inventoryId AS inventoryId,
+                   COALESCE(SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
+                                      ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END), 0) AS qty,
+                   COALESCE(SUM(i.amount), 0) AS revenue
             FROM InvoiceItem i
+            LEFT JOIN PharmacyMedicineOverride o
+              ON o.id.pharmacyId = i.invoice.pharmacyId AND o.id.medicineId = i.inventory.medicineId
             WHERE i.invoice.pharmacyId = :pharmacyId AND i.invoice.isCancelled = false
               AND i.invoice.createdAt >= :from AND i.invoice.createdAt <= :to
             GROUP BY i.inventoryId
-            HAVING SUM(i.quantity) >= :minQty
-            ORDER BY SUM(i.quantity) ASC
+            HAVING SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
+                             ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END) >= :minQty
+            ORDER BY SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
+                               ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END) ASC
             """)
     List<MovementGroupRow> slowMovingInRange(@Param("pharmacyId") String pharmacyId,
                                              @Param("from") Instant from, @Param("to") Instant to,
                                              @Param("minQty") int minQty, Limit limit);
 
     @Query("""
-            SELECT i.inventoryId AS inventoryId, COALESCE(SUM(i.quantity), 0) AS qty, COALESCE(SUM(i.amount), 0) AS revenue
+            SELECT i.inventoryId AS inventoryId,
+                   COALESCE(SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
+                                      ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END), 0) AS qty,
+                   COALESCE(SUM(i.amount), 0) AS revenue
             FROM InvoiceItem i
+            LEFT JOIN PharmacyMedicineOverride o
+              ON o.id.pharmacyId = i.invoice.pharmacyId AND o.id.medicineId = i.inventory.medicineId
             WHERE i.invoice.pharmacyId = :pharmacyId AND i.invoice.isCancelled = false
               AND i.invoice.createdAt >= :since
             GROUP BY i.inventoryId
-            ORDER BY SUM(i.quantity) DESC
+            ORDER BY SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
+                               ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END) DESC
             """)
     List<MovementGroupRow> topItemsSince(@Param("pharmacyId") String pharmacyId,
                                         @Param("since") Instant since, Limit limit);
@@ -76,8 +109,14 @@ public interface InvoiceItemRepository extends JpaRepository<InvoiceItem, String
         BigDecimal getSgst();
         BigDecimal getIgst();
         BigDecimal getAmount();
-        /** Long, not Integer: this is now a SUM, and Hibernate widens an integer sum. */
-        Long getQuantity();
+        /**
+         * Quantity in WHOLE PACKS/strips (the unit valuation, purchases and every prior
+         * GSTR-1 filing use). A loose line's piece {@code quantity} is folded to a
+         * fractional pack-equivalent before summing, so this is a {@code Double}; the
+         * caller rounds it for the return. Identical to a plain pack count for any HSN
+         * that never had a loose sale in the period.
+         */
+        Double getQuantity();
     }
 
     /**
@@ -94,14 +133,31 @@ public interface InvoiceItemRepository extends JpaRepository<InvoiceItem, String
      * distinct (HSN, rate) pairs the pharmacy actually sells — tens, not hundreds of
      * thousands. Grouping also treats NULL hsnCode as a single group, which is what
      * the caller's "UNCLASSIFIED" bucket wants.
+     *
+     * <p>A loose (cut-strip) line's {@code quantity} is in pieces, not packs. Summing
+     * it straight against the pack lines of the same HSN would put a figure on GSTR-1
+     * Table 12 that is neither strips nor tablets. The CASE folds each loose line to a
+     * fractional pack-equivalent ({@code pieces / unitsPerPack} — this pharmacy's
+     * override, else the catalogue) so the column stays in the one unit valuation and
+     * every earlier filing already use. The joins are LEFT so a line whose batch or
+     * medicine row is missing still contributes its money. {@code CAST(... AS double)}
+     * is mandatory — a bare decimal literal is silently truncated to int in a JPQL
+     * aggregate and {@code 8/15} becomes {@code 0}.
      */
     @Query("""
             SELECT i.hsnCode AS hsnCode, i.gstRate AS gstRate,
                    COALESCE(SUM(i.taxableAmount), 0) AS taxableAmount,
                    COALESCE(SUM(i.cgst), 0) AS cgst, COALESCE(SUM(i.sgst), 0) AS sgst,
                    COALESCE(SUM(i.igst), 0) AS igst, COALESCE(SUM(i.amount), 0) AS amount,
-                   COALESCE(SUM(i.quantity), 0) AS quantity
+                   COALESCE(SUM(
+                       CASE WHEN i.saleUnit = 'LOOSE'
+                            THEN CAST(i.quantity AS double) / COALESCE(o.unitsPerPack, med.unitsPerPack, 1)
+                            ELSE CAST(i.quantity AS double) END), 0) AS quantity
             FROM InvoiceItem i
+            LEFT JOIN i.inventory inv
+            LEFT JOIN inv.medicine med
+            LEFT JOIN PharmacyMedicineOverride o
+              ON o.id.pharmacyId = i.invoice.pharmacyId AND o.id.medicineId = inv.medicineId
             WHERE i.invoice.pharmacyId = :pharmacyId AND i.invoice.isCancelled = false
               AND i.invoice.createdAt >= :from AND i.invoice.createdAt <= :to
             GROUP BY i.hsnCode, i.gstRate
@@ -326,4 +382,36 @@ public interface InvoiceItemRepository extends JpaRepository<InvoiceItem, String
             """)
     List<MarginGroupRow> lossMakingByInventory(@Param("pharmacyId") String pharmacyId,
                                                @Param("from") Instant from, @Param("to") Instant to, Limit limit);
+
+    // ── Loose (cut-strip) sales ──────────────────────────────────────────────
+
+    interface LooseSalesTotalsRow {
+        BigDecimal getRevenueExGst();
+        /** Individual pieces sold loose — NOT packs, and not comparable to {@link MarginTotalsRow#getUnitsSold()}. */
+        Long getPiecesSold();
+        Long getLineCount();
+        Long getBillCount();
+    }
+
+    /**
+     * How much of the period's revenue came from cut-strip (loose) lines, folded into the
+     * same Profit &amp; Margin panel the rest of {@link #marginTotals} feeds.
+     *
+     * <p>{@code COUNT(DISTINCT i.invoiceId)} — not {@code i.invoice} — because grouping or
+     * counting distinct on the joined entity would ask Postgres to compare whole rows;
+     * counting the scalar id is both what "how many bills" means and what the query planner
+     * can actually use an index on.
+     */
+    @Query("""
+            SELECT COALESCE(SUM(i.taxableAmount), 0) AS revenueExGst,
+                   COALESCE(SUM(i.quantity), 0) AS piecesSold,
+                   COUNT(i) AS lineCount,
+                   COUNT(DISTINCT i.invoiceId) AS billCount
+            FROM InvoiceItem i
+            WHERE i.invoice.pharmacyId = :pharmacyId AND i.invoice.isCancelled = false
+              AND i.invoice.createdAt >= :from AND i.invoice.createdAt <= :to
+              AND i.saleUnit = 'LOOSE'
+            """)
+    LooseSalesTotalsRow looseSalesTotals(@Param("pharmacyId") String pharmacyId,
+                                         @Param("from") Instant from, @Param("to") Instant to);
 }
