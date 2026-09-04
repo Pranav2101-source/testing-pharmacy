@@ -1163,7 +1163,9 @@ export default function PrescriptionsPage() {
   const totalPages    = Math.max(1, Math.ceil(total / PAGE_LIMIT));
 
   return (
-    <div className="p-6 space-y-5">
+    // h-full + own scroll: DashboardLayout's <main> is overflow-hidden, so a
+    // page that doesn't scroll itself just clips its list past the fold.
+    <div className="h-full overflow-y-auto p-6 space-y-5">
 
       {/* Page header */}
       <div className="flex items-center justify-between">

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { planLooseSplit, loosePiecesOf, runLooseOverflow } from "./CartTable";
+import { planLooseSplit, loosePiecesOf, runLooseOverflow, nextLineAfterBatchSwap } from "./CartTable";
 import type { InventoryBatch } from "./BatchPickerDialog";
 import type { CartItem, NewCartItem } from "./useBillingStore";
 
@@ -40,6 +40,41 @@ const cart = [{ inventoryId: "A", medicineName: "Telma 40", saleUnit: "LOOSE", q
 describe("loosePiecesOf", () => {
   it("counts unreserved sealed packs opened up, plus the loose remainder", () => {
     expect(loosePiecesOf(batch({ id: "b", quantity: 3, looseUnits: 4, reservedQuantity: 1 }), 15)).toBe(34); // 2*15 + 4
+  });
+});
+
+describe("nextLineAfterBatchSwap", () => {
+  // `line` is a LOOSE line: quantity 17 pieces, unitsPerPack 15.
+  it("keeps the line loose when the new batch also sells loose", () => {
+    const r = nextLineAfterBatchSwap(line, true, 15);
+    expect(r).toEqual({ saleUnit: "LOOSE", quantity: 17, forcedToPack: false });
+  });
+
+  it("converts piece count to an equivalent pack count, rounded up, when the new batch can't sell loose", () => {
+    // 17 tablets no longer sellable loose -> ceil(17/15) = 2 whole packs, not "17 packs".
+    const r = nextLineAfterBatchSwap(line, false, undefined);
+    expect(r).toEqual({ saleUnit: "PACK", quantity: 2, forcedToPack: true });
+  });
+
+  it("also forces to pack when the new batch's own pack size is 1 or unknown", () => {
+    expect(nextLineAfterBatchSwap(line, true, 1)).toEqual({ saleUnit: "PACK", quantity: 2, forcedToPack: true });
+    expect(nextLineAfterBatchSwap(line, true, undefined)).toEqual({ saleUnit: "PACK", quantity: 2, forcedToPack: true });
+  });
+
+  it("never rounds below 1 whole pack, even for a tiny loose quantity", () => {
+    const r = nextLineAfterBatchSwap({ ...line, quantity: 1 }, false, undefined);
+    expect(r).toEqual({ saleUnit: "PACK", quantity: 1, forcedToPack: true });
+  });
+
+  it("doesn't round up when the piece count divides the pack size exactly", () => {
+    const r = nextLineAfterBatchSwap({ ...line, quantity: 30 }, false, undefined);
+    expect(r.quantity).toBe(2); // 30 / 15, exact
+  });
+
+  it("leaves an already-PACK line untouched regardless of the new batch's loose eligibility", () => {
+    const packLine = { ...line, saleUnit: "PACK" };
+    const r = nextLineAfterBatchSwap(packLine, false, undefined);
+    expect(r).toEqual({ saleUnit: "PACK", quantity: 17, forcedToPack: false });
   });
 });
 

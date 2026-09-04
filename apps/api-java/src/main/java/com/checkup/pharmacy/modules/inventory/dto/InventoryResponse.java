@@ -35,10 +35,18 @@ public record InventoryResponse(
      * <p>{@code unitsPerPack} is the EFFECTIVE pack size (this pharmacy's override,
      * else the catalogue's); {@code allowLooseSale} is this pharmacy's opt-in. The
      * POS uses both to offer the Strip/Tab toggle and compute per-piece availability.
+     *
+     * <p>{@code schedule} and {@code packSize} are the catalogue's raw values (not
+     * pharmacy-specific) — added so the Inventory screen can offer its own "enable
+     * loose selling" entry point without a second round trip: {@code schedule} is
+     * required to keep blocking Schedule X the same way the Medicines page does,
+     * and {@code packSize} (free text like "10s") is what a units-per-pack guess is
+     * parsed from when the catalogue has no structured {@code unitsPerPack}.
      */
     public record MedicineRef(String id, String name, String genericName, String form, String strength, String unit,
                               boolean isActive, java.math.BigDecimal gstRate, String hsnCode,
-                              Integer unitsPerPack, String baseUnit, boolean allowLooseSale, boolean looseByDefault) {
+                              Integer unitsPerPack, String baseUnit, boolean allowLooseSale, boolean looseByDefault,
+                              String schedule, String packSize) {
     }
 
     public record ShelfRef(String id, String code, RackRef rack) {

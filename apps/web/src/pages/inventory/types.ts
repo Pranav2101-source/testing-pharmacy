@@ -37,6 +37,9 @@ export type InventoryItem = {
     baseUnit?:       string | null;
     allowLooseSale?: boolean;
     looseByDefault?: boolean;
+    /** Catalogue values (not pharmacy-specific) — drive the Inventory "enable loose selling" flow. */
+    schedule?:       string | null;
+    packSize?:       string | null;
   };
   shelf: { id: string; code: string; rack: { id: string; code: string; name: string } } | null;
 };

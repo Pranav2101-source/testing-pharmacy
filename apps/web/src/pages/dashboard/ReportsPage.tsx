@@ -1406,7 +1406,8 @@ function InventoryTab() {
   const [writeOffBusy, setWriteOffBusy]       = useState(false);
   const [writeOffError, setWriteOffError]     = useState<string | null>(null);
   const [writeOffDone, setWriteOffDone] =
-    useState<{ batchesWrittenOff: number; unitsWrittenOff: number; costWrittenOff: number; itcToReverse: number } | null>(null);
+    useState<{ batchesWrittenOff: number; unitsWrittenOff: number; looseUnitsWrittenOff: number;
+      unpriceableLooseBatches: number; costWrittenOff: number; itcToReverse: number } | null>(null);
 
   const loadExpiry = useCallback(async () => {
     setExpiryLoad(true);
@@ -1578,12 +1579,23 @@ function InventoryTab() {
             <p className="text-[12px] text-emerald-900 leading-relaxed">
               <span className="font-bold">
                 Wrote off {writeOffDone.batchesWrittenOff} batch
-                {writeOffDone.batchesWrittenOff === 1 ? "" : "es"} ({writeOffDone.unitsWrittenOff} units,
+                {writeOffDone.batchesWrittenOff === 1 ? "" : "es"} ({writeOffDone.unitsWrittenOff} pack
+                {writeOffDone.unitsWrittenOff === 1 ? "" : "s"}
+                {writeOffDone.looseUnitsWrittenOff > 0
+                  && ` + ${writeOffDone.looseUnitsWrittenOff} loose unit${writeOffDone.looseUnitsWrittenOff === 1 ? "" : "s"}`},
                 ₹{fmt(writeOffDone.costWrittenOff)} at cost).
               </span>{" "}
               Reverse <span className="font-bold">₹{fmt(writeOffDone.itcToReverse)}</span> of input tax credit
               in GSTR-3B Table 4(B)(1) for this period — it is on the GSTR-3B tab now.
             </p>
+            {writeOffDone.unpriceableLooseBatches > 0 && (
+              <p className="text-[11px] text-amber-700 font-semibold mt-1.5 flex items-start gap-1">
+                <AlertTriangle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                {writeOffDone.unpriceableLooseBatches} batch{writeOffDone.unpriceableLooseBatches === 1 ? "" : "es"} had a
+                loose remainder with no pack size on record — its cost and ITC above are understated. Set the
+                medicine&apos;s pack size to fix this going forward.
+              </p>
+            )}
           </div>
         )}
         {expiryLoading ? (

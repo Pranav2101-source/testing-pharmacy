@@ -321,6 +321,9 @@ class LooseDispensingIT extends AbstractPostgresIT {
         entityManager.clear();
 
         assertThat(result.batchesWrittenOff()).as("the batch is no longer silently skipped").isEqualTo(1);
+        assertThat(result.unitsWrittenOff()).as("no sealed packs here — 0, not silently wrong").isZero();
+        assertThat(result.looseUnitsWrittenOff()).as("the 6 loose tablets are counted in their own field").isEqualTo(6);
+        assertThat(result.unpriceableLooseBatches()).as("this medicine has a pack size on record, so it prices cleanly").isZero();
         // 6 tablets at a per-piece purchase rate of 10.00 / 10 = 1.00 => Rs.6.00 of cost,
         // and 12% of that as blocked ITC.
         assertThat(result.costWrittenOff()).isEqualByComparingTo(new BigDecimal("6.00"));
@@ -333,6 +336,38 @@ class LooseDispensingIT extends AbstractPostgresIT {
                         + "AND CAST(m.type AS string) = 'EXPIRY_REMOVAL' AND m.baseUnit = 'TABLET'", Long.class)
                 .setParameter("id", expired).getSingleResult();
         assertThat(moves).as("a piece-denominated ledger row explains the loss").isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("an expired loose remainder with no resolvable pack size is still written off, with the cost shortfall flagged rather than silently absorbed")
+    void expiredLooseRemainderWithNoPackSizeIsFlagged() {
+        // No catalogue pack size and no pharmacy override for one — the "admin cleared
+        // it after the fact" edge case. The 4 loose pieces are real, expired stock and
+        // still have to come off the books, but there is no number to price them at.
+        Medicine noPackSize = Medicine.create("Unknown Pack Size Tablet " + unique(), new BigDecimal("12"));
+        medicineRepository.save(noPackSize);
+        String expired = inventoryRepository.save(Inventory.create(pharmacyId, noPackSize.getId(), "OLD-NOPACK",
+                Instant.now().minus(5, ChronoUnit.DAYS), 0, new BigDecimal("10.00"), new BigDecimal("20.00"), 10, 5)).getId();
+        Inventory e = inventoryRepository.findById(expired).orElseThrow();
+        e.setLooseUnits(4);
+        inventoryRepository.save(e);
+        entityManager.flush();
+        entityManager.clear();
+
+        var result = inventoryService.writeOffExpired(
+                new com.checkup.pharmacy.modules.inventory.dto.WriteOffExpiredRequest(
+                        List.of(expired), "expired, pack size unknown"));
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThat(result.batchesWrittenOff()).as("still written off despite the unpriceable remainder").isEqualTo(1);
+        assertThat(result.looseUnitsWrittenOff()).as("the 4 loose pieces are still counted").isEqualTo(4);
+        assertThat(result.unpriceableLooseBatches()).as("flagged, not silently absorbed into a clean-looking total").isEqualTo(1);
+        assertThat(result.costWrittenOff()).as("no pack size means no per-piece cost can be computed").isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(result.itcToReverse()).isEqualByComparingTo(BigDecimal.ZERO);
+
+        Inventory after = inventoryRepository.findById(expired).orElseThrow();
+        assertThat(after.getLooseUnits()).as("the remainder is still cleared from stock regardless").isZero();
     }
 
     @Test
@@ -473,7 +508,7 @@ class LooseDispensingIT extends AbstractPostgresIT {
         entityManager.flush();
         entityManager.clear();
 
-        var page = inventoryService.list(null, medicineId, false, false, false, null, false, 1, 20);
+        var page = inventoryService.list(null, medicineId, false, false, false, null, false, 1, 20, true);
         var row = page.items().stream().filter(i -> i.id().equals(batchId)).findFirst().orElseThrow();
         assertThat(row.looseUnits()).isEqualTo(2);
         assertThat(row.medicine().allowLooseSale()).isTrue();
@@ -528,6 +563,39 @@ class LooseDispensingIT extends AbstractPostgresIT {
         assertThat(resp.unitsPerPack()).isEqualTo(15);
         assertThat(resp.effectiveUnitsPerPack()).isEqualTo(15);
         assertThat(resp.looseConfirmedAt()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("changing an already-loose medicine's pack size to a new number still requires confirmation")
+    void changingPackSizeOnAlreadyLooseMedicineStillNeedsConfirmation() {
+        Medicine m = medicineRepository.findById(medicineId).orElseThrow();
+        m.setPackaging(null, "TABLET");   // catalogue has no pack size
+        medicineRepository.save(m);
+        entityManager.flush();
+        entityManager.clear();
+
+        medicineService.setLoosePosSettings(medicineId,
+                new com.checkup.pharmacy.modules.medicine.dto.LoosePosSettingsRequest(true, 15, null, true));
+
+        // A different pack size arrives with no confirmation. This used to slip through
+        // once the medicine was already loose — the trust check only ever guarded the
+        // first-enable transition — silently mispricing every loose sale from then on.
+        assertThatThrownBy(() -> medicineService.setLoosePosSettings(medicineId,
+                new com.checkup.pharmacy.modules.medicine.dto.LoosePosSettingsRequest(true, 20, null, null)))
+                .isInstanceOf(com.checkup.pharmacy.common.exception.BadRequestException.class)
+                .hasMessageContaining("against a real strip");
+
+        // Confirmed, the change goes through.
+        var resp = medicineService.setLoosePosSettings(medicineId,
+                new com.checkup.pharmacy.modules.medicine.dto.LoosePosSettingsRequest(true, 20, null, true));
+        assertThat(resp.unitsPerPack()).isEqualTo(20);
+
+        // An edit that never touches the pack size (null = "leave as it was") is
+        // unaffected either way — toggling unrelated fields on an already-loose
+        // medicine must not require re-confirming a number nobody is changing.
+        var unrelated = medicineService.setLoosePosSettings(medicineId,
+                new com.checkup.pharmacy.modules.medicine.dto.LoosePosSettingsRequest(true, null, true, null));
+        assertThat(unrelated.unitsPerPack()).as("untouched — still 20").isEqualTo(20);
     }
 
     // ── Batch B: repeat-bill, reservations, re-print ─────────────────────────

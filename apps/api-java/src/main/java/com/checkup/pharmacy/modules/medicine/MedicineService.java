@@ -258,6 +258,22 @@ public class MedicineService {
 
     @Transactional
     public OverrideResponse upsertOverride(String medicineId, UpsertOverrideRequest req) {
+        // Validates the medicine exists before allowing an override to be attached to it.
+        Medicine medicine = load(medicineId);
+        PharmacyMedicineOverride existing = overrideRepository
+                .findByIdPharmacyIdAndIdMedicineId(TenantContext.pharmacyId(), medicineId)
+                .orElse(null);
+        return doUpsertOverride(medicine, existing, req);
+    }
+
+    /**
+     * The actual upsert, taking an already-resolved {@link Medicine} and its (nullable)
+     * existing override rather than ids to look up. Split out of {@link #upsertOverride}
+     * so {@link #bulkEnableLoose} can reuse the two batch-loaded maps it already fetched
+     * for validation, instead of every row in its loop re-querying both a Medicine and
+     * an Override by id that the caller is holding in memory two lines away.
+     */
+    private OverrideResponse doUpsertOverride(Medicine medicine, PharmacyMedicineOverride existing, UpsertOverrideRequest req) {
         if (req.isEmpty()) {
             throw new BadRequestException(
                     "Nothing to save — set a GST rate, a default discount, loose selling, or a pack size. "
@@ -270,13 +286,10 @@ public class MedicineService {
         if (req.gstRate() != null) {
             validateGstRate(req.gstRate());
         }
-        // Validates the medicine exists before allowing an override to be attached to it.
-        Medicine medicine = load(medicineId);
 
         String pharmacyId = TenantContext.pharmacyId();
-        PharmacyMedicineOverride override = overrideRepository
-                .findByIdPharmacyIdAndIdMedicineId(pharmacyId, medicineId)
-                .orElseGet(() -> PharmacyMedicineOverride.create(pharmacyId, medicineId));
+        PharmacyMedicineOverride override = existing != null
+                ? existing : PharmacyMedicineOverride.create(pharmacyId, medicine.getId());
 
         // ── Loose-POS settings ────────────────────────────────────────────────
         // A null field on the request means "leave as it was", so unrelated edits
@@ -285,7 +298,13 @@ public class MedicineService {
         Integer overrideUpp = req.unitsPerPack() != null ? req.unitsPerPack() : override.getUnitsPerPack();
         Integer effectiveUpp = overrideUpp != null ? overrideUpp : medicine.getUnitsPerPack();
         boolean looseByDefault = req.looseByDefault() != null ? req.looseByDefault() : override.isLooseByDefault();
-        boolean confirmed = Boolean.TRUE.equals(req.confirmed()) || override.getLooseConfirmedAt() != null;
+        // The pharmacist confirming THIS request, right now — distinct from "was ever
+        // confirmed at some point", which says nothing about whether today's number was
+        // checked. Used only for the trust check below; persistToLooseConfirmedAt (fed
+        // to applyLoosePos further down) is the "ever or now" version, which is fine
+        // there because stamping looseConfirmedAt is idempotent once already set.
+        boolean confirmedNow = Boolean.TRUE.equals(req.confirmed());
+        boolean persistToLooseConfirmedAt = confirmedNow || override.getLooseConfirmedAt() != null;
         // A default-to-loose flag is meaningless without loose selling on.
         if (looseByDefault && !allowLoose) {
             looseByDefault = false;
@@ -300,21 +319,28 @@ public class MedicineService {
             throw new BadRequestException("Schedule X medicines must be sold in the original pack — loose selling "
                     + "cannot be enabled for \"" + medicine.getName() + "\".");
         }
-        // Turning loose ON for the first time needs the pack size to come from a
-        // trustworthy source — a wrong number silently over- or under-charges every
-        // loose sale of the medicine, forever. Trusted = the pharmacist confirming it
-        // against a real strip now (or having done so before), OR an existing
-        // pharmacy-set pack size, OR the platform-managed catalogue's own value
-        // (whether the request omits its own or supplies the same number). A
-        // caller-supplied number that DIFFERS from the catalogue, with no
-        // confirmation, is refused — the POS dialog requires the tick; this is the
-        // API-level backstop. Toggling other fields on an already-loose medicine is
-        // unaffected.
-        boolean trustedPackSize = confirmed
-                || override.getUnitsPerPack() != null
-                || (medicine.getUnitsPerPack() != null
-                    && (req.unitsPerPack() == null || req.unitsPerPack().equals(medicine.getUnitsPerPack())));
-        if (allowLoose && !override.isAllowLooseSale() && !trustedPackSize) {
+        // A wrong pack size silently over- or under-charges every loose sale of the
+        // medicine, forever — so this checks EVERY request that would leave loose
+        // selling on with a given pack size, not just the first time it's turned on.
+        // (An earlier version only guarded `!override.isAllowLooseSale()` — the
+        // first-enable transition — so a pack-size change on an ALREADY-loose medicine
+        // skipped this check entirely and got persisted unverified.) Trusted = the
+        // pharmacist confirming THIS number now, OR it's not actually changing from
+        // whatever pharmacy-set value is already on record, OR — only when there is no
+        // pharmacy-set value yet — it matches the platform-managed catalogue's own
+        // number. A caller-supplied number that differs from what's on record, with no
+        // confirmation, is refused; the POS dialog requires the tick, this is the
+        // API-level backstop. A request that never touches unitsPerPack (null = "leave
+        // as it was") always counts as unchanged, so toggling unrelated fields (GST,
+        // discount) on an already-loose medicine is unaffected.
+        Integer trustedUpp = override.getUnitsPerPack();
+        boolean unchanged = req.unitsPerPack() == null
+                || (trustedUpp != null && req.unitsPerPack().equals(trustedUpp));
+        boolean matchesCatalogueWithNoOverrideYet = trustedUpp == null
+                && medicine.getUnitsPerPack() != null
+                && (req.unitsPerPack() == null || req.unitsPerPack().equals(medicine.getUnitsPerPack()));
+        boolean trustedPackSize = confirmedNow || unchanged || matchesCatalogueWithNoOverrideYet;
+        if (allowLoose && !trustedPackSize) {
             throw new BadRequestException("Check the pack size for \"" + medicine.getName()
                     + "\" against a real strip and confirm it before turning loose selling on.");
         }
@@ -325,7 +351,7 @@ public class MedicineService {
                     req.defaultDiscountPct() != null ? req.defaultDiscountPct() : override.getDefaultDiscountPct(),
                     req.notes() != null ? req.notes() : override.getNotes());
         }
-        override.applyLoosePos(allowLoose, overrideUpp, looseByDefault, confirmed);
+        override.applyLoosePos(allowLoose, overrideUpp, looseByDefault, persistToLooseConfirmedAt);
         overrideRepository.save(override);
         return toOverrideResponse(override, medicine.getUnitsPerPack());
     }
@@ -396,9 +422,12 @@ public class MedicineService {
                 throw new BadRequestException("\"" + m.getName() + "\" has no pack size on record. "
                         + "Enable loose selling for it individually so you can enter and confirm the pack size.");
             }
+            // Reuses the Medicine/Override rows already batch-loaded above instead of
+            // routing through setLoosePosSettings, which would re-fetch both by id —
+            // the N+1 this method's own batching was otherwise defeated by.
             // unitsPerPack null → keep whatever is already on record; confirmed null → not stamped.
-            out.add(setLoosePosSettings(row.medicineId(), new LoosePosSettingsRequest(
-                    true, null, row.looseByDefault(), null)));
+            out.add(doUpsertOverride(m, ov, new UpsertOverrideRequest(
+                    null, null, null, true, null, row.looseByDefault(), null)));
         }
         return out;
     }

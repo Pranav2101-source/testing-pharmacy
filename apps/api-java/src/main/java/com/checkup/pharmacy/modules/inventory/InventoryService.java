@@ -125,7 +125,8 @@ public class InventoryService {
 
     @Transactional(readOnly = true)
     public InventoryPageResponse list(String search, String medicineId, boolean inStock, boolean lowStock,
-                                      boolean nearExpiry, String status, boolean hasLoose, int page, int limit) {
+                                      boolean nearExpiry, String status, boolean hasLoose, int page, int limit,
+                                      boolean includeAlertCounts) {
         String pharmacyId = TenantContext.pharmacyId();
         int safePage = Math.max(page, 1);
         int safeLimit = Math.min(Math.max(limit, 1), 100);
@@ -137,9 +138,14 @@ public class InventoryService {
                 inStock, nearExpiry, nearExpiryThreshold, blankToNull(status), lowStock, hasLoose, pageable);
 
         List<InventoryResponse> items = enrich(result.getContent());
-        var alertCounts = new InventoryPageResponse.AlertCounts(
-                inventoryRepository.countExpiryAlerts(pharmacyId, nearExpiryThreshold),
-                inventoryRepository.countLowStockAlerts(pharmacyId));
+        // Two more round trips only the dashboard's alert badge needs — skipped for
+        // callers that just want the item rows (batch pickers, loose-sale setup, the
+        // billing-side loose-overflow split all pass includeAlertCounts=false).
+        var alertCounts = includeAlertCounts
+                ? new InventoryPageResponse.AlertCounts(
+                        inventoryRepository.countExpiryAlerts(pharmacyId, nearExpiryThreshold),
+                        inventoryRepository.countLowStockAlerts(pharmacyId))
+                : null;
 
         return new InventoryPageResponse(items, result.getTotalElements(), safePage, result.getTotalPages(), alertCounts);
     }
@@ -923,6 +929,8 @@ public class InventoryService {
 
         long batchesWritten = 0;
         long unitsWritten = 0;
+        long looseUnitsWritten = 0;
+        long unpriceableLooseBatches = 0;
         BigDecimal cost = BigDecimal.ZERO;
         BigDecimal itc = BigDecimal.ZERO;
 
@@ -970,6 +978,7 @@ public class InventoryService {
             // recorded as its own EXPIRY_REMOVAL movement in pieces and tagged with the base
             // unit, exactly as loose sales and cancellations are.
             if (looseBefore > 0) {
+                looseUnitsWritten += looseBefore;
                 String looseBaseUnit = com.checkup.pharmacy.common.util.BaseUnits.resolve(
                         medicine != null ? medicine.getBaseUnit() : null,
                         medicine != null ? medicine.getForm() : null);
@@ -979,6 +988,12 @@ public class InventoryService {
                     BigDecimal looseCost = perPieceCost.multiply(BigDecimal.valueOf(looseBefore));
                     cost = cost.add(looseCost);
                     itc = itc.add(looseCost.multiply(gstRate).divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP));
+                } else {
+                    // No pack size resolvable for this remainder (override and catalogue both
+                    // empty by now) — the piece count is still real and still gets written off
+                    // below, but its cost/ITC can't be computed and is silently absent from the
+                    // totals unless we say so. Counted rather than left invisible.
+                    unpriceableLooseBatches++;
                 }
                 movementRepository.save(InventoryMovement.record(pharmacyId, batch.getId(), userId,
                         MovementType.EXPIRY_REMOVAL, MovementDirection.OUT, looseBefore, looseBefore, 0,
@@ -987,7 +1002,7 @@ public class InventoryService {
             }
         }
 
-        return new WriteOffExpiredResponse(batchesWritten, unitsWritten,
+        return new WriteOffExpiredResponse(batchesWritten, unitsWritten, looseUnitsWritten, unpriceableLooseBatches,
                 cost.setScale(2, RoundingMode.HALF_UP), itc.setScale(2, RoundingMode.HALF_UP));
     }
 
@@ -1091,7 +1106,7 @@ public class InventoryService {
                     m.getId(), m.getName(), m.getGenericName(), m.getForm(), m.getStrength(), m.getUnit(),
                     m.isActive(), m.getGstRate(), m.getHsnCode(),
                     effectiveUpp, com.checkup.pharmacy.common.util.BaseUnits.resolve(m.getBaseUnit(), m.getForm()),
-                    allowLoose, looseDefault);
+                    allowLoose, looseDefault, m.getSchedule(), m.getPackSize());
 
             InventoryResponse.ShelfRef shelfRef = null;
             if (inv.getShelfId() != null) {

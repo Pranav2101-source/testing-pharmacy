@@ -65,7 +65,7 @@ function ReturnDetailModal({ id, onClose }: { id: string; onClose: () => void })
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
       <motion.div initial={{ opacity: 0, scale: 0.96, y: 8 }} animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.96, y: 8 }} transition={{ duration: 0.16 }}
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[88vh] flex flex-col">
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[calc(100vh-2rem)] flex flex-col overflow-hidden">
 
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
@@ -78,7 +78,7 @@ function ReturnDetailModal({ id, onClose }: { id: string; onClose: () => void })
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
           {loading ? (
             <div className="flex items-center justify-center py-20">
               <Loader2 className="w-6 h-6 animate-spin text-blue-400" />
@@ -274,7 +274,7 @@ export function ReturnsTab({ suppliers }: { suppliers: Supplier[] }) {
                 <td className="px-4 py-3 text-[13px] font-bold text-slate-900 tabular-nums">{currency(sr.totalAmount)}</td>
                 <td className="px-4 py-3 text-[12px] text-slate-500">{fmtDate(sr.createdAt)}</td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-1.5">
                     <ActionBtn onClick={() => setDetailId(sr.id)} disabled={false}
                       icon={Eye} label="View"
                       cls="text-slate-600 border-slate-200 hover:bg-slate-50" />

@@ -330,7 +330,7 @@ export default function ClinicPrescriptionTriage({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.15, ease: "easeOut" }}
-        className="bg-white rounded-2xl shadow-xl w-full max-w-3xl my-6 overflow-hidden flex flex-col max-h-[calc(100vh-3rem)]"
+        className="bg-white rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[calc(100vh-2rem)]"
       >
         {/* ── Header: where it came from, and who it's for ── */}
         <div className="bg-violet-700 px-6 pt-5 pb-5 flex-shrink-0 relative">
@@ -376,7 +376,7 @@ export default function ClinicPrescriptionTriage({
         </div>
 
         {/* ── The script itself ── */}
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-4">
           <div>
             <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wide mb-2.5 flex items-center gap-1.5">
               <Pill className="w-3.5 h-3.5" /> Prescribed ({rx.items.length})

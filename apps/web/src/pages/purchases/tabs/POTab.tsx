@@ -168,7 +168,7 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
                 <td className="px-4 py-3 text-[12px] text-slate-400">{fmtDate(po.expectedDate)}</td>
                 <td className="px-4 py-3 text-[12px] text-slate-500">{fmtDate(po.orderedAt)}</td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex items-center gap-1.5">
                     {/* The Purchase Order document itself (print-ready). */}
                     <ActionBtn onClick={() => downloadPOPdf(po.id)} disabled={pdfId === po.id}
                       icon={FileText} label="PDF" cls="text-blue-600 border-blue-200 hover:bg-blue-50" />

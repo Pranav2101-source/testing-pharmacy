@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, memo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import { format } from "date-fns";
 import { X, AlertTriangle, MapPin } from "lucide-react";
@@ -10,12 +11,13 @@ import { RecentItemsCard } from "./RecentItemsCard";
 import { BatchPickerDialog, type InventoryBatch, expiryStatus, getLocationLabel } from "./BatchPickerDialog";
 import { baseUnitShort } from "@pharmacy/utils";
 import { api } from "@/lib/api-client";
+import { queryKeys } from "@/lib/queryKeys";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
 
 // Column grid — 12 cols: ItemName | Pack | Batch+Loc | Expiry | MRP | Qty | Free | D% | Rate | GST% | Amount | Del
 // "Free" is scheme quantity (10+1): not charged, but deducted from the same batch.
-const COL = "grid-cols-[minmax(200px,1fr)_80px_104px_72px_80px_72px_56px_64px_90px_64px_104px_38px]";
+const COL = "grid-cols-[minmax(200px,1fr)_80px_104px_72px_80px_128px_56px_64px_90px_50px_104px_38px]";
 
 const CONTROLLED_BADGE: Record<string, string> = {
   H:  "bg-amber-100 text-amber-700 border-amber-200",
@@ -27,6 +29,31 @@ const CONTROLLED_BADGE: Record<string, string> = {
 export function loosePiecesOf(b: InventoryBatch, upp: number): number {
   const packs = Math.max(0, b.quantity - (b.reservedQuantity ?? 0));
   return packs * upp + (b.looseUnits ?? 0);
+}
+
+/**
+ * What a cart line's unit and quantity should become after swapping to a different
+ * batch. Pure, so the conversion is testable without touching the DOM or the store —
+ * same pattern as {@link planLooseSplit} below.
+ *
+ * A LOOSE (piece-count) line landing on a batch that can't sell loose would otherwise
+ * carry its piece count straight into what becomes a pack-count field — "8 tablets"
+ * silently turning into "8 whole packs". Converts to the equivalent pack count instead
+ * (rounded up, so the patient never gets less than intended); the caller is expected to
+ * surface `forcedToPack` to the cashier rather than let it pass unexplained.
+ */
+export function nextLineAfterBatchSwap(
+  current: { saleUnit?: string; quantity: number; unitsPerPack?: number },
+  nextAllowLooseSale: boolean,
+  nextUnitsPerPack: number | undefined,
+): { saleUnit: "PACK" | "LOOSE"; quantity: number; forcedToPack: boolean } {
+  const wasLoose = current.saleUnit === "LOOSE";
+  const keepLoose = wasLoose && nextAllowLooseSale && (nextUnitsPerPack ?? 0) > 1;
+  const forcedToPack = wasLoose && !keepLoose;
+  const quantity = forcedToPack
+    ? Math.max(1, Math.ceil(current.quantity / (current.unitsPerPack ?? 1)))
+    : current.quantity;
+  return { saleUnit: keepLoose ? "LOOSE" : "PACK", quantity, forcedToPack };
 }
 
 /**
@@ -265,7 +292,7 @@ function SkeletonRow({ idx }: { idx: number }) {
       <div className="px-3 flex items-center gap-2">
         <div className="skeleton h-3.5 w-36 rounded" />
       </div>
-      {[80, 104, 72, 80, 72, 56, 64, 90, 64, 104].map((w, i) => (
+      {[80, 104, 72, 80, 128, 56, 64, 90, 50, 104].map((w, i) => (
         <div key={i} className="px-2.5 flex justify-end">
           <div className="skeleton h-3 rounded" style={{ width: w * 0.44 }} />
         </div>
@@ -324,6 +351,7 @@ const CartRow = memo(function CartRow({
   return (
     <>
     <motion.div
+      data-inventory-id={item.inventoryId}
       initial={{ opacity: 0, y: -6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, x: -16 }}
@@ -461,33 +489,52 @@ const CartRow = memo(function CartRow({
               onKeyNav(e, idx, "qty");
             }}
             className={cn(
-              "w-full text-center text-[14px] font-bold tabnum",
-              "border rounded-md px-1 py-1.5",
+              "flex-1 min-w-0 text-center text-[16px] font-bold tabnum",
+              "border rounded-md px-2 py-2",
               isLoose ? "border-amber-300 bg-amber-50/40" : "border-slate-200 bg-white",
               "focus:outline-none focus:ring-2 focus:ring-blue-500/25 focus:border-blue-400",
               "hover:border-blue-300 transition-all duration-75"
             )}
           />
+          {/* Strip / loose — a segmented toggle, not a native <select>, so it reads as one
+              deliberate control instead of a dropdown bolted onto a number box. Same two
+              states, same "L" shortcut above; clicking either half fires the same handler
+              and refocuses Qty so the cashier can retype the count in the new unit. */}
           {canLoose && (
-            <select
+            <div
+              role="group"
               aria-label={`Sell ${item.medicineName} by strip or ${baseUnitShort(item.baseUnit)}`}
-              value={isLoose ? "LOOSE" : "PACK"}
-              onChange={(e) => {
-                onSaleUnitChange(item.inventoryId, e.target.value as "PACK" | "LOOSE");
-                // Let the cashier immediately retype the count in the new unit.
-                requestAnimationFrame(() => {
-                  const el = document.querySelector<HTMLInputElement>(`[data-row="${idx}"][data-col="qty"]`);
-                  el?.focus(); el?.select();
-                });
-              }}
-              className={cn(
-                "text-[10px] font-bold rounded-md border px-0.5 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-500/25",
-                isLoose ? "border-amber-300 bg-amber-100 text-amber-800" : "border-slate-200 bg-white text-slate-500",
-              )}
+              className="flex flex-shrink-0 rounded-md border border-slate-200 overflow-hidden"
             >
-              <option value="PACK">Strip</option>
-              <option value="LOOSE">{baseUnitLabel(item.baseUnit)}</option>
-            </select>
+              {([
+                { unit: "PACK" as const, label: "Strip" },
+                { unit: "LOOSE" as const, label: baseUnitLabel(item.baseUnit) },
+              ]).map(({ unit, label }, i) => {
+                const active = (unit === "LOOSE") === isLoose;
+                return (
+                  <button
+                    key={unit}
+                    type="button"
+                    onClick={() => {
+                      onSaleUnitChange(item.inventoryId, unit);
+                      requestAnimationFrame(() => {
+                        const el = document.querySelector<HTMLInputElement>(`[data-row="${idx}"][data-col="qty"]`);
+                        el?.focus(); el?.select();
+                      });
+                    }}
+                    className={cn(
+                      "px-1.5 py-1 text-[10px] font-bold leading-none whitespace-nowrap transition-colors",
+                      i === 1 && "border-l border-slate-200",
+                      active
+                        ? unit === "LOOSE" ? "bg-amber-500 text-white" : "bg-slate-700 text-white"
+                        : "bg-white text-slate-400 hover:bg-slate-50",
+                    )}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
           )}
         </div>
         {looseOpensStrips > 0 && (
@@ -621,6 +668,7 @@ export function CartTableRows({
   const [swapTarget,  setSwapTarget]  = useState<CartItem | null>(null);
   const [swapBatches, setSwapBatches] = useState<InventoryBatch[]>([]);
   const toast = useToast();
+  const queryClient = useQueryClient();
 
   /**
    * Say so when a typed quantity was not the quantity kept.
@@ -661,16 +709,21 @@ export function CartTableRows({
    */
   const handleLooseOverflow = useCallback((item: CartItem, typed: number) =>
     runLooseOverflow(item, typed, useBillingStore.getState().items, {
-      fetchBatches: async (name) => {
-        const res = await api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
-          params: { search: name, inStock: true, limit: 40 },
-        });
-        return res.data?.data?.items ?? [];
-      },
+      // Same cache key + shape the search combobox just populated when this medicine
+      // was added to the cart (see MedicineSearchCombobox's fetchBatches) — an
+      // overflow a few seconds later is served from that cache instead of a second
+      // round trip for data the app almost certainly already has.
+      fetchBatches: (name) => queryClient.fetchQuery({
+        queryKey: queryKeys.medicineStock.byName(name),
+        queryFn:  () => api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
+          params: { search: name, inStock: true, limit: 40, includeAlertCounts: false },
+        }).then((r) => r.data?.data?.items ?? []),
+        staleTime: 30_000,
+      }),
       addLine: addItem,
       notify: toast,
     }),
-  [addItem, toast]);
+  [addItem, toast, queryClient]);
 
   const handleQtySettled  = useCallback((item: CartItem, typed: number) => {
     reportClamp(item, typed, "quantity");
@@ -685,24 +738,31 @@ export function CartTableRows({
   const handleSwapBatch = useCallback(async (item: CartItem) => {
     setSwapTarget(item);
     try {
-      const res = await api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
-        params: { search: item.medicineName, inStock: false, limit: 30 },
+      // Cached briefly — reopening the swap picker for the same line right after
+      // closing it (a common "let me double check" click) is served from cache
+      // instead of hitting the network again.
+      const items = await queryClient.fetchQuery({
+        queryKey: queryKeys.medicineStock.byNameAll(item.medicineName),
+        queryFn:  () => api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
+          params: { search: item.medicineName, inStock: false, limit: 30, includeAlertCounts: false },
+        }).then((r) => r.data?.data?.items ?? []),
+        staleTime: 15_000,
       });
-      const batches = (res.data?.data?.items ?? [])
-        .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+      const batches = [...items].sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
       setSwapBatches(batches);
     } catch {
       setSwapTarget(null);
     }
-  }, []);
+  }, [queryClient]);
 
   const handleBatchSelect = useCallback((batch: InventoryBatch) => {
     if (!swapTarget) return;
-    // Keep the line on the same unit (Strip / loose) across the batch swap; the new
-    // batch carries its own opened-pack remainder and pack size.
+    // Keep the line on the same unit (Strip / loose) across the batch swap where
+    // possible; the new batch carries its own opened-pack remainder and pack size.
     const nextUpp = batch.medicine.unitsPerPack ?? swapTarget.unitsPerPack ?? undefined;
     const nextAllow = batch.medicine.allowLooseSale ?? swapTarget.allowLooseSale ?? false;
-    const keepLoose = swapTarget.saleUnit === "LOOSE" && nextAllow && (nextUpp ?? 0) > 1;
+    const next = nextLineAfterBatchSwap(swapTarget, nextAllow, nextUpp);
+
     replaceItem(swapTarget.inventoryId, {
       inventoryId:    batch.id,
       medicineName:   batch.medicine.name,
@@ -713,19 +773,23 @@ export function CartTableRows({
       batchNumber:    batch.batchNumber,
       expiryDate:     batch.expiryDate,
       mrp:            batch.mrp,
-      quantity:       swapTarget.quantity,
+      quantity:       next.quantity,
       discount:       swapTarget.discount,
       gstRate:        batch.medicine.gstRate,
       availableStock: batch.quantity - (batch.reservedQuantity ?? 0),
-      saleUnit:       keepLoose ? "LOOSE" : "PACK",
+      saleUnit:       next.saleUnit,
       unitsPerPack:   nextUpp,
       baseUnit:       batch.medicine.baseUnit ?? swapTarget.baseUnit ?? undefined,
       allowLooseSale: nextAllow,
       looseUnits:     batch.looseUnits ?? 0,
     });
+    if (next.forcedToPack) {
+      toast.warning(`${batch.medicine.name}: the new batch doesn't sell loose — ${swapTarget.quantity} `
+        + `${baseUnitShort(swapTarget.baseUnit)} became ${next.quantity} whole pack${next.quantity === 1 ? "" : "s"}. Check the quantity.`);
+    }
     setSwapTarget(null);
     setSwapBatches([]);
-  }, [swapTarget, replaceItem]);
+  }, [swapTarget, replaceItem, toast]);
 
   const handleKeyNav = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => {

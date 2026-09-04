@@ -188,18 +188,33 @@ export function MedicineSearchCombobox({
     }
 
     // In scan mode, leave focus on the dedicated barcode box so the next scan
-    // lands there; otherwise return focus to the search input.
-    if (!scanMode) inputRef.current?.focus();
+    // lands there. Otherwise, jump straight into the new line's Qty box — the
+    // cashier almost always needs to set it to the prescribed count next, and
+    // returning focus to search just made that a mouse click on every single
+    // line. Falls back to the search box if the row hasn't painted yet.
+    if (!scanMode) {
+      requestAnimationFrame(() => {
+        const qty = document.querySelector<HTMLInputElement>(
+          `[data-inventory-id="${batch.id}"] [data-col="qty"]`,
+        );
+        if (qty) { qty.focus(); qty.select(); } else { inputRef.current?.focus(); }
+      });
+    }
   }
 
   // ── Fetch batches for a medicine (cached 30 s so repeat clicks are instant) ──
 
+  // limit: 40 (not just enough for a picker's ~20) so this cache entry can also
+  // serve CartTable's loose-overflow split, which needs a wider candidate set than
+  // one batch picker screen — same query key, same shape, one fetch does both jobs.
   function fetchBatches(name: string) {
     return queryClient.fetchQuery({
       queryKey: queryKeys.medicineStock.byName(name),
       queryFn:  () =>
         api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
-          params: { search: name, inStock: true, limit: 20 },
+          // includeAlertCounts:false skips 2 unconditional COUNT queries this call
+          // never reads — a picker only wants the item rows, not the dashboard's alert badge.
+          params: { search: name, inStock: true, limit: 40, includeAlertCounts: false },
         }).then((r) => r.data.data.items),
       staleTime: 30_000,
     });
@@ -212,7 +227,7 @@ export function MedicineSearchCombobox({
       queryKey: queryKeys.medicineStock.byName(name),
       queryFn:  () =>
         api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
-          params: { search: name, inStock: true, limit: 20 },
+          params: { search: name, inStock: true, limit: 40, includeAlertCounts: false },
         }).then((r) => r.data.data.items),
       staleTime: 30_000,
     });

@@ -20,8 +20,13 @@ export const queryKeys = {
     }) => ["inventory", "list", params] as const,
     ledger: (params: Record<string, unknown>) => ["inventory", "ledger", params] as const,
     alerts: () => ["inventory", "alerts"] as const,
+    /** Every stocked medicine, deduped — the candidate set for "Set up loose selling". */
+    looseSetupCandidates: () => ["inventory", "loose-setup-candidates"] as const,
   },
   medicineStock: {
-    byName: (name: string) => ["medicine-stock", name] as const,
+    /** In-stock, loose-sale-eligible batches — what the billing search combobox and cart's loose-overflow split both need. */
+    byName:    (name: string) => ["medicine-stock", name] as const,
+    /** Every batch including out-of-stock — what the cart's "change batch" swap picker needs. */
+    byNameAll: (name: string) => ["medicine-stock-all", name] as const,
   },
 } as const;

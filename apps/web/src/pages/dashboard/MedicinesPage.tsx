@@ -683,7 +683,7 @@ function MedicineModal({
  *   "15" / "15 tablets" / "10's" → the number
  *   "200 ml", "50 g", "500mg 10 tablets", "strip of 15" → nothing (left for a human)
  */
-function parsePackSize(text: string | null): number | undefined {
+export function parsePackSize(text: string | null): number | undefined {
   if (!text) return undefined;
   const t = text.trim();
   const grid = t.match(/^(\d+)\s*[xX*]\s*(\d+)\b/);
@@ -696,7 +696,7 @@ function parsePackSize(text: string | null): number | undefined {
 }
 
 /** Word for the loose toggle button in the POS ("Tablet" → shown as "Tab"). */
-function baseUnitWord(b: string | null): string {
+export function baseUnitWord(b: string | null): string {
   switch (b) {
     case "TABLET":  return "Tab";
     case "CAPSULE": return "Cap";
