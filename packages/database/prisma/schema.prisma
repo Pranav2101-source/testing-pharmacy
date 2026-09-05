@@ -392,6 +392,7 @@ model Medicine {
   prescriptionItems PrescriptionItem[]
   batchRecalls      BatchRecall[]
   medicineMappings  MedicineMapping[]
+  pharmacyMedicines PharmacyMedicine[]
 
   @@index([name])
   @@index([genericName])
@@ -442,6 +443,55 @@ model PharmacyMedicineOverride {
   @@map("pharmacy_medicine_overrides")
 }
 
+// ─── Pharmacy-local medicine (GRN receiving must never block on the global catalog) ─
+// A pharmacy-owned stand-in identity for a medicine that GRN received but the global
+// `Medicine` catalog doesn't (yet) know. GRNItem.localMedicineId / Inventory.localMedicineId
+// point here instead of at `Medicine` — exactly one of medicineId/localMedicineId is set on
+// either table (enforced by a CHECK constraint added in migration 20260904000001, not
+// representable in this DSL). Carries only what billing/GST-reporting need to snapshot onto
+// an InvoiceItem, mirroring the equivalent Medicine columns by name.
+//
+// `linkedMedicineId` is the eventual global-catalog link, set by the background matcher
+// (deterministic tiers only) or a pharmacist's manual confirm — set once, and existing
+// GRNItem/Inventory/InvoiceItem rows are never rewritten when it changes; only future lookups
+// benefit. A fuzzy (trigram) candidate is never auto-linked here, only ever surfaced for a
+// human to confirm — see MedicineMatchStatus.SUGGESTED.
+model PharmacyMedicine {
+  id           String  @id @default(cuid())
+  pharmacyId   String
+  name         String
+  manufacturer String?
+  genericName  String?
+  strength     String?
+  form         String? // tablet, syrup, injection, cream — mirrors Medicine.form
+  unit         String? // strip, bottle, vial, tube — mirrors Medicine.unit
+  hsnCode      String?
+  gstRate      Decimal @db.Decimal(12, 2) // always supplied from the GRN line, never defaulted
+  schedule     String? // OTC, H, X, G — kept so a local scheduled drug still hits the Schedule-H gate
+
+  linkedMedicineId String?
+  matchStatus      MedicineMatchStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pharmacy       Pharmacy  @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  linkedMedicine Medicine? @relation(fields: [linkedMedicineId], references: [id], onDelete: SetNull)
+  grnItems       GRNItem[]
+  inventory      Inventory[]
+
+  @@index([pharmacyId, name])
+  @@index([pharmacyId, matchStatus])
+  @@map("pharmacy_medicines")
+}
+
+enum MedicineMatchStatus {
+  PENDING
+  SUGGESTED
+  LINKED
+  KEPT_LOCAL
+}
+
 // ─── Brand (global — shared across all pharmacies) ───────────────────────────
 
 model Brand {
@@ -486,7 +536,12 @@ model ProductCategory {
 model Inventory {
   id               String      @id @default(cuid())
   pharmacyId       String
-  medicineId       String
+  // Exactly one of medicineId/localMedicineId is set — CHECK constraint added in
+  // migration 20260904000001 (not representable in this DSL). A row with
+  // localMedicineId set is stock GRN received for a medicine not yet in the
+  // global catalog; see PharmacyMedicine.
+  medicineId       String?
+  localMedicineId  String?
   batchNumber      String
   expiryDate       DateTime
   quantity         Int
@@ -507,7 +562,8 @@ model Inventory {
   updatedAt DateTime @updatedAt
 
   pharmacy           Pharmacy            @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  medicine           Medicine            @relation(fields: [medicineId], references: [id])
+  medicine           Medicine?           @relation(fields: [medicineId], references: [id])
+  localMedicine      PharmacyMedicine?   @relation(fields: [localMedicineId], references: [id])
   shelf              Shelf?              @relation(fields: [shelfId], references: [id])
   invoiceItems       InvoiceItem[]
   salesReturnItems   SalesReturnItem[]
@@ -516,8 +572,14 @@ model Inventory {
   grnItems           GRNItem[]
   stockAuditItems    StockAuditItem[]
 
+  // NULL is never equal to NULL in a standard unique constraint, so this does not
+  // prevent duplicate (pharmacyId, batchNumber) rows across two localMedicineId
+  // batches — that is enforced instead by a partial unique index on
+  // (pharmacyId, localMedicineId, batchNumber) WHERE localMedicineId IS NOT NULL,
+  // added in migration 20260904000001 (not representable in this DSL).
   @@unique([pharmacyId, medicineId, batchNumber])
   @@index([pharmacyId, medicineId])
+  @@index([pharmacyId, localMedicineId])
   @@index([pharmacyId, expiryDate])
   @@index([pharmacyId, status])
   // Covering index for active-stock and low-stock queries: WHERE pharmacyId=? AND status='ACTIVE' AND quantity>0
@@ -1375,7 +1437,10 @@ model GRNItem {
   id               String   @id @default(cuid())
   pharmacyId       String
   grnId            String
-  medicineId       String
+  // Exactly one of medicineId/localMedicineId is set — CHECK constraint added in
+  // migration 20260904000001 (not representable in this DSL). See PharmacyMedicine.
+  medicineId       String?
+  localMedicineId  String?
   medicineName     String
   batchNumber      String
   expiryDate       DateTime
@@ -1397,14 +1462,16 @@ model GRNItem {
 
   createdAt DateTime @default(now())
 
-  pharmacy  Pharmacy         @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  grn       GoodsReceiptNote @relation(fields: [grnId], references: [id], onDelete: Cascade)
-  medicine  Medicine         @relation(fields: [medicineId], references: [id])
-  inventory Inventory?       @relation(fields: [inventoryId], references: [id])
+  pharmacy      Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  grn           GoodsReceiptNote  @relation(fields: [grnId], references: [id], onDelete: Cascade)
+  medicine      Medicine?         @relation(fields: [medicineId], references: [id])
+  localMedicine PharmacyMedicine? @relation(fields: [localMedicineId], references: [id])
+  inventory     Inventory?        @relation(fields: [inventoryId], references: [id])
 
   @@index([pharmacyId])
   @@index([grnId])
   @@index([medicineId])
+  @@index([localMedicineId])
   @@index([inventoryId])
   @@map("grn_items")
 }

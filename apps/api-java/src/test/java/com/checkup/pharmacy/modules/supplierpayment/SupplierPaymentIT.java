@@ -82,7 +82,7 @@ class SupplierPaymentIT extends AbstractPostgresIT {
 
     /** A confirmed GRN — the thing that puts a payable on the supplier's ledger. */
     private String receiveGoods(String batchNumber, int qty, String costPerUnit) {
-        var item = new GrnItemRequest(medicineId, "Amoxicillin 250", batchNumber,
+        var item = new GrnItemRequest(medicineId, null, "Amoxicillin 250", null, null, null, null, null, null, null, batchNumber,
                 Instant.now().plus(365, ChronoUnit.DAYS), 0, qty, 0, null, null,
                 new BigDecimal(costPerUnit), new BigDecimal("200.00"), BigDecimal.ZERO, BigDecimal.ZERO);
         String grnId = purchasesService.createGrn(new CreateGrnRequest(
@@ -341,7 +341,7 @@ class SupplierPaymentIT extends AbstractPostgresIT {
 
             String bigSupplier = supplierRepository.save(Supplier.create(pharmacyId, "Big Distributors")).getId();
             flushAndClear();
-            var item = new GrnItemRequest(medicineId, "Amoxicillin 250", "B-BIG",
+            var item = new GrnItemRequest(medicineId, null, "Amoxicillin 250", null, null, null, null, null, null, null, "B-BIG",
                     Instant.now().plus(365, ChronoUnit.DAYS), 0, 100, 0, null, null,
                     new BigDecimal("500.00"), new BigDecimal("900.00"), BigDecimal.ZERO, BigDecimal.ZERO);
             String grnId = purchasesService.createGrn(new CreateGrnRequest(

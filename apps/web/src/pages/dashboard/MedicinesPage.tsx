@@ -16,6 +16,9 @@ import { isPlatformAdmin, getStoredUser } from "@/lib/auth";
 import { BarcodeMappingModal } from "@/components/BarcodeMappingModal";
 import { IconGridPicker } from "@/components/IconGridPicker";
 import { PACKAGING_UNITS, PRODUCT_CATEGORIES, ProductTag } from "@/lib/product-taxonomy";
+import { parsePackSize } from "@/lib/packSize";
+import { LooseSetupModal, candidateFromMedicine } from "@/components/inventory/LooseSetupModal";
+import { PendingLocalMedicinesPanel } from "@/components/purchases/PendingLocalMedicinesPanel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -675,26 +678,6 @@ function MedicineModal({
 // The catalog is global (platform-managed); this sets MY pharmacy's GST rate /
 // standing discount for one medicine without touching the shared record.
 
-/**
- * Best-effort "units per pack" from free text — a PREFILL only, the pharmacist still
- * checks it against a real strip. Conservative on purpose: a wrong guess mis-prices
- * every loose sale. Mirrors migration 20260901000001's backfill rule.
- *   "1x10" / "10 x 15" → the second number
- *   "15" / "15 tablets" / "10's" → the number
- *   "200 ml", "50 g", "500mg 10 tablets", "strip of 15" → nothing (left for a human)
- */
-export function parsePackSize(text: string | null): number | undefined {
-  if (!text) return undefined;
-  const t = text.trim();
-  const grid = t.match(/^(\d+)\s*[xX*]\s*(\d+)\b/);
-  if (grid) { const n = Number(grid[2]); if (n >= 2 && n <= 100000) return n; }
-  // A bare count with an optional piece word and NOTHING else. A volume/weight, a
-  // strength, a second number or extra words all fail this and fall through.
-  const bare = t.match(/^(\d+)\s*(?:tab(?:let)?s?|cap(?:sule)?s?|pcs?|pieces?|nos?|'?s)?$/i);
-  if (bare) { const n = Number(bare[1]); if (n >= 2 && n <= 100000) return n; }
-  return undefined;
-}
-
 /** Word for the loose toggle button in the POS ("Tablet" → shown as "Tab"). */
 export function baseUnitWord(b: string | null): string {
   switch (b) {
@@ -983,8 +966,11 @@ export default function MedicinesPage() {
   const [filterActive,   setFilterActive]   = useState<"" | "true" | "false">("");
   const [showFilters,    setShowFilters]     = useState(false);
 
-  const [modal,       setModal]       = useState<"add" | "edit" | "bulk" | "override" | "barcode" | "bulkLoose" | null>(null);
-  const canMapBarcodes = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
+  const [modal,       setModal]       = useState<"add" | "edit" | "bulk" | "override" | "barcode" | "bulkLoose" | "looseSetup" | null>(null);
+  // Trusted-staff gate reused across this page: mapping barcodes, the loose-selling
+  // hint/row action, and (H2) the catalogue-write actions below — CASHIER/PHARMACIST
+  // can browse the catalogue but never create or bulk-import into it.
+  const isOwnerOrManager = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
   const [looseHintDismissed, setLooseHintDismissed] = useState(() => {
     try { return localStorage.getItem("loose-hint-dismissed") === "1"; } catch { return false; }
   });
@@ -1092,23 +1078,31 @@ export default function MedicinesPage() {
         <div className="flex items-center gap-3">
           <h1 className="text-[18px] font-bold text-slate-900 leading-none">Medicines</h1>
 
-          <button
-            onClick={() => { setEditing(null); setModal("add"); }}
-            className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold px-3 py-1.5 rounded-md transition-colors shadow-sm"
-          >
-            <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
-            Add Medicine
-          </button>
+          {/* H2: creating/bulk-importing writes into the shared, platform-wide catalogue —
+              OWNER/MANAGER only, same trust level as the loose-selling and barcode-mapping
+              actions below. CASHIER/PHARMACIST can browse the catalogue but never write it. */}
+          {isOwnerOrManager && (
+            <button
+              onClick={() => { setEditing(null); setModal("add"); }}
+              title="Add a medicine that's genuinely missing from the shared catalogue"
+              className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-semibold px-3 py-1.5 rounded-md transition-colors shadow-sm"
+            >
+              <Plus className="w-3.5 h-3.5" strokeWidth={2.5} />
+              Add Medicine
+            </button>
+          )}
 
-          <button
-            onClick={() => setModal("bulk")}
-            className="flex items-center gap-1.5 border border-slate-200 hover:border-blue-300 bg-white text-slate-600 hover:text-blue-600 text-[13px] font-semibold px-3 py-1.5 rounded-md transition-colors shadow-sm"
-          >
-            <Upload className="w-3.5 h-3.5" />
-            Bulk Upload
-          </button>
+          {isOwnerOrManager && (
+            <button
+              onClick={() => setModal("bulk")}
+              className="flex items-center gap-1.5 border border-slate-200 hover:border-blue-300 bg-white text-slate-600 hover:text-blue-600 text-[13px] font-semibold px-3 py-1.5 rounded-md transition-colors shadow-sm"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              Bulk Upload
+            </button>
+          )}
 
-          {canMapBarcodes && (
+          {isOwnerOrManager && (
             <button
               onClick={() => setModal("barcode")}
               title="Scan products to link barcodes so POS & receiving scans work"
@@ -1233,7 +1227,7 @@ export default function MedicinesPage() {
       </div>
 
       {/* ── First-run loose-selling hint (OWNER/MANAGER, none enabled yet) ── */}
-      {canMapBarcodes && !looseHintDismissed
+      {isOwnerOrManager && !looseHintDismissed
         && !loading && medicines.length > 0
         && !Object.values(overrides).some((o) => o.allowLooseSale) && (
         <div className="mx-5 mt-3 flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-2.5">
@@ -1255,6 +1249,8 @@ export default function MedicinesPage() {
           </button>
         </div>
       )}
+
+      <PendingLocalMedicinesPanel />
 
       {/* ── Table ────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-auto min-h-0">
@@ -1372,6 +1368,7 @@ export default function MedicinesPage() {
                         <button
                           onClick={() => { setEditing(m); setModal("edit"); }}
                           title="Edit medicine"
+                          aria-label={`Edit medicine ${m.name}`}
                           className="w-7 h-7 rounded-md hover:bg-blue-100 flex items-center justify-center text-slate-400 hover:text-blue-600 transition-colors"
                         >
                           <Pencil className="w-3.5 h-3.5" />
@@ -1380,6 +1377,7 @@ export default function MedicinesPage() {
                       <button
                         onClick={() => { setEditing(m); setModal("override"); }}
                         title={overrides[m.id] ? "Pharmacy settings — GST / discount / loose selling" : "Set pharmacy GST / discount / loose selling"}
+                        aria-label={`Pharmacy settings for ${m.name}`}
                         className={cn(
                           "w-7 h-7 rounded-md hover:bg-violet-100 flex items-center justify-center transition-colors",
                           overrides[m.id] ? "text-violet-600" : "text-slate-300 hover:text-violet-600",
@@ -1387,10 +1385,20 @@ export default function MedicinesPage() {
                       >
                         <BadgePercent className="w-3.5 h-3.5" />
                       </button>
-                      {canMapBarcodes && (m.schedule ?? "").trim().toUpperCase() !== "X" && (
+                      {isOwnerOrManager && (m.schedule ?? "").trim().toUpperCase() !== "X" && (
                         <button
-                          onClick={() => { setEditing(m); setModal("override"); }}
-                          title={overrides[m.id]?.allowLooseSale ? "Loose selling — on" : "Sell this medicine loose (cut strip)"}
+                          onClick={() => {
+                            setEditing(m);
+                            // M1: first-time enable opens the same focused "Set up loose
+                            // selling" dialog Inventory → Batches uses (matching the ✂ icon
+                            // itself, instead of landing in an unrelated-looking "Pharmacy
+                            // Override" screen framed around GST/discount). Reviewing or
+                            // changing an already-enabled medicine still goes to Override,
+                            // since that's genuinely a different action (edit, not enable).
+                            setModal(overrides[m.id]?.allowLooseSale ? "override" : "looseSetup");
+                          }}
+                          title={overrides[m.id]?.allowLooseSale ? "Loose selling — on (review or change)" : "Sell this medicine loose (cut strip)"}
+                          aria-label={overrides[m.id]?.allowLooseSale ? `Loose selling on for ${m.name} — review or change` : `Sell ${m.name} loose (cut strip)`}
                           className={cn(
                             "w-7 h-7 rounded-md hover:bg-amber-100 flex items-center justify-center transition-colors",
                             overrides[m.id]?.allowLooseSale ? "text-amber-600" : "text-slate-300 hover:text-amber-600",
@@ -1403,6 +1411,7 @@ export default function MedicinesPage() {
                         <button
                           onClick={() => toggleActive(m)}
                           title={m.isActive ? "Deactivate medicine" : "Activate medicine"}
+                          aria-label={m.isActive ? `Deactivate ${m.name}` : `Activate ${m.name}`}
                           className={cn(
                             "w-7 h-7 rounded-md flex items-center justify-center transition-colors",
                             m.isActive
@@ -1508,12 +1517,26 @@ export default function MedicinesPage() {
             }}
           />
         )}
+        {modal === "looseSetup" && editing && (
+          // M1: the ✂ button's first-time-enable path — same dialog as Inventory →
+          // Batches, not the GST/discount-framed "Pharmacy Override" screen.
+          <LooseSetupModal
+            only={candidateFromMedicine(editing)}
+            onClose={() => { setModal(null); setEditing(null); }}
+            onDone={(count) => {
+              const name = editing.name;
+              setModal(null);
+              setEditing(null);
+              loadOverrides();
+              if (count > 0) toast.success(`Loose selling enabled for ${name}`);
+            }}
+          />
+        )}
         {modal === "bulkLoose" && (
-          <BulkLooseModal
-            search={search.trim()}
-            filterForm={filterForm}
-            filterSchedule={filterSchedule}
-            overrides={overrides}
+          // Same tool Inventory → Batches uses ("Set up loose selling") — scoped to what
+          // this pharmacy actually stocks, with an editable guessed pack size where the
+          // catalogue has none, instead of a dead end when nothing has a structured size.
+          <LooseSetupModal
             onClose={() => setModal(null)}
             onDone={(count) => {
               setModal(null);
@@ -1523,148 +1546,6 @@ export default function MedicinesPage() {
           />
         )}
       </AnimatePresence>
-    </div>
-  );
-}
-
-// ─── Bulk enable loose ────────────────────────────────────────────────────────
-type BulkCandidate = { id: string; name: string; unitsPerPack: number | null };
-
-function BulkLooseModal({
-  search, filterForm, filterSchedule, overrides, onClose, onDone,
-}: {
-  search: string;
-  filterForm: string;
-  filterSchedule: string;
-  overrides: Record<string, Override>;
-  onClose: () => void;
-  onDone: (count: number) => void;
-}) {
-  // Fetch a wide slice (not just the 20-row page behind the modal) matching the
-  // page's current search / form filter, so "set up my common ones" actually reaches
-  // them. Only medicines that ALREADY have a structured pack size are eligible — a
-  // parsePackSize() guess off free text can be wrong and bulk has no strip to check.
-  const [loading, setLoading] = useState(true);
-  const [candidates, setCandidates] = useState<BulkCandidate[]>([]);
-  const [leftOut, setLeftOut] = useState(0);
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const params: Record<string, string | number> = { page: 1, limit: 200, isActive: "true" };
-        if (search) params.search = search;
-        if (filterForm) params.form = filterForm;
-        if (filterSchedule && filterSchedule.toUpperCase() !== "X") params.schedule = filterSchedule;
-        const { data } = await api.get("/medicines", { params });
-        if (cancelled) return;
-        const rows = (data.data.items as Medicine[])
-          .filter((m) => m.isActive && (m.schedule ?? "").trim().toUpperCase() !== "X")
-          .filter((m) => !overrides[m.id]?.allowLooseSale);
-        const ready: BulkCandidate[] = [];
-        let out = 0;
-        for (const m of rows) {
-          const upp = m.unitsPerPack ?? overrides[m.id]?.effectiveUnitsPerPack ?? null;
-          if (upp && upp >= 2) ready.push({ id: m.id, name: m.name, unitsPerPack: upp });
-          else out++;
-        }
-        setCandidates(ready);
-        setLeftOut(out);
-        setPicked(new Set(ready.map((c) => c.id)));
-      } catch (err: any) {
-        if (!cancelled) setError(getErrorMessage(err, "Couldn't load medicines."));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [search, filterForm, filterSchedule, overrides]);
-
-  const ready = candidates;
-
-  async function submit() {
-    const items = ready.filter((c) => picked.has(c.id)).map((c) => ({ medicineId: c.id, unitsPerPack: c.unitsPerPack }));
-    if (items.length === 0) { onClose(); return; }
-    setSaving(true);
-    setError(null);
-    try {
-      await api.post("/medicines/loose-settings/bulk", { items });
-      onDone(items.length);
-    } catch (err: any) {
-      setError(getErrorMessage(err, "Couldn't enable loose selling for the batch."));
-      setSaving(false);
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <motion.div
-        initial={{ opacity: 0, scale: 0.96, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96, y: 10 }}
-        transition={{ duration: 0.18 }}
-        className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[80vh]"
-      >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center">
-              <Scissors className="w-4 h-4 text-amber-600" />
-            </div>
-            <div>
-              <h2 className="text-[15px] font-bold text-slate-900 leading-tight">Enable loose selling</h2>
-              <p className="text-[12px] text-slate-500 leading-tight">
-                {search || filterForm ? "Medicines matching your current filter" : "Your first 200 medicines"} that
-                already have a pack size on record. Check each against a real strip when you can.
-              </p>
-            </div>
-          </div>
-          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-slate-100 flex items-center justify-center"><X className="w-4 h-4 text-slate-500" /></button>
-        </div>
-
-        <div className="px-6 py-4 overflow-y-auto flex-1">
-          {loading ? (
-            <div className="py-10 flex items-center justify-center text-slate-400"><Loader2 className="w-5 h-5 animate-spin" /></div>
-          ) : ready.length === 0 ? (
-            <p className="text-[13px] text-slate-500 py-6 text-center">
-              None of these medicines have a structured pack size on record. Set one on each with the ✂ button — you'll confirm it against a real strip there — or add it to the catalogue first.
-            </p>
-          ) : (
-            <div className="space-y-1">
-              {ready.map((c) => (
-                <label key={c.id} className="flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={picked.has(c.id)}
-                    onChange={(e) => setPicked((prev) => { const n = new Set(prev); e.target.checked ? n.add(c.id) : n.delete(c.id); return n; })}
-                    className="w-4 h-4 rounded border-slate-300 text-amber-600 focus:ring-amber-400"
-                  />
-                  <span className="flex-1 text-[13px] text-slate-800 truncate">{c.name}</span>
-                  <span className="text-[12px] font-semibold text-amber-700 tabular-nums">{c.unitsPerPack}/strip</span>
-                </label>
-              ))}
-            </div>
-          )}
-          {!loading && leftOut > 0 && (
-            <p className="mt-3 text-[11px] text-slate-400">
-              {leftOut} more have no structured pack size and were left out — enable those one at a time with the ✂ button.
-            </p>
-          )}
-          {error && <p className="mt-3 text-[12px] text-red-600">{error}</p>}
-        </div>
-
-        <div className="flex items-center justify-end gap-3 px-6 py-3 border-t border-slate-100">
-          <button onClick={onClose} className="text-[13px] text-slate-500 hover:text-slate-700 font-medium">Cancel</button>
-          <button
-            onClick={submit}
-            disabled={saving || picked.size === 0}
-            className="text-[13px] font-bold px-4 py-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 flex items-center gap-1.5"
-          >
-            {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-            Enable for {picked.size}
-          </button>
-        </div>
-      </motion.div>
     </div>
   );
 }

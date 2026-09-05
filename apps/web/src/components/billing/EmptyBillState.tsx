@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { Pill, Search, ScanBarcode, Sparkles } from "lucide-react";
+import { Pill, Search, ScanBarcode, Cross } from "lucide-react";
 
 export function EmptyBillState() {
   return (
@@ -27,8 +27,10 @@ export function EmptyBillState() {
         <div className="absolute -top-1.5 -right-1.5 w-8 h-8 rounded-full bg-emerald-500 shadow-md flex items-center justify-center ring-4 ring-white">
           <ScanBarcode className="w-4 h-4 text-white" />
         </div>
-        <div className="absolute -bottom-1 -left-2 w-7 h-7 rounded-full bg-amber-400 shadow-md flex items-center justify-center ring-4 ring-white">
-          <Sparkles className="w-3.5 h-3.5 text-white" />
+        {/* Pharmacy mark — cross + capsule concept: the capsule (Pill) is the dominant
+            shape above; this badge completes it with the pharmacy cross. */}
+        <div className="absolute -bottom-1 -left-2 w-7 h-7 rounded-full bg-purple-700 shadow-md flex items-center justify-center ring-4 ring-white">
+          <Cross className="w-3.5 h-3.5 text-white" />
         </div>
       </motion.div>
 

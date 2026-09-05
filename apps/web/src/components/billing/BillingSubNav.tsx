@@ -3,12 +3,13 @@ import { Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronRight, ChevronDown,
-  Loader2, MoreHorizontal, Pin,
+  Loader2, MoreHorizontal, Pin, Receipt,
   Banknote, Smartphone, CreditCard, Clock3,
 } from "lucide-react";
 import { useBillingPreferences, ACTION_DEF_MAP } from "@/lib/billingPreferences";
 import type { ActionId } from "@/lib/billingPreferences";
 import { cn } from "@/lib/utils";
+import { KeyboardShortcutsPanel } from "./KeyboardShortcutsPanel";
 
 // ─── Payment mode metadata ────────────────────────────────────────────────────
 
@@ -61,7 +62,7 @@ export const SaveDropdown = memo(function SaveDropdown({
         title={`${primaryDef.label}${primaryDef.shortcut ? ` (${primaryDef.shortcut})` : ""}`}
         className={cn(
           "flex items-center gap-1.5 text-[13px] font-bold px-4 py-2 rounded-l-lg transition-colors active:scale-[0.98]",
-          hasItems ? "bg-blue-600 hover:bg-blue-700 text-white" : "bg-blue-300 text-white cursor-not-allowed",
+          hasItems ? "bg-purple-700 hover:bg-purple-800 text-white" : "bg-purple-300 text-white cursor-not-allowed",
         )}
       >
         {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
@@ -84,8 +85,8 @@ export const SaveDropdown = memo(function SaveDropdown({
         className={cn(
           "flex items-center justify-center px-1.5 rounded-r-lg border-l transition-colors",
           hasItems
-            ? "bg-blue-600 hover:bg-blue-700 text-white border-blue-500"
-            : "bg-blue-300 text-white border-blue-200 cursor-not-allowed",
+            ? "bg-purple-700 hover:bg-purple-800 text-white border-purple-600"
+            : "bg-purple-300 text-white border-purple-200 cursor-not-allowed",
         )}
       >
         <ChevronDown className={cn("w-3.5 h-3.5 transition-transform duration-150", showDrop && "rotate-180")} />
@@ -222,7 +223,8 @@ export const BillingSubNav = memo(function BillingSubNav({
     >
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5">
-        <Link to="/dashboard/billing" className="text-[13px] text-slate-400 font-medium hover:text-blue-600 transition-colors">
+        <Link to="/dashboard/billing" className="flex items-center gap-1.5 text-[13px] text-slate-400 font-medium hover:text-blue-600 transition-colors">
+          <Receipt className="w-3.5 h-3.5" strokeWidth={1.8} />
           Sales
         </Link>
         <ChevronRight className="w-3.5 h-3.5 text-slate-300" />
@@ -231,6 +233,10 @@ export const BillingSubNav = memo(function BillingSubNav({
 
       {/* Controls */}
       <div className="flex items-center gap-2">
+        <KeyboardShortcutsPanel />
+
+        <div className="h-5 w-px bg-slate-200 mx-0.5" />
+
         {/* LIFA / LILA — batch selection strategy */}
         <div className="flex items-center gap-1.5 group/lifa">
           <button

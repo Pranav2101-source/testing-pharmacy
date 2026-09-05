@@ -78,16 +78,80 @@ public interface MedicineRepository extends JpaRepository<Medicine, String> {
      * caller-supplied {@link Pageable} size. Deliberately does NOT match on
      * barcode — the frontend resolves barcodes via the separate exact-match
      * {@code findByBarcode} lookup instead (see MedicineSearchCombobox.tsx).
+     *
+     * <p>Ranked by match quality, not just alphabetical. Plain {@code ORDER BY name}
+     * let a mere genericName/manufacturer hit alphabetically outrank the medicine
+     * whose own name actually starts with what was typed — e.g. searching "para"
+     * surfaced "A 250 Suspension" (genericName Paracetamol) ahead of "Paracetamol
+     * 500mg Tablet" itself, purely because 'A' sorts before 'P'. Tiers: exact name
+     * match, name starts with the query, name contains it, genericName starts with
+     * it, genericName contains it, composition starts with it, composition contains
+     * it, else (manufacturer-only hit). Within a tier, shorter names win (closer to
+     * what was typed) before falling back to A–Z.
+     *
+     * <p>composition sits below genericName, not alongside it: a pharmacist typing a
+     * bare active-ingredient name almost always means the generic name field, and
+     * composition is often a multi-ingredient string ("Paracetamol 500mg + Caffeine
+     * 30mg") where the same query matches less precisely.
      */
     @Query("""
             SELECT m FROM Medicine m
             WHERE m.isActive = true
               AND (LOWER(m.name) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%'))
                    OR LOWER(m.genericName) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%'))
+                   OR LOWER(m.composition) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%'))
                    OR LOWER(m.manufacturer) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')))
-            ORDER BY m.name ASC
+            ORDER BY
+              CASE
+                WHEN LOWER(m.name) = LOWER(CAST(:q AS string)) THEN 0
+                WHEN LOWER(m.name) LIKE LOWER(CONCAT(CAST(:q AS string), '%')) THEN 1
+                WHEN LOWER(m.name) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')) THEN 2
+                WHEN LOWER(m.genericName) LIKE LOWER(CONCAT(CAST(:q AS string), '%')) THEN 3
+                WHEN LOWER(m.genericName) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')) THEN 4
+                WHEN LOWER(m.composition) LIKE LOWER(CONCAT(CAST(:q AS string), '%')) THEN 5
+                WHEN LOWER(m.composition) LIKE LOWER(CONCAT('%', CAST(:q AS string), '%')) THEN 6
+                ELSE 7
+              END,
+              LENGTH(m.name),
+              m.name ASC
             """)
     List<Medicine> quickSearch(@Param("q") String q, Pageable pageable);
+
+    /**
+     * Typo/word-order fallback for {@link #quickSearch} — a plain LIKE (even ranked)
+     * requires the typed text to appear as a literal substring, so a transposed word
+     * ("500mg paracetamol" vs. "Paracetamol 500mg") or a one-letter typo
+     * ("paracetmol") returns nothing from quickSearch even though the medicine is
+     * right there. Trigram similarity doesn't care about substring position, so it
+     * catches both.
+     *
+     * <p>Same {@code %}-plus-explicit-floor pattern as {@link #findSimilarByNames}
+     * (see its javadoc): the {@code %} operator hits the GIN trigram index to find
+     * candidates cheaply, and the explicit {@code >= 0.35} is the real filter rather
+     * than trusting the mutable per-connection {@code pg_trgm.similarity_threshold}
+     * session default.
+     */
+    @Query(value = """
+            SELECT m.* FROM medicines m
+            WHERE m."isActive" = true
+              AND (
+                (LOWER(m.name) % LOWER(CAST(:q AS text))
+                 AND similarity(LOWER(m.name), LOWER(CAST(:q AS text))) >= 0.35)
+                OR
+                (LOWER(m."genericName") % LOWER(CAST(:q AS text))
+                 AND similarity(LOWER(m."genericName"), LOWER(CAST(:q AS text))) >= 0.35)
+                OR
+                (LOWER(m.composition) % LOWER(CAST(:q AS text))
+                 AND similarity(LOWER(m.composition), LOWER(CAST(:q AS text))) >= 0.35)
+              )
+            ORDER BY GREATEST(
+                similarity(LOWER(m.name), LOWER(CAST(:q AS text))),
+                similarity(LOWER(m."genericName"), LOWER(CAST(:q AS text))),
+                similarity(LOWER(m.composition), LOWER(CAST(:q AS text)))
+            ) DESC
+            LIMIT :limit
+            """, nativeQuery = true)
+    List<Medicine> fuzzySearch(@Param("q") String q, @Param("limit") int limit);
 
     /**
      * Generic-substitution candidates: other active medicines sharing the source's

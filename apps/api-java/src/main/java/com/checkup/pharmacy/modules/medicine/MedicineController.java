@@ -61,7 +61,15 @@ public class MedicineController {
         return ApiResponse.ok(medicineService.list(search, schedule, form, isActive, page, limit));
     }
 
+    /**
+     * Adds a new catalog entry — OWNER/MANAGER only. Intentionally not PLATFORM_ADMIN-gated
+     * like {@link #update}/{@link #deactivate}: the catalog is meant to grow as pharmacies
+     * encounter a medicine it's missing, so this stays a write pharmacy staff can make, just
+     * not CASHIER/PHARMACIST — creating a new shared row is a different trust level than
+     * billing or receiving stock.
+     */
     @PostMapping
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER')")
     public ResponseEntity<ApiResponse<MedicineResponse>> create(@Valid @RequestBody CreateMedicineRequest req) {
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(medicineService.create(req)));
     }
@@ -121,7 +129,9 @@ public class MedicineController {
         return ApiResponse.ok(medicineService.activate(id));
     }
 
+    /** Same trust level as {@link #create} — one write vs. many, not a different rule. */
     @PostMapping("/bulk")
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER')")
     public ApiResponse<BulkImportResponse> bulkImport(@Valid @RequestBody BulkImportRequest req) {
         return ApiResponse.ok(medicineService.bulkImport(req));
     }

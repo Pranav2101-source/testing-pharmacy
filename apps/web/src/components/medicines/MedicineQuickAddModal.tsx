@@ -29,6 +29,25 @@ export interface QuickAddedMedicine {
   unit:         string | null;
 }
 
+/**
+ * A pharmacy-local medicine (see PharmacyMedicine on the backend) — never written to
+ * the shared catalogue. Same shape as {@link QuickAddedMedicine} minus `category`
+ * (not a local-medicine field) so a "Save as Local Medicine" result can flow through
+ * the same GRN-row-population code as a catalogue pick, just without a medicineId.
+ */
+export interface QuickAddedLocalMedicine {
+  id:           string;
+  name:         string;
+  genericName:  string | null;
+  manufacturer: string | null;
+  gstRate:      number;
+  hsnCode:      string | null;
+  schedule:     string | null;
+  form:         string | null;
+  strength:     string | null;
+  unit:         string | null;
+}
+
 // Match the lists in MedicinesPage.tsx — kept in sync by hand (short, stable).
 const SCHEDULES   = ["OTC", "H", "H1", "X", "G"];
 const FORMS       = ["tablet", "capsule", "syrup", "injection", "cream", "drops", "sachet", "gel", "powder", "inhaler", "suspension", "lotion", "ointment", "patch", "spray"];
@@ -48,24 +67,37 @@ interface FormState {
 }
 
 /**
- * Create a catalogue medicine without leaving the GRN / PO flow. A distributor
- * invoice routinely lists products not yet in the shared catalogue; before this,
- * an unmatched line was a hard wall (leave → Medicines page → add → come back).
+ * Create a medicine without leaving the GRN / PO flow. A distributor invoice
+ * routinely lists products not yet in the catalogue; before this, an unmatched
+ * line was a hard wall (leave → Medicines page → add → come back).
  *
- * Hits `POST /api/v1/medicines` (open to any authenticated user; dedupes on
- * name+manufacturer with a 409). A trimmed version of the full MedicinesPage
- * form — composition / pack-size are left for a later edit there.
+ * Two modes:
+ *  - {@code "global"} (default) hits `POST /api/v1/medicines` — writes the SHARED
+ *    catalogue (open to any authenticated user; dedupes on name+manufacturer with
+ *    a 409). A trimmed version of the full MedicinesPage form.
+ *  - {@code "local"} hits `POST /api/v1/purchases/local-medicines` — writes a
+ *    pharmacy-scoped identity ONLY (see PharmacyMedicine on the backend), never
+ *    the shared catalogue. Used by GRN receiving so an unrecognized medicine on
+ *    an invoice never blocks the GRN or pollutes the platform-wide catalogue with
+ *    a one-off/mistyped entry; it's matched to the real catalogue automatically,
+ *    later, in the background.
  */
 export function MedicineQuickAddModal({
+  mode = "global",
   initialName = "",
   defaultGstRate,
   onClose,
   onSaved,
+  onSavedLocal,
 }: {
+  mode?:           "global" | "local";
   initialName?:    string;
   defaultGstRate?: number;
   onClose:         () => void;
-  onSaved:         (m: QuickAddedMedicine) => void;
+  /** Required when {@code mode} is "global" (the default). */
+  onSaved?:        (m: QuickAddedMedicine) => void;
+  /** Required when {@code mode} is "local". */
+  onSavedLocal?:   (m: QuickAddedLocalMedicine) => void;
 }) {
   const [form, setForm] = useState<FormState>({
     name: initialName, manufacturer: "", genericName: "", category: "", form: "",
@@ -85,25 +117,41 @@ export function MedicineQuickAddModal({
     setSubmitting(true);
     setError(null);
     try {
-      const body = {
-        name:         form.name.trim(),
-        manufacturer: form.manufacturer.trim() || undefined,
-        genericName:  form.genericName.trim()  || undefined,
-        category:     form.category.trim()     || undefined,
-        form:         form.form                || undefined,
-        unit:         form.unit.trim()         || undefined,
-        strength:     form.strength.trim()      || undefined,
-        hsnCode:      form.hsnCode.trim()       || undefined,
-        schedule:     form.schedule            || undefined,
-        gstRate,
-      };
-      const res = await api.post<{ data: QuickAddedMedicine }>("/medicines", body);
-      onSaved(res.data.data);
+      if (mode === "local") {
+        const body = {
+          name:         form.name.trim(),
+          manufacturer: form.manufacturer.trim() || undefined,
+          genericName:  form.genericName.trim()  || undefined,
+          form:         form.form                || undefined,
+          unit:         form.unit.trim()         || undefined,
+          strength:     form.strength.trim()      || undefined,
+          hsnCode:      form.hsnCode.trim()       || undefined,
+          schedule:     form.schedule            || undefined,
+          gstRate,
+        };
+        const res = await api.post<{ data: QuickAddedLocalMedicine }>("/purchases/local-medicines", body);
+        onSavedLocal!(res.data.data);
+      } else {
+        const body = {
+          name:         form.name.trim(),
+          manufacturer: form.manufacturer.trim() || undefined,
+          genericName:  form.genericName.trim()  || undefined,
+          category:     form.category.trim()     || undefined,
+          form:         form.form                || undefined,
+          unit:         form.unit.trim()         || undefined,
+          strength:     form.strength.trim()      || undefined,
+          hsnCode:      form.hsnCode.trim()       || undefined,
+          schedule:     form.schedule            || undefined,
+          gstRate,
+        };
+        const res = await api.post<{ data: QuickAddedMedicine }>("/medicines", body);
+        onSaved!(res.data.data);
+      }
     } catch (err: unknown) {
       // The 409 "A medicine with this name and manufacturer already exists" is
       // already human-readable — surface it and let the user change the
       // manufacturer or cancel and pick the existing one.
-      setError(getErrorMessage(err, "Failed to add medicine"));
+      setError(getErrorMessage(err, mode === "local" ? "Failed to save local medicine" : "Failed to add medicine"));
     } finally {
       setSubmitting(false);
     }
@@ -135,9 +183,11 @@ export function MedicineQuickAddModal({
             </div>
             <div>
               <p className="text-blue-200 text-[11px] font-semibold tracking-wide uppercase">
-                Medicine Catalogue
+                {mode === "local" ? "This Pharmacy Only" : "Medicine Catalogue"}
               </p>
-              <h2 className="text-white text-[18px] font-bold leading-snug">Add New Medicine</h2>
+              <h2 className="text-white text-[18px] font-bold leading-snug">
+                {mode === "local" ? "Save as Local Medicine" : "Add New Medicine"}
+              </h2>
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
@@ -147,7 +197,7 @@ export function MedicineQuickAddModal({
               className="flex items-center gap-1.5 bg-white text-blue-700 font-bold text-[13px] px-5 py-2 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-60"
             >
               {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-              Add Medicine
+              {mode === "local" ? "Save as Local" : "Add Medicine"}
             </button>
             <button onClick={onClose} className="text-white/60 hover:text-white transition-colors p-1">
               <X className="w-5 h-5" />
@@ -160,6 +210,13 @@ export function MedicineQuickAddModal({
           {error && (
             <div className="col-span-2 bg-red-50 border border-red-200 text-red-700 text-[13px] px-4 py-2.5 rounded-lg">
               {error}
+            </div>
+          )}
+
+          {mode === "local" && (
+            <div className="col-span-2 bg-blue-50 border border-blue-100 text-blue-700 text-[12px] px-4 py-2.5 rounded-lg">
+              This never touches the shared medicine catalogue — it's saved for your pharmacy only, and matched to the
+              catalogue automatically in the background once a confident match is found.
             </div>
           )}
 
@@ -180,12 +237,14 @@ export function MedicineQuickAddModal({
               placeholder="e.g. Micro Labs" className={inputCls} />
           </div>
 
-          <div>
-            <QLabel>Category / Type</QLabel>
-            <IconGridPicker value={form.category} onChange={set("category")}
-              options={PRODUCT_CATEGORIES} title="Product Category" placeholder="Select category" />
-          </div>
-          <div>
+          {mode !== "local" && (
+            <div>
+              <QLabel>Category / Type</QLabel>
+              <IconGridPicker value={form.category} onChange={set("category")}
+                options={PRODUCT_CATEGORIES} title="Product Category" placeholder="Select category" />
+            </div>
+          )}
+          <div className={mode === "local" ? "col-span-2" : undefined}>
             <QLabel>Form</QLabel>
             <select value={form.form} onChange={(e) => set("form")(e.target.value)}
               className={cn(inputCls, "capitalize")}>

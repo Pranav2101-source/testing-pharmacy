@@ -10,9 +10,10 @@ import java.math.BigDecimal;
 
 /**
  * The shared medicine catalog (table "medicines") — platform-wide, NOT scoped to
- * a pharmacy. Any authenticated user may add a new catalog entry (the catalog
- * grows as pharmacies encounter medicines it's missing); only PLATFORM_ADMIN may
- * edit or deactivate an existing entry, since that affects every tenant.
+ * a pharmacy. OWNER/MANAGER may add a new catalog entry (the catalog grows as
+ * pharmacies encounter medicines it's missing) but not CASHIER/PHARMACIST; only
+ * PLATFORM_ADMIN may edit or deactivate an existing entry, since that affects
+ * every tenant. See {@link com.checkup.pharmacy.modules.medicine.MedicineController}.
  *
  * Per-pharmacy customization (GST rate, standing discount) lives in
  * {@link PharmacyMedicineOverride}, never on this row.

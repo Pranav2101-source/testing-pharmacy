@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { format } from "date-fns";
 import { motion, AnimatePresence } from "framer-motion";
-import { Calendar, Stethoscope, ChevronDown, FileText, X, UserPlus, AlertTriangle, CheckCircle2, Plus, Loader2, Upload, ImageIcon } from "lucide-react";
+import { Calendar, Stethoscope, ChevronDown, FileText, ClipboardList, X, UserPlus, AlertTriangle, CheckCircle2, Plus, Loader2, Upload, ImageIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   isClean,
@@ -139,7 +139,7 @@ function RxPreviewModal({
         <div className="p-5 space-y-4 overflow-y-auto max-h-[calc(100vh-240px)]">
           {loading && (
             <div className="flex items-center justify-center py-10">
-              <Loader2 className="w-6 h-6 text-violet-500 animate-spin" />
+              <Loader2 className="w-6 h-6 text-blue-500 animate-spin" />
             </div>
           )}
 
@@ -203,11 +203,11 @@ function RxPreviewModal({
                   type="button"
                   onClick={openFile}
                   disabled={viewingFile}
-                  className="w-full flex items-center gap-3 bg-violet-50 border border-violet-100 rounded-xl px-3 py-2.5 hover:bg-violet-100 transition-colors disabled:opacity-60"
+                  className="w-full flex items-center gap-3 bg-blue-50 border border-blue-100 rounded-xl px-3 py-2.5 hover:bg-blue-100 transition-colors disabled:opacity-60"
                 >
-                  {viewingFile ? <Loader2 className="w-4 h-4 text-violet-500 animate-spin flex-shrink-0" /> : <FileText className="w-4 h-4 text-violet-500 flex-shrink-0" />}
-                  <span className="text-[13px] font-semibold text-violet-700 flex-1 text-left truncate">{rx.upload.fileName}</span>
-                  <span className="text-[11px] text-violet-400 flex-shrink-0">View ↗</span>
+                  {viewingFile ? <Loader2 className="w-4 h-4 text-blue-500 animate-spin flex-shrink-0" /> : <FileText className="w-4 h-4 text-blue-500 flex-shrink-0" />}
+                  <span className="text-[13px] font-semibold text-blue-700 flex-1 text-left truncate">{rx.upload.fileName}</span>
+                  <span className="text-[11px] text-blue-400 flex-shrink-0">View ↗</span>
                 </button>
               )}
 
@@ -235,7 +235,7 @@ function RxPreviewModal({
           <button
             type="button"
             onClick={onConfirm}
-            className="flex items-center gap-2 px-5 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-[13px] font-bold transition-colors shadow-sm"
+            className="flex items-center gap-2 px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-bold transition-colors shadow-sm"
           >
             <CheckCircle2 className="w-4 h-4" /> Confirm & Link
           </button>
@@ -417,12 +417,12 @@ function QuickPrescriptionModal({
         className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden"
       >
         {/* Header */}
-        <div className="bg-violet-700 px-5 py-4 flex items-center justify-between">
+        <div className="bg-blue-700 px-5 py-4 flex items-center justify-between">
           <div>
-            <p className="text-violet-200 text-[10px] font-bold tracking-widest uppercase">{isEdit ? "Edit Prescription" : "New Prescription"}</p>
+            <p className="text-blue-200 text-[10px] font-bold tracking-widest uppercase">{isEdit ? "Edit Prescription" : "New Prescription"}</p>
             <h3 className="text-white text-[16px] font-bold leading-tight">{isEdit ? editRx!.prescriptionNumber : "Record Prescription"}</h3>
           </div>
-          <button onClick={onClose} className="text-violet-300 hover:text-white transition-colors p-1">
+          <button onClick={onClose} className="text-blue-300 hover:text-white transition-colors p-1">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -450,7 +450,7 @@ function QuickPrescriptionModal({
                 placeholder="Full name"
                 className={cn(
                   "w-full border rounded-lg px-3 py-2 text-[13px] text-slate-800 placeholder-slate-400 focus:outline-none transition-colors",
-                  rxErrors.patientName ? "border-red-300 focus:border-red-400" : "border-slate-200 focus:border-violet-400",
+                  rxErrors.patientName ? "border-red-300 focus:border-red-400" : "border-slate-200 focus:border-blue-400",
                 )}
               />
               <RxFieldError message={rxErrors.patientName} />
@@ -458,7 +458,7 @@ function QuickPrescriptionModal({
             <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">Age</label>
               <input value={form.patientAge} onChange={set("patientAge")} type="number" min="0" max="150" placeholder="Years"
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] placeholder-slate-400 focus:outline-none focus:border-violet-400 transition-colors" />
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] placeholder-slate-400 focus:outline-none focus:border-blue-400 transition-colors" />
             </div>
             <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">Phone</label>
@@ -466,7 +466,7 @@ function QuickPrescriptionModal({
                 onChange={(e) => setPatientField("patientPhone", normalizeIndianMobile(e.target.value))}
                 className={cn(
                   "w-full border rounded-lg px-3 py-2 text-[13px] placeholder-slate-400 focus:outline-none transition-colors",
-                  rxErrors.patientPhone ? "border-red-300 focus:border-red-400" : "border-slate-200 focus:border-violet-400",
+                  rxErrors.patientPhone ? "border-red-300 focus:border-red-400" : "border-slate-200 focus:border-blue-400",
                 )} />
               <RxFieldError message={rxErrors.patientPhone} />
             </div>
@@ -477,12 +477,12 @@ function QuickPrescriptionModal({
             <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">Prescribed Date</label>
               <input type="date" value={form.prescribedDate} onChange={set("prescribedDate")}
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] focus:outline-none focus:border-violet-400 transition-colors" />
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] focus:outline-none focus:border-blue-400 transition-colors" />
             </div>
             <div>
               <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">Valid Until</label>
               <input type="date" value={form.validUntil} onChange={set("validUntil")}
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] focus:outline-none focus:border-violet-400 transition-colors" />
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] focus:outline-none focus:border-blue-400 transition-colors" />
             </div>
           </div>
 
@@ -491,7 +491,7 @@ function QuickPrescriptionModal({
             <div className="flex items-center justify-between mb-2">
               <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">Medicines</label>
               <button type="button" onClick={() => setForm(f => ({ ...f, drugs: [...f.drugs, { medicineName: "", schedule: "", quantity: "1", dosage: "" }] }))}
-                className="text-[11px] font-semibold text-violet-600 hover:text-violet-800 flex items-center gap-1 transition-colors">
+                className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 transition-colors">
                 <Plus className="w-3 h-3" /> Add Row
               </button>
             </div>
@@ -500,9 +500,9 @@ function QuickPrescriptionModal({
                 <div key={idx} className="grid grid-cols-[2fr_72px_60px_auto] gap-2 items-center">
                   <input value={drug.medicineName} onChange={e => updateDrug(idx, "medicineName", e.target.value)}
                     placeholder="Medicine name"
-                    className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-[12px] placeholder-slate-400 focus:outline-none focus:border-violet-400 transition-colors" />
+                    className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-[12px] placeholder-slate-400 focus:outline-none focus:border-blue-400 transition-colors" />
                   <select value={drug.schedule} onChange={e => updateDrug(idx, "schedule", e.target.value)}
-                    className="border border-slate-200 rounded-lg px-2 py-1.5 text-[12px] text-slate-700 focus:outline-none focus:border-violet-400 transition-colors">
+                    className="border border-slate-200 rounded-lg px-2 py-1.5 text-[12px] text-slate-700 focus:outline-none focus:border-blue-400 transition-colors">
                     <option value="">Sch.</option>
                     <option value="H">H</option>
                     <option value="H1">H1</option>
@@ -512,7 +512,7 @@ function QuickPrescriptionModal({
                   </select>
                   <input value={drug.quantity} onChange={e => updateDrug(idx, "quantity", e.target.value)}
                     type="number" min="1" placeholder="Qty"
-                    className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-[12px] placeholder-slate-400 focus:outline-none focus:border-violet-400 transition-colors" />
+                    className="border border-slate-200 rounded-lg px-2.5 py-1.5 text-[12px] placeholder-slate-400 focus:outline-none focus:border-blue-400 transition-colors" />
                   <button type="button" onClick={() => setForm(f => ({ ...f, drugs: f.drugs.filter((_, i) => i !== idx) }))}
                     disabled={form.drugs.length === 1}
                     className="text-slate-300 hover:text-red-400 transition-colors disabled:opacity-30 p-1">
@@ -549,12 +549,12 @@ function QuickPrescriptionModal({
             ) : (
               <label className={cn(
                 "flex items-center gap-3 border-2 border-dashed rounded-xl px-4 py-3 cursor-pointer transition-colors",
-                uploading ? "border-violet-300 bg-violet-50 cursor-wait" : "border-slate-200 hover:border-violet-400 hover:bg-violet-50",
+                uploading ? "border-blue-300 bg-blue-50 cursor-wait" : "border-slate-200 hover:border-blue-400 hover:bg-blue-50",
               )}>
                 <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,application/pdf"
                   className="sr-only" onChange={handleFile} disabled={uploading} />
                 {uploading
-                  ? <Loader2 className="w-5 h-5 text-violet-500 animate-spin flex-shrink-0" />
+                  ? <Loader2 className="w-5 h-5 text-blue-500 animate-spin flex-shrink-0" />
                   : <ImageIcon className="w-5 h-5 text-slate-400 flex-shrink-0" />}
                 <span className="text-[12px] text-slate-500">
                   {uploading ? "Uploading…" : "Click to attach scan / PDF"}
@@ -567,7 +567,7 @@ function QuickPrescriptionModal({
           <div>
             <label className="block text-[11px] font-bold text-slate-500 uppercase tracking-wide mb-1.5">Notes</label>
             <textarea value={form.notes} onChange={set("notes")} rows={2} placeholder="Internal notes"
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] placeholder-slate-400 focus:outline-none focus:border-violet-400 resize-none transition-colors" />
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-[13px] placeholder-slate-400 focus:outline-none focus:border-blue-400 resize-none transition-colors" />
           </div>
 
           {/* Actions */}
@@ -577,7 +577,7 @@ function QuickPrescriptionModal({
               Cancel
             </button>
             <button type="submit" disabled={saving}
-              className="flex items-center gap-2 px-5 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-[13px] font-bold transition-colors disabled:opacity-60 shadow-sm">
+              className="flex items-center gap-2 px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[13px] font-bold transition-colors disabled:opacity-60 shadow-sm">
               {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
               {isEdit ? "Save & Link Rx" : "Create & Link Rx"}
             </button>
@@ -596,11 +596,18 @@ function DoctorCombobox({ value, onChange }: { value: string; onChange: (name: s
   const [hints,     setHints]     = useState<DoctorHint[]>([]);
   const [searched,  setSearched]  = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
   const [pos,       setPos]       = useState<DropdownPos>({ top: 0, left: 0, width: 260 });
   const anchorRef  = useRef<HTMLDivElement>(null);
   const dropRef    = useRef<HTMLDivElement>(null);
   const timerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rafRef     = useRef<number | null>(null);
+  const queryClient = useQueryClient();
+  // Always-current query text, read inside the debounced fetch below to tell a
+  // response that is still relevant apart from one answering a search the user has
+  // since typed past or cleared.
+  const queryRef   = useRef(query);
+  useEffect(() => { queryRef.current = query; }, [query]);
 
   useEffect(() => { setQuery(value); }, [value]);
 
@@ -648,15 +655,29 @@ function DoctorCombobox({ value, onChange }: { value: string; onChange: (name: s
     if (v.trim().length < 1) { setHints([]); setSearched(false); setOpen(false); return; }
     timerRef.current = setTimeout(async () => {
       try {
-        const { data } = await api.get<{ data: DoctorHint[] }>(
-          `/doctors?search=${encodeURIComponent(v)}&limit=6`,
-        );
-        const list = data.data ?? [];
+        // Cached 30s by search term — retyping a name already searched this session
+        // (backspace-and-retype, tabbing away and back) is served from cache instead
+        // of hitting /doctors again, and a second search in flight for the same term
+        // shares that one request rather than duplicating it.
+        const list = await queryClient.fetchQuery({
+          queryKey: ["doctor-search", v],
+          queryFn: () => api.get<{ data: DoctorHint[] }>(`/doctors?search=${encodeURIComponent(v)}&limit=6`)
+            .then((r) => r.data.data ?? []),
+          staleTime: 30_000,
+        });
+        // The user may have kept typing (or cleared the field) while this was in
+        // flight — a slower older request landing after a newer one already updated
+        // the dropdown would otherwise overwrite it with results for text no longer
+        // in the box.
+        if (v !== queryRef.current) return;
         setHints(list);
         setSearched(true);
         setOpen(true);   // always open after a search so "no results" is visible
+        setActiveIndex(0);
         recalc();
-      } catch { setHints([]); setSearched(false); setOpen(false); }
+      } catch {
+        if (v === queryRef.current) { setHints([]); setSearched(false); setOpen(false); }
+      }
     }, 220);
   }
 
@@ -674,6 +695,19 @@ function DoctorCombobox({ value, onChange }: { value: string; onChange: (name: s
     setOpen(false);
   }
 
+  // totalRows includes the trailing "Add to Doctor Master" row, always present once open.
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (!open) return;
+    const totalRows = hints.length + 1;
+    if (e.key === "ArrowDown") { e.preventDefault(); setActiveIndex((i) => Math.min(i + 1, totalRows - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActiveIndex((i) => Math.max(i - 1, 0)); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      if (activeIndex < hints.length) { const d = hints[activeIndex]; if (d) pick(d); }
+      else { setOpen(false); setShowModal(true); }
+    } else if (e.key === "Escape") { setOpen(false); }
+  }
+
   return (
     <>
       <div ref={anchorRef} className="relative flex items-center gap-1 w-full">
@@ -681,6 +715,8 @@ function DoctorCombobox({ value, onChange }: { value: string; onChange: (name: s
           type="text"
           value={query}
           onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          onFocus={() => { if (hints.length > 0) { setOpen(true); recalc(); } }}
           placeholder="Name / Lic No."
           autoComplete="off"
           className="w-full text-[13px] font-medium text-slate-800 placeholder-slate-300 bg-transparent focus:outline-none leading-none"
@@ -714,12 +750,16 @@ function DoctorCombobox({ value, onChange }: { value: string; onChange: (name: s
                   No doctors found for &ldquo;{query}&rdquo;
                 </div>
               )}
-              {hints.map((d) => (
+              {hints.map((d, i) => (
                 <button
                   key={d.id}
                   type="button"
                   onMouseDown={(e) => { e.preventDefault(); pick(d); }}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-blue-50 transition-colors border-b border-slate-50"
+                  onMouseEnter={() => setActiveIndex(i)}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-4 py-3 text-left transition-colors border-b border-slate-50",
+                    activeIndex === i ? "bg-blue-50" : "hover:bg-blue-50",
+                  )}
                 >
                   <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white font-bold text-[12px] flex-shrink-0">
                     {d.name.charAt(0).toUpperCase()}
@@ -737,12 +777,19 @@ function DoctorCombobox({ value, onChange }: { value: string; onChange: (name: s
                       )}
                     </div>
                   </div>
+                  {activeIndex === i && (
+                    <span className="text-[9px] font-bold bg-blue-600 text-white px-1.5 py-0.5 rounded-full uppercase tracking-wide flex-shrink-0">↵</span>
+                  )}
                 </button>
               ))}
               <button
                 type="button"
                 onMouseDown={(e) => { e.preventDefault(); setOpen(false); setShowModal(true); }}
-                className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-slate-50 transition-colors"
+                onMouseEnter={() => setActiveIndex(hints.length)}
+                className={cn(
+                  "w-full flex items-center gap-3 px-4 py-3 text-left transition-colors",
+                  activeIndex === hints.length ? "bg-blue-50" : "hover:bg-slate-50",
+                )}
               >
                 <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
                   <UserPlus className="w-4 h-4 text-blue-600" />
@@ -790,11 +837,17 @@ function PrescriptionCombobox({
   const [open,     setOpen]     = useState(false);
   const [hints,    setHints]    = useState<RxHint[]>([]);
   const [searched, setSearched] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
   const [pos,      setPos]      = useState<DropdownPos>({ top: 0, left: 0, width: 320 });
   const anchorRef = useRef<HTMLDivElement>(null);
   const dropRef   = useRef<HTMLDivElement>(null);
   const timerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rafRef    = useRef<number | null>(null);
+  const queryClient = useQueryClient();
+  // Always-current query text — same guard as DoctorCombobox, so a slow response to
+  // an earlier search can't land after a newer one and overwrite it.
+  const queryRef  = useRef(query);
+  useEffect(() => { queryRef.current = query; }, [query]);
 
   useEffect(() => { setQuery(displayValue); }, [displayValue]);
 
@@ -849,16 +902,39 @@ function PrescriptionCombobox({
     }
     timerRef.current = setTimeout(async () => {
       try {
-        const { data } = await api.get<{ data: { items: RxHint[] } }>(
-          `/prescriptions?status=ACTIVE&search=${encodeURIComponent(v)}&limit=6`,
-        );
-        const list = data.data?.items ?? [];
+        // Same caching + guard as DoctorCombobox above.
+        const list = await queryClient.fetchQuery({
+          queryKey: ["rx-search", v],
+          queryFn: () => api.get<{ data: { items: RxHint[] } }>(`/prescriptions?status=ACTIVE&search=${encodeURIComponent(v)}&limit=6`)
+            .then((r) => r.data.data?.items ?? []),
+          staleTime: 30_000,
+        });
+        if (v !== queryRef.current) return;
         setHints(list);
         setSearched(true);
         setOpen(true);
+        setActiveIndex(0);
         recalc();
-      } catch { setHints([]); setSearched(false); setOpen(false); }
+      } catch {
+        if (v === queryRef.current) { setHints([]); setSearched(false); setOpen(false); }
+      }
     }, 220);
+  }
+
+  // The trailing "New Prescription" row only exists once a search has actually run
+  // (searched && onNewPrescription) — unlike Doctor's always-present trailing row.
+  const hasNewRow = searched && !!onNewPrescription;
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (!open) return;
+    const totalRows = hints.length + (hasNewRow ? 1 : 0);
+    if (totalRows === 0) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setActiveIndex((i) => Math.min(i + 1, totalRows - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setActiveIndex((i) => Math.max(i - 1, 0)); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      if (activeIndex < hints.length) { const rx = hints[activeIndex]; if (rx) pick(rx); }
+      else if (hasNewRow) { setOpen(false); onNewPrescription!(query); }
+    } else if (e.key === "Escape") { setOpen(false); }
   }
 
   function pick(rx: RxHint) {
@@ -886,8 +962,10 @@ function PrescriptionCombobox({
       <div ref={anchorRef} className="relative flex items-center gap-1 w-full">
         <input
           type="text"
+          data-rx-search-input
           value={query}
           onChange={handleChange}
+          onKeyDown={handleKeyDown}
           onFocus={() => { if (hints.length > 0) { setOpen(true); recalc(); } }}
           placeholder={placeholder}
           autoComplete="off"
@@ -918,14 +996,18 @@ function PrescriptionCombobox({
               className="bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden"
             >
               {/* Results */}
-              {hints.map((rx) => (
+              {hints.map((rx, i) => (
                 <button
                   key={rx.id}
                   type="button"
                   onMouseDown={(e) => { e.preventDefault(); pick(rx); }}
-                  className="w-full flex items-start gap-3 px-4 py-3 text-left hover:bg-violet-50 transition-colors border-b border-slate-50 last:border-b-0"
+                  onMouseEnter={() => setActiveIndex(i)}
+                  className={cn(
+                    "w-full flex items-start gap-3 px-4 py-3 text-left transition-colors border-b border-slate-50 last:border-b-0",
+                    activeIndex === i ? "bg-blue-50" : "hover:bg-blue-50",
+                  )}
                 >
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-400 to-purple-500 flex items-center justify-center text-white font-bold text-[10px] flex-shrink-0 mt-0.5">
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white font-bold text-[10px] flex-shrink-0 mt-0.5">
                     Rx
                   </div>
                   <div className="min-w-0 flex-1">
@@ -936,6 +1018,9 @@ function PrescriptionCombobox({
                       </span>
                       {rx.items?.length > 0 && (
                         <span className="text-[10px] text-slate-400">{rx.items.length} med{rx.items.length !== 1 ? "s" : ""}</span>
+                      )}
+                      {activeIndex === i && (
+                        <span className="text-[9px] font-bold bg-blue-600 text-white px-1.5 py-0.5 rounded-full uppercase tracking-wide leading-none">↵</span>
                       )}
                     </div>
                     <p className="text-[11px] text-slate-700 font-medium truncate mt-0.5">
@@ -957,17 +1042,21 @@ function PrescriptionCombobox({
               )}
 
               {/* Create new prescription */}
-              {searched && onNewPrescription && (
+              {hasNewRow && onNewPrescription && (
                 <button
                   type="button"
                   onMouseDown={(e) => { e.preventDefault(); setOpen(false); onNewPrescription(query); }}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-violet-50 transition-colors"
+                  onMouseEnter={() => setActiveIndex(hints.length)}
+                  className={cn(
+                    "w-full flex items-center gap-3 px-4 py-3 text-left transition-colors",
+                    activeIndex === hints.length ? "bg-blue-50" : "hover:bg-blue-50",
+                  )}
                 >
-                  <div className="w-8 h-8 rounded-full bg-violet-100 flex items-center justify-center flex-shrink-0">
-                    <Plus className="w-4 h-4 text-violet-600" />
+                  <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                    <Plus className="w-4 h-4 text-blue-600" />
                   </div>
                   <div>
-                    <p className="text-[13px] font-bold text-violet-700">New Prescription</p>
+                    <p className="text-[13px] font-bold text-blue-700">New Prescription</p>
                     <p className="text-[11px] text-slate-400">
                       {query.trim() ? `Create for "${query}"` : "Record a new prescription"}
                     </p>
@@ -1116,6 +1205,7 @@ export function BillHeader() {
 
       {/* Prescription / Rx No. */}
       <div
+        data-rx-field
         className={cn(
           "flex items-center gap-2.5 px-4 py-2 flex-shrink-0 min-w-[220px] input-glow glow-focus transition-colors duration-200",
           rxMissing && "bg-amber-50/70 border-l-2 !border-l-amber-400",
@@ -1126,7 +1216,7 @@ export function BillHeader() {
           ? <AlertTriangle className="w-4 h-4 text-amber-500 flex-shrink-0 animate-pulse" strokeWidth={2} />
           : rxLinked
             ? <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" strokeWidth={2} />
-            : <FileText className="w-4 h-4 text-slate-400 flex-shrink-0" strokeWidth={1.8} />
+            : <ClipboardList className="w-4 h-4 text-slate-400 flex-shrink-0" strokeWidth={1.8} />
         }
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 mb-1.5">

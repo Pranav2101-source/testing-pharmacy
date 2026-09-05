@@ -77,11 +77,12 @@ test.describe.serial("loose dispensing: enable → cut-strip sale → stock", ()
     await resultRow.click();
     await expect(page.getByText("1 Qty.")).toBeVisible({ timeout: 10_000 });
 
-    // The Strip / Tab unit selector on the Qty cell only renders because loose
-    // selling is enabled for this medicine.
-    const unitSelect = page.locator('select[aria-label*="by strip or"]').first();
-    await expect(unitSelect).toBeVisible({ timeout: 10_000 });
-    await unitSelect.selectOption("LOOSE");
+    // The Strip / Tab segmented toggle on the Qty cell only renders because loose
+    // selling is enabled for this medicine. It's a button pair (role="group"), not
+    // a native <select> — CartTable.tsx:512-551.
+    const unitGroup = page.locator('[role="group"][aria-label*="by strip or"]').first();
+    await expect(unitGroup).toBeVisible({ timeout: 10_000 });
+    await unitGroup.getByRole("button", { name: "Tab" }).click();
 
     // Type the tablet count directly — the doctor wrote 8.
     const qtyCell = page.locator('[data-col="qty"]').first();

@@ -91,7 +91,7 @@ class SupplierReturnIT extends AbstractPostgresIT {
 
     /** Receives stock through a real confirmed GRN so the batch exists exactly as production would create it. */
     private String receiveStock(String batchNumber, int qty) {
-        var item = new GrnItemRequest(medicineId, "Amoxicillin 250", batchNumber,
+        var item = new GrnItemRequest(medicineId, null, "Amoxicillin 250", null, null, null, null, null, null, null, batchNumber,
                 Instant.now().plus(365, ChronoUnit.DAYS), 0, qty, 0, null, null,
                 new BigDecimal("100.00"), new BigDecimal("200.00"), BigDecimal.ZERO, BigDecimal.ZERO);
         String grnId = purchasesService.createGrn(new CreateGrnRequest(

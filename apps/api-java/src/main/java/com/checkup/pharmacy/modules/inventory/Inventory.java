@@ -21,6 +21,12 @@ import java.time.Instant;
  * on-hand count and {@code reservedQuantity} is stock held by in-progress billing
  * sessions (see {@link StockReservation}) — available-to-sell is quantity minus
  * reservedQuantity, never a stored column, to avoid it drifting out of sync.
+ *
+ * <p>Exactly one of {@code medicine}/{@code localMedicine} is set (DB CHECK
+ * constraint): a batch received for a medicine not yet in the global catalog
+ * points at a {@link com.checkup.pharmacy.modules.medicine.PharmacyMedicine}
+ * instead — see that class's javadoc. GRN receiving must never block on
+ * catalog matching.
  */
 @Entity
 @Table(name = "inventory")
@@ -31,6 +37,10 @@ public class Inventory extends BaseEntity {
 
     @Column(name = "medicineId")
     private String medicineId;
+
+    /** Exactly one of medicineId/localMedicineId is set (DB CHECK constraint) — see {@link com.checkup.pharmacy.modules.medicine.PharmacyMedicine}. */
+    @Column(name = "localMedicineId")
+    private String localMedicineId;
 
     @Column(name = "batchNumber")
     private String batchNumber;
@@ -79,6 +89,10 @@ public class Inventory extends BaseEntity {
     private com.checkup.pharmacy.modules.medicine.Medicine medicine;
 
     @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "localMedicineId", insertable = false, updatable = false)
+    private com.checkup.pharmacy.modules.medicine.PharmacyMedicine localMedicine;
+
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "shelfId", insertable = false, updatable = false)
     private com.checkup.pharmacy.modules.location.Shelf shelf;
 
@@ -86,13 +100,26 @@ public class Inventory extends BaseEntity {
         // Required by JPA.
     }
 
+    /** The ordinary path: stock received against a real global catalogue medicine. */
     public static Inventory create(String pharmacyId, String medicineId, String batchNumber, Instant expiryDate,
                                    int quantity, BigDecimal purchaseRate, BigDecimal mrp,
                                    int minimumStock, int reorderLevel) {
+        return create(pharmacyId, medicineId, null, batchNumber, expiryDate, quantity, purchaseRate, mrp,
+                minimumStock, reorderLevel);
+    }
+
+    /** GRN received a medicine not yet in the global catalogue — see {@link com.checkup.pharmacy.modules.medicine.PharmacyMedicine}. Exactly one of medicineId/localMedicineId is set. */
+    public static Inventory create(String pharmacyId, String medicineId, String localMedicineId, String batchNumber,
+                                   Instant expiryDate, int quantity, BigDecimal purchaseRate, BigDecimal mrp,
+                                   int minimumStock, int reorderLevel) {
+        if ((medicineId == null) == (localMedicineId == null)) {
+            throw new IllegalArgumentException("Exactly one of medicineId/localMedicineId must be set");
+        }
         Inventory inv = new Inventory();
         inv.assignId(Cuid.generate());
         inv.pharmacyId = pharmacyId;
         inv.medicineId = medicineId;
+        inv.localMedicineId = localMedicineId;
         inv.batchNumber = batchNumber;
         inv.expiryDate = expiryDate;
         inv.quantity = quantity;
@@ -232,6 +259,8 @@ public class Inventory extends BaseEntity {
 
     public String getMedicineId() { return medicineId; }
 
+    public String getLocalMedicineId() { return localMedicineId; }
+
     public String getBatchNumber() { return batchNumber; }
 
     public Instant getExpiryDate() { return expiryDate; }
@@ -258,5 +287,54 @@ public class Inventory extends BaseEntity {
 
     public com.checkup.pharmacy.modules.medicine.Medicine getMedicine() { return medicine; }
 
+    public com.checkup.pharmacy.modules.medicine.PharmacyMedicine getLocalMedicine() { return localMedicine; }
+
     public com.checkup.pharmacy.modules.location.Shelf getShelf() { return shelf; }
+
+    // ── Resolved product info — from the linked catalogue medicine, else the local
+    // one (see PharmacyMedicine). Billing/reporting should read these instead of
+    // dereferencing getMedicine() directly, so a batch received for a medicine not
+    // yet in the global catalogue stays fully sellable. A local medicine has no
+    // deactivate flow (always "active") and no loose-sale support yet (unitsPerPack
+    // is always null for one, same as an unclassified catalogue medicine today). ──
+
+    public String productName() {
+        if (medicine != null) return medicine.getName();
+        return localMedicine != null ? localMedicine.getName() : null;
+    }
+
+    public String productHsnCode() {
+        if (medicine != null) return medicine.getHsnCode();
+        return localMedicine != null ? localMedicine.getHsnCode() : null;
+    }
+
+    public BigDecimal productGstRate() {
+        if (medicine != null) return medicine.getGstRate();
+        return localMedicine != null ? localMedicine.getGstRate() : null;
+    }
+
+    public String productSchedule() {
+        if (medicine != null) return medicine.getSchedule();
+        return localMedicine != null ? localMedicine.getSchedule() : null;
+    }
+
+    public String productForm() {
+        if (medicine != null) return medicine.getForm();
+        return localMedicine != null ? localMedicine.getForm() : null;
+    }
+
+    /** A catalogue medicine can be deactivated; a local one cannot (no such flow yet), so it is always sellable. */
+    public boolean productIsActive() {
+        if (medicine != null) return medicine.isActive();
+        return localMedicine != null;
+    }
+
+    /** Effective pack size for loose (cut-strip) selling — always null for a local medicine, which does not support it yet. */
+    public Integer productUnitsPerPack() {
+        return medicine != null ? medicine.getUnitsPerPack() : null;
+    }
+
+    public String productBaseUnit() {
+        return medicine != null ? medicine.getBaseUnit() : null;
+    }
 }

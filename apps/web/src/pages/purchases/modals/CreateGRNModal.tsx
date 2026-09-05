@@ -3,9 +3,10 @@ import { Plus, Loader2, Truck, Trash2, AlertTriangle, CheckCircle2, FileSpreadsh
 import { api, getErrorMessage } from "@/lib/api-client";
 import type { Supplier, Medicine, GRNLineItem, FullSupplier } from "../types";
 import { GST_RATES } from "../types";
-import { currency, resolveMedicinesByName, normalizeMedicineName, describeImportResolution } from "../utils";
+import { currency, resolveMedicinesByName, normalizeMedicineName } from "../utils";
 import { cn } from "@/lib/utils";
 import { MedicineCombobox } from "../components/MedicineCombobox";
+import type { QuickAddedLocalMedicine } from "@/components/medicines/MedicineQuickAddModal";
 import { BulkImportPanel } from "../components/BulkImportPanel";
 import { ModalShell, ErrorBanner, FieldLabel, FInput, SmartAddBar } from "./shared";
 import { QuickAddHint } from "./SupplierFormModal";
@@ -143,6 +144,23 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     }]);
   }
 
+  /**
+   * A "Save as Local Medicine" result — no medicineId, deliberately. On submit, the
+   * backend resolves-or-creates a PharmacyMedicine by this exact name and reuses the
+   * one just created here (see PurchasesService.resolveMedicineRefs), so the richer
+   * details captured in the quick-add form (manufacturer/HSN/schedule/etc, none of
+   * which this row table has columns for) are preserved without needing to thread a
+   * localMedicineId through this form.
+   */
+  function addLocalMed(m: QuickAddedLocalMedicine) {
+    setItems((p) => [...p, {
+      medicineId: "", medicineName: m.name,
+      batchNumber: "", expiryDate: "",
+      orderedQty: 0, receivedQty: 1, freeQty: 0,
+      purchaseRate: 0, mrp: 0, discount: 0, gstRate: m.gstRate,
+    }]);
+  }
+
   // Always uploads the PDF and attaches it to the GRN, regardless of whether
   // text extraction below finds a usable item table — per design, a PDF
   // (even a scanned one we can't parse) is never just discarded.
@@ -186,15 +204,26 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
 
     // Imported rows carry a printed name but no catalogue id — link them now, distinguishing
     // "not in catalogue" from a failed lookup so the message is accurate. See resolveMedicinesByName.
+    //
+    // Unlike a PO import (which still requires a catalogue match — see describeImportResolution,
+    // shared with CreatePOModal), a GRN row that isn't in the catalogue is NOT a problem: it's
+    // saved as a pharmacy-local medicine automatically, so it gets its own, softer message here
+    // rather than the shared "pick a match or add it" copy. Only a genuinely failed lookup (a
+    // connection/server problem, not missing data) still merits an error-toned retry prompt.
     const r = await linkImportedRows(fresh.map((i) => i.medicineName));
-    const hasProblem = r.notInCatalogue.length > 0 || r.lookupFailed.length > 0;
-    const msg = describeImportResolution({
-      imported: fresh.length,
-      notInCatalogue: r.notInCatalogue.length,
-      lookupFailed: r.lookupFailed.length,
-    });
-    if (hasProblem) setImportInfo({ msg: msg!, tone: "error" });
-    else setImportInfo({ msg: `All ${fresh.length} imported medicine${fresh.length === 1 ? "" : "s"} matched to your catalogue.`, tone: "success" });
+    if (r.lookupFailed.length > 0) {
+      setImportInfo({
+        msg: `${r.lookupFailed.length} row${r.lookupFailed.length === 1 ? "" : "s"} couldn't be checked against your catalogue — this is usually a connection problem. Use "Retry matching", or save the GRN as-is and they'll be added as local medicines.`,
+        tone: "error",
+      });
+    } else if (r.notInCatalogue.length > 0) {
+      setImportInfo({
+        msg: `${r.notInCatalogue.length} of ${fresh.length} imported medicine${fresh.length === 1 ? "" : "s"} aren't in your catalogue yet — they'll be saved as local medicines and matched to it automatically later. Pick a row's dropdown if you'd rather link one now.`,
+        tone: "info",
+      });
+    } else {
+      setImportInfo({ msg: `All ${fresh.length} imported medicine${fresh.length === 1 ? "" : "s"} matched to your catalogue.`, tone: "success" });
+    }
   }
 
   /** Shared by bulk import and Retry — resolves names, links matches, records why the
@@ -227,9 +256,19 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     const names = items.filter((i) => !i.medicineId).map((i) => i.medicineName);
     if (names.length === 0) return;
     const r = await linkImportedRows(names);
-    setImportInfo(r.lookupFailed.length === 0 && r.notInCatalogue.length === 0
-      ? { msg: "All imported medicines are now matched to your catalogue.", tone: "success" }
-      : { msg: describeImportResolution({ notInCatalogue: r.notInCatalogue.length, lookupFailed: r.lookupFailed.length })!, tone: "error" });
+    if (r.lookupFailed.length > 0) {
+      setImportInfo({
+        msg: `${r.lookupFailed.length} row${r.lookupFailed.length === 1 ? "" : "s"} still couldn't be checked — use Retry again, or save the GRN as-is.`,
+        tone: "error",
+      });
+    } else if (r.notInCatalogue.length > 0) {
+      setImportInfo({
+        msg: `${r.notInCatalogue.length} row${r.notInCatalogue.length === 1 ? "" : "s"} still aren't in your catalogue — they'll be saved as local medicines.`,
+        tone: "info",
+      });
+    } else {
+      setImportInfo({ msg: "All imported medicines are now matched to your catalogue.", tone: "success" });
+    }
   }
 
   function linkRow(idx: number, m: Medicine) {
@@ -237,6 +276,24 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     setItems((p) => {
       const n = [...p];
       n[idx] = { ...n[idx]!, medicineId: m.id, medicineName: m.name, gstRate: m.gstRate ?? n[idx]!.gstRate };
+      return n;
+    });
+    setMatchIssues((prev) => {
+      const key = normalizeMedicineName(prevName);
+      if (!prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.delete(key);
+      return next;
+    });
+    setError(null);
+  }
+
+  /** Row-level counterpart to {@link addLocalMed} — see its note on why no medicineId/localMedicineId is set. */
+  function linkRowLocal(idx: number, m: QuickAddedLocalMedicine) {
+    const prevName = items[idx]?.medicineName ?? "";
+    setItems((p) => {
+      const n = [...p];
+      n[idx] = { ...n[idx]!, medicineId: "", medicineName: m.name, gstRate: m.gstRate ?? n[idx]!.gstRate };
       return n;
     });
     setMatchIssues((prev) => {
@@ -344,15 +401,10 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
     for (let idx = 0; idx < items.length; idx++) {
       const i = items[idx]!;
       const row = `Row ${idx + 1} (${i.medicineName})`;
-      // Imported rows have a name but no catalogue link. Without this the API rejects the
-      // whole GRN with one "items[N].medicineId: must not be blank" per row, which says
-      // nothing about which medicine to fix.
-      if (!i.medicineId) {
-        const failed = matchIssues.get(normalizeMedicineName(i.medicineName)) === "failed";
-        errs.push(failed
-          ? `${row}: couldn't be checked against your catalogue — use "Retry matching" or pick it from the dropdown`
-          : `${row}: not linked to your medicine catalogue — pick it from the dropdown`);
-      }
+      // A row with no catalogue link is NOT an error — receiving stock must never block on
+      // the global catalogue. It's saved as a pharmacy-local medicine (see PharmacyMedicine)
+      // using this row's own name/GST rate, and matched to the catalogue later in the
+      // background. Only a genuinely missing/invalid field blocks submit below.
       if (!i.batchNumber.trim()) errs.push(`${row}: Batch number is required`);
       if (!i.expiryDate)         errs.push(`${row}: Expiry date is required`);
       else if (isNaN(new Date(i.expiryDate).getTime())) errs.push(`${row}: Expiry date is invalid`);
@@ -510,7 +562,7 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
           {/* ── Medicine search ────────────────────────────────────────── */}
           <div>
             <FieldLabel>Search &amp; Add Medicine (one by one)</FieldLabel>
-            <MedicineCombobox onSelect={addMed} onClearError={() => setError(null)} />
+            <MedicineCombobox onSelect={addMed} onSelectLocal={addLocalMed} allowLocalSave onClearError={() => setError(null)} />
           </div>
 
           {/* ── Line items table ───────────────────────────────────────── */}
@@ -544,10 +596,11 @@ export function CreateGRNModal({ suppliers: initialSuppliers, onClose, onDone }:
                             const failed = matchIssues.get(normalizeMedicineName(item.medicineName)) === "failed";
                             return (
                               <div className="mt-1">
-                                <p className={cn("text-[10px] font-semibold mb-1", failed ? "text-orange-700" : "text-amber-700")}>
-                                  {failed ? "Couldn't check — pick or Retry" : "Not in catalogue — pick or add"}
+                                <p className={cn("text-[10px] font-semibold mb-1", failed ? "text-orange-700" : "text-slate-500")}>
+                                  {failed ? "Couldn't check — pick or Retry" : "Not in catalogue — will be saved as a local medicine, or pick a match"}
                                 </p>
-                                <MedicineCombobox onSelect={(m) => linkRow(idx, m)} gstRateHint={item.gstRate} />
+                                <MedicineCombobox onSelect={(m) => linkRow(idx, m)} onSelectLocal={(m) => linkRowLocal(idx, m)}
+                                  allowLocalSave gstRateHint={item.gstRate} />
                               </div>
                             );
                           })()}

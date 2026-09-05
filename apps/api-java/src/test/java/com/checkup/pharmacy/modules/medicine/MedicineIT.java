@@ -20,6 +20,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -425,5 +426,71 @@ class MedicineIT extends AbstractPostgresIT {
 
         assertThat(medicineService.quickSearch(uniqueName, 10))
                 .noneSatisfy(m -> assertThat(m.id()).isEqualTo(created.id()));
+    }
+
+    @Test
+    @DisplayName("quick search ranks a name match above a mere genericName match, not alphabetically")
+    void quickSearchRanksNameMatchAboveGenericMatch() {
+        String term = "Findpara" + unique();
+        // Its own name doesn't contain the search term at all — matches only because
+        // its genericName happens to equal it. Alphabetically "A..." would sort first.
+        var byGenericOnly = medicineService.create(new CreateMedicineRequest(
+                "A Other Brand " + unique(), term, "Mfr", null, null, null, null,
+                new BigDecimal("12"), "Suspension", "250mg", "bottle", "60 ml"));
+        // Its own name starts with the search term — this is the one a pharmacist
+        // typing "findpara..." actually means, and must rank first.
+        var byNamePrefix = medicineService.create(new CreateMedicineRequest(
+                term + " 500mg Tablet", "Ibuprofen", "Mfr", null, null, null, null,
+                new BigDecimal("12"), "Tablet", "500mg", "strip", "10 tablets"));
+        flushAndClear();
+
+        assertThat(medicineService.quickSearch(term, 10))
+                .extracting(m -> m.id())
+                .containsExactly(byNamePrefix.id(), byGenericOnly.id());
+    }
+
+    @Test
+    @DisplayName("quick search falls back to trigram similarity for a one-letter typo")
+    void quickSearchToleratesTypo() {
+        String suffix = unique();
+        var created = medicineService.create(createReq("Zolmitriptanum" + suffix + " Tablet", "Mfr", new BigDecimal("12")));
+        flushAndClear();
+
+        // m -> n: confirms the literal-substring tier alone genuinely misses this,
+        // so a hit below proves the fuzzy fallback fired rather than some other tier.
+        String typo = "Zolmitriptanun" + suffix;
+        assertThat(medicineRepository.quickSearch(typo, PageRequest.of(0, 10))).isEmpty();
+
+        assertThat(medicineService.quickSearch(typo, 10))
+                .anySatisfy(m -> assertThat(m.id()).isEqualTo(created.id()));
+    }
+
+    @Test
+    @DisplayName("quick search tolerates a transposed word order via trigram fallback")
+    void quickSearchToleratesWordOrderTranspose() {
+        String suffix = unique();
+        var created = medicineService.create(createReq("Nefodryl" + suffix + " 250mg", "Mfr", new BigDecimal("12")));
+        flushAndClear();
+
+        // The catalogue name has the strength after the brand token; a pharmacist
+        // typing it the other way round shouldn't come up empty.
+        String transposed = "250mg Nefodryl" + suffix;
+        assertThat(medicineRepository.quickSearch(transposed, PageRequest.of(0, 10))).isEmpty();
+
+        assertThat(medicineService.quickSearch(transposed, 10))
+                .anySatisfy(m -> assertThat(m.id()).isEqualTo(created.id()));
+    }
+
+    @Test
+    @DisplayName("quick search matches by composition, not just name/genericName/manufacturer")
+    void quickSearchMatchesByComposition() {
+        String token = "Cafmol" + unique();
+        var created = medicineService.create(new CreateMedicineRequest(
+                "Brand " + unique(), "Paracetamol", "Mfr", token + " 500mg + Caffeine 30mg",
+                null, null, null, new BigDecimal("12"), "Tablet", "500mg", "strip", "10"));
+        flushAndClear();
+
+        assertThat(medicineService.quickSearch(token, 10))
+                .anySatisfy(m -> assertThat(m.id()).isEqualTo(created.id()));
     }
 }

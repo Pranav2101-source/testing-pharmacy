@@ -430,10 +430,9 @@ public class BillingService {
         List<String> controlled = new ArrayList<>();
         for (InvoiceItemRequest item : req.items()) {
             Inventory batch = batchMap.get(item.inventoryId());
-            String schedule = batch.getMedicine() == null || batch.getMedicine().getSchedule() == null
-                    ? null : batch.getMedicine().getSchedule().toUpperCase().trim();
+            String schedule = batch.productSchedule() == null ? null : batch.productSchedule().toUpperCase().trim();
             if (schedule != null && CONTROLLED_SCHEDULES.contains(schedule)) {
-                controlled.add(batch.getMedicine().getName() + " (Schedule " + schedule + ")");
+                controlled.add(batch.productName() + " (Schedule " + schedule + ")");
             }
         }
         if (!controlled.isEmpty() && (req.prescriptionId() == null || req.prescriptionId().isBlank())) {
@@ -490,17 +489,17 @@ public class BillingService {
 
         for (InvoiceItemRequest item : req.items()) {
             Inventory batch = batchMap.get(item.inventoryId());
-            if (batch.getMedicine() == null || !batch.getMedicine().isActive()) {
+            if (!batch.productIsActive()) {
                 throw new UnprocessableEntityException(
-                        "Medicine \"" + (batch.getMedicine() == null ? "?" : batch.getMedicine().getName()) + "\" is inactive and cannot be billed");
+                        "Medicine \"" + (batch.productName() == null ? "?" : batch.productName()) + "\" is inactive and cannot be billed");
             }
             if (batch.getStatus() != BatchStatus.ACTIVE) {
                 throw new UnprocessableEntityException(
-                        "Batch \"" + batch.getBatchNumber() + "\" of \"" + batch.getMedicine().getName() + "\" is " + batch.getStatus() + " and cannot be sold");
+                        "Batch \"" + batch.getBatchNumber() + "\" of \"" + batch.productName() + "\" is " + batch.getStatus() + " and cannot be sold");
             }
             if (!batch.getExpiryDate().isAfter(now)) {
                 throw new UnprocessableEntityException(
-                        "Batch \"" + batch.getBatchNumber() + "\" of \"" + batch.getMedicine().getName() + "\" expired on " + batch.getExpiryDate());
+                        "Batch \"" + batch.getBatchNumber() + "\" of \"" + batch.productName() + "\" expired on " + batch.getExpiryDate());
             }
 
             // ── Loose (cut-strip) line: validate it is permitted, then price per piece ──
@@ -509,22 +508,24 @@ public class BillingService {
             if (loose) {
                 if (!looseAllowedMedicineIds.contains(batch.getMedicineId())) {
                     throw new UnprocessableEntityException(
-                            "Loose selling is not enabled for \"" + batch.getMedicine().getName() + "\" at this pharmacy. "
+                            "Loose selling is not enabled for \"" + batch.productName() + "\" at this pharmacy. "
                             + "Turn it on in the medicine's POS settings, or sell it as a full pack.");
                 }
                 // Effective pack size: this pharmacy's override wins over the catalogue.
+                // (Always null for a local/unmatched medicine — loose selling isn't offered
+                // for one yet, so this throws below exactly as an unclassified medicine would.)
                 Integer upp = looseUppOverrideByMedicineId.getOrDefault(
-                        batch.getMedicineId(), batch.getMedicine().getUnitsPerPack());
+                        batch.getMedicineId(), batch.productUnitsPerPack());
                 if (upp == null || upp <= 1) {
                     throw new UnprocessableEntityException(
-                            "\"" + batch.getMedicine().getName() + "\" has no pack size on record, so it cannot be sold loose. "
+                            "\"" + batch.productName() + "\" has no pack size on record, so it cannot be sold loose. "
                             + "Set how many units are in a pack in its POS settings, or sell it as a full pack.");
                 }
                 // Schedule X cannot be broken out of its original packaging (Drug Rules).
-                String schedule = batch.getMedicine().getSchedule() == null ? ""
-                        : batch.getMedicine().getSchedule().trim().toUpperCase();
+                String schedule = batch.productSchedule() == null ? ""
+                        : batch.productSchedule().trim().toUpperCase();
                 if (schedule.equals("X")) {
-                    throw new UnprocessableEntityException("\"" + batch.getMedicine().getName()
+                    throw new UnprocessableEntityException("\"" + batch.productName()
                             + "\" is a Schedule X medicine and must be sold in its original pack, not loose.");
                 }
                 // A whole number of packs asked for as loose would needlessly cut sealed
@@ -539,7 +540,7 @@ public class BillingService {
                 if (wholeMultiple && !item.isForceLoose()
                         && batch.getLooseUnits() < wanted && batch.getQuantity() >= packsNeeded) {
                     throw new UnprocessableEntityException("That is " + packsNeeded + " full pack"
-                            + (packsNeeded == 1 ? "" : "s") + " of \"" + batch.getMedicine().getName()
+                            + (packsNeeded == 1 ? "" : "s") + " of \"" + batch.productName()
                             + "\" and there " + (batch.getQuantity() == 1 ? "is 1 sealed pack" : "are "
                             + batch.getQuantity() + " sealed packs") + " on this batch. "
                             + "Bill it as a pack sale so the strips stay sealed.");
@@ -548,14 +549,14 @@ public class BillingService {
                 // to divide. Surface it as a clear 422 rather than letting perPieceMrp
                 // throw an IllegalArgumentException that would surface as a 500.
                 if (batch.getMrp() == null || batch.getMrp().signum() <= 0) {
-                    throw new UnprocessableEntityException("\"" + batch.getMedicine().getName() + "\" (batch "
+                    throw new UnprocessableEntityException("\"" + batch.productName() + "\" (batch "
                             + batch.getBatchNumber() + ") has no MRP on record, so it cannot be priced for a "
                             + "loose sale. Set the batch MRP, or sell it as a full pack.");
                 }
                 unitsPerPack = upp;
             }
 
-            BigDecimal gstRate = gstOverrideByMedicineId.getOrDefault(batch.getMedicineId(), batch.getMedicine().getGstRate());
+            BigDecimal gstRate = gstOverrideByMedicineId.getOrDefault(batch.getMedicineId(), batch.productGstRate());
             // Per-piece MRP for a loose line: pack MRP / unitsPerPack at 2dp rounded DOWN —
             // the exact figure charged and printed, so the tax below reverse-calculates
             // from it and "qty x rate" reconciles with the line amount on the bill. The
@@ -570,7 +571,7 @@ public class BillingService {
                     BigDecimal.ONE.subtract(item.discountOrZero().divide(BigDecimal.valueOf(100), 10, RoundingMode.HALF_UP))));
             if (loose && rate.compareTo(unitMrp) > 0) {
                 throw new UnprocessableEntityException(
-                        "Loose price for \"" + batch.getMedicine().getName() + "\" (Rs." + rate
+                        "Loose price for \"" + batch.productName() + "\" (Rs." + rate
                         + "/unit) exceeds the pro-rata MRP of Rs." + unitMrp + "/unit.");
             }
 
@@ -738,7 +739,7 @@ public class BillingService {
                     String reservedNote = reservedByOthers > 0
                             ? " (" + reservedByOthers + " pack(s) reserved by another open billing session)" : "";
                     String freeNote = freeQty > 0 ? " (" + quantity + " + " + freeQty + " free)" : "";
-                    throw new ConflictException("Insufficient stock for \"" + batch.getMedicine().getName() + "\": "
+                    throw new ConflictException("Insufficient stock for \"" + batch.productName() + "\": "
                             + Math.max(0, availablePieces) + " piece(s) available" + reservedNote + ", " + dispensed + " requested" + freeNote);
                 }
                 ledgerBefore = batch.availablePieces(upp);
@@ -754,7 +755,7 @@ public class BillingService {
                     String reservedNote = reservedByOthers > 0
                             ? " (" + reservedByOthers + " reserved by another open billing session)" : "";
                     String freeNote = freeQty > 0 ? " (" + quantity + " + " + freeQty + " free)" : "";
-                    throw new ConflictException("Insufficient stock for \"" + batch.getMedicine().getName() + "\": "
+                    throw new ConflictException("Insufficient stock for \"" + batch.productName() + "\": "
                             + Math.max(0, available) + " available" + reservedNote + ", " + dispensed + " requested" + freeNote);
                 }
                 batch.setQuantity(quantityBefore - dispensed);
@@ -762,14 +763,14 @@ public class BillingService {
                 ledgerAfter = quantityBefore - dispensed;
             }
 
-            InvoiceItem item = InvoiceItem.create(pharmacyId, invoice.getId(), batch.getId(), batch.getMedicine().getName(),
-                    batch.getMedicine().getHsnCode(), batch.getBatchNumber(), batch.getExpiryDate(), quantity, freeQty,
+            InvoiceItem item = InvoiceItem.create(pharmacyId, invoice.getId(), batch.getId(), batch.productName(),
+                    batch.productHsnCode(), batch.getBatchNumber(), batch.getExpiryDate(), quantity, freeQty,
                     batch.getMrp(),
                     line.rate(), line.storedPurchaseRate(), line.req().discountOrZero(), line.gstRate(), line.gst().cgst(),
                     line.gst().sgst(), line.gst().igst(), line.gst().taxableAmount(), line.gst().amount(), line.location());
             String looseBaseUnit = line.loose()
                     ? com.checkup.pharmacy.common.util.BaseUnits.resolve(
-                            batch.getMedicine().getBaseUnit(), batch.getMedicine().getForm())
+                            batch.productBaseUnit(), batch.productForm())
                     : null;
             if (line.loose()) {
                 item.asLooseSale(looseBaseUnit);
@@ -817,7 +818,7 @@ public class BillingService {
                 if (linkedItemId != null && !linkedItemId.isBlank()) {
                     attributedByItemId.merge(linkedItemId,
                             new Attribution(line.req().quantity(), line.batch().getMedicineId(),
-                                    line.batch().getMedicine().getName()),
+                                    line.batch().productName()),
                             Attribution::plus);
                 } else {
                     dispensedByMedicineId.merge(line.batch().getMedicineId(), line.req().quantity(), Integer::sum);

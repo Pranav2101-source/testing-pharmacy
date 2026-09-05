@@ -17,6 +17,7 @@ import { BarcodeInput } from "@/components/BarcodeInput";
 import { ProductTag } from "@/lib/product-taxonomy";
 import { ClassifyModal, type ClassifyTarget } from "@/components/ClassifyModal";
 import { getStoredUser } from "@/lib/auth";
+import { playScanBeep } from "@/lib/sound";
 import { Tag } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -278,6 +279,45 @@ export function MedicineSearchCombobox({
     }
   }
 
+  // ── ← from the results list: always show the batch picker ────────────────
+  // selectMedicine skips the picker and quick-adds when only one batch exists —
+  // the fast path for the common case. Pressing ← is a deliberate "let me see the
+  // batches" ask, so it shows the picker even for a single batch instead of
+  // auto-adding it.
+  async function openBatchPicker(med: MedicineSearchResult) {
+    setOpen(false);
+    setQuery("");
+    setDebouncedQuery("");
+    isBarcodeRef.current  = false;
+    barcodeCharCount.current = 0;
+    setIsBarcode(false);
+    setAddingId(med.id);
+
+    try {
+      const allBatches = await fetchBatches(med.name);
+      const now         = new Date();
+      const liveBatches = allBatches
+        .filter((b) => new Date(b.expiryDate) > now)
+        .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+
+      if (liveBatches.length === 0) {
+        if ((med.hasAlternatives || med.genericName) && onOpenAlternatives) {
+          onOpenAlternatives(med, true);
+        } else if (allBatches.length > 0) {
+          setStockError(`All batches of "${med.name}" are expired.`);
+        } else {
+          setStockError(`No stock available for "${med.name}".`);
+        }
+        return;
+      }
+      setPickerState({ med, batches: liveBatches });
+    } catch {
+      setStockError(`Failed to load stock for "${med.name}". Try again.`);
+    } finally {
+      setAddingId(null);
+    }
+  }
+
   // ── Exact barcode lookup ──────────────────────────────────────────────────
   // A scanner types the barcode into the search box then fires Enter. The fuzzy
   // /medicines/search endpoint does NOT match on barcode, so we resolve the code
@@ -304,6 +344,11 @@ export function MedicineSearchCombobox({
         setStockError(`"${m.name}" is discontinued and cannot be billed.`);
         return;
       }
+      // The barcode resolved to a real, sellable medicine — confirm it audibly so a
+      // cashier scanning several items in a row doesn't need to watch the screen
+      // after every scan. Fires here (decode success), not after the batch/stock
+      // resolution below, matching how a hardware scanner's own buzzer works.
+      playScanBeep();
       // selectMedicine fetches live batches → adds directly if one batch, else
       // opens the batch picker. Identical to a manual pick, so all downstream
       // expiry/stock guards apply.
@@ -358,6 +403,15 @@ export function MedicineSearchCombobox({
           onOpenAlternatives(focused);
           setOpen(false);
           setQuery("");
+          return;
+        }
+      }
+      // Left Arrow → batch picker for the focused result, if it has stock at all
+      if (e.key === "ArrowLeft") {
+        const focused = results[cursor];
+        if (focused) {
+          e.preventDefault();
+          void openBatchPicker(focused);
           return;
         }
       }
@@ -441,7 +495,7 @@ export function MedicineSearchCombobox({
             onKeyDown={handleKeyDown}
             onFocus={() => { setFocused(true); if (results.length > 0) setOpen(true); }}
             onBlur={() => setFocused(false)}
-            placeholder="Search item here. (e.g 'gly' or 'g+99' or '8908009149206' or 'c,paracetamol')"
+            placeholder="Search by name, generic, composition, or manufacturer — or scan a barcode"
             className="flex-1 text-[15px] text-slate-700 placeholder-blue-400/70 bg-transparent focus:outline-none"
           />
 
@@ -567,6 +621,13 @@ export function MedicineSearchCombobox({
                         {med.packSize && (
                           <span className="pill bg-slate-100 text-slate-500 text-[12px]">{med.packSize}</span>
                         )}
+                        {/* Same badge CartTable shows once this is in the cart (see its "LOOSE OK"
+                            pill) — surfaced here too so a cashier can tell before adding it, not
+                            after, which is the moment that actually decides whether to search
+                            for a smaller pack size at all. */}
+                        {med.allowLooseSale && (
+                          <span className="pill bg-amber-100 text-amber-700 text-[10px] font-bold">LOOSE OK</span>
+                        )}
                         <span className="pill bg-blue-100 text-blue-600 text-[12px]">GST {med.gstRate}%</span>
                         {i === cursor && (
                           <span className="pill bg-emerald-100 text-emerald-600 uppercase tracking-wide">↵</span>
@@ -612,7 +673,7 @@ export function MedicineSearchCombobox({
               <p className="text-sm text-slate-500">
                 No medicines found for <strong className="text-slate-700">&quot;{query}&quot;</strong>
               </p>
-              <p className="text-[11px] text-slate-400 mt-1">Try generic name, barcode, or manufacturer</p>
+              <p className="text-[11px] text-slate-400 mt-1">Try the generic name, composition, manufacturer, or barcode</p>
             </motion.div>
           )}
         </AnimatePresence>

@@ -84,6 +84,16 @@ export function CustomerSearchCombobox() {
     return () => clearTimeout(t);
   }, [query]);
 
+  // A prescription (e.g. one pushed from the EMR) sets meta.customerName as a
+  // free-text patient name with no linked customerId — loadDraft/saveDraft can set
+  // this at any time, including while this component is already mounted. Without
+  // this sync the search box's local `query` just stays "" forever, so the name
+  // never appears even though the store has it. Mirrors how DoctorCombobox and
+  // PrescriptionCombobox already sync from their own external value.
+  useEffect(() => {
+    if (!customerId) setQuery(customerName);
+  }, [customerName, customerId]);
+
   // ── RAF-throttled position calculation ───────────────────────────────────
   // Batches rapid scroll/resize events to at most one setState per animation frame.
   const recalc = useCallback(() => {

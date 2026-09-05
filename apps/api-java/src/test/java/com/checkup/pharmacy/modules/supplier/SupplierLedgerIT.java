@@ -95,7 +95,7 @@ class SupplierLedgerIT extends AbstractPostgresIT {
 
     /** Receives `qty` units at Rs.100 each, 0% GST — so the GRN total is exactly qty x 100. */
     private String receiveStock(String batchNumber, int qty) {
-        var item = new GrnItemRequest(medicineId, "Amoxicillin 250", batchNumber,
+        var item = new GrnItemRequest(medicineId, null, "Amoxicillin 250", null, null, null, null, null, null, null, batchNumber,
                 Instant.now().plus(365, ChronoUnit.DAYS), 0, qty, 0, null, null,
                 new BigDecimal("100.00"), new BigDecimal("200.00"), BigDecimal.ZERO, BigDecimal.ZERO);
         String grnId = purchasesService.createGrn(new CreateGrnRequest(

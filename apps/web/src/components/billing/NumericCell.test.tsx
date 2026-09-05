@@ -162,5 +162,28 @@ describe("NumericCell", () => {
       // Number(".") is NaN; committing it would poison every total on the bill.
       expect(onChange).not.toHaveBeenCalled();
     });
+
+    it("clearing the field and tabbing away commits 0, not the old discount", async () => {
+      // Reported bug: type 5, backspace it out, tab away — the 5 reappeared
+      // uncommitted, because plain NumericCell reverts to the last committed value
+      // on an empty blur. For discount, 0 is a real, common value ("no discount"),
+      // not "nothing typed" — emptyCommitsZero opts a cell into committing it.
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      render(
+        <NumericCell value={0} onCommit={onChange} decimals emptyCommitsZero dataRow={0} dataCol="dis" />,
+      );
+      const cell = screen.getByRole("textbox");
+
+      await user.click(cell);
+      await user.keyboard("{Backspace}5");
+      expect(onChange).toHaveBeenLastCalledWith(5);
+
+      await user.keyboard("{Backspace}");
+      await user.tab();
+
+      expect(onChange).toHaveBeenLastCalledWith(0);
+      expect(cell).toHaveValue("0");
+    });
   });
 });

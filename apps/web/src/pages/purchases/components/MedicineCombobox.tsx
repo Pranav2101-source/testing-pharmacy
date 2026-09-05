@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Search, Loader2, Plus } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api-client";
-import { MedicineQuickAddModal } from "@/components/medicines/MedicineQuickAddModal";
+import { MedicineQuickAddModal, type QuickAddedLocalMedicine } from "@/components/medicines/MedicineQuickAddModal";
 import type { Medicine } from "../types";
 
 type MenuPos = {
@@ -11,11 +11,26 @@ type MenuPos = {
   top?: number; bottom?: number;
 };
 
-export function MedicineCombobox({ onSelect, onClearError, allowQuickAdd = true, gstRateHint }: {
+export function MedicineCombobox({
+  onSelect, onSelectLocal, onClearError, allowQuickAdd = true, allowLocalSave = false, gstRateHint,
+}: {
   onSelect: (m: Medicine) => void;
+  /**
+   * Called instead of a global catalogue write when {@code allowLocalSave} is true and
+   * the quick-add fallback is used — see MedicineQuickAddModal's "local" mode. Required
+   * when {@code allowLocalSave} is true.
+   */
+  onSelectLocal?: (m: QuickAddedLocalMedicine) => void;
   onClearError?: () => void;
-  /** Show "+ Add to catalogue" in the empty state (default true). */
+  /** Show a quick-add fallback in the empty state (default true). */
   allowQuickAdd?: boolean;
+  /**
+   * The quick-add fallback saves a pharmacy-local medicine (never the shared catalogue)
+   * instead of creating a new global one — for GRN receiving, where an unrecognized
+   * medicine must never block the GRN or pollute the platform-wide catalogue. Off by
+   * default (e.g. Purchase Orders still require a real catalogue medicine).
+   */
+  allowLocalSave?: boolean;
   /** Pre-fills the GST rate in the quick-add form — pass the line row's current rate. */
   gstRateHint?: number;
 }) {
@@ -107,7 +122,8 @@ export function MedicineCombobox({ onSelect, onClearError, allowQuickAdd = true,
           {allowQuickAdd && q.trim().length >= 2 && (
             <button type="button" onClick={openQuickAdd}
               className="w-full flex items-center gap-1.5 px-3.5 py-2.5 text-[12px] font-semibold text-blue-600 hover:bg-blue-50 transition-colors border-t border-slate-100">
-              <Plus className="w-3.5 h-3.5 flex-shrink-0" />Not here? Add "{q.trim()}" to catalogue
+              <Plus className="w-3.5 h-3.5 flex-shrink-0" />
+              {allowLocalSave ? `Not here? Save "${q.trim()}" as a local medicine` : `Not here? Add "${q.trim()}" to catalogue`}
             </button>
           )}
         </>
@@ -117,7 +133,8 @@ export function MedicineCombobox({ onSelect, onClearError, allowQuickAdd = true,
           {allowQuickAdd ? (
             <button type="button" onClick={openQuickAdd}
               className="mt-2 w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-[12px] font-semibold py-2 rounded-lg transition-colors">
-              <Plus className="w-3.5 h-3.5" />Add "{q.trim()}" to catalogue
+              <Plus className="w-3.5 h-3.5" />
+              {allowLocalSave ? `Save "${q.trim()}" as a local medicine` : `Add "${q.trim()}" to catalogue`}
             </button>
           ) : (
             <p className="text-[11px] text-slate-400 mt-0.5 text-center">Go to <span className="font-semibold">Medicines</span> page to add it to the catalog first.</p>
@@ -141,11 +158,17 @@ export function MedicineCombobox({ onSelect, onClearError, allowQuickAdd = true,
       <AnimatePresence>
         {quickAddOpen && (
           <MedicineQuickAddModal
+            mode={allowLocalSave ? "local" : "global"}
             initialName={q.trim()}
             defaultGstRate={gstRateHint}
             onClose={() => setQuickAddOpen(false)}
             onSaved={(m) => {
               onSelect(m);
+              setQuickAddOpen(false);
+              setQ(""); setOpen(false); setResults([]);
+            }}
+            onSavedLocal={(m) => {
+              onSelectLocal?.(m);
               setQuickAddOpen(false);
               setQ(""); setOpen(false); setResults([]);
             }}

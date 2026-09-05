@@ -231,7 +231,7 @@ export function InvoiceBreakdownModal({
         {/* ── Sticky header ─────────────────────────────────────────────────── */}
         <div
           className="flex items-center justify-between px-6 py-4 flex-shrink-0"
-          style={{ background: "linear-gradient(135deg,#0c1f5c 0%,#132468 50%,#1a3080 100%)" }}
+          style={{ background: "linear-gradient(135deg,#3b0764 0%,#4c1d7c 50%,#5b21a8 100%)" }}
         >
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-white/15 ring-1 ring-white/25 flex items-center justify-center">
@@ -248,7 +248,7 @@ export function InvoiceBreakdownModal({
             <button
               onClick={onSubmit}
               disabled={submitting || items.length === 0}
-              className="flex items-center gap-1.5 bg-white text-blue-700 font-bold text-[13px] px-5 py-2 rounded-lg hover:bg-blue-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 bg-white text-purple-700 font-bold text-[13px] px-5 py-2 rounded-lg hover:bg-purple-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
               {submitting ? "Saving…" : "Submit"}
@@ -414,13 +414,16 @@ export function InvoiceBreakdownModal({
               <div className="border border-slate-200 rounded-xl overflow-hidden">
                 <div className="grid grid-cols-3 divide-x divide-slate-200">
                   {[
-                    { label: isInterstate ? "IGST" : "CGST+SGST", value: fmt(bd.gst), color: "text-slate-800" },
-                    { label: "CESS",   value: fmt(0),       color: "text-slate-400" },
-                    { label: "Margin", value: "₹0 (0.00%)", color: "text-slate-400" },
-                  ].map(({ label, value, color }) => (
+                    { label: isInterstate ? "IGST" : "CGST+SGST", value: fmt(bd.gst), color: "text-slate-800", placeholder: false },
+                    // Neither is computed anywhere in this cart (no cess field on a line;
+                    // margin needs purchaseRate, which cart items don't carry) — showing a
+                    // hardcoded ₹0 / 0.00% here used to look like real, live figures.
+                    { label: "CESS",   value: "Not available", color: "text-slate-400", placeholder: true },
+                    { label: "Margin", value: "Not available", color: "text-slate-400", placeholder: true },
+                  ].map(({ label, value, color, placeholder }) => (
                     <div key={label} className="flex flex-col items-center py-3 px-2">
                       <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-1">{label}</span>
-                      <span className={cn("text-[14px] font-bold tabular-nums", color)}>{value}</span>
+                      <span className={cn(placeholder ? "text-[11px] font-semibold italic" : "text-[14px] font-bold tabular-nums", color)}>{value}</span>
                     </div>
                   ))}
                 </div>
@@ -502,10 +505,10 @@ export function InvoiceBreakdownModal({
                     animate={{ scale: 1, opacity: 1 }}
                     transition={{ type: "spring", stiffness: 420, damping: 26 }}
                   >
-                    <span className="text-[36px] font-black text-blue-700 tabular-nums leading-none">
+                    <span className="text-[36px] font-black text-purple-700 tabular-nums leading-none">
                       {Math.round(bd.netPayable)}
                     </span>
-                    <span className="text-[18px] font-bold text-blue-400 ml-1">₹</span>
+                    <span className="text-[18px] font-bold text-purple-400 ml-1">₹</span>
                   </motion.div>
                 </div>
 
