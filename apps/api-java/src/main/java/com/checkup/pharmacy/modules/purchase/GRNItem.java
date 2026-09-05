@@ -28,6 +28,10 @@ public class GRNItem extends CreatedAtEntity {
     @Column(name = "medicineId")
     private String medicineId;
 
+    /** Exactly one of medicineId/localMedicineId is set (DB CHECK constraint) — see {@link com.checkup.pharmacy.modules.medicine.PharmacyMedicine}. */
+    @Column(name = "localMedicineId")
+    private String localMedicineId;
+
     @Column(name = "medicineName")
     private String medicineName;
 
@@ -91,16 +95,20 @@ public class GRNItem extends CreatedAtEntity {
         // Required by JPA.
     }
 
-    public static GRNItem create(String pharmacyId, String grnId, String medicineId, String medicineName,
-                                 String batchNumber, Instant expiryDate, Integer orderedQty, int receivedQty,
-                                 int freeQty, String purchaseUnit, int conversionFactor, BigDecimal purchaseRate,
-                                 BigDecimal mrp, BigDecimal discount, BigDecimal gstRate, BigDecimal cgst,
-                                 BigDecimal sgst, BigDecimal igst, BigDecimal amount) {
+    public static GRNItem create(String pharmacyId, String grnId, String medicineId, String localMedicineId,
+                                 String medicineName, String batchNumber, Instant expiryDate, Integer orderedQty,
+                                 int receivedQty, int freeQty, String purchaseUnit, int conversionFactor,
+                                 BigDecimal purchaseRate, BigDecimal mrp, BigDecimal discount, BigDecimal gstRate,
+                                 BigDecimal cgst, BigDecimal sgst, BigDecimal igst, BigDecimal amount) {
+        if ((medicineId == null) == (localMedicineId == null)) {
+            throw new IllegalArgumentException("Exactly one of medicineId/localMedicineId must be set");
+        }
         GRNItem item = new GRNItem();
         item.assignId(Cuid.generate());
         item.pharmacyId = pharmacyId;
         item.grnId = grnId;
         item.medicineId = medicineId;
+        item.localMedicineId = localMedicineId;
         item.medicineName = medicineName;
         item.batchNumber = batchNumber;
         item.expiryDate = expiryDate;
@@ -134,6 +142,8 @@ public class GRNItem extends CreatedAtEntity {
     public String getGrnId() { return grnId; }
 
     public String getMedicineId() { return medicineId; }
+
+    public String getLocalMedicineId() { return localMedicineId; }
 
     public String getMedicineName() { return medicineName; }
 

@@ -26,6 +26,33 @@ import { BatchStatusModal } from "../modals/BatchStatusModal";
 import { AssignLocationModal } from "../modals/AssignLocationModal";
 import { CalibrateModal } from "../modals/CalibrateModal";
 
+/**
+ * M2: a `title`-only hint is mouse-only — a <span> isn't focusable and native
+ * tooltips generally don't show on keyboard focus anyway, so a keyboard-only
+ * pharmacist could never see column explanations like what "+N tablets" means.
+ * A real `<button>` (natively focusable) + `aria-label` (screen readers) + a
+ * CSS bubble shown on hover OR focus covers mouse, keyboard and screen reader.
+ */
+function InfoTooltip({ label }: { label: string }) {
+  return (
+    <span className="relative inline-flex group">
+      <button
+        type="button"
+        aria-label={label}
+        className="cursor-help rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+      >
+        <Info className="w-3 h-3 text-slate-400" />
+      </button>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute left-1/2 top-full z-20 mt-1.5 w-56 -translate-x-1/2 whitespace-normal rounded-md bg-slate-800 px-2.5 py-1.5 text-[11px] font-normal normal-case leading-snug text-white opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100 group-focus-within:opacity-100"
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
+
 export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts) => void }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -124,6 +151,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
           { label: "Opened strips", val: hasLoose, set: setHasLoose,   on: "bg-amber-500 border-amber-500" },
         ] as const).map(({ label, val, set, on }) => (
           <button key={label} onClick={() => { set((v) => !v); setPage(1); }}
+            aria-pressed={val}
             className={cn("h-[30px] px-3 rounded-md text-[12px] font-semibold border transition-all shadow-sm",
               val ? `${on} text-white` : "bg-white text-slate-600 border-slate-200 hover:border-blue-300"
             )}>
@@ -203,17 +231,13 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
               <th className="px-4 py-3 text-left text-[12px] font-semibold text-blue-600 whitespace-nowrap">
                 <span className="inline-flex items-center gap-1">
                   Stock
-                  <span title="Counted in the medicine's pack unit — strips, bottles, vials (set it via Categorize). '+N tablets/ml' = loose pieces from an opened pack." className="cursor-help">
-                    <Info className="w-3 h-3 text-slate-400" />
-                  </span>
+                  <InfoTooltip label="Counted in the medicine's pack unit — strips, bottles, vials (set it via Categorize). '+N tablets/ml' = loose pieces from an opened pack." />
                 </span>
               </th>
               <th className="px-4 py-3 text-left text-[12px] font-semibold text-blue-600 whitespace-nowrap">
                 <span className="inline-flex items-center gap-1">
                   Reserved
-                  <span title="Units held for pending sales / in-progress billing. Automatically released when the bill is finalised or cancelled." className="cursor-help">
-                    <Info className="w-3 h-3 text-slate-400" />
-                  </span>
+                  <InfoTooltip label="Units held for pending sales / in-progress billing. Automatically released when the bill is finalised or cancelled." />
                 </span>
               </th>
               {["MRP","Buy Rate","Location","Status","Actions"].map((h) => (
@@ -243,6 +267,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                           <button
                             onClick={() => setClassifyTarget(item.medicine)}
                             title="Edit category / packaging"
+                            aria-label={`Edit category / packaging for ${item.medicine.name}`}
                             className="flex-shrink-0 w-5 h-5 rounded-md hover:bg-blue-100 flex items-center justify-center text-slate-300 hover:text-blue-600 transition-colors"
                           >
                             <Pencil className="w-3 h-3" />
@@ -308,15 +333,18 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                         && (item.medicine.schedule ?? "").trim().toUpperCase() !== "X" && (
                         <button onClick={() => { const c = candidateFrom(item.medicine); if (c) setLooseSetup(c); }}
                           title="Enable loose (cut-strip) selling"
+                          aria-label={`Enable loose (cut-strip) selling for ${item.medicine.name}`}
                           className="p-1 rounded-md hover:bg-amber-100 text-slate-400 hover:text-amber-600 transition-colors">
                           <Scissors className="w-3.5 h-3.5" />
                         </button>
                       )}
                       <button onClick={() => setLocationModal(item)} title="Assign location"
+                        aria-label={`Assign location for ${item.medicine.name}, batch ${item.batchNumber}`}
                         className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-teal-600 transition-colors">
                         <MapPin className="w-3.5 h-3.5" />
                       </button>
                       <button onClick={() => setBarcodePrintItem(item)} title="Print barcode label"
+                        aria-label={`Print barcode label for ${item.medicine.name}, batch ${item.batchNumber}`}
                         className="p-1 rounded-md hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition-colors">
                         <Printer className="w-3.5 h-3.5" />
                       </button>
@@ -366,6 +394,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                             <button
                               onClick={() => setClassifyTarget(item.medicine)}
                               title="Edit category / packaging"
+                              aria-label={`Edit category / packaging for ${item.medicine.name}`}
                               className="flex-shrink-0 w-5 h-5 rounded-md hover:bg-blue-100 flex items-center justify-center text-slate-300 hover:text-blue-600"
                             >
                               <Pencil className="w-3 h-3" />
@@ -423,15 +452,18 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                         && (item.medicine.schedule ?? "").trim().toUpperCase() !== "X" && (
                         <button onClick={() => { const c = candidateFrom(item.medicine); if (c) setLooseSetup(c); }}
                           title="Enable loose (cut-strip) selling"
+                          aria-label={`Enable loose (cut-strip) selling for ${item.medicine.name}`}
                           className="p-2 rounded-md border border-slate-200 text-slate-400 active:bg-amber-100">
                           <Scissors className="w-4 h-4" />
                         </button>
                       )}
                       <button onClick={() => setLocationModal(item)} title="Assign location"
+                        aria-label={`Assign location for ${item.medicine.name}, batch ${item.batchNumber}`}
                         className="p-2 rounded-md border border-slate-200 text-slate-400 active:bg-slate-100">
                         <MapPin className="w-4 h-4" />
                       </button>
                       <button onClick={() => setBarcodePrintItem(item)} title="Print barcode label"
+                        aria-label={`Print barcode label for ${item.medicine.name}, batch ${item.batchNumber}`}
                         className="p-2 rounded-md border border-slate-200 text-slate-400 active:bg-slate-100">
                         <Printer className="w-4 h-4" />
                       </button>

@@ -436,7 +436,16 @@ public class MedicineService {
     public record BulkLooseRow(String medicineId, Integer unitsPerPack, Boolean looseByDefault) {
     }
 
-    /** Quick fuzzy search for the billing/GRN combobox — active medicines only, capped by limit. */
+    /**
+     * Quick search for the billing/GRN combobox — active medicines only, capped by limit.
+     *
+     * <p>Substring/prefix hits (see {@link MedicineRepository#quickSearch}) come first,
+     * exactly as before. If those don't fill the requested limit, tops up with
+     * {@link MedicineRepository#fuzzySearch} results — a typo ("paracetmol") or a
+     * transposed word ("500mg paracetamol") matches nothing as a literal substring,
+     * but trigram similarity finds it. Never lets a fuzzy guess outrank a real
+     * substring match; it only ever fills the seats a substring search left empty.
+     */
     @Transactional(readOnly = true)
     public List<MedicineResponse> quickSearch(String q, int limit) {
         String trimmed = q == null ? "" : q.trim();
@@ -444,7 +453,14 @@ public class MedicineService {
             return List.of();
         }
         int safeLimit = Math.min(Math.max(limit, 1), 50);
-        List<Medicine> hits = medicineRepository.quickSearch(trimmed, PageRequest.of(0, safeLimit));
+        List<Medicine> hits = new ArrayList<>(medicineRepository.quickSearch(trimmed, PageRequest.of(0, safeLimit)));
+        if (hits.size() < safeLimit) {
+            Set<String> seen = hits.stream().map(Medicine::getId).collect(Collectors.toSet());
+            for (Medicine m : medicineRepository.fuzzySearch(trimmed, safeLimit)) {
+                if (hits.size() >= safeLimit) break;
+                if (seen.add(m.getId())) hits.add(m);
+            }
+        }
         Map<String, PharmacyMedicineOverride> overrides = overridesByMedicineId(hits.stream().map(Medicine::getId).toList());
         return hits.stream().map(m -> toResponse(m, overrides.get(m.getId()))).toList();
     }

@@ -178,7 +178,7 @@ class SupplierCreditNoteIT extends AbstractPostgresIT {
     }
 
     private String inventoryIdAfterReceiving(String batchNumber, int qty) {
-        var item = new GrnItemRequest(medicineId, "Amoxicillin 250", batchNumber,
+        var item = new GrnItemRequest(medicineId, null, "Amoxicillin 250", null, null, null, null, null, null, null, batchNumber,
                 Instant.now().plus(365, ChronoUnit.DAYS), 0, qty, 0, null, null,
                 new BigDecimal("100.00"), new BigDecimal("200.00"), BigDecimal.ZERO, BigDecimal.ZERO);
         String grnId = purchasesService.createGrn(new CreateGrnRequest(

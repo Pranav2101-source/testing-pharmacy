@@ -10,6 +10,7 @@ import { EmptyBillState } from "./EmptyBillState";
 import { RecentItemsCard } from "./RecentItemsCard";
 import { BatchPickerDialog, type InventoryBatch, expiryStatus, getLocationLabel } from "./BatchPickerDialog";
 import { baseUnitShort } from "@pharmacy/utils";
+import { packDisplayLabel } from "@/lib/packSize";
 import { api } from "@/lib/api-client";
 import { queryKeys } from "@/lib/queryKeys";
 import { useToast } from "@/hooks/useToast";
@@ -202,7 +203,7 @@ const TH = "text-[11px] font-bold text-slate-500 uppercase tracking-wider text-r
  * worked here anyway, because ArrowUp/ArrowDown are bound to row navigation.
  */
 export function NumericCell({
-  value, onCommit, onSettle, decimals = false, blankWhenZero = false,
+  value, onCommit, onSettle, decimals = false, blankWhenZero = false, emptyCommitsZero = false,
   placeholder, title, className, dataRow, dataCol, onKeyDown,
 }: {
   value:        number;
@@ -212,6 +213,14 @@ export function NumericCell({
   decimals?:    boolean;
   /** Show an empty box instead of "0", so a row with no scheme reads as blank. */
   blankWhenZero?: boolean;
+  /**
+   * Leaving the field empty on blur commits 0 instead of reverting to the last
+   * value. Right for a column where 0 is itself a meaningful, common value (no
+   * discount, no free qty) — wrong for Qty, where 0 doesn't mean anything (an
+   * empty line should be removed, not silently zeroed) and clearing-then-blurring
+   * is how a cashier backs out of a keystroke while keeping the line.
+   */
+  emptyCommitsZero?: boolean;
   placeholder?: string;
   title?:       string;
   className?:   string;
@@ -244,6 +253,11 @@ export function NumericCell({
   function handleBlur() {
     const typed = draft;
     setDraft(null); // fall back to the store's value, clamped and settled
+    if (emptyCommitsZero && (typed === "" || typed === ".")) {
+      onCommit(0);
+      onSettle?.(0);
+      return;
+    }
     if (typed && typed !== "." && !Number.isNaN(Number(typed))) onSettle?.(Number(typed));
   }
 
@@ -303,7 +317,10 @@ function SkeletonRow({ idx }: { idx: number }) {
 }
 
 // ─── Cart Row ─────────────────────────────────────────────────────
-const CartRow = memo(function CartRow({
+// Exported (only) so tests can render one row in isolation — every dependency is an
+// explicit prop, no store/query/toast context required — and drive its "L" row-wide
+// keyboard shortcut without standing up the whole cart.
+export const CartRow = memo(function CartRow({
   item, idx, hasConflict, onKeyNav, onRemove, onQtyChange, onFreeQtyChange, onDiscountChange, onSwapBatch,
   onQtySettled, onFreeSettled, onSaleUnitChange, onFixIssue,
 }: {
@@ -328,6 +345,7 @@ const CartRow = memo(function CartRow({
   const isLoose   = item.saleUnit === "LOOSE";
   const upp       = item.unitsPerPack ?? 1;
   const canLoose  = !!item.allowLooseSale && upp > 1;
+  const packLabel = packDisplayLabel(item.packSize, item.unitsPerPack);
   const issue     = lineIssue(item);
   const looseOpensStrips = looseStripsOpened(item);
   // Everything on a loose line — quantity, the cap, the stock hint — is in pieces.
@@ -348,10 +366,26 @@ const CartRow = memo(function CartRow({
     return "ok";
   })();
 
+  /**
+   * "L" toggles Strip/Loose for this row from anywhere inside it — Qty, Free, Disc%,
+   * not just Qty. A single delegated handler on the row root (rather than repeating
+   * the check in each cell's own onKeyDown) is what makes that automatic: a keydown
+   * on any input inside this row bubbles up here, and none of Qty/Free/Disc's own
+   * handlers call stopPropagation, so this always sees it. Purely synchronous —
+   * setSaleUnit is an in-memory store update, no network call.
+   */
+  function handleRowKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (canLoose && (e.key === "l" || e.key === "L")) {
+      e.preventDefault();
+      onSaleUnitChange(item.inventoryId, isLoose ? "PACK" : "LOOSE");
+    }
+  }
+
   return (
     <>
     <motion.div
       data-inventory-id={item.inventoryId}
+      onKeyDown={handleRowKeyDown}
       initial={{ opacity: 0, y: -6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, x: -16 }}
@@ -407,10 +441,13 @@ const CartRow = memo(function CartRow({
         </div>
       </div>
 
-      {/* Pack — free-text label; the Strip/Tab choice lives on the Qty cell now */}
+      {/* Pack — packDisplayLabel prefers the catalogue's free-text packSize, but only
+          when it's actually descriptive; a bare "1" reads as no better than having no
+          label at all, so it falls back to a computed unitsPerPack label instead. The
+          Strip/Tab choice itself lives on the Qty cell now. */}
       <span className={cn("px-2.5 py-2 text-[13px] text-left truncate flex items-center gap-1",
-        item.packSize ? "text-slate-600 font-medium" : "text-slate-300")}>
-        <span className="truncate">{item.packSize ?? (canLoose ? `${upp}/strip` : "—")}</span>
+        packLabel !== "—" ? "text-slate-600 font-medium" : "text-slate-300")}>
+        <span className="truncate">{packLabel}</span>
         {canLoose && (
           <span className="flex-shrink-0 text-[8px] font-bold px-1 py-px rounded bg-amber-100 text-amber-700 leading-none">LOOSE OK</span>
         )}
@@ -431,7 +468,7 @@ const CartRow = memo(function CartRow({
             <p className="text-[10px] text-blue-500 font-semibold truncate">{item.location}</p>
           </div>
         ) : (
-          <p className="text-[9px] text-slate-300 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          <p className="text-[9px] text-slate-300 mt-0.5">
             No location
           </p>
         )}
@@ -471,7 +508,8 @@ const CartRow = memo(function CartRow({
 
       {/* Qty — for a loose-capable line, the unit sits right here so the cashier
           just types the number the doctor wrote and picks tab / strip. Press "L"
-          in the field to flip the unit without the mouse. */}
+          anywhere in this row (see handleRowKeyDown) to flip the unit without the
+          mouse — not just from this field. */}
       <div className="px-1.5 py-1.5">
         <div className="flex items-stretch gap-1">
           <NumericCell
@@ -480,14 +518,8 @@ const CartRow = memo(function CartRow({
             onSettle={(typed) => onQtySettled(item, typed)}
             dataRow={idx}
             dataCol="qty"
-            onKeyDown={(e) => {
-              if (canLoose && (e.key === "l" || e.key === "L")) {
-                e.preventDefault();
-                onSaleUnitChange(item.inventoryId, isLoose ? "PACK" : "LOOSE");
-                return;
-              }
-              onKeyNav(e, idx, "qty");
-            }}
+            title={canLoose ? `Press L to switch between strip and ${baseUnitShort(item.baseUnit)}` : undefined}
+            onKeyDown={(e) => onKeyNav(e, idx, "qty")}
             className={cn(
               "flex-1 min-w-0 text-center text-[16px] font-bold tabnum",
               "border rounded-md px-2 py-2",
@@ -515,6 +547,7 @@ const CartRow = memo(function CartRow({
                   <button
                     key={unit}
                     type="button"
+                    aria-pressed={active}
                     onClick={() => {
                       onSaleUnitChange(item.inventoryId, unit);
                       requestAnimationFrame(() => {
@@ -537,38 +570,69 @@ const CartRow = memo(function CartRow({
             </div>
           )}
         </div>
-        {looseOpensStrips > 0 && (
-          <p className="text-[9px] text-amber-600 font-semibold mt-0.5 text-center leading-none">
-            opens {looseOpensStrips} sealed strip{looseOpensStrips === 1 ? "" : "s"}
-          </p>
-        )}
-        {isLoose && (item.looseUnits ?? 0) > 0 && looseOpensStrips === 0 && (
-          <p className="text-[9px] text-emerald-600 font-semibold mt-0.5 text-center leading-none">
-            from {item.looseUnits} already open
-          </p>
-        )}
+        {/* Animated height (not a plain conditional) so flipping the Strip/Tab toggle
+            doesn't snap every row below it down instantly — this is the one spot in
+            an otherwise-animated cart that used to jump. */}
+        <AnimatePresence initial={false}>
+          {looseOpensStrips > 0 && (
+            <motion.p
+              key="opens"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="text-[9px] text-amber-600 font-semibold mt-0.5 text-center leading-none overflow-hidden"
+            >
+              opens {looseOpensStrips} sealed strip{looseOpensStrips === 1 ? "" : "s"}
+            </motion.p>
+          )}
+          {isLoose && (item.looseUnits ?? 0) > 0 && looseOpensStrips === 0 && (
+            <motion.p
+              key="open"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="text-[9px] text-emerald-600 font-semibold mt-0.5 text-center leading-none overflow-hidden"
+            >
+              from {item.looseUnits} already open
+            </motion.p>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Free (scheme qty) — zero shows as a muted placeholder rather than a hard
-          "0", so a row with no scheme reads as empty at a glance. */}
+          "0", so a row with no scheme reads as empty at a glance. On a loose line
+          this counts pieces, not strips (see clampLine in useBillingStore), so it
+          gets the same amber tint + unit label as Qty — otherwise "2 free" reads as
+          2 strips when it's actually 2 tablets. */}
       <div className="px-1.5 py-1.5">
         <NumericCell
           value={item.freeQty}
           onCommit={(n) => onFreeQtyChange(item.inventoryId, n)}
           onSettle={(typed) => onFreeSettled(item, typed)}
           blankWhenZero
+          emptyCommitsZero
           placeholder="0"
-          title="Free / scheme quantity — not charged, deducted from stock"
+          title={isLoose
+            ? `Free / scheme quantity, in ${baseUnitShort(item.baseUnit)} — not charged, deducted from stock`
+            : "Free / scheme quantity — not charged, deducted from stock"}
           dataRow={idx}
           dataCol="free"
           className={cn(
             "w-full text-center text-[14px] tabnum",
             item.freeQty > 0 ? "font-bold text-emerald-700" : "text-slate-400",
-            "border border-slate-200 rounded-md px-1 py-1.5",
+            "border rounded-md px-1 py-1.5",
+            isLoose ? "border-amber-300 bg-amber-50/40" : "border-slate-200 bg-white",
             "focus:outline-none focus:ring-2 focus:ring-emerald-500/25 focus:border-emerald-400",
-            "bg-white hover:border-emerald-300 transition-all duration-75"
+            "hover:border-emerald-300 transition-all duration-75"
           )}
         />
+        {isLoose && item.freeQty > 0 && (
+          <p className="text-[9px] text-amber-600 font-semibold mt-0.5 text-center leading-none">
+            {baseUnitShort(item.baseUnit)}, not strips
+          </p>
+        )}
       </div>
 
       {/* D% — decimals allowed (half-percent schemes are common) */}
@@ -577,6 +641,7 @@ const CartRow = memo(function CartRow({
           value={item.discount}
           onCommit={(n) => onDiscountChange(item.inventoryId, n)}
           decimals
+          emptyCommitsZero
           dataRow={idx}
           dataCol="dis"
           onKeyDown={(e) => onKeyNav(e, idx, "dis")}
@@ -608,12 +673,15 @@ const CartRow = memo(function CartRow({
         {item.amount.toFixed(2)}
       </span>
 
-      {/* Delete */}
+      {/* Delete — always visible/focusable, not hover-only: a hover-revealed action is
+          unreachable by keyboard (tabIndex=-1 used to lock it out entirely) and often
+          unreachable by touch on a POS tablet, which has no hover state to reveal it. */}
       <div className="flex justify-center">
         <button
           onClick={() => onRemove(item.inventoryId)}
-          tabIndex={-1}
-          className="row-delete-btn opacity-0 group-hover:opacity-100 w-6 h-6 rounded-md bg-red-50 hover:bg-red-500 text-red-400 hover:text-white flex items-center justify-center transition-all duration-100 hover:scale-110 active:scale-90 will-change-transform"
+          aria-label={`Remove ${item.medicineName} from bill`}
+          title="Remove from bill"
+          className="w-7 h-7 rounded-lg bg-red-50 hover:bg-red-500 text-red-400 hover:text-white flex items-center justify-center transition-all duration-100 hover:scale-110 active:scale-90 will-change-transform outline-none focus-visible:ring-2 focus-visible:ring-red-400/60"
         >
           <X className="w-3.5 h-3.5" />
         </button>

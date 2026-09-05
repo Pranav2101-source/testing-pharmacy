@@ -65,7 +65,7 @@ class GrnListEffectiveDateIT extends AbstractPostgresIT {
     }
 
     private String confirmedGrn() {
-        GrnItemRequest line = new GrnItemRequest(medicineId, "Amoxicillin 250", "B-" + u(),
+        GrnItemRequest line = new GrnItemRequest(medicineId, null, "Amoxicillin 250", null, null, null, null, null, null, null, "B-" + u(),
                 Instant.now().plus(400, ChronoUnit.DAYS), 0, 10, 0,
                 "UNIT", 1, new BigDecimal("10.00"), new BigDecimal("20.00"), BigDecimal.ZERO, new BigDecimal("12"));
         String grnId = purchasesService.createGrn(new CreateGrnRequest(

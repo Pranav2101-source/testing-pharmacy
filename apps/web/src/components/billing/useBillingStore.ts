@@ -85,6 +85,28 @@ export function lineIssue(item: CartItem): LineIssue | null {
   return null;
 }
 
+/** Schedule H/H1/X medicines require a linked prescription (Indian Drug Rules) —
+ *  mirrors BillingService.java's own guard, which throws a 422 for exactly this.
+ *  Kept here, not just checked at save, so the pre-flight check in the save
+ *  handler and the "Rx Required" banner can't drift apart on which schedules count. */
+export const CONTROLLED_SCHEDULES = new Set(["H", "H1", "X"]);
+
+/**
+ * Returns the blocking issue when the cart holds a controlled medicine with no
+ * prescription linked, or null when the bill is fine to save on that front. Pure —
+ * safe to call from the save handler before the network round trip.
+ */
+export function rxRequiredIssue(
+  items: CartItem[],
+  meta: Pick<BillingMeta, "prescriptionId">,
+): { schedules: string[] } | null {
+  if (meta.prescriptionId) return null;
+  const schedules = [...new Set(
+    items.map((i) => (i.schedule ?? "").toUpperCase()).filter((s) => CONTROLLED_SCHEDULES.has(s)),
+  )];
+  return schedules.length > 0 ? { schedules } : null;
+}
+
 export type CartItem = {
   inventoryId:    string;
   medicineName:   string;

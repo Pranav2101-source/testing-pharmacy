@@ -81,7 +81,7 @@ class PurchaseIT extends AbstractPostgresIT {
     }
 
     private GrnItemRequest line(String batchNumber, int receivedQty, int freeQty) {
-        return new GrnItemRequest(medicineId, "Amoxicillin 250", batchNumber,
+        return new GrnItemRequest(medicineId, null, "Amoxicillin 250", null, null, null, null, null, null, null, batchNumber,
                 Instant.now().plus(365, ChronoUnit.DAYS), 0, receivedQty, freeQty,
                 null, null, new BigDecimal("10.00"), new BigDecimal("20.00"),
                 BigDecimal.ZERO, new BigDecimal("12"));

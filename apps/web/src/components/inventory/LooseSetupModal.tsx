@@ -5,7 +5,7 @@ import { Loader2, Scissors, Sparkles, X, AlertTriangle } from "lucide-react";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
-import { parsePackSize } from "@/pages/dashboard/MedicinesPage";
+import { parsePackSize } from "@/lib/packSize";
 import type { InventoryItem } from "@/pages/inventory/types";
 
 /**
@@ -45,12 +45,19 @@ export type LooseCandidate = {
 
 type Row = LooseCandidate & { checked: boolean; value: string };
 
-/** Shared with `BatchesTab`'s row-level ✂ button, so a single-row trigger builds
- *  the exact same candidate shape the bulk fetch below would have produced for it. */
-export function candidateFrom(medicine: InventoryItem["medicine"]): LooseCandidate | null {
-  if (medicine.isActive === false) return null;
-  if ((medicine.schedule ?? "").trim().toUpperCase() === "X") return null;
-  if (medicine.allowLooseSale) return null;
+type MedicineLike = {
+  id:           string;
+  name:         string;
+  unitsPerPack?: number | null;
+  packSize?:     string | null;
+  baseUnit?:     string | null;
+};
+
+/** The candidate shape, with no eligibility opinion — the caller has already
+ *  decided this medicine belongs in a loose-setup dialog. Shared by both
+ *  {@link candidateFrom} below and the Medicines-page row ✂ button, so "first-time
+ *  enable" looks and behaves identically no matter which screen it's launched from. */
+export function candidateFromMedicine(medicine: MedicineLike): LooseCandidate {
   const catalogueUpp = medicine.unitsPerPack && medicine.unitsPerPack >= 2 ? medicine.unitsPerPack : null;
   const guessedUpp = catalogueUpp ? undefined : parsePackSize(medicine.packSize ?? null);
   return {
@@ -60,6 +67,15 @@ export function candidateFrom(medicine: InventoryItem["medicine"]): LooseCandida
     guessedUpp,
     baseUnitLabel: (medicine.baseUnit ?? "").toLowerCase() || "piece",
   };
+}
+
+/** Shared with `BatchesTab`'s row-level ✂ button, so a single-row trigger builds
+ *  the exact same candidate shape the bulk fetch below would have produced for it. */
+export function candidateFrom(medicine: InventoryItem["medicine"]): LooseCandidate | null {
+  if (medicine.isActive === false) return null;
+  if ((medicine.schedule ?? "").trim().toUpperCase() === "X") return null;
+  if (medicine.allowLooseSale) return null;
+  return candidateFromMedicine(medicine);
 }
 
 export function LooseSetupModal({ only, onClose, onDone }: {
@@ -281,6 +297,7 @@ export function LooseSetupModal({ only, onClose, onDone }: {
                             <input type="checkbox" checked={r.checked}
                               onChange={(e) => setRow(r.medicineId, { checked: e.target.checked })}
                               disabled={!!only}
+                              aria-label={`Include ${r.name} in loose selling setup`}
                               className="rounded border-slate-300" />
                           </td>
                           <td className="px-3 py-2 font-semibold text-slate-800">{r.name}</td>
@@ -289,6 +306,7 @@ export function LooseSetupModal({ only, onClose, onDone }: {
                               <input type="number" min={2} max={100000} value={r.value}
                                 onChange={(e) => setRow(r.medicineId, { value: e.target.value })}
                                 placeholder="e.g. 10"
+                                aria-label={`Units per pack for ${r.name}`}
                                 className={cn(
                                   "w-16 border rounded px-2 py-1 text-[12px] text-center focus:outline-none focus:border-blue-400",
                                   invalid ? "border-red-300 bg-red-50" : isGuess ? "border-amber-300 bg-amber-50" : "border-slate-200",

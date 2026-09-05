@@ -93,6 +93,7 @@ public class InventoryService {
     private final StockReservationRepository reservationRepository;
     private final BatchRecallRepository batchRecallRepository;
     private final MedicineRepository medicineRepository;
+    private final com.checkup.pharmacy.modules.medicine.PharmacyMedicineRepository pharmacyMedicineRepository;
     private final com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository;
     private final ShelfRepository shelfRepository;
     private final RackRepository rackRepository;
@@ -104,6 +105,7 @@ public class InventoryService {
                             StockReservationRepository reservationRepository,
                             BatchRecallRepository batchRecallRepository,
                             MedicineRepository medicineRepository,
+                            com.checkup.pharmacy.modules.medicine.PharmacyMedicineRepository pharmacyMedicineRepository,
                             com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository,
                             ShelfRepository shelfRepository,
                             RackRepository rackRepository,
@@ -114,6 +116,7 @@ public class InventoryService {
         this.reservationRepository = reservationRepository;
         this.batchRecallRepository = batchRecallRepository;
         this.medicineRepository = medicineRepository;
+        this.pharmacyMedicineRepository = pharmacyMedicineRepository;
         this.overrideRepository = overrideRepository;
         this.shelfRepository = shelfRepository;
         this.rackRepository = rackRepository;
@@ -1068,15 +1071,30 @@ public class InventoryService {
         if (rows.isEmpty()) {
             return List.of();
         }
-        List<String> medicineIds = rows.stream().map(Inventory::getMedicineId).distinct().toList();
+        List<String> medicineIds = rows.stream().map(Inventory::getMedicineId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
         Map<String, Medicine> medicinesById = new HashMap<>();
-        for (Medicine m : medicineRepository.findAllById(medicineIds)) {
-            medicinesById.put(m.getId(), m);
+        if (!medicineIds.isEmpty()) {
+            for (Medicine m : medicineRepository.findAllById(medicineIds)) {
+                medicinesById.put(m.getId(), m);
+            }
+        }
+        // A batch received for a medicine not yet in the global catalogue — see PharmacyMedicine.
+        List<String> localMedicineIds = rows.stream().map(Inventory::getLocalMedicineId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        Map<String, com.checkup.pharmacy.modules.medicine.PharmacyMedicine> localMedicinesById = new HashMap<>();
+        if (!localMedicineIds.isEmpty()) {
+            for (var m : pharmacyMedicineRepository.findAllById(localMedicineIds)) {
+                localMedicinesById.put(m.getId(), m);
+            }
         }
         // This pharmacy's loose-selling opt-in and pack-size override, per medicine.
+        // (A local medicine has no override row — loose selling isn't offered for one yet.)
         Map<String, com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride> overridesById = new HashMap<>();
-        for (var o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(TenantContext.pharmacyId(), medicineIds)) {
-            overridesById.put(o.getMedicineId(), o);
+        if (!medicineIds.isEmpty()) {
+            for (var o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(TenantContext.pharmacyId(), medicineIds)) {
+                overridesById.put(o.getMedicineId(), o);
+            }
         }
 
         List<String> shelfIds = rows.stream().map(Inventory::getShelfId).filter(java.util.Objects::nonNull).distinct().toList();
@@ -1095,18 +1113,28 @@ public class InventoryService {
         List<InventoryResponse> out = new ArrayList<>(rows.size());
         for (Inventory inv : rows) {
             Medicine m = medicinesById.get(inv.getMedicineId());
-            var ov = overridesById.get(inv.getMedicineId());
+            var ov = m == null ? null : overridesById.get(inv.getMedicineId());
             Integer effectiveUpp = ov != null && ov.getUnitsPerPack() != null
                     ? ov.getUnitsPerPack()
                     : (m != null ? m.getUnitsPerPack() : null);
             boolean allowLoose = ov != null && ov.isAllowLooseSale()
                     && effectiveUpp != null && effectiveUpp > 1;
             boolean looseDefault = allowLoose && ov.isLooseByDefault();
-            InventoryResponse.MedicineRef medRef = m == null ? null : new InventoryResponse.MedicineRef(
-                    m.getId(), m.getName(), m.getGenericName(), m.getForm(), m.getStrength(), m.getUnit(),
-                    m.isActive(), m.getGstRate(), m.getHsnCode(),
-                    effectiveUpp, com.checkup.pharmacy.common.util.BaseUnits.resolve(m.getBaseUnit(), m.getForm()),
-                    allowLoose, looseDefault, m.getSchedule(), m.getPackSize());
+            InventoryResponse.MedicineRef medRef;
+            if (m != null) {
+                medRef = new InventoryResponse.MedicineRef(
+                        m.getId(), m.getName(), m.getGenericName(), m.getForm(), m.getStrength(), m.getUnit(),
+                        m.isActive(), m.getGstRate(), m.getHsnCode(),
+                        effectiveUpp, com.checkup.pharmacy.common.util.BaseUnits.resolve(m.getBaseUnit(), m.getForm()),
+                        allowLoose, looseDefault, m.getSchedule(), m.getPackSize());
+            } else {
+                var lm = localMedicinesById.get(inv.getLocalMedicineId());
+                // Not in the global catalogue (yet) — no loose-sale support, no packSize label.
+                // isActive is always true: a local medicine has no deactivate flow.
+                medRef = lm == null ? null : new InventoryResponse.MedicineRef(
+                        lm.getId(), lm.getName(), lm.getGenericName(), lm.getForm(), lm.getStrength(), lm.getUnit(),
+                        true, lm.getGstRate(), lm.getHsnCode(), null, null, false, false, lm.getSchedule(), null);
+            }
 
             InventoryResponse.ShelfRef shelfRef = null;
             if (inv.getShelfId() != null) {

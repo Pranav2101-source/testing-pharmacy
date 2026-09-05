@@ -18,6 +18,7 @@ import com.checkup.pharmacy.modules.integration.emr.dto.EmrPrescriptionSnapshot;
 import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
+import com.checkup.pharmacy.modules.medicine.MedicineMatcher;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
 import com.checkup.pharmacy.modules.prescription.Prescription;
 import com.checkup.pharmacy.modules.prescription.PrescriptionItem;
@@ -35,7 +36,6 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -262,7 +262,7 @@ public class EmrIntegrationService {
     }
 
     private static boolean sameName(String a, String b) {
-        return normalize(a).equals(normalize(b));
+        return MedicineMatcher.normalize(a).equals(MedicineMatcher.normalize(b));
     }
 
     @Transactional(readOnly = true)
@@ -321,10 +321,10 @@ public class EmrIntegrationService {
             }
         }
         Set<String> lowerNames = request.items().stream().map(EmrMedicineMatchRequest.Item::name)
-                .map(EmrIntegrationService::normalize).collect(Collectors.toSet());
+                .map(MedicineMatcher::normalize).collect(Collectors.toSet());
         Set<String> lowerGenerics = request.items().stream().map(EmrMedicineMatchRequest.Item::genericName)
                 .filter(Objects::nonNull).filter(s -> !s.isBlank())
-                .map(EmrIntegrationService::normalize).collect(Collectors.toSet());
+                .map(MedicineMatcher::normalize).collect(Collectors.toSet());
         // Hibernate/Postgres do not portably accept an empty IN collection.
         if (lowerNames.isEmpty()) lowerNames = Set.of("__no_name__");
         if (lowerGenerics.isEmpty()) lowerGenerics = Set.of("__no_generic__");
@@ -337,20 +337,20 @@ public class EmrIntegrationService {
             if (candidates.stream().noneMatch(c -> c.getId().equals(m.getId()))) candidates.add(m);
         });
 
-        Map<String, Match> matches = new LinkedHashMap<>();
+        Map<String, MedicineMatcher.Match> matches = new LinkedHashMap<>();
         for (var item : request.items()) {
-            Match match = match(item, direct, candidates);
+            MedicineMatcher.Match match = MedicineMatcher.match(item, direct, candidates);
             matches.put(item.externalItemId(), match);
         }
 
-        Set<String> matchedIds = matches.values().stream().map(Match::medicine)
+        Set<String> matchedIds = matches.values().stream().map(MedicineMatcher.Match::medicine)
                 .filter(Objects::nonNull).map(Medicine::getId).collect(Collectors.toSet());
         Map<String, List<Inventory>> stock = matchedIds.isEmpty() ? Map.of()
                 : inventoryRepository.findActiveNonExpiredByMedicineIdIn(pharmacyId, matchedIds, Instant.now()).stream()
                         .collect(Collectors.groupingBy(Inventory::getMedicineId));
 
         List<EmrMedicineMatchResponse.Item> response = request.items().stream().map(item -> {
-            Match match = matches.get(item.externalItemId());
+            MedicineMatcher.Match match = matches.get(item.externalItemId());
             Medicine medicine = match.medicine();
             if (medicine == null) {
                 return new EmrMedicineMatchResponse.Item(item.externalItemId(), match.strategy(), null, null,
@@ -376,7 +376,7 @@ public class EmrIntegrationService {
      */
     private Map<String, Medicine> matchIngestItems(List<EmrPrescriptionIngestRequest.Item> items) {
         Set<String> lowerNames = items.stream().map(EmrPrescriptionIngestRequest.Item::medicineName)
-                .map(EmrIntegrationService::normalize).collect(Collectors.toSet());
+                .map(MedicineMatcher::normalize).collect(Collectors.toSet());
         if (lowerNames.isEmpty()) lowerNames = Set.of("__no_name__");
         List<Medicine> candidates = new ArrayList<>(
                 medicineRepository.findActiveForEmrMatch(lowerNames, Set.of("__no_generic__")));
@@ -385,7 +385,7 @@ public class EmrIntegrationService {
         for (var item : items) {
             var matchItem = new EmrMedicineMatchRequest.Item(item.externalItemId(), null,
                     item.medicineName(), null, item.strength(), null);
-            Medicine medicine = match(matchItem, Map.of(), candidates).medicine();
+            Medicine medicine = MedicineMatcher.match(matchItem, Map.of(), candidates).medicine();
             if (medicine != null) resolved.put(item.externalItemId().trim(), medicine);
         }
         return resolved;
@@ -434,51 +434,7 @@ public class EmrIntegrationService {
                 .collect(Collectors.toMap(Medicine::getId, Function.identity()));
     }
 
-    /**
-     * Two candidates tying on the same name (or generic+strength+form) is a different problem
-     * from finding none at all — one is a duplicate in this pharmacy's own catalogue, the
-     * other is a genuinely unknown product — and collapsing both to plain UNMATCHED told a
-     * pharmacist "not found" when the real answer was "found twice, pick one". AMBIGUOUS_*
-     * still resolves to no medicineId (nothing here can safely pick between two candidates on
-     * its own), but names the actual reason so it can be shown differently — see
-     * {@link EmrMedicineMatchResponse.Item#ambiguous}.
-     */
-    private static Match match(EmrMedicineMatchRequest.Item item, Map<String, Medicine> direct,
-                               List<Medicine> candidates) {
-        if (item.medicineId() != null && direct.containsKey(item.medicineId())) {
-            return new Match("EXACT_ID", direct.get(item.medicineId()));
-        }
-        List<Medicine> exactName = candidates.stream()
-                .filter(m -> normalize(m.getName()).equals(normalize(item.name())))
-                .filter(m -> compatible(m, item)).toList();
-        if (exactName.size() == 1) return new Match("EXACT_NAME", exactName.getFirst());
-        if (exactName.size() > 1) return new Match("AMBIGUOUS_NAME", null);
-
-        if (item.genericName() != null && !item.genericName().isBlank()) {
-            List<Medicine> exactGeneric = candidates.stream()
-                    .filter(m -> normalize(m.getGenericName()).equals(normalize(item.genericName())))
-                    .filter(m -> compatible(m, item)).toList();
-            if (exactGeneric.size() == 1) return new Match("GENERIC_STRENGTH_FORM", exactGeneric.getFirst());
-            if (exactGeneric.size() > 1) return new Match("AMBIGUOUS_GENERIC", null);
-        }
-        return new Match("UNMATCHED", null);
-    }
-
-    private static boolean compatible(Medicine medicine, EmrMedicineMatchRequest.Item item) {
-        return (item.strength() == null || item.strength().isBlank()
-                || normalize(medicine.getStrength()).equals(normalize(item.strength())))
-                && (item.form() == null || item.form().isBlank()
-                || normalize(medicine.getForm()).equals(normalize(item.form())));
-    }
-
-    private static String normalize(String value) {
-        return value == null ? "" : value.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
-    }
-
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
-    }
-
-    private record Match(String strategy, Medicine medicine) {
     }
 }

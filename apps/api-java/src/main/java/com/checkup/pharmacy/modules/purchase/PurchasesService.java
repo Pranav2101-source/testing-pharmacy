@@ -19,7 +19,11 @@ import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryMovement;
 import com.checkup.pharmacy.modules.inventory.InventoryMovementRepository;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
+import com.checkup.pharmacy.modules.medicine.GrnConfirmedEvent;
+import com.checkup.pharmacy.modules.medicine.MedicineMatcher;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicine;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineRepository;
 import com.checkup.pharmacy.modules.purchase.dto.ApprovePurchaseOrderRequest;
 import com.checkup.pharmacy.modules.purchase.dto.CreateGrnRequest;
 import com.checkup.pharmacy.modules.purchase.dto.CreatePurchaseOrderRequest;
@@ -36,6 +40,7 @@ import com.checkup.pharmacy.modules.supplier.SupplierRepository;
 import com.checkup.pharmacy.modules.user.User;
 import com.checkup.pharmacy.modules.user.UserRepository;
 import com.checkup.pharmacy.tenant.TenantContext;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -50,6 +55,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Purchase orders and goods-receipt-notes, scoped to the caller's pharmacy.
@@ -59,8 +65,13 @@ import java.util.Set;
  *
  * Deferred vs. the Node original: PO sharing (email/WhatsApp — needs D4
  * mailer), CSV bulk import (needs uploads/D3).
- * Medicine-name auto-resolution/auto-create is also dropped — callers must
- * supply a valid medicineId, matching every other Tier 1 module's contract.
+ *
+ * A GRN line names exactly one of medicineId (global catalogue), localMedicineId
+ * (an existing pharmacy-local medicine), or neither — in which case it
+ * resolve-or-creates a {@link PharmacyMedicine} from the line's own details.
+ * Receiving stock must never block on the global catalogue matching; see
+ * {@link #resolveMedicineRefs}. Purchase orders keep the stricter contract
+ * (a valid medicineId is still required) — deliberately out of scope for now.
  */
 @Service
 public class PurchasesService {
@@ -75,20 +86,23 @@ public class PurchasesService {
     private final InventoryMovementRepository movementRepository;
     private final SupplierRepository supplierRepository;
     private final MedicineRepository medicineRepository;
+    private final PharmacyMedicineRepository pharmacyMedicineRepository;
     private final com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository;
     private final UserRepository userRepository;
     private final DocumentSequenceService sequenceService;
     private final com.checkup.pharmacy.modules.pharmacy.PharmacyRepository pharmacyRepository;
     private final com.checkup.pharmacy.common.idempotency.DuplicateSubmitGuard duplicateSubmitGuard;
+    private final ApplicationEventPublisher eventPublisher;
 
     public PurchasesService(PurchaseOrderRepository purchaseOrderRepository, GoodsReceiptNoteRepository grnRepository,
                             GRNItemRepository grnItemRepository, InventoryRepository inventoryRepository,
                             InventoryMovementRepository movementRepository, SupplierRepository supplierRepository,
-                            MedicineRepository medicineRepository,
+                            MedicineRepository medicineRepository, PharmacyMedicineRepository pharmacyMedicineRepository,
                             com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository,
                             UserRepository userRepository, DocumentSequenceService sequenceService,
                             com.checkup.pharmacy.modules.pharmacy.PharmacyRepository pharmacyRepository,
-                            com.checkup.pharmacy.common.idempotency.DuplicateSubmitGuard duplicateSubmitGuard) {
+                            com.checkup.pharmacy.common.idempotency.DuplicateSubmitGuard duplicateSubmitGuard,
+                            ApplicationEventPublisher eventPublisher) {
         this.pharmacyRepository = pharmacyRepository;
         this.purchaseOrderRepository = purchaseOrderRepository;
         this.grnRepository = grnRepository;
@@ -97,10 +111,12 @@ public class PurchasesService {
         this.movementRepository = movementRepository;
         this.supplierRepository = supplierRepository;
         this.medicineRepository = medicineRepository;
+        this.pharmacyMedicineRepository = pharmacyMedicineRepository;
         this.overrideRepository = overrideRepository;
         this.userRepository = userRepository;
         this.sequenceService = sequenceService;
         this.duplicateSubmitGuard = duplicateSubmitGuard;
+        this.eventPublisher = eventPublisher;
     }
 
     // ── Purchase Orders ──────────────────────────────────────────────────────
@@ -333,7 +349,7 @@ public class PurchasesService {
         duplicateSubmitGuard.guard("purchase.grn.create", req);
         String pharmacyId = TenantContext.pharmacyId();
         Supplier supplier = loadSupplier(req.supplierId());
-        validateMedicinesExist(req.items().stream().map(GrnItemRequest::medicineId).toList());
+        List<ResolvedMedicine> medicineRefs = resolveMedicineRefs(pharmacyId, req.items());
 
         String duplicateWarning = null;
         if (req.supplierInvoiceNo() != null && !req.supplierInvoiceNo().isBlank()) {
@@ -355,7 +371,7 @@ public class PurchasesService {
         grn.setSourceUploadId(req.sourceUploadId());
         grnRepository.save(grn);
 
-        List<GRNItem> items = buildGrnItems(pharmacyId, grn.getId(), req.items(), totals, isInterstate(supplier));
+        List<GRNItem> items = buildGrnItems(pharmacyId, grn.getId(), req.items(), medicineRefs, totals, isInterstate(supplier));
         grnItemRepository.saveAll(items);
         grn.applyDraftEdit(grn.getSupplierInvoiceNo(), grn.getSupplierInvoiceDate(), grn.getNotes(), totals[0], totals[1]);
 
@@ -381,11 +397,11 @@ public class PurchasesService {
             if (req.items().isEmpty()) {
                 throw new BadRequestException("items must not be empty");
             }
-            validateMedicinesExist(req.items().stream().map(GrnItemRequest::medicineId).toList());
+            List<ResolvedMedicine> medicineRefs = resolveMedicineRefs(grn.getPharmacyId(), req.items());
             checkNearExpiry(req.items(), req.allowNearExpiry());
             grnItemRepository.deleteByGrnId(id);
             BigDecimal[] totals = new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO};
-            items = buildGrnItems(grn.getPharmacyId(), id, req.items(), totals,
+            items = buildGrnItems(grn.getPharmacyId(), id, req.items(), medicineRefs, totals,
                     isInterstate(loadSupplier(grn.getSupplierId())));
             grnItemRepository.saveAll(items);
             subtotal = totals[0];
@@ -403,23 +419,76 @@ public class PurchasesService {
     }
 
     private List<GRNItem> buildGrnItems(String pharmacyId, String grnId, List<GrnItemRequest> requests,
-                                        BigDecimal[] totalsOut, boolean isInterstate) {
+                                        List<ResolvedMedicine> medicineRefs, BigDecimal[] totalsOut, boolean isInterstate) {
         BigDecimal subtotal = BigDecimal.ZERO;
         BigDecimal totalGst = BigDecimal.ZERO;
         List<GRNItem> items = new ArrayList<>();
-        for (GrnItemRequest r : requests) {
+        for (int i = 0; i < requests.size(); i++) {
+            GrnItemRequest r = requests.get(i);
+            ResolvedMedicine ref = medicineRefs.get(i);
             GstCalculator.PurchaseLineGst gst = GstCalculator.calcPurchaseLineGst(
                     r.purchaseRate(), r.receivedQty(), r.discountOrZero(), r.gstRate(), isInterstate);
             subtotal = subtotal.add(gst.lineTotal());
             totalGst = totalGst.add(gst.totalGst());
-            items.add(GRNItem.create(pharmacyId, grnId, r.medicineId(), r.medicineName(), r.batchNumber(),
-                    r.expiryDate(), r.orderedQty(), r.receivedQty(), r.freeQtyOrZero(), r.purchaseUnitOrDefault(),
-                    r.conversionFactorOrDefault(), r.purchaseRate(), r.mrp(), r.discountOrZero(), r.gstRate(),
-                    gst.cgst(), gst.sgst(), gst.igst(), gst.amount()));
+            items.add(GRNItem.create(pharmacyId, grnId, ref.medicineId(), ref.localMedicineId(), r.medicineName(),
+                    r.batchNumber(), r.expiryDate(), r.orderedQty(), r.receivedQty(), r.freeQtyOrZero(),
+                    r.purchaseUnitOrDefault(), r.conversionFactorOrDefault(), r.purchaseRate(), r.mrp(),
+                    r.discountOrZero(), r.gstRate(), gst.cgst(), gst.sgst(), gst.igst(), gst.amount()));
         }
         totalsOut[0] = subtotal;
         totalsOut[1] = totalGst;
         return items;
+    }
+
+    private record ResolvedMedicine(String medicineId, String localMedicineId) {
+    }
+
+    /**
+     * Batch-resolves every line's medicine reference before anything else is written:
+     * an existing medicineId/localMedicineId must actually exist, and a line naming
+     * neither resolve-or-creates a {@link PharmacyMedicine} from its own invoice-supplied
+     * details — receiving stock must never block on the global catalogue. Two lines in
+     * the same GRN naming the same new local product (by exact, case-insensitive name)
+     * are folded into one local medicine, not duplicated; a repeat GRN later reuses the
+     * same pharmacy-local row via {@link PharmacyMedicineRepository#findFirstByPharmacyIdAndNameIgnoreCase}.
+     */
+    private List<ResolvedMedicine> resolveMedicineRefs(String pharmacyId, List<GrnItemRequest> requests) {
+        Set<String> medicineIds = requests.stream().map(GrnItemRequest::medicineId)
+                .filter(id -> id != null && !id.isBlank()).collect(Collectors.toSet());
+        if (!medicineIds.isEmpty()) {
+            validateMedicinesExist(new ArrayList<>(medicineIds));
+        }
+
+        Set<String> localMedicineIds = requests.stream().map(GrnItemRequest::localMedicineId)
+                .filter(id -> id != null && !id.isBlank()).collect(Collectors.toSet());
+        if (!localMedicineIds.isEmpty()) {
+            // Tenant-scoped at the query itself (findByIdInAndPharmacyId), not a
+            // fetch-then-filter over findAllById — see UnscopedFinderCallGuardTest.
+            Set<String> found = pharmacyMedicineRepository.findByIdInAndPharmacyId(localMedicineIds, pharmacyId)
+                    .stream().map(PharmacyMedicine::getId).collect(Collectors.toSet());
+            if (!found.containsAll(localMedicineIds)) {
+                throw new NotFoundException("One or more local medicines could not be found");
+            }
+        }
+
+        Map<String, PharmacyMedicine> newLocalByNormalizedName = new HashMap<>();
+        List<ResolvedMedicine> resolved = new ArrayList<>();
+        for (GrnItemRequest r : requests) {
+            String medicineId = blankToNull(r.medicineId());
+            String localMedicineId = blankToNull(r.localMedicineId());
+            if (medicineId == null && localMedicineId == null) {
+                String key = MedicineMatcher.normalize(r.medicineName());
+                PharmacyMedicine local = newLocalByNormalizedName.computeIfAbsent(key, k ->
+                        pharmacyMedicineRepository.findFirstByPharmacyIdAndNameIgnoreCase(pharmacyId, r.medicineName())
+                                .orElseGet(() -> pharmacyMedicineRepository.save(PharmacyMedicine.create(pharmacyId,
+                                        r.medicineName(), blankToNull(r.manufacturer()), blankToNull(r.genericName()),
+                                        blankToNull(r.strength()), blankToNull(r.form()), blankToNull(r.unit()),
+                                        blankToNull(r.hsnCode()), r.gstRate(), blankToNull(r.schedule())))));
+                localMedicineId = local.getId();
+            }
+            resolved.add(new ResolvedMedicine(medicineId, localMedicineId));
+        }
+        return resolved;
     }
 
     private void checkNearExpiry(List<GrnItemRequest> items, boolean allowNearExpiry) {
@@ -469,17 +538,19 @@ public class PurchasesService {
 
         for (GRNItem item : items) {
             int totalQty = item.totalBaseUnits();
-            Inventory inv = inventoryRepository
-                    .findByPharmacyIdAndMedicineIdAndBatchNumber(grn.getPharmacyId(), item.getMedicineId(), item.getBatchNumber())
-                    .orElse(null);
+            Inventory inv = item.getMedicineId() != null
+                    ? inventoryRepository.findByPharmacyIdAndMedicineIdAndBatchNumber(
+                            grn.getPharmacyId(), item.getMedicineId(), item.getBatchNumber()).orElse(null)
+                    : inventoryRepository.findByPharmacyIdAndLocalMedicineIdAndBatchNumber(
+                            grn.getPharmacyId(), item.getLocalMedicineId(), item.getBatchNumber()).orElse(null);
             int quantityBefore;
             if (inv != null) {
                 quantityBefore = inv.getQuantity();
                 inv.mergeIncoming(totalQty, item.getPurchaseRate(), item.getMrp(), item.getExpiryDate());
             } else {
                 quantityBefore = 0;
-                inv = Inventory.create(grn.getPharmacyId(), item.getMedicineId(), item.getBatchNumber(),
-                        item.getExpiryDate(), totalQty, item.getPurchaseRate(), item.getMrp(), 10, 5);
+                inv = Inventory.create(grn.getPharmacyId(), item.getMedicineId(), item.getLocalMedicineId(),
+                        item.getBatchNumber(), item.getExpiryDate(), totalQty, item.getPurchaseRate(), item.getMrp(), 10, 5);
                 inventoryRepository.save(inv);
             }
             item.setInventoryId(inv.getId());
@@ -496,6 +567,10 @@ public class PurchasesService {
         if (grn.getPurchaseOrderId() != null) {
             rollUpPurchaseOrderStatus(grn.getPurchaseOrderId());
         }
+
+        List<String> localMedicineIds = items.stream().map(GRNItem::getLocalMedicineId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        eventPublisher.publishEvent(new GrnConfirmedEvent(grn.getPharmacyId(), grn.getId(), localMedicineIds));
 
         return toResponse(grn, supplier, items, null);
     }
@@ -524,6 +599,8 @@ public class PurchasesService {
         List<PurchaseOrderItemSnapshot> poItems = po.getItems();
         boolean allCovered = !poItems.isEmpty() && poItems.stream()
                 .allMatch(i -> receivedByMedicine.getOrDefault(i.medicineId(), 0) >= i.quantity());
+        // (receivedByMedicine intentionally omits local-only GRN lines — a PO item always
+        // names a real catalogue medicineId, so a local line can never satisfy one anyway.)
 
         if (allCovered) {
             po.markFullyReceived();

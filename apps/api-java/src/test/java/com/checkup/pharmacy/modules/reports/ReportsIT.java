@@ -1160,7 +1160,7 @@ class ReportsIT extends AbstractPostgresIT {
         var grn = purchasesService.createGrn(new com.checkup.pharmacy.modules.purchase.dto.CreateGrnRequest(
                 supplier.getId(), null, "SUP-INV-1", Instant.now(), null,
                 List.of(new com.checkup.pharmacy.modules.purchase.dto.GrnItemRequest(
-                        medicineId, "Amoxicillin 250", "GRN-B1",
+                        medicineId, null, "Amoxicillin 250", null, null, null, null, null, null, null, "GRN-B1",
                         Instant.now().plus(365, ChronoUnit.DAYS), 10, 10, 0, null, null,
                         new BigDecimal("100.00"), new BigDecimal("150.00"), BigDecimal.ZERO,
                         new BigDecimal("18"))),
@@ -1483,7 +1483,7 @@ class ReportsIT extends AbstractPostgresIT {
         var grn = purchasesService.createGrn(new com.checkup.pharmacy.modules.purchase.dto.CreateGrnRequest(
                 supplier.getId(), null, "SUP-INV-" + unique(), Instant.now(), null,
                 List.of(new com.checkup.pharmacy.modules.purchase.dto.GrnItemRequest(
-                        medicineId, "Amoxicillin 250", "GRN-B1",
+                        medicineId, null, "Amoxicillin 250", null, null, null, null, null, null, null, "GRN-B1",
                         Instant.now().plus(365, ChronoUnit.DAYS), 10, 10, 0, null, null,
                         new BigDecimal("100.00"), new BigDecimal("150.00"), BigDecimal.ZERO,
                         new BigDecimal("18"))),

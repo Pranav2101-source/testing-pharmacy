@@ -1,5 +1,6 @@
 package com.checkup.pharmacy.modules.integration.emr.dto;
 
+import com.checkup.pharmacy.modules.medicine.MedicineMatcher;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
@@ -17,6 +18,6 @@ public record EmrMedicineMatchRequest(
             @Size(max = 200) String genericName,
             @Size(max = 100) String strength,
             @Size(max = 100) String form
-    ) {
+    ) implements MedicineMatcher.MatchInput {
     }
 }

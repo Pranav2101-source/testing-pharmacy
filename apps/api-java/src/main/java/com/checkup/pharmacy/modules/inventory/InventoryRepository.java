@@ -64,6 +64,9 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
 
     Optional<Inventory> findByPharmacyIdAndMedicineIdAndBatchNumber(String pharmacyId, String medicineId, String batchNumber);
 
+    /** Merge-on-repeat-receipt lookup for a batch received against a {@link com.checkup.pharmacy.modules.medicine.PharmacyMedicine} instead of the global catalog. */
+    Optional<Inventory> findByPharmacyIdAndLocalMedicineIdAndBatchNumber(String pharmacyId, String localMedicineId, String batchNumber);
+
     List<Inventory> findByPharmacyIdAndMedicineIdIn(String pharmacyId, java.util.Collection<String> medicineIds);
 
     /**

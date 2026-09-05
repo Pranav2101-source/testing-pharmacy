@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
@@ -67,12 +67,17 @@ function AlternativeCard({
   onAdd,
   onReplace,
   onHover,
+  registerDispatch,
 }: {
   alt:           AlternativeResult;
   isHighlighted: boolean;
   onAdd:         (batch: AlternativeBatch) => void;
   onReplace:     ((batch: AlternativeBatch) => void) | null;
   onHover:       () => void;
+  /** Hands the parent this card's "add" trigger so the drawer's Enter key can fire
+   *  it without owning DOM focus — the drawer already drives cursor/Escape the same
+   *  centralized way (no per-card focus to track). */
+  registerDispatch?: (dispatch: (action: "add" | "replace") => void) => void;
 }) {
   const [expandBatches, setExpandBatches] = useState(false);
   const [pendingAction, setPendingAction] = useState<"add" | "replace" | null>(null);
@@ -101,6 +106,8 @@ function AlternativeCard({
     setExpandBatches(false);
     setPendingAction(null);
   }, [pendingAction, onAdd, onReplace]);
+
+  useEffect(() => { registerDispatch?.(dispatch); }, [registerDispatch, dispatch]);
 
   return (
     <div
@@ -245,6 +252,7 @@ export function AlternativesDrawer({
   onClose:      () => void;
 }) {
   const [cursor, setCursor] = useState(0);
+  const dispatchRefs = useRef<Record<string, (action: "add" | "replace") => void>>({});
 
   const addItem    = useBillingStore((s) => s.addItem);
   const removeItem = useBillingStore((s) => s.removeItem);
@@ -265,17 +273,32 @@ export function AlternativesDrawer({
 
   const sorted = data ? sortAlternatives(data) : [];
 
+  // Read inside the keydown handler via refs, not closed-over values — otherwise
+  // the listener would need `sorted`/`cursor` in its deps and re-subscribe on every
+  // render (sorted is a fresh array each render; it's never memoized).
+  const sortedRef = useRef(sorted);
+  useEffect(() => { sortedRef.current = sorted; });
+  const cursorRef = useRef(cursor);
+  useEffect(() => { cursorRef.current = cursor; }, [cursor]);
+
   useEffect(() => { setCursor(0); }, [sorted.length]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") { onClose(); return; }
-      if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(c + 1, sorted.length - 1)); }
+      if (e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(c + 1, sortedRef.current.length - 1)); }
       if (e.key === "ArrowUp")   { e.preventDefault(); setCursor((c) => Math.max(c - 1, 0)); }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const alt = sortedRef.current[cursorRef.current];
+        // Same behaviour as clicking "Add to Bill": a single valid batch adds
+        // straight away, more than one reveals that card's inline batch picker.
+        if (alt) dispatchRefs.current[alt.id]?.("add");
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose, sorted.length]);
+  }, [onClose]);
 
   function addBatchToCart(alt: AlternativeResult, batch: AlternativeBatch) {
     addItem({
@@ -392,7 +415,7 @@ export function AlternativesDrawer({
                 <span className="text-xs text-slate-600 capitalize">{s.replace(/_/g, " ")}</span>
               </div>
             ))}
-            <span className="ml-auto text-xs text-slate-500">↑↓ navigate · ESC close</span>
+            <span className="ml-auto text-xs text-slate-500">↑↓ navigate · ↵ add · ESC close</span>
           </div>
         )}
 
@@ -435,6 +458,7 @@ export function AlternativesDrawer({
                   ? (batch) => replaceBatchInCart(alt, batch)
                   : null
               }
+              registerDispatch={(fn) => { dispatchRefs.current[alt.id] = fn; }}
             />
           ))}
         </div>

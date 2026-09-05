@@ -15,7 +15,7 @@ import { BillHeader } from "@/components/billing/BillHeader";
 import { CartTableHeader, CartTableRows } from "@/components/billing/CartTable";
 import { MedicineSearchCombobox } from "@/components/billing/MedicineSearchCombobox";
 import { AlternativesDrawer } from "@/components/billing/AlternativesDrawer";
-import { useBillingStore, lineIssue } from "@/components/billing/useBillingStore";
+import { useBillingStore, lineIssue, rxRequiredIssue } from "@/components/billing/useBillingStore";
 import { InvoiceBreakdownModal } from "@/components/billing/InvoiceBreakdownModal";
 import type { MedicineSearchResult } from "@pharmacy/types";
 import { useQueryClient } from "@tanstack/react-query";
@@ -36,6 +36,18 @@ const InvoicePrintView = lazy(() =>
 // ─── Error → conflict mapping ─────────────────────────────────────────────────
 // Parses backend error messages to find the specific cart item that caused the failure.
 import type { CartItem } from "@/components/billing/useBillingStore";
+
+/**
+ * A cashier finishing one bill should never need the mouse to start the next —
+ * called after Save & New, Save Draft, and dismissing the printed receipt.
+ * RAF, not a bare call: the cart-cleared re-render (and the print overlay's own
+ * unmount) hasn't necessarily painted yet, and focusing mid-render is a no-op.
+ */
+function focusBillingSearch() {
+  requestAnimationFrame(() => {
+    document.querySelector<HTMLInputElement>("[data-billing-search]")?.focus();
+  });
+}
 
 function extractConflictIds(msg: string, items: CartItem[]): Set<string> {
   const byName = (name: string): string | undefined =>
@@ -129,8 +141,15 @@ function NewBillInner() {
   // Always-current ref so the keydown handler never closes over a stale handleSave.
   // Initialized with a no-op; synced to the real callback after handleSave is declared below.
   const handleSaveRef = useRef<(action?: ActionId) => Promise<void>>(async () => {});
+  // Same reason: Escape's meaning depends on whether the receipt overlay is up right
+  // now, and this handler is registered once at mount.
+  const showPrintRef = useRef(showPrint);
+  useEffect(() => { showPrintRef.current = showPrint; }, [showPrint]);
+  const closePrintRef = useRef<() => void>(() => {});
 
-  // F9 = Save & Print, F8 = Save & New, Ctrl+S = Draft, Alt+1..4 = payment mode
+  // F9 = Save & Print, F8 = Save & New, Ctrl+S = Draft, Alt+1..4 = payment mode,
+  // Escape = dismiss the receipt and jump straight to the next bill,
+  // / = jump back into medicine search from anywhere on the screen.
   // Empty deps: registered once at mount; latest callbacks accessed via refs.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -141,6 +160,21 @@ function NewBillInner() {
         if (tag !== "INPUT" && tag !== "TEXTAREA") {
           e.preventDefault();
           void handleSaveRef.current("save_draft");
+        }
+      }
+      if (e.key === "Escape" && showPrintRef.current) {
+        e.preventDefault();
+        closePrintRef.current();
+      }
+      if (e.key === "/" && !showPrintRef.current) {
+        const target = e.target as HTMLElement;
+        // Not while actually typing a "/" into a field (a discount note, a doctor
+        // name with a qualifier, etc.) — only when it's free, i.e. nothing text-
+        // editable currently has focus.
+        const typing = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
+        if (!typing) {
+          e.preventDefault();
+          focusBillingSearch();
         }
       }
       if (e.altKey) {
@@ -249,6 +283,7 @@ function NewBillInner() {
     clearSession();
     setDraftToast(`Draft "${draft.label}" saved`);
     clear();
+    focusBillingSearch();
     setTimeout(() => setDraftToast(null), 3000);
   }, [items, meta, loadedDraftId, clear]);
 
@@ -287,6 +322,21 @@ function NewBillInner() {
     if (comingSoon.includes(action)) {
       setActionToast({ msg: `${ACTION_DEF_MAP[action].label} — coming soon`, type: "info" });
       setTimeout(() => setActionToast(null), 3000);
+      return;
+    }
+
+    // Schedule H/H1/X items require a linked prescription (Indian Drug Rules).
+    // BillingService.java throws a 422 for exactly this — checked here too so the
+    // cashier is stopped before the round trip, at the field the "Rx Required"
+    // banner has already been pointing at, instead of a generic server error after
+    // F9. The backend check is untouched and remains the authority.
+    const rxIssue = rxRequiredIssue(items, meta);
+    if (rxIssue) {
+      const plural = rxIssue.schedules.length > 1 ? "s" : "";
+      setError(`Prescription required for controlled medicine${plural} (Schedule ${rxIssue.schedules.join(", ")}) `
+        + `— link a prescription to save.`);
+      document.querySelector("[data-rx-field]")?.scrollIntoView({ block: "center", behavior: "smooth" });
+      document.querySelector<HTMLInputElement>("[data-rx-search-input]")?.focus();
       return;
     }
 
@@ -405,6 +455,7 @@ function NewBillInner() {
         // Skip print overlay — just confirm and stay on the new-bill page
         setActionToast({ msg: `Invoice #${data.data.invoiceNumber} saved — ready for next bill`, type: "info" });
         setTimeout(() => setActionToast(null), 3500);
+        focusBillingSearch();
       } else {
         // save_print (default): show print overlay
         setSavedInvoiceId(data.data.id);
@@ -452,7 +503,9 @@ function NewBillInner() {
     setSavedInvoiceId(null);
     setCancelConfirm(false);
     setCancelReason("");
+    focusBillingSearch();
   }
+  useEffect(() => { closePrintRef.current = closePrint; });
 
   // Stable callbacks for BillingSubNav — prevents re-renders on every cart change
   const handlePaymentMode  = useCallback((m: "CASH"|"UPI"|"CARD"|"CREDIT") => setMeta({ paymentMode: m }), [setMeta]);
@@ -644,7 +697,7 @@ function NewBillInner() {
           className="flex items-center px-6 flex-shrink-0"
           style={{
             height: "56px",
-            background: "linear-gradient(135deg, #0c1f5c 0%, #132468 40%, #1a3080 100%)",
+            background: "linear-gradient(135deg, #3b0764 0%, #4c1d7c 40%, #5b21a8 100%)",
           }}
         >
           <AnimatePresence>
@@ -682,20 +735,10 @@ function NewBillInner() {
               {" "}Items
             </span>
 
-            <span className="text-white/30">•</span>
-
-            <AnimatedCount
-              value={roundedTotal}
-              className="font-bold text-white tabular-nums inline-block"
-            >
-              ₹{roundedTotal.toFixed(2)}
-            </AnimatedCount>
-
             <div className="flex items-center gap-2 pl-2 border-l border-white/15">
               <Calculator className="w-5 h-5 text-white/40" />
             </div>
 
-            <span className="text-white/30">•</span>
             <span className="text-white/60 font-medium">Net Payable</span>
 
             <button
@@ -775,7 +818,10 @@ function NewBillInner() {
                         onChange={(e) => setCancelReason(e.target.value)}
                         onKeyDown={(e) => {
                           if (e.key === "Enter") handleCancel();
-                          if (e.key === "Escape") { setCancelConfirm(false); setCancelReason(""); }
+                          // Stop here so Escape closes just this cancel-reason step, not
+                          // the whole receipt overlay too — the global Escape handler
+                          // (BillingNewPage) would otherwise also fire on the same keystroke.
+                          if (e.key === "Escape") { e.stopPropagation(); setCancelConfirm(false); setCancelReason(""); }
                         }}
                         placeholder="Reason for cancellation..."
                         className="text-[13px] border border-red-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-red-200 w-52"
