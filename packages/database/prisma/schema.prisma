@@ -139,6 +139,7 @@ model Pharmacy {
   migrationSessions     MigrationSession[]
   migrationImportJobs   MigrationImportJob[]
   medicineMappings      MedicineMapping[]
+  pharmacyMedicines     PharmacyMedicine[]
 
   @@map("pharmacies")
 }
