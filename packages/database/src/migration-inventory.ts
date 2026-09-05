@@ -40,7 +40,11 @@ export interface InventoryImportOutcome {
 // large on a big migration file.
 const INSERT_CHUNK = 500;
 
-const batchKey = (medicineId: string, batchNumber: string) => `${medicineId}|${batchNumber}`;
+// `inventory.medicineId` is nullable since 20260904000001 — a batch may point at a
+// pharmacy-local medicine instead. This importer only ever resolves global-catalogue
+// medicines, and both callers below query by a non-null id, so a null never actually
+// reaches here; the signature just has to admit what the generated type now allows.
+const batchKey = (medicineId: string | null, batchNumber: string) => `${medicineId}|${batchNumber}`;
 
 /**
  * Persists pre-resolved inventory batches for a migration session.
