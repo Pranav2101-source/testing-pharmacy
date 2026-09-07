@@ -481,6 +481,11 @@ model PharmacyMedicine {
   grnItems       GRNItem[]
   inventory      Inventory[]
 
+  // A case-insensitive unique constraint on (pharmacyId, name) also exists in the
+  // database — added in migration 20260905000002 as a functional index (LOWER(name)),
+  // not representable in this DSL. The app takes a transaction-scoped advisory lock
+  // before find-or-create (see AdvisoryLock) so this should never actually fire; it is
+  // the backstop, not the primary defense.
   @@index([pharmacyId, name])
   @@index([pharmacyId, matchStatus])
   @@map("pharmacy_medicines")

@@ -6,6 +6,7 @@ import com.checkup.pharmacy.common.concurrency.RetryOnConflict;
 import com.checkup.pharmacy.common.enums.BatchStatus;
 import com.checkup.pharmacy.common.enums.CustomerType;
 import com.checkup.pharmacy.common.enums.InvoiceStatus;
+import com.checkup.pharmacy.common.enums.MedicineMatchStatus;
 import com.checkup.pharmacy.common.enums.MovementDirection;
 import com.checkup.pharmacy.common.enums.MovementType;
 import com.checkup.pharmacy.common.enums.PaymentMode;
@@ -34,12 +35,16 @@ import com.checkup.pharmacy.modules.customer.Customer;
 import com.checkup.pharmacy.modules.customer.CustomerRepository;
 import com.checkup.pharmacy.modules.doctor.Doctor;
 import com.checkup.pharmacy.modules.doctor.DoctorRepository;
+import com.checkup.pharmacy.modules.inventory.EffectiveMedicine;
 import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryMovement;
 import com.checkup.pharmacy.modules.inventory.InventoryMovementRepository;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.inventory.StockReservation;
 import com.checkup.pharmacy.modules.inventory.StockReservationRepository;
+import com.checkup.pharmacy.modules.medicine.Medicine;
+import com.checkup.pharmacy.modules.medicine.MedicineRepository;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicine;
 import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride;
 import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository;
 import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
@@ -104,6 +109,7 @@ public class BillingService {
     private final CustomerRepository customerRepository;
     private final DoctorRepository doctorRepository;
     private final PharmacyRepository pharmacyRepository;
+    private final MedicineRepository medicineRepository;
     private final PharmacyMedicineOverrideRepository overrideRepository;
     private final PrescriptionRepository prescriptionRepository;
     private final PrescriptionItemRepository prescriptionItemRepository;
@@ -119,6 +125,7 @@ public class BillingService {
                           InventoryMovementRepository movementRepository, StockReservationRepository reservationRepository,
                           CustomerRepository customerRepository,
                           DoctorRepository doctorRepository, PharmacyRepository pharmacyRepository,
+                          MedicineRepository medicineRepository,
                           PharmacyMedicineOverrideRepository overrideRepository, PrescriptionRepository prescriptionRepository,
                           PrescriptionItemRepository prescriptionItemRepository,
                           UserRepository userRepository, DocumentSequenceService sequenceService,
@@ -136,6 +143,7 @@ public class BillingService {
         this.customerRepository = customerRepository;
         this.doctorRepository = doctorRepository;
         this.pharmacyRepository = pharmacyRepository;
+        this.medicineRepository = medicineRepository;
         this.overrideRepository = overrideRepository;
         this.prescriptionRepository = prescriptionRepository;
         this.prescriptionItemRepository = prescriptionItemRepository;
@@ -365,6 +373,46 @@ public class BillingService {
             }
         }
 
+        // The catalogue medicine each batch on this bill should actually be treated as: its
+        // own direct link, or, for a batch received against a local medicine identity that has
+        // since been confirmed LINKED to the catalogue (see PharmacyMedicine#confirmLink), the
+        // linked medicine — see EffectiveMedicine. InventoryService.enrich() makes the exact
+        // same resolution on the read side, so a batch the POS shows as loose-sellable/GST-
+        // configured is also allowed to actually sell that way; a batch whose local identity is
+        // still PENDING/SUGGESTED/KEPT_LOCAL (or LINKED to a since-deleted medicine) resolves to
+        // null here, same as before this existed.
+        //
+        // batch.getMedicine()/getLocalMedicine() are each already loaded per batch (lazily,
+        // within this transaction) by the lock query above, so the only NEW query this needs is
+        // ONE batch fetch of the linked targets — not one per line, regardless of how many
+        // lines reference a linked local medicine.
+        Map<String, PharmacyMedicine> localMedicinesById = new HashMap<>();
+        Set<String> linkedMedicineIds = new HashSet<>();
+        for (Inventory batch : batchMap.values()) {
+            if (batch.getMedicineId() != null) {
+                continue;
+            }
+            PharmacyMedicine local = batch.getLocalMedicine();
+            if (local == null) {
+                continue;
+            }
+            localMedicinesById.put(local.getId(), local);
+            if (local.getMatchStatus() == MedicineMatchStatus.LINKED && local.getLinkedMedicineId() != null) {
+                linkedMedicineIds.add(local.getLinkedMedicineId());
+            }
+        }
+        Map<String, Medicine> linkedMedicinesById = new HashMap<>();
+        if (!linkedMedicineIds.isEmpty()) {
+            for (Medicine m : medicineRepository.findAllById(linkedMedicineIds)) {
+                linkedMedicinesById.put(m.getId(), m);
+            }
+        }
+        Map<String, Medicine> effectiveMedicineByInventoryId = new HashMap<>();
+        for (Inventory batch : batchMap.values()) {
+            effectiveMedicineByInventoryId.put(batch.getId(), EffectiveMedicine.resolve(
+                    batch.getMedicine(), batch.getLocalMedicineId(), localMedicinesById, linkedMedicinesById));
+        }
+
         // Holds by OTHER sessions that are still live, counted from the reservation
         // rows rather than from Inventory.reservedQuantity.
         //
@@ -430,7 +478,9 @@ public class BillingService {
         List<String> controlled = new ArrayList<>();
         for (InvoiceItemRequest item : req.items()) {
             Inventory batch = batchMap.get(item.inventoryId());
-            String schedule = batch.productSchedule() == null ? null : batch.productSchedule().toUpperCase().trim();
+            Medicine eff = effectiveMedicineByInventoryId.get(batch.getId());
+            String rawSchedule = eff != null ? eff.getSchedule() : batch.productSchedule();
+            String schedule = rawSchedule == null ? null : rawSchedule.toUpperCase().trim();
             if (schedule != null && CONTROLLED_SCHEDULES.contains(schedule)) {
                 controlled.add(batch.productName() + " (Schedule " + schedule + ")");
             }
@@ -453,9 +503,15 @@ public class BillingService {
 
         // Only the medicines actually being sold. batchMap can now also hold batches
         // this session merely had reserved, so the ids come from the invoice lines.
+        // The EFFECTIVE medicine per line — a batch's own catalogue link, or a LINKED local
+        // medicine's catalogue target — so this pharmacy's override on that catalogue medicine
+        // is found below regardless of which batch id physically carries the stock.
         Set<String> medicineIds = new HashSet<>();
         for (InvoiceItemRequest item : req.items()) {
-            medicineIds.add(batchMap.get(item.inventoryId()).getMedicineId());
+            Medicine eff = effectiveMedicineByInventoryId.get(item.inventoryId());
+            if (eff != null) {
+                medicineIds.add(eff.getId());
+            }
         }
         // Filtered in SQL, not in Java: this used to load every override the pharmacy
         // had ever set — thousands of rows on a customised catalogue — and discard all
@@ -489,7 +545,14 @@ public class BillingService {
 
         for (InvoiceItemRequest item : req.items()) {
             Inventory batch = batchMap.get(item.inventoryId());
-            if (!batch.productIsActive()) {
+            // The medicine this batch's loose/GST/schedule/active-state rules actually come
+            // from — see the resolution above. Falls back to the batch's own local-only
+            // behaviour (effMedicineId null) exactly as before whenever there is no LINKED
+            // catalogue target to defer to.
+            Medicine eff = effectiveMedicineByInventoryId.get(batch.getId());
+            String effMedicineId = eff != null ? eff.getId() : batch.getMedicineId();
+            boolean effIsActive = eff != null ? eff.isActive() : batch.productIsActive();
+            if (!effIsActive) {
                 throw new UnprocessableEntityException(
                         "Medicine \"" + (batch.productName() == null ? "?" : batch.productName()) + "\" is inactive and cannot be billed");
             }
@@ -506,24 +569,26 @@ public class BillingService {
             boolean loose = item.isLoose();
             int unitsPerPack = 1;
             if (loose) {
-                if (!looseAllowedMedicineIds.contains(batch.getMedicineId())) {
+                if (!looseAllowedMedicineIds.contains(effMedicineId)) {
                     throw new UnprocessableEntityException(
                             "Loose selling is not enabled for \"" + batch.productName() + "\" at this pharmacy. "
                             + "Turn it on in the medicine's POS settings, or sell it as a full pack.");
                 }
-                // Effective pack size: this pharmacy's override wins over the catalogue.
-                // (Always null for a local/unmatched medicine — loose selling isn't offered
-                // for one yet, so this throws below exactly as an unclassified medicine would.)
+                // Effective pack size: this pharmacy's override wins over the catalogue (its
+                // own, or — for a batch resolved through a LINKED local medicine — the linked
+                // catalogue medicine's). Null for a genuinely local/unmatched medicine — loose
+                // selling isn't offered for one yet, so this throws below exactly as an
+                // unclassified medicine would.
                 Integer upp = looseUppOverrideByMedicineId.getOrDefault(
-                        batch.getMedicineId(), batch.productUnitsPerPack());
+                        effMedicineId, eff != null ? eff.getUnitsPerPack() : batch.productUnitsPerPack());
                 if (upp == null || upp <= 1) {
                     throw new UnprocessableEntityException(
                             "\"" + batch.productName() + "\" has no pack size on record, so it cannot be sold loose. "
                             + "Set how many units are in a pack in its POS settings, or sell it as a full pack.");
                 }
                 // Schedule X cannot be broken out of its original packaging (Drug Rules).
-                String schedule = batch.productSchedule() == null ? ""
-                        : batch.productSchedule().trim().toUpperCase();
+                String rawSchedule = eff != null ? eff.getSchedule() : batch.productSchedule();
+                String schedule = rawSchedule == null ? "" : rawSchedule.trim().toUpperCase();
                 if (schedule.equals("X")) {
                     throw new UnprocessableEntityException("\"" + batch.productName()
                             + "\" is a Schedule X medicine and must be sold in its original pack, not loose.");
@@ -556,7 +621,8 @@ public class BillingService {
                 unitsPerPack = upp;
             }
 
-            BigDecimal gstRate = gstOverrideByMedicineId.getOrDefault(batch.getMedicineId(), batch.productGstRate());
+            BigDecimal gstRate = gstOverrideByMedicineId.getOrDefault(
+                    effMedicineId, eff != null ? eff.getGstRate() : batch.productGstRate());
             // Per-piece MRP for a loose line: pack MRP / unitsPerPack at 2dp rounded DOWN —
             // the exact figure charged and printed, so the tax below reverse-calculates
             // from it and "qty x rate" reconciles with the line amount on the bill. The
@@ -763,14 +829,21 @@ public class BillingService {
                 ledgerAfter = quantityBefore - dispensed;
             }
 
+            // Same effective medicine as the resolution loop above — a batch resolved through a
+            // LINKED local medicine snapshots the CATALOGUE HSN/base-unit onto the invoice line,
+            // not the pre-link local placeholder, matching the gstRate already resolved into
+            // `line`.
+            Medicine effForItem = effectiveMedicineByInventoryId.get(batch.getId());
+            String hsnCode = effForItem != null ? effForItem.getHsnCode() : batch.productHsnCode();
             InvoiceItem item = InvoiceItem.create(pharmacyId, invoice.getId(), batch.getId(), batch.productName(),
-                    batch.productHsnCode(), batch.getBatchNumber(), batch.getExpiryDate(), quantity, freeQty,
+                    hsnCode, batch.getBatchNumber(), batch.getExpiryDate(), quantity, freeQty,
                     batch.getMrp(),
                     line.rate(), line.storedPurchaseRate(), line.req().discountOrZero(), line.gstRate(), line.gst().cgst(),
                     line.gst().sgst(), line.gst().igst(), line.gst().taxableAmount(), line.gst().amount(), line.location());
             String looseBaseUnit = line.loose()
                     ? com.checkup.pharmacy.common.util.BaseUnits.resolve(
-                            batch.productBaseUnit(), batch.productForm())
+                            effForItem != null ? effForItem.getBaseUnit() : batch.productBaseUnit(),
+                            effForItem != null ? effForItem.getForm() : batch.productForm())
                     : null;
             if (line.loose()) {
                 item.asLooseSale(looseBaseUnit);

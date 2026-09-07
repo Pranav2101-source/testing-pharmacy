@@ -110,8 +110,11 @@ export function MedicineSearchCombobox({
   const { data: searchData, isFetching: loading } = useQuery({
     queryKey: ["medicine-search", debouncedQuery],
     queryFn:  () =>
+      // includeLocal: this pharmacy's own not-yet-catalogued medicines (see
+      // PharmacyMedicine) are billable stock too — the batch picker fix isn't enough
+      // if the medicine never shows up in this dropdown to begin with.
       api.get<{ data: MedicineSearchResult[] }>("/medicines/search", {
-        params: { q: debouncedQuery, limit: 8 },
+        params: { q: debouncedQuery, limit: 8, includeLocal: true },
       }).then((r) => r.data.data),
     enabled:         debouncedQuery.length > 0,
     staleTime:       60_000,
@@ -257,7 +260,7 @@ export function MedicineSearchCombobox({
       if (liveBatches.length === 0) {
         // If the medicine has a genericName, open the alternatives drawer automatically
         // instead of showing a plain error — keeps the billing flow moving.
-        if ((med.hasAlternatives || med.genericName) && onOpenAlternatives) {
+        if (!med.isLocal && (med.hasAlternatives || med.genericName) && onOpenAlternatives) {
           onOpenAlternatives(med, true);
         } else if (allBatches.length > 0) {
           setStockError(`All batches of "${med.name}" are expired.`);
@@ -301,7 +304,7 @@ export function MedicineSearchCombobox({
         .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
 
       if (liveBatches.length === 0) {
-        if ((med.hasAlternatives || med.genericName) && onOpenAlternatives) {
+        if (!med.isLocal && (med.hasAlternatives || med.genericName) && onOpenAlternatives) {
           onOpenAlternatives(med, true);
         } else if (allBatches.length > 0) {
           setStockError(`All batches of "${med.name}" are expired.`);
@@ -398,7 +401,7 @@ export function MedicineSearchCombobox({
       // Right Arrow → open alternatives for the focused result
       if (e.key === "ArrowRight") {
         const focused = results[cursor];
-        if ((focused?.hasAlternatives || focused?.genericName) && onOpenAlternatives) {
+        if (!focused?.isLocal && (focused?.hasAlternatives || focused?.genericName) && onOpenAlternatives) {
           e.preventDefault();
           onOpenAlternatives(focused);
           setOpen(false);
@@ -597,8 +600,17 @@ export function MedicineSearchCombobox({
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <p className="text-[15px] font-semibold text-slate-800 truncate">{med.name}</p>
-                          <ProductTag value={med.category} kind="category" size="xs" className="flex-shrink-0" />
-                          {canClassify && !med.category && (
+                          {med.isLocal ? (
+                            <span
+                              title="Not yet in the shared medicine catalogue — this pharmacy's own"
+                              className="pill bg-amber-100 text-amber-700 text-[10px] font-bold uppercase tracking-wide flex-shrink-0"
+                            >
+                              Local
+                            </span>
+                          ) : (
+                            <ProductTag value={med.category} kind="category" size="xs" className="flex-shrink-0" />
+                          )}
+                          {canClassify && !med.category && !med.isLocal && (
                             <button
                               onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setClassifyTarget(med); }}
                               title="Set category / packaging"
@@ -633,8 +645,9 @@ export function MedicineSearchCombobox({
                           <span className="pill bg-emerald-100 text-emerald-600 uppercase tracking-wide">↵</span>
                         )}
 
-                        {/* Alternatives — shown when alternatives confirmed, or medicine has a genericName */}
-                        {(med.hasAlternatives || med.genericName) && (
+                        {/* Alternatives — shown when alternatives confirmed, or medicine has a genericName.
+                            Never for a local medicine: it has no global medicineId to look alternatives up by. */}
+                        {!med.isLocal && (med.hasAlternatives || med.genericName) && (
                           <button
                             onMouseDown={(e) => {
                               e.preventDefault();

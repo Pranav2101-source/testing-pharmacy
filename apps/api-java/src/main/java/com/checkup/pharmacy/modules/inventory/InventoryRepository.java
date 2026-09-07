@@ -82,17 +82,26 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
     List<Inventory> findByPharmacyIdAndStatus(String pharmacyId, com.checkup.pharmacy.common.enums.BatchStatus status);
 
     /**
-     * Distinct catalogue names this pharmacy has carried, for the paired clinic's prescribing
+     * Distinct names this pharmacy has carried, for the paired clinic's prescribing
      * autocomplete. Inventory — not the shared medicine catalogue — defines "in this pharmacy";
      * zero/expired batches remain discoverable so the caller can honestly show Not available.
+     *
+     * <p>Includes local medicines (see PharmacyMedicine): a batch received on a GRN before it
+     * was in the global catalogue is real stock this pharmacy can dispense, and a prescriber
+     * searching for it by name should find it the same as any catalogue medicine — the implicit
+     * {@code i.medicine.name}/{@code isActive} path this used to use compiled to an INNER join,
+     * which silently excluded every such batch. A local medicine has no deactivate flow (always
+     * "active"), matching {@code Inventory.productIsActive()}.
      */
     @Query("""
-            SELECT DISTINCT i.medicine.name FROM Inventory i
-            WHERE i.pharmacyId = :pharmacyId AND i.medicine.isActive = true
+            SELECT DISTINCT COALESCE(m.name, lm.name) FROM Inventory i
+            LEFT JOIN i.medicine m
+            LEFT JOIN i.localMedicine lm
+            WHERE i.pharmacyId = :pharmacyId AND (m.isActive = true OR lm IS NOT NULL)
               AND (:search IS NULL
-                   OR LOWER(i.medicine.name) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%'))
-                   OR LOWER(i.medicine.genericName) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%')))
-            ORDER BY i.medicine.name ASC
+                   OR LOWER(COALESCE(m.name, lm.name)) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%'))
+                   OR LOWER(COALESCE(m.genericName, lm.genericName)) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%')))
+            ORDER BY COALESCE(m.name, lm.name) ASC
             """)
     List<String> searchMedicineNames(@Param("pharmacyId") String pharmacyId,
                                      @Param("search") String search,
@@ -109,13 +118,25 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
      * resolve the parameter's type from context (it infers bytea and then
      * "function lower(bytea) does not exist") — the same class of bug as the
      * enum one, just a different error shape. The CAST forces text unconditionally.
+     *
+     * LEFT JOINs to medicine AND localMedicine — deliberately, not the implicit
+     * {@code i.medicine.name} path this used to use. A batch received for a
+     * medicine not yet in the global catalogue has {@code medicine} null (see
+     * PharmacyMedicine); implicit path navigation compiles to an INNER join,
+     * which silently dropped every such batch from this query — the one the
+     * billing batch picker and the Inventory Batches tab both call. COALESCE
+     * reads whichever side is actually populated. medicineId filtering is left
+     * scoped to the global catalogue on purpose: a caller asking for a specific
+     * catalogue medicine's batches has no equivalent local id to also match.
      */
     @Query("""
             SELECT i FROM Inventory i
+            LEFT JOIN i.medicine m
+            LEFT JOIN i.localMedicine lm
             WHERE i.pharmacyId = :pharmacyId
               AND (:search IS NULL
-                   OR LOWER(i.medicine.name) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%'))
-                   OR LOWER(i.medicine.genericName) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%'))
+                   OR LOWER(COALESCE(m.name, lm.name)) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%'))
+                   OR LOWER(COALESCE(m.genericName, lm.genericName)) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%'))
                    OR LOWER(i.batchNumber) LIKE LOWER(CONCAT('%', CAST(:search AS string), '%')))
               AND (:medicineId IS NULL OR i.medicineId = :medicineId)
               AND (:inStock = false OR i.quantity > 0 OR i.looseUnits > 0)
@@ -183,7 +204,7 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
      * A tail that is cut off is stock with the most time left.
      */
     @Query("""
-            SELECT i FROM Inventory i LEFT JOIN FETCH i.medicine
+            SELECT i FROM Inventory i LEFT JOIN FETCH i.medicine LEFT JOIN FETCH i.localMedicine
             WHERE i.pharmacyId = :pharmacyId AND i.expiryDate <= :threshold
               AND (i.quantity > 0 OR i.looseUnits > 0)
               AND CAST(i.status AS string) IN ('ACTIVE', 'EXPIRED')
@@ -273,11 +294,15 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
 
     /**
      * Batches by id WITH their medicine, tenant-scoped — for report rows that already know the
-     * ids they need (fast/slow-moving, EOD top sellers). Replaces {@code findAllById}, which
-     * left {@code medicine} lazy and so fired one extra query per row while the caller built
-     * its medicine refs, and carried no pharmacyId predicate.
+     * ids they need (fast/slow-moving, EOD top sellers, margin report). Replaces
+     * {@code findAllById}, which left {@code medicine} lazy and so fired one extra query per row
+     * while the caller built its medicine refs, and carried no pharmacyId predicate.
+     *
+     * <p>Fetches {@code localMedicine} too, for the same reason — a caller reading
+     * {@code inv.productName()} on a batch that was never linked to the global catalogue (see
+     * PharmacyMedicine) would otherwise lazy-load one local medicine per such row.
      */
-    @Query("SELECT i FROM Inventory i LEFT JOIN FETCH i.medicine "
+    @Query("SELECT i FROM Inventory i LEFT JOIN FETCH i.medicine LEFT JOIN FETCH i.localMedicine "
             + "WHERE i.pharmacyId = :pharmacyId AND i.id IN :ids")
     List<Inventory> findByIdInWithMedicine(@Param("pharmacyId") String pharmacyId,
                                            @Param("ids") java.util.Collection<String> ids);
@@ -343,6 +368,14 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
      * was originally claimed under (a batch can merge receipts from more than one supplier), and
      * a pharmacy-level GST override is not considered. It is the right order of magnitude and
      * the right list of batches — the exact split belongs to whoever signs the return.
+     *
+     * <p>{@code Medicine} is LEFT-joined, not INNER: a local medicine (not yet in the global
+     * catalogue, see PharmacyMedicine) has {@code i.medicineId} null, and an INNER join silently
+     * dropped its expired, unwritten-off batch from this figure entirely instead of just pricing
+     * it without a per-pharmacy override — exactly the ITC-reversal exposure this query exists to
+     * surface. {@code PharmacyMedicine} is LEFT-joined for its gstRate as the fallback when
+     * {@code Medicine} is absent; a local medicine has no override or unitsPerPack concept, so
+     * {@code COALESCE(o.unitsPerPack, m.unitsPerPack, 1)} already resolves correctly to 1 for it.
      */
     @Query("""
             SELECT COUNT(i) AS batches,
@@ -350,9 +383,11 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
                    COALESCE(SUM(i.purchaseRate * i.quantity
                        + (i.purchaseRate * i.looseUnits) / COALESCE(o.unitsPerPack, m.unitsPerPack, 1)), 0) AS cost,
                    COALESCE(SUM((i.purchaseRate * i.quantity
-                       + (i.purchaseRate * i.looseUnits) / COALESCE(o.unitsPerPack, m.unitsPerPack, 1)) * m.gstRate / 100), 0) AS embeddedItc
+                       + (i.purchaseRate * i.looseUnits) / COALESCE(o.unitsPerPack, m.unitsPerPack, 1))
+                       * COALESCE(m.gstRate, lm.gstRate, 0) / 100), 0) AS embeddedItc
             FROM Inventory i
-            JOIN Medicine m ON m.id = i.medicineId
+            LEFT JOIN Medicine m ON m.id = i.medicineId
+            LEFT JOIN PharmacyMedicine lm ON lm.id = i.localMedicineId
             LEFT JOIN PharmacyMedicineOverride o ON o.id.pharmacyId = i.pharmacyId AND o.id.medicineId = i.medicineId
             WHERE i.pharmacyId = :pharmacyId
               AND (i.quantity > 0 OR i.looseUnits > 0)

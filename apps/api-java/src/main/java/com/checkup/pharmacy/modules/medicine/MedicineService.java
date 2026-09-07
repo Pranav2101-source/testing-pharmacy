@@ -46,8 +46,6 @@ public class MedicineService {
 
     private static final Logger log = LoggerFactory.getLogger(MedicineService.class);
 
-    private static final Set<BigDecimal> ALLOWED_GST_RATES =
-            Set.of(BigDecimal.ZERO, BigDecimal.valueOf(5), BigDecimal.valueOf(12), BigDecimal.valueOf(18));
     private static final BigDecimal DEFAULT_GST_RATE = BigDecimal.valueOf(12);
     // Matches the frontend's advertised "Max 5,000 rows" (BulkUploadModal) — reject
     // oversized payloads outright rather than let them tie up a long transaction.
@@ -66,13 +64,16 @@ public class MedicineService {
     private final MedicineRepository medicineRepository;
     private final PharmacyMedicineOverrideRepository overrideRepository;
     private final com.checkup.pharmacy.modules.inventory.InventoryRepository inventoryRepository;
+    private final PharmacyMedicineRepository pharmacyMedicineRepository;
 
     public MedicineService(MedicineRepository medicineRepository,
                            PharmacyMedicineOverrideRepository overrideRepository,
-                           com.checkup.pharmacy.modules.inventory.InventoryRepository inventoryRepository) {
+                           com.checkup.pharmacy.modules.inventory.InventoryRepository inventoryRepository,
+                           PharmacyMedicineRepository pharmacyMedicineRepository) {
         this.medicineRepository = medicineRepository;
         this.overrideRepository = overrideRepository;
         this.inventoryRepository = inventoryRepository;
+        this.pharmacyMedicineRepository = pharmacyMedicineRepository;
     }
 
     @Transactional(readOnly = true)
@@ -448,6 +449,24 @@ public class MedicineService {
      */
     @Transactional(readOnly = true)
     public List<MedicineResponse> quickSearch(String q, int limit) {
+        return quickSearch(q, limit, false);
+    }
+
+    /**
+     * {@code includeLocal} additionally merges this pharmacy's own not-yet-catalogued
+     * medicines (see {@link PharmacyMedicine}) that a GRN received, matched by name and
+     * appended only after every catalogue hit — a real catalogue entry always wins a
+     * tie, and local results only ever fill seats the catalogue search left empty.
+     * {@code LINKED} local medicines are excluded: those already have a usable global
+     * identity, so surfacing both would just be the same product twice.
+     *
+     * <p>Only the billing combobox opts into this. Every other caller of this endpoint
+     * (Add Stock, barcode mapping, the alternatives drawer) writes against a global
+     * {@code medicineId} and must keep seeing catalogue-only results — a local
+     * medicine's id is a {@code PharmacyMedicine} id, meaningless to those flows.
+     */
+    @Transactional(readOnly = true)
+    public List<MedicineResponse> quickSearch(String q, int limit, boolean includeLocal) {
         String trimmed = q == null ? "" : q.trim();
         if (trimmed.isEmpty()) {
             return List.of();
@@ -462,7 +481,18 @@ public class MedicineService {
             }
         }
         Map<String, PharmacyMedicineOverride> overrides = overridesByMedicineId(hits.stream().map(Medicine::getId).toList());
-        return hits.stream().map(m -> toResponse(m, overrides.get(m.getId()))).toList();
+        List<MedicineResponse> results = new ArrayList<>(
+                hits.stream().map(m -> toResponse(m, overrides.get(m.getId()))).toList());
+
+        if (includeLocal && results.size() < safeLimit) {
+            int remaining = safeLimit - results.size();
+            for (PharmacyMedicine lm : pharmacyMedicineRepository.findByPharmacyIdAndNameContainingIgnoreCaseAndMatchStatusNot(
+                    TenantContext.pharmacyId(), trimmed, com.checkup.pharmacy.common.enums.MedicineMatchStatus.LINKED,
+                    PageRequest.of(0, remaining))) {
+                results.add(toLocalResponse(lm));
+            }
+        }
+        return results;
     }
 
     /** Exact barcode lookup — returns any status (active or not) so the caller can surface a
@@ -606,10 +636,7 @@ public class MedicineService {
 
     private BigDecimal validateGstRate(BigDecimal requested) {
         BigDecimal rate = requested == null ? DEFAULT_GST_RATE : requested;
-        boolean allowed = ALLOWED_GST_RATES.stream().anyMatch(a -> a.compareTo(rate) == 0);
-        if (!allowed) {
-            throw new BadRequestException("gstRate must be 0, 5, 12, or 18");
-        }
+        com.checkup.pharmacy.common.tax.GstRates.requireAllowed(rate);
         return rate;
     }
 
@@ -636,7 +663,22 @@ public class MedicineService {
                 m.getCategory(), m.getSchedule(), m.getHsnCode(), m.getGstRate(), m.getForm(),
                 m.getStrength(), m.getUnit(), m.getPackSize(), m.isActive(),
                 effectiveUpp, com.checkup.pharmacy.common.util.BaseUnits.resolve(m.getBaseUnit(), m.getForm()),
-                allowLoose, looseDefault);
+                allowLoose, looseDefault, false);
+    }
+
+    /**
+     * A pharmacy-local medicine (see {@link PharmacyMedicine}) shaped as a search
+     * result — {@code id} is a {@code PharmacyMedicine} id, not a global catalogue
+     * one; callers must check {@code isLocal} before treating it as one. No loose-sale
+     * support yet (always inactive-for-that-purpose), no composition/category/packSize
+     * on record.
+     */
+    private MedicineResponse toLocalResponse(PharmacyMedicine m) {
+        return new MedicineResponse(
+                m.getId(), m.getName(), m.getGenericName(), m.getManufacturer(), null,
+                null, m.getSchedule(), m.getHsnCode(), m.getGstRate(), m.getForm(),
+                m.getStrength(), m.getUnit(), null, true,
+                null, null, false, false, true);
     }
 
     private OverrideResponse toOverrideResponse(PharmacyMedicineOverride o, Integer catalogueUnitsPerPack) {

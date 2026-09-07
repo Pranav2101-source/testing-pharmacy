@@ -356,13 +356,17 @@ public class ReportsService {
         List<MarginReportResponse.Item> items = new ArrayList<>();
         for (var row : rows) {
             Inventory inv = byId.get(row.getInventoryId());
-            var m = inv != null ? inv.getMedicine() : null;
             BigDecimal revenue = nz(row.getRevenueExGst());
             BigDecimal cogs = nz(row.getCogs());
             BigDecimal profit = revenue.subtract(cogs);
-            items.add(new MarginReportResponse.Item(row.getInventoryId(),
-                    m != null ? new MarginReportResponse.MedicineRef(m.getId(), m.getName(), m.getGenericName(),
-                            m.getForm()) : null,
+            // productX() falls back to the local medicine (see PharmacyMedicine) when this
+            // batch was never linked to the global catalogue — inv.getMedicine() alone read
+            // null for it even though the revenue/cost figures above resolve fine.
+            MarginReportResponse.MedicineRef medicineRef = inv != null && inv.productName() != null
+                    ? new MarginReportResponse.MedicineRef(inv.productId(), inv.productName(),
+                            inv.productGenericName(), inv.productForm())
+                    : null;
+            items.add(new MarginReportResponse.Item(row.getInventoryId(), medicineRef,
                     row.getQty() != null ? row.getQty() : 0L,
                     round2(revenue), round2(cogs), round2(profit), round2(percentOf(profit, revenue)),
                     inv != null ? inv.getBatchNumber() : null));
@@ -819,9 +823,11 @@ public class ReportsService {
         // of them away. The endpoint already advertised a limit; now it actually has one.
         return inventoryRepository.findExpiryAlerts(TenantContext.pharmacyId(), threshold,
                         PageRequest.of(0, limit)).stream()
+                // productName() falls back to the local medicine (see PharmacyMedicine) when
+                // this batch was never linked to the global catalogue — i.getMedicine() alone
+                // read null for it, so a local medicine nearing expiry showed up unlabeled.
                 .map(i -> new ExpiryItemResponse(i.getId(), i.getQuantity(), i.getLooseUnits(), i.getExpiryDate(),
-                        i.getBatchNumber(), i.getMrp(), new ExpiryItemResponse.MedicineRef(
-                                i.getMedicine() != null ? i.getMedicine().getName() : null)))
+                        i.getBatchNumber(), i.getMrp(), new ExpiryItemResponse.MedicineRef(i.productName())))
                 .toList();
     }
 
@@ -937,15 +943,17 @@ public class ReportsService {
 
     private ScheduleHItemResponse toScheduleHItem(InvoiceItem item) {
         var invoice = item.getInvoice();
-        var medicine = item.getInventory() != null ? item.getInventory().getMedicine() : null;
+        var inv = item.getInventory();
         ScheduleHItemResponse.CustomerRef customer = invoice.getCustomer() != null
                 ? new ScheduleHItemResponse.CustomerRef(invoice.getCustomer().getName(), invoice.getCustomer().getPhone())
                 : null;
         ScheduleHItemResponse.UserRef user = invoice.getUser() != null
                 ? new ScheduleHItemResponse.UserRef(invoice.getUser().getName()) : null;
-        ScheduleHItemResponse.MedicineRef medicineRef = medicine != null
-                ? new ScheduleHItemResponse.MedicineRef(medicine.getName(), medicine.getGenericName(),
-                        medicine.getSchedule(), medicine.getStrength(), medicine.getForm())
+        // productX() falls back to the local medicine (see PharmacyMedicine) when this
+        // batch was never linked to the global catalogue.
+        ScheduleHItemResponse.MedicineRef medicineRef = inv != null && inv.productName() != null
+                ? new ScheduleHItemResponse.MedicineRef(inv.productName(), inv.productGenericName(),
+                        inv.productSchedule(), inv.productStrength(), inv.productForm())
                 : null;
         return new ScheduleHItemResponse(item.getId(), item.getQuantity(),
                 new ScheduleHItemResponse.InvoiceRef(invoice.getInvoiceNumber(), invoice.getCreatedAt(),
@@ -1017,9 +1025,12 @@ public class ReportsService {
         List<FastMovingResponse.Item> items = new ArrayList<>();
         for (var g : groups) {
             Inventory inv = byId.get(g.getInventoryId());
-            FastMovingResponse.MedicineRef medicineRef = inv != null && inv.getMedicine() != null
-                    ? new FastMovingResponse.MedicineRef(inv.getMedicine().getId(), inv.getMedicine().getName(),
-                            inv.getMedicine().getGenericName(), inv.getMedicine().getForm())
+            // productX() falls back to the local medicine (see PharmacyMedicine) when this
+            // batch was never linked to the global catalogue — inv.getMedicine() alone would
+            // read null for it even though the row itself resolves fine.
+            FastMovingResponse.MedicineRef medicineRef = inv != null && inv.productName() != null
+                    ? new FastMovingResponse.MedicineRef(inv.productId(), inv.productName(),
+                            inv.productGenericName(), inv.productForm())
                     : null;
             items.add(new FastMovingResponse.Item(g.getInventoryId(), medicineRef, g.getQty(), round2(g.getRevenue())));
         }
@@ -1128,8 +1139,10 @@ public class ReportsService {
         List<EodSummaryResponse.TopMedicine> topMedicines = new ArrayList<>();
         for (var g : topGroups) {
             Inventory inv = byId.get(g.getInventoryId());
-            String name = inv != null && inv.getMedicine() != null ? inv.getMedicine().getName() : "Unknown";
-            String genericName = inv != null && inv.getMedicine() != null ? inv.getMedicine().getGenericName() : null;
+            // productName() falls back to the local medicine when this batch was never
+            // linked to the global catalogue — see PharmacyMedicine.
+            String name = inv != null && inv.productName() != null ? inv.productName() : "Unknown";
+            String genericName = inv != null ? inv.productGenericName() : null;
             topMedicines.add(new EodSummaryResponse.TopMedicine(name, genericName, g.getQty(), round2(g.getRevenue())));
         }
 

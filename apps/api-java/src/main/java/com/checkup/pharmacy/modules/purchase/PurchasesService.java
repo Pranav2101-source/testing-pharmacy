@@ -11,6 +11,7 @@ import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.ForbiddenException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.exception.UnprocessableEntityException;
+import com.checkup.pharmacy.common.concurrency.AdvisoryLock;
 import com.checkup.pharmacy.common.sequence.DocumentNumberFormat;
 import com.checkup.pharmacy.common.sequence.DocumentSequenceService;
 import com.checkup.pharmacy.common.util.DateRange;
@@ -93,6 +94,7 @@ public class PurchasesService {
     private final com.checkup.pharmacy.modules.pharmacy.PharmacyRepository pharmacyRepository;
     private final com.checkup.pharmacy.common.idempotency.DuplicateSubmitGuard duplicateSubmitGuard;
     private final ApplicationEventPublisher eventPublisher;
+    private final AdvisoryLock advisoryLock;
 
     public PurchasesService(PurchaseOrderRepository purchaseOrderRepository, GoodsReceiptNoteRepository grnRepository,
                             GRNItemRepository grnItemRepository, InventoryRepository inventoryRepository,
@@ -102,7 +104,7 @@ public class PurchasesService {
                             UserRepository userRepository, DocumentSequenceService sequenceService,
                             com.checkup.pharmacy.modules.pharmacy.PharmacyRepository pharmacyRepository,
                             com.checkup.pharmacy.common.idempotency.DuplicateSubmitGuard duplicateSubmitGuard,
-                            ApplicationEventPublisher eventPublisher) {
+                            ApplicationEventPublisher eventPublisher, AdvisoryLock advisoryLock) {
         this.pharmacyRepository = pharmacyRepository;
         this.purchaseOrderRepository = purchaseOrderRepository;
         this.grnRepository = grnRepository;
@@ -117,6 +119,7 @@ public class PurchasesService {
         this.sequenceService = sequenceService;
         this.duplicateSubmitGuard = duplicateSubmitGuard;
         this.eventPublisher = eventPublisher;
+        this.advisoryLock = advisoryLock;
     }
 
     // ── Purchase Orders ──────────────────────────────────────────────────────
@@ -478,12 +481,22 @@ public class PurchasesService {
             String localMedicineId = blankToNull(r.localMedicineId());
             if (medicineId == null && localMedicineId == null) {
                 String key = MedicineMatcher.normalize(r.medicineName());
-                PharmacyMedicine local = newLocalByNormalizedName.computeIfAbsent(key, k ->
-                        pharmacyMedicineRepository.findFirstByPharmacyIdAndNameIgnoreCase(pharmacyId, r.medicineName())
-                                .orElseGet(() -> pharmacyMedicineRepository.save(PharmacyMedicine.create(pharmacyId,
+                PharmacyMedicine local = newLocalByNormalizedName.computeIfAbsent(key, k -> {
+                    // Blocks any other transaction (another cashier's GRN, a "Save as Local
+                    // Medicine" call) racing to create this exact pharmacy+name until this
+                    // transaction commits or rolls back — see AdvisoryLock. Without this, two
+                    // GRNs naming the same brand-new medicine at the same moment could each miss
+                    // the other's uncommitted row and insert two identities for one product.
+                    advisoryLock.acquire(pharmacyId + "|pharmacy_medicine|" + k);
+                    return pharmacyMedicineRepository.findFirstByPharmacyIdAndNameIgnoreCase(pharmacyId, r.medicineName())
+                            .orElseGet(() -> {
+                                com.checkup.pharmacy.common.tax.GstRates.requireAllowed(r.gstRate());
+                                return pharmacyMedicineRepository.save(PharmacyMedicine.create(pharmacyId,
                                         r.medicineName(), blankToNull(r.manufacturer()), blankToNull(r.genericName()),
                                         blankToNull(r.strength()), blankToNull(r.form()), blankToNull(r.unit()),
-                                        blankToNull(r.hsnCode()), r.gstRate(), blankToNull(r.schedule())))));
+                                        blankToNull(r.hsnCode()), r.gstRate(), blankToNull(r.schedule())));
+                            });
+                });
                 localMedicineId = local.getId();
             }
             resolved.add(new ResolvedMedicine(medicineId, localMedicineId));
@@ -782,10 +795,10 @@ public class PurchasesService {
                     .orElse(null);
         }
         List<GrnResponse.Item> itemResponses = items.stream()
-                .map(i -> new GrnResponse.Item(i.getId(), i.getMedicineId(), i.getMedicineName(), i.getBatchNumber(),
-                        i.getExpiryDate(), i.getOrderedQty(), i.getReceivedQty(), i.getFreeQty(), i.getPurchaseUnit(),
-                        i.getConversionFactor(), i.getPurchaseRate(), i.getMrp(), i.getDiscount(), i.getGstRate(),
-                        i.getCgst(), i.getSgst(), i.getAmount()))
+                .map(i -> new GrnResponse.Item(i.getId(), i.getMedicineId(), i.getLocalMedicineId(), i.getMedicineName(),
+                        i.getBatchNumber(), i.getExpiryDate(), i.getOrderedQty(), i.getReceivedQty(), i.getFreeQty(),
+                        i.getPurchaseUnit(), i.getConversionFactor(), i.getPurchaseRate(), i.getMrp(), i.getDiscount(),
+                        i.getGstRate(), i.getCgst(), i.getSgst(), i.getAmount()))
                 .toList();
         Map<String, GrnResponse.UserRef> actors = resolveGrnActors(List.of(grn));
         return new GrnResponse(grn.getId(), grn.getGrnNumber(), supplierRef, poRef, grn.getSupplierInvoiceNo(),

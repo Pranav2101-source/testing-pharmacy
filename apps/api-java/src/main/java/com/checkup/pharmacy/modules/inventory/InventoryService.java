@@ -1071,15 +1071,9 @@ public class InventoryService {
         if (rows.isEmpty()) {
             return List.of();
         }
-        List<String> medicineIds = rows.stream().map(Inventory::getMedicineId)
-                .filter(java.util.Objects::nonNull).distinct().toList();
-        Map<String, Medicine> medicinesById = new HashMap<>();
-        if (!medicineIds.isEmpty()) {
-            for (Medicine m : medicineRepository.findAllById(medicineIds)) {
-                medicinesById.put(m.getId(), m);
-            }
-        }
         // A batch received for a medicine not yet in the global catalogue — see PharmacyMedicine.
+        // Fetched BEFORE medicinesById below so a LINKED local medicine's own catalogue target
+        // can be folded into that one query too (see EffectiveMedicine).
         List<String> localMedicineIds = rows.stream().map(Inventory::getLocalMedicineId)
                 .filter(java.util.Objects::nonNull).distinct().toList();
         Map<String, com.checkup.pharmacy.modules.medicine.PharmacyMedicine> localMedicinesById = new HashMap<>();
@@ -1088,8 +1082,34 @@ public class InventoryService {
                 localMedicinesById.put(m.getId(), m);
             }
         }
-        // This pharmacy's loose-selling opt-in and pack-size override, per medicine.
-        // (A local medicine has no override row — loose selling isn't offered for one yet.)
+
+        // Direct catalogue links, plus the catalogue target of every LINKED local medicine — a
+        // batch resolved against a local identity a pharmacist has since confirmed IS a
+        // catalogue medicine (see PharmacyMedicine#confirmLink) gets that medicine's loose-sale/
+        // GST/etc. behaviour too, exactly like a batch received against the catalogue directly.
+        // Folded into ONE id set so both this query and the override query below stay single
+        // round trips regardless of how many rows are direct vs. linked-local.
+        Set<String> medicineIds = new java.util.HashSet<>();
+        for (Inventory inv : rows) {
+            if (inv.getMedicineId() != null) {
+                medicineIds.add(inv.getMedicineId());
+            }
+        }
+        for (var lm : localMedicinesById.values()) {
+            if (lm.getMatchStatus() == com.checkup.pharmacy.common.enums.MedicineMatchStatus.LINKED
+                    && lm.getLinkedMedicineId() != null) {
+                medicineIds.add(lm.getLinkedMedicineId());
+            }
+        }
+        Map<String, Medicine> medicinesById = new HashMap<>();
+        if (!medicineIds.isEmpty()) {
+            for (Medicine m : medicineRepository.findAllById(medicineIds)) {
+                medicinesById.put(m.getId(), m);
+            }
+        }
+        // This pharmacy's loose-selling opt-in and pack-size override, per (possibly linked)
+        // effective medicine. (A local medicine that is still PENDING/SUGGESTED/KEPT_LOCAL has
+        // no override row of its own — loose selling isn't offered for one yet.)
         Map<String, com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride> overridesById = new HashMap<>();
         if (!medicineIds.isEmpty()) {
             for (var o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(TenantContext.pharmacyId(), medicineIds)) {
@@ -1112,8 +1132,12 @@ public class InventoryService {
 
         List<InventoryResponse> out = new ArrayList<>(rows.size());
         for (Inventory inv : rows) {
-            Medicine m = medicinesById.get(inv.getMedicineId());
-            var ov = m == null ? null : overridesById.get(inv.getMedicineId());
+            Medicine direct = medicinesById.get(inv.getMedicineId());
+            // Follows a LINKED local medicine through to its catalogue target; null for a
+            // genuinely local batch (PENDING/SUGGESTED/KEPT_LOCAL, or a LINKED one whose
+            // target has since vanished from the catalogue) — see EffectiveMedicine.
+            Medicine m = EffectiveMedicine.resolve(direct, inv.getLocalMedicineId(), localMedicinesById, medicinesById);
+            var ov = m == null ? null : overridesById.get(m.getId());
             Integer effectiveUpp = ov != null && ov.getUnitsPerPack() != null
                     ? ov.getUnitsPerPack()
                     : (m != null ? m.getUnitsPerPack() : null);
@@ -1129,8 +1153,9 @@ public class InventoryService {
                         allowLoose, looseDefault, m.getSchedule(), m.getPackSize());
             } else {
                 var lm = localMedicinesById.get(inv.getLocalMedicineId());
-                // Not in the global catalogue (yet) — no loose-sale support, no packSize label.
-                // isActive is always true: a local medicine has no deactivate flow.
+                // Not in the global catalogue (yet), or a local identity that is not (or no
+                // longer) LINKED to one — no loose-sale support, no packSize label. isActive
+                // is always true: a local medicine has no deactivate flow.
                 medRef = lm == null ? null : new InventoryResponse.MedicineRef(
                         lm.getId(), lm.getName(), lm.getGenericName(), lm.getForm(), lm.getStrength(), lm.getUnit(),
                         true, lm.getGstRate(), lm.getHsnCode(), null, null, false, false, lm.getSchedule(), null);

@@ -49,6 +49,11 @@ export type MedicineSearchResult = {
   allowLooseSale?: boolean;
   // New bill lines for this medicine start as loose.
   looseByDefault?: boolean;
+  // True when `id` is a pharmacy-local medicine id (see PharmacyMedicine on the backend),
+  // not a global catalogue id — only ever set when the search was called with
+  // includeLocal=true (the billing combobox). Callers must not pass this id to any
+  // endpoint that expects a global medicineId (alternatives, classification, barcode).
+  isLocal?: boolean;
 };
 
 export type AlternativeBatch = {
