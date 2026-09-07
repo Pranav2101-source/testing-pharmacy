@@ -69,6 +69,8 @@ export function planLooseSplit(
   cartItems: { inventoryId: string; medicineName: string; saleUnit?: string; quantity: number }[],
   fetchedBatches: InventoryBatch[],
   now = Date.now(),
+  /** When the batches already arrive in the dispensing engine's strategy order (GET /dispensing/batches), keep it rather than re-sorting FEFO. */
+  batchesAreStrategyOrdered = false,
 ): { lines: NewCartItem[]; shortfall: number } {
   const upp = template.unitsPerPack ?? 1;
   if (upp <= 1 || !Number.isInteger(wantedPieces) || wantedPieces < 1) return { lines: [], shortfall: 0 };
@@ -80,13 +82,15 @@ export function planLooseSplit(
   if (remaining < 1) return { lines: [], shortfall: 0 };
 
   const inCartIds = new Set(cartItems.map((i) => i.inventoryId));
-  const candidates = fetchedBatches
+  const filtered = fetchedBatches
     .filter((b) => b.medicine.name === template.medicineName   // /inventory search is fuzzy — pin the exact medicine
       && !inCartIds.has(b.id)
       && new Date(b.expiryDate).getTime() > now
       && (b.medicine.allowLooseSale ?? false)
-      && loosePiecesOf(b, b.medicine.unitsPerPack ?? upp) > 0)
-    .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+      && loosePiecesOf(b, b.medicine.unitsPerPack ?? upp) > 0);
+  const candidates = batchesAreStrategyOrdered
+    ? filtered  // already ordered by the dispensing engine's strategy
+    : [...filtered].sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
 
   const lines: NewCartItem[] = [];
   for (const b of candidates) {
@@ -115,6 +119,8 @@ export async function runLooseOverflow(
     fetchBatches: (medicineName: string) => Promise<InventoryBatch[]>;
     addLine: (line: NewCartItem) => void;
     notify: { info: (m: string) => void; warning: (m: string) => void; error: (m: string) => void };
+    /** Set when fetchBatches returns the dispensing engine's strategy-ordered list. */
+    batchesAreStrategyOrdered?: boolean;
   },
 ): Promise<void> {
   if (item.saleUnit !== "LOOSE" || (item.unitsPerPack ?? 1) <= 1) return;
@@ -128,7 +134,8 @@ export async function runLooseOverflow(
     return;
   }
 
-  const { lines, shortfall } = planLooseSplit(item, typed, cartItems, fetched);
+  const { lines, shortfall } = planLooseSplit(
+    item, typed, cartItems, fetched, Date.now(), deps.batchesAreStrategyOrdered ?? false);
   if (lines.length === 0) {
     if (shortfall > 0) {
       deps.notify.warning(`No other batch of ${item.medicineName} has loose stock — ${shortfall} ${unit} short.`);
@@ -777,19 +784,26 @@ export function CartTableRows({
    */
   const handleLooseOverflow = useCallback((item: CartItem, typed: number) =>
     runLooseOverflow(item, typed, useBillingStore.getState().items, {
-      // Same cache key + shape the search combobox just populated when this medicine
-      // was added to the cart (see MedicineSearchCombobox's fetchBatches) — an
-      // overflow a few seconds later is served from that cache instead of a second
-      // round trip for data the app almost certainly already has.
+      // Spill onto the SAME strategy-ordered batch list the dispensing engine
+      // would use (GET /dispensing/batches — already ACTIVE, in date, unreserved).
+      // Falls back to a name search only for a pharmacy-local medicine, which has
+      // no catalogue id to query the engine by.
       fetchBatches: (name) => queryClient.fetchQuery({
-        queryKey: queryKeys.medicineStock.byName(name),
-        queryFn:  () => api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
-          params: { search: name, inStock: true, limit: 40, includeAlertCounts: false },
-        }).then((r) => r.data?.data?.items ?? []),
+        queryKey: item.medicineId
+          ? queryKeys.dispensing.batches(item.medicineId, false)
+          : queryKeys.medicineStock.byName(name),
+        queryFn:  () => (item.medicineId
+          ? api.get<{ data: InventoryBatch[] }>("/dispensing/batches", {
+              params: { medicineId: item.medicineId },
+            }).then((r) => r.data?.data ?? [])
+          : api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
+              params: { search: name, inStock: true, limit: 40, includeAlertCounts: false },
+            }).then((r) => r.data?.data?.items ?? [])),
         staleTime: 30_000,
       }),
       addLine: addItem,
       notify: toast,
+      batchesAreStrategyOrdered: !!item.medicineId,
     }),
   [addItem, toast, queryClient]);
 
@@ -833,6 +847,7 @@ export function CartTableRows({
 
     replaceItem(swapTarget.inventoryId, {
       inventoryId:    batch.id,
+      medicineId:     swapTarget.medicineId,
       medicineName:   batch.medicine.name,
       hsnCode:        batch.medicine.hsnCode,
       schedule:       swapTarget.schedule,
@@ -850,6 +865,8 @@ export function CartTableRows({
       baseUnit:       batch.medicine.baseUnit ?? swapTarget.baseUnit ?? undefined,
       allowLooseSale: nextAllow,
       looseUnits:     batch.looseUnits ?? 0,
+      // The pharmacist deliberately chose this batch over the engine's order.
+      batchAutoSelected: false,
     });
     if (next.forcedToPack) {
       toast.warning(`${batch.medicine.name}: the new batch doesn't sell loose — ${swapTarget.quantity} `

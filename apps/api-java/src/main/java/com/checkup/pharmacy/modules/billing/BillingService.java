@@ -118,6 +118,7 @@ public class BillingService {
     private final DocumentSequenceService sequenceService;
     private final com.checkup.pharmacy.modules.audit.AuditService auditService;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    private final com.checkup.pharmacy.modules.dispensing.DispensingService dispensingService;
 
     public BillingService(InvoiceRepository invoiceRepository, InvoiceItemRepository invoiceItemRepository,
                           InvoicePaymentRepository invoicePaymentRepository, SalesReturnRepository salesReturnRepository,
@@ -131,6 +132,7 @@ public class BillingService {
                           UserRepository userRepository, DocumentSequenceService sequenceService,
                           com.checkup.pharmacy.modules.audit.AuditService auditService,
                           com.fasterxml.jackson.databind.ObjectMapper objectMapper,
+                          com.checkup.pharmacy.modules.dispensing.DispensingService dispensingService,
                           ApplicationEventPublisher eventPublisher) {
         this.invoiceRepository = invoiceRepository;
         this.invoiceItemRepository = invoiceItemRepository;
@@ -152,6 +154,7 @@ public class BillingService {
         this.sequenceService = sequenceService;
         this.auditService = auditService;
         this.objectMapper = objectMapper;
+        this.dispensingService = dispensingService;
     }
 
     // ── Dashboard stats + invoice settings ───────────────────────────────────
@@ -775,6 +778,10 @@ public class BillingService {
                 discountAmount, itemTotals.taxableAmount(), itemTotals.cgst(), itemTotals.sgst(), itemTotals.igst(),
                 itemTotals.totalGst(), finalTotal,
                 req.extraChargesOrZero(), req.adjustmentAmountOrZero(), roundOff);
+        // Snapshot the batch-selection strategy in force right now. A later change to
+        // the pharmacy setting must never rewrite what this sale actually did — see
+        // DispensingService. `pharmacy` was already loaded above, so this costs nothing.
+        invoice.setDispensingStrategy(pharmacy.getDispensingStrategy());
         invoiceRepository.save(invoice);
 
         List<InvoiceItem> savedItems = new ArrayList<>();
@@ -839,7 +846,8 @@ public class BillingService {
                     hsnCode, batch.getBatchNumber(), batch.getExpiryDate(), quantity, freeQty,
                     batch.getMrp(),
                     line.rate(), line.storedPurchaseRate(), line.req().discountOrZero(), line.gstRate(), line.gst().cgst(),
-                    line.gst().sgst(), line.gst().igst(), line.gst().taxableAmount(), line.gst().amount(), line.location());
+                    line.gst().sgst(), line.gst().igst(), line.gst().taxableAmount(), line.gst().amount(), line.location())
+                    .withBatchAutoSelected(line.req().batchAutoSelectedOrDefault());
             String looseBaseUnit = line.loose()
                     ? com.checkup.pharmacy.common.util.BaseUnits.resolve(
                             effForItem != null ? effForItem.getBaseUnit() : batch.productBaseUnit(),
@@ -970,15 +978,14 @@ public class BillingService {
             medicineIdByBatchId.put(inv.getId(), inv.getMedicineId());
         }
 
-        // Ordered by (medicineId, expiryDate) — putIfAbsent therefore keeps the
-        // earliest-expiring batch per medicine, which is what FEFO means.
-        Map<String, Inventory> fefoByMedicineId = new HashMap<>();
-        if (!medicineIdByBatchId.isEmpty()) {
-            for (Inventory candidate : inventoryRepository.findFefoCandidatesForMedicines(
-                    pharmacyId, new HashSet<>(medicineIdByBatchId.values()), now, 1)) {
-                fefoByMedicineId.putIfAbsent(candidate.getMedicineId(), candidate);
-            }
-        }
+        // Which batch to repeat each line from is the dispensing engine's call — it
+        // orders the candidates by the pharmacy's configured strategy (LILA/FEFO or
+        // LIFA), so a repeat and a fresh manual sale of the same medicine agree.
+        Map<String, Inventory> fefoByMedicineId = medicineIdByBatchId.isEmpty()
+                ? new HashMap<>()
+                : new HashMap<>(dispensingService.topBatchPerMedicine(
+                        inventoryRepository.findSellableBatchesForMedicines(
+                                pharmacyId, new HashSet<>(medicineIdByBatchId.values()), now)));
         // This pharmacy's loose opt-in / pack-size override, so a regular loose order
         // repeats as loose only while the pharmacy still sells that medicine that way.
         Map<String, PharmacyMedicineOverride> repeatOverrides = new HashMap<>();
@@ -1715,7 +1722,7 @@ public class BillingService {
                         i.getBatchNumber(), i.getExpiryDate(), i.getQuantity(), i.getFreeQty(), i.getSaleUnit(),
                         i.getBaseUnit(), i.getMrp(), i.getRate(), i.getPurchaseRate(),
                         i.getDiscount(), i.getGstRate(), i.getCgst(), i.getSgst(), i.getIgst(), i.getTaxableAmount(),
-                        i.getAmount(), i.getLocation()))
+                        i.getAmount(), i.getLocation(), i.isBatchAutoSelected()))
                 .toList();
         List<PaymentResponse> paymentResponses = payments.stream().map(this::toResponse).toList();
         List<InvoiceResponse.ReturnRef> returnRefs = returns.stream()
@@ -1729,7 +1736,9 @@ public class BillingService {
                 invoice.getCgst(), invoice.getSgst(), invoice.getIgst(), invoice.getTotalGst(), invoice.getTotalAmount(),
                 invoice.getExtraCharges(), invoice.getAdjustmentAmount(), invoice.getRoundOff(),
                 invoice.getReturnedAmount(), invoice.isInterstate(), invoice.getNotes(), invoice.isCancelled(),
-                invoice.getCancelledAt(), invoice.getCancelReason(), itemResponses, paymentResponses, returnRefs,
+                invoice.getCancelledAt(), invoice.getCancelReason(),
+                invoice.getDispensingStrategy() == null ? null : invoice.getDispensingStrategy().name(),
+                itemResponses, paymentResponses, returnRefs,
                 invoice.getCreatedAt(), invoice.getUpdatedAt());
     }
 

@@ -48,6 +48,13 @@ model Pharmacy {
   // "we don't do home delivery" is a shop policy, not a cashier's preference, and it
   // must look the same on every till. Same shape and lifecycle as invoiceSettings.
   billingPreferences Json?
+  // Which batch the dispensing engine picks when a medicine has several in stock
+  // (see DispensingService, Java). LILA_FEFO — earliest valid expiry first — is the
+  // safe default and what nearly every pharmacy wants; LIFA (newest received stock
+  // first) is a deliberate opt-in. Shop policy, not a per-bill or per-cashier choice:
+  // it is one enum here, snapshotted onto each Invoice at billing time so a later
+  // change never rewrites what a past bill actually did.
+  dispensingStrategy DispensingStrategy @default(LILA_FEFO)
   // Per-pharmacy EMR machine-to-machine HMAC secret, AES-256-GCM at rest (see
   // EmrSecretCipher / EmrHmacAuthenticationFilter). Null until the pharmacy
   // generates one from its own Integrations screen; the EMR integration route
@@ -768,6 +775,18 @@ enum BatchStatus {
   DAMAGED
 }
 
+// How the dispensing engine orders in-stock batches of one medicine (see
+// DispensingService, Java). Only ACTIVE, in-date, sellable batches are ever
+// candidates under either value — this only decides the order among those.
+enum DispensingStrategy {
+  // Last In, Last Available — earliest valid expiry first (a.k.a. FEFO). The
+  // default: sells older stock before it expires and minimises write-offs.
+  LILA_FEFO
+  // Last In, First Available — most recently received batch first. Opt-in, for
+  // pharmacies that deliberately want to move the freshest stock.
+  LIFA
+}
+
 enum GRNStatus {
   DRAFT
   CONFIRMED
@@ -820,6 +839,11 @@ model Invoice {
   cancelledAt    DateTime?
   cancelReason   String?
   idempotencyKey String?
+  // The batch-selection strategy in effect when this bill was created (see
+  // DispensingService). Snapshotted so a later change to the pharmacy setting
+  // never rewrites the audit trail of a past sale. NULL on rows created before
+  // this column existed — "not recorded", not "no strategy".
+  dispensingStrategy DispensingStrategy?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -923,6 +947,14 @@ model PrescriptionItem {
   schedule       String? // H, H1, X, G, OTC
   quantity       Int
   dispensedQty   Int     @default(0)
+  // True when `quantity` was derived from dosage + duration rather than sent by the clinic —
+  // see PrescriptionQuantityCalculator (Java). Purely informational: nothing reads this to
+  // decide behaviour, it only lets the triage screen label where the number came from.
+  quantityAutoCalculated Boolean @default(false)
+  // One line explaining HOW quantity was calculated, or WHY it couldn't be (still needing
+  // manual confirmation) — see PrescriptionQuantityCalculator.Result. Null when neither
+  // ever applied (an explicit clinic quantity, or an unmatched line).
+  quantityCalculationNote String?
   // Set only when a substitute was handed over; NULL means "as prescribed".
   dispensedMedicineId   String?
   dispensedMedicineName String?
@@ -1006,6 +1038,11 @@ model InvoiceItem {
   taxableAmount Decimal  @db.Decimal(12, 2)
   amount        Decimal  @db.Decimal(12, 2)
   location      String?
+  // true — the dispensing engine chose this batch under the invoice's strategy.
+  // false — a pharmacist overrode it in the batch picker. Part of the dispensing
+  // audit trail alongside Invoice.dispensingStrategy. Defaults true: every legacy
+  // row predates the picker's override flag and was effectively engine order.
+  batchAutoSelected Boolean @default(true)
 
   pharmacy         Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   invoice          Invoice           @relation(fields: [invoiceId], references: [id], onDelete: Cascade)

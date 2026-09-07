@@ -1,7 +1,9 @@
 package com.checkup.pharmacy.modules.prescription;
 
 import com.checkup.pharmacy.common.domain.CreatedAtEntity;
+import com.checkup.pharmacy.common.util.BaseUnits;
 import com.checkup.pharmacy.common.util.Cuid;
+import com.checkup.pharmacy.modules.medicine.Medicine;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
@@ -34,6 +36,34 @@ public class PrescriptionItem extends CreatedAtEntity {
 
     @Column(name = "dispensedQty")
     private int dispensedQty;
+
+    /**
+     * True when {@link #quantity} was worked out from the dosing pattern and duration rather
+     * than sent by the clinic — see {@link PrescriptionQuantityCalculator}.
+     *
+     * <p>Persisted rather than derived because it cannot be recovered later: once computed, the
+     * number on this row is indistinguishable from one the clinic stated. A pharmacist reviewing
+     * this prescription tomorrow is entitled to know which of the two they are looking at, and
+     * that is the whole reason this column exists — it changes nothing about how the quantity is
+     * used, only how it is labelled.
+     */
+    @Column(name = "quantityAutoCalculated")
+    private boolean quantityAutoCalculated;
+
+    /**
+     * Why {@link #quantity} is what it is, in a sentence a pharmacist can read — either how it
+     * was calculated ({@code "Calculated: 1-0-1 x 6 days = 12"}) or, while {@link
+     * #needsQuantityConfirmation()} is still true, exactly why {@link PrescriptionQuantityCalculator}
+     * declined to calculate one ({@code "This medicine is measured in millilitres..."}).
+     *
+     * <p>Persisted rather than left for the frontend to reconstruct: the reason a calculation was
+     * refused depends on the calculator's own parsing rules, and duplicating those rules in the
+     * UI just to explain a refusal would be exactly the kind of second copy of business logic
+     * this feature is supposed to avoid. Cleared whenever a human settles the quantity — the
+     * explanation stops being relevant the moment it stops being the reason nothing happened.
+     */
+    @Column(name = "quantityCalculationNote")
+    private String quantityCalculationNote;
 
     /**
      * What the patient actually received, when it differs from what was prescribed.
@@ -120,6 +150,12 @@ public class PrescriptionItem extends CreatedAtEntity {
         this.dosage = dosage;
         this.duration = duration;
         this.notes = notes;
+        // Whatever this line's quantity was derived from before, it is now whatever the clinic
+        // just sent. The caller re-derives it afterwards if this push again carried none, which
+        // sets a fresh note of its own — any note referring to the OLD dosage/duration would be
+        // actively misleading here, not just stale.
+        this.quantityAutoCalculated = false;
+        this.quantityCalculationNote = null;
     }
 
     public String getPharmacyId() { return pharmacyId; }
@@ -188,6 +224,80 @@ public class PrescriptionItem extends CreatedAtEntity {
      */
     public void confirmQuantity(int quantity) {
         this.quantity = quantity;
+        // A person has now settled this number, so it is no longer a computed one — even if it
+        // happens to equal what a calculation would have produced — and whatever note explained
+        // an earlier refusal to calculate no longer describes this line's state.
+        this.quantityAutoCalculated = false;
+        this.quantityCalculationNote = null;
+    }
+
+    /**
+     * Sets a quantity worked out from this line's own dosing pattern and duration, for a line
+     * the clinic sent without one — see {@link PrescriptionQuantityCalculator}.
+     *
+     * <p>Only ever called while {@link #needsQuantityConfirmation()}: a clinic-stated quantity
+     * is the prescribed amount and is never recomputed over. The flag it sets is what lets the
+     * triage screen show the number as calculated rather than prescribed; {@code note} is the
+     * one-line "how" (e.g. {@code "Calculated: 1-0-1 x 6 days = 12"}) shown alongside it.
+     */
+    public void applyCalculatedQuantity(int quantity, String note) {
+        this.quantity = quantity;
+        this.quantityAutoCalculated = true;
+        this.quantityCalculationNote = note;
+    }
+
+    /**
+     * Records why {@link PrescriptionQuantityCalculator} could NOT work out this line's quantity,
+     * for a line still waiting on {@link #confirmQuantity} — so the pharmacist resolving it sees
+     * the specific reason ("measured in millilitres", "no duration was sent", "SOS — not a daily
+     * schedule") instead of a bare "quantity not stated".
+     *
+     * <p>Quantity is untouched: this line is exactly as unconfirmed as it was before the attempt.
+     */
+    public void recordQuantityCalculationNote(String note) {
+        this.quantityCalculationNote = note;
+    }
+
+    /**
+     * Attempts to derive this line's quantity from its own dosage and duration against {@code
+     * medicine}'s base unit, applying whichever outcome {@link PrescriptionQuantityCalculator}
+     * reaches — a computed quantity, or a note explaining why one could not be.
+     *
+     * <p>A no-op once this line already has a real quantity: {@link #needsQuantityConfirmation()}
+     * guards it the same way {@link #confirmQuantity} and {@link #applyCalculatedQuantity} are
+     * documented to — a clinic-stated or pharmacist-confirmed amount is never second-guessed by
+     * recalculating over it. Also a no-op with no medicine, so every caller can pass whatever it
+     * has on hand without checking first.
+     *
+     * <p>Written to be called from anywhere a medicine BECOMES known for a line still waiting on
+     * a quantity — EMR ingest, an amendment, or a pharmacist manually linking a previously
+     * unmatched line via {@code PrescriptionService.linkItemToMedicine} — so all three reach the
+     * same automatic outcome instead of only the first ever getting it. Linking and calculating
+     * are two different facts about a line and can each still fail independently: a link with an
+     * uncalculable quantity leaves this line exactly as unconfirmed as an already-linked one that
+     * could not be calculated, and a calculation is attempted even though nothing here required
+     * one — it costs nothing when it does not apply.
+     */
+    public void calculateQuantityIfMissing(Medicine medicine) {
+        if (medicine == null || !needsQuantityConfirmation()) {
+            return;
+        }
+        PrescriptionQuantityCalculator.Result result = PrescriptionQuantityCalculator.calculate(
+                dosage, duration, BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm()));
+        if (result.isCalculated()) {
+            applyCalculatedQuantity(result.quantity(),
+                    "Calculated: " + dosage + " x " + duration + " = " + result.quantity());
+        } else {
+            recordQuantityCalculationNote(result.message());
+        }
+    }
+
+    public boolean isQuantityAutoCalculated() {
+        return quantityAutoCalculated;
+    }
+
+    public String getQuantityCalculationNote() {
+        return quantityCalculationNote;
     }
 
     public String getDosage() { return dosage; }

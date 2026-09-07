@@ -50,7 +50,15 @@ public record InvoiceItemRequest(
          * "that is N full packs — bill it as a pack sale" guard for THIS line and
          * nothing else. Ignored on a PACK line. Null/absent on every ordinary sale.
          */
-        Boolean forceLoose
+        Boolean forceLoose,
+        /**
+         * {@code false} only when a pharmacist picked THIS batch by hand in the batch
+         * picker, overriding the dispensing engine's order. {@code true}/null/absent —
+         * the engine chose it (single-batch auto-add, Quick Add, Repeat, prescription
+         * plan) or the client predates this flag. Recorded on the invoice line as part
+         * of the dispensing audit trail; changes nothing about the sale itself.
+         */
+        Boolean batchAutoSelected
 ) {
     /**
      * Back-compatible constructor for callers that predate loose selling — every
@@ -60,13 +68,24 @@ public record InvoiceItemRequest(
      */
     public InvoiceItemRequest(String inventoryId, Integer quantity, Integer freeQty, BigDecimal discount,
                               String prescriptionItemId) {
-        this(inventoryId, quantity, freeQty, discount, prescriptionItemId, null, null);
+        this(inventoryId, quantity, freeQty, discount, prescriptionItemId, null, null, null);
     }
 
     /** Back-compatible constructor for callers that predate the {@code forceLoose} waiver. */
     public InvoiceItemRequest(String inventoryId, Integer quantity, Integer freeQty, BigDecimal discount,
                               String prescriptionItemId, String saleUnit) {
-        this(inventoryId, quantity, freeQty, discount, prescriptionItemId, saleUnit, null);
+        this(inventoryId, quantity, freeQty, discount, prescriptionItemId, saleUnit, null, null);
+    }
+
+    /** Back-compatible constructor for callers that predate the {@code batchAutoSelected} audit flag. */
+    public InvoiceItemRequest(String inventoryId, Integer quantity, Integer freeQty, BigDecimal discount,
+                              String prescriptionItemId, String saleUnit, Boolean forceLoose) {
+        this(inventoryId, quantity, freeQty, discount, prescriptionItemId, saleUnit, forceLoose, null);
+    }
+
+    /** True unless a pharmacist explicitly overrode the engine's batch for this line. */
+    public boolean batchAutoSelectedOrDefault() {
+        return batchAutoSelected == null || batchAutoSelected;
     }
 
     /** True when the cashier has explicitly waived the whole-pack-as-loose guard for this line. */

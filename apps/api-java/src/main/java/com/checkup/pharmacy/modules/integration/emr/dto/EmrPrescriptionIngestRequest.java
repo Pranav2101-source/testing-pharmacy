@@ -7,7 +7,7 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
-import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
@@ -35,7 +35,19 @@ public record EmrPrescriptionIngestRequest(
             @Size(max = 100) String medicineId,
             @Size(max = 100) String strength,
             @Size(max = 20) String schedule,
-            @Positive int quantity,
+            /**
+             * Units prescribed, or 0 when the clinic states none ("as directed").
+             *
+             * <p>Zero is accepted rather than rejected because rejecting it fails the whole
+             * prescription over one line's missing field, leaving a patient at the counter with
+             * nothing — the same reasoning the compat surface already applied when it began
+             * translating a missing quantity to 0 (see {@code ClinicIngestRequest.Item}). What
+             * happens next is not a guess: the quantity is derived from the line's own dosing
+             * pattern and duration where those establish it, and otherwise a pharmacist settles
+             * it at the counter. Negative is still refused — it is not a statement about
+             * anything.
+             */
+            @PositiveOrZero int quantity,
             @Size(max = 100) String dosage,
             @Size(max = 100) String duration,
             @Size(max = 200) String notes

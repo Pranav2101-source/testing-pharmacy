@@ -73,8 +73,12 @@ public class ClinicIngestService {
         int unmatched = (int) snapshot.items().stream()
                 .filter(i -> i.medicineId() == null)
                 .count();
-        int unconfirmedQuantity = (int) request.items().stream()
-                .filter(i -> i.quantity() == null || i.quantity() <= 0)
+        // Read from the STORED lines, not the request: a missing quantity the calculator
+        // resolved from dosage + duration (see PrescriptionQuantityCalculator) is no longer
+        // unconfirmed, and counting the request's raw zero here would tell the clinic a
+        // pharmacist still has work that ingest already finished.
+        int unconfirmedQuantity = (int) snapshot.items().stream()
+                .filter(i -> i.prescribedQuantity() <= 0)
                 .count();
 
         return new ClinicIngestResponse(snapshot.pharmacyPrescriptionId(), snapshot.pharmacyPrescriptionNumber(),
@@ -101,7 +105,7 @@ public class ClinicIngestService {
                     // that governs whether a sale is legal.
                     null,
                     item.quantity() == null || item.quantity() < 0 ? 0 : item.quantity(),
-                    trimToNull(item.dosage()),
+                    dosageForCalculation(item),
                     trimToNull(item.duration()),
                     itemNotes(item)));
         }
@@ -123,6 +127,36 @@ public class ClinicIngestService {
                 null,
                 truncate(r.notes(), MAX_NOTES),
                 items);
+    }
+
+    /**
+     * The text {@link com.checkup.pharmacy.modules.prescription.PrescriptionQuantityCalculator}
+     * gets to find a dosing pattern in.
+     *
+     * <p>This contract carries {@code dosage} and {@code frequency} as two separate fields (a
+     * dose amount and a schedule like {@code "1-0-1"}), where the native path only has one
+     * {@code dosage} field for both — see that DTO's own note on why. A clinic that puts its
+     * {@code 1-0-1}-style pattern in {@code frequency} rather than {@code dosage} would otherwise
+     * be invisible to the calculator, which only ever reads the native {@code dosage} field:
+     * {@link #itemNotes} already folds {@code frequency} in for a pharmacist to READ, but reading
+     * and calculating are different needs, and folding it in only as free text among route/timing/
+     * instructions buries it exactly where a pattern-matcher does not look. Concatenating both
+     * here costs nothing when a clinic already puts the pattern in {@code dosage} — the calculator
+     * ignores surrounding text — and recovers it for the clinics that do not.
+     */
+    private static String dosageForCalculation(ClinicIngestRequest.Item item) {
+        String dosage = trimToNull(item.dosage());
+        String frequency = trimToNull(item.frequency());
+        if (dosage == null) {
+            return frequency;
+        }
+        if (frequency == null || frequency.equalsIgnoreCase(dosage)) {
+            return dosage;
+        }
+        // max 100 on the native DTO's own dosage field — truncating beats failing the whole
+        // prescription over a combined string that ran long, same policy as truncate() elsewhere
+        // on this path.
+        return truncate(dosage + " " + frequency, 100);
     }
 
     /**

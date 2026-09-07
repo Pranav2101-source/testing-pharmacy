@@ -253,8 +253,8 @@ const CATEGORIES: HelpCategory[] = [
               "Press F2, or click the blue 'New Bill' button in the top navigation bar",
               "Optionally search for a registered customer/patient",
               "Type the medicine name in the search box — results appear from your stock instantly",
-              "Select the medicine; price, batch, MRP, and GST are auto-filled",
-              "Enter the quantity; the system picks the right batch (FEFO — first-expiry-first-out)",
+              "Select the medicine; the dispensing engine picks the batch (LILA/FEFO by default), and price, MRP and GST are auto-filled",
+              "Enter the quantity — packs vs. loose pieces and multi-batch splits are worked out for you",
               "Add more medicines as needed",
               "Choose payment method (Cash / UPI / Card / Credit)",
               "Click 'Save & Print' to finalise and print the invoice",
@@ -324,16 +324,16 @@ const CATEGORIES: HelpCategory[] = [
       },
       {
         id: "lifa-lila", question: "What is LIFA / LILA batch selection?",
-        tags: ["lifa", "lila", "batch", "newest", "oldest", "fefo", "lifo"],
+        tags: ["lifa", "lila", "batch", "newest", "oldest", "fefo", "lifo", "dispensing", "strategy"],
         blocks: [
-          { type: "text", content: "LIFA and LILA control which batch is auto-selected when you add a medicine that exists in multiple batches." },
+          { type: "text", content: "This is a pharmacy-wide setting that decides which batch is dispensed first whenever a medicine has more than one in stock. It applies everywhere automatically — New Bill, Quick Add, Repeat Last Bill and prescriptions from your clinic — so every counter and every flow picks the same batch." },
           {
             type: "badges", items: [
-              { label: "LIFA", color: "bg-blue-100 text-blue-700",  desc: "Last In, First Available — newest batch dispensed first. Useful for fast-moving medicines where the latest stock is most trusted." },
-              { label: "LILA", color: "bg-slate-100 text-slate-700", desc: "Last In, Last Available — oldest batch dispensed first (FEFO behaviour). Recommended to minimise expiry losses." },
+              { label: "LILA / FEFO", color: "bg-slate-100 text-slate-700", desc: "Last In, Last Available — the batch expiring soonest goes first (First-Expiry-First-Out). This is the default and what almost every pharmacy should use: it sells older stock before it expires and minimises write-offs." },
+              { label: "LIFA", color: "bg-blue-100 text-blue-700",  desc: "Last In, First Available — the most recently received batch goes first. A deliberate opt-in for pharmacies that specifically want to move the freshest stock." },
             ],
           },
-          { type: "tip", content: "Toggle LIFA/LILA from the small button on the billing sub-navigation bar. Hover it to see which mode is active. LILA (FEFO) is the safer default for most pharmacies." },
+          { type: "tip", content: "Only expired, blocked, quarantined or out-of-stock batches are ever skipped — neither setting will ever dispense stock you can't sell. An owner or manager toggles LILA/LIFA from the small button on the billing sub-navigation bar (or Settings → Billing). Changing it only affects future bills; past bills keep the batch and strategy they were made under." },
         ],
       },
       {
@@ -397,10 +397,10 @@ const CATEGORIES: HelpCategory[] = [
       },
       {
         id: "fefo", question: "What is FEFO?",
-        tags: ["fefo", "first expiry", "batch selection", "expiry"],
+        tags: ["fefo", "first expiry", "batch selection", "expiry", "lila"],
         blocks: [
-          { type: "text", content: "First-Expiry-First-Out. If a medicine has multiple batches, Checkup auto-picks the one expiring soonest during billing — so older stock sells first and less goes to waste." },
-          { type: "tip", content: "You can manually override the batch at billing if needed." },
+          { type: "text", content: "First-Expiry-First-Out — the batch expiring soonest is dispensed first, so older stock sells before it is wasted. This is Checkup's default batch strategy (shown as LILA on the billing bar) and the backend dispensing engine applies it automatically to every billing flow." },
+          { type: "tip", content: "You can still hand-pick a different batch in the batch picker — that is recorded on the bill as a manual override. To switch the whole pharmacy to newest-stock-first, see LIFA / LILA in Settings → Billing." },
         ],
       },
       {
@@ -502,7 +502,7 @@ const CATEGORIES: HelpCategory[] = [
         id: "batch-status", question: "What does changing a batch's Status do?",
         tags: ["batch status", "quarantine", "damaged", "expired", "active"],
         blocks: [
-          { type: "text", content: "Each batch is Active, Quarantine, Expired, or Damaged. Anything other than Active is excluded from billing and FEFO — it stays in records but can't be sold." },
+          { type: "text", content: "Each batch is Active, Quarantine, Expired, or Damaged. Only Active batches are ever offered by the dispensing engine — Quarantine (including recalled stock), Expired and Damaged are excluded from billing under both LILA and LIFA. They stay in records but can't be sold." },
           { type: "tip", content: "In Inventory → Batches, click 'Status' on a row and give a reason — useful while a batch is under QC review or pulled for damage." },
         ],
       },
@@ -1215,9 +1215,9 @@ const CATEGORIES: HelpCategory[] = [
       },
       {
         id: "fefo-term", question: "FEFO — what does it mean?",
-        tags: ["fefo", "first expiry first out", "stock rotation"],
+        tags: ["fefo", "first expiry first out", "stock rotation", "lila", "dispensing"],
         blocks: [
-          { type: "text", content: "FEFO stands for First-Expiry-First-Out. It is the principle of always selling the batch that expires soonest before a newer batch. This minimises medicine wastage due to expiry. Checkup applies this automatically during billing." },
+          { type: "text", content: "FEFO stands for First-Expiry-First-Out — always dispensing the batch that expires soonest before a newer one, which minimises wastage. Checkup's dispensing engine applies it automatically across New Bill, Quick Add, Repeat Last Bill and clinic prescriptions. It is the default (labelled LILA); a pharmacy can opt into newest-stock-first (LIFA) instead in Settings → Billing." },
         ],
       },
       {

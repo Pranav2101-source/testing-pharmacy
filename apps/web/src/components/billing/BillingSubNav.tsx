@@ -205,6 +205,8 @@ export const BillingSubNav = memo(function BillingSubNav({
   onInterstate,
   lifa,
   onLifaToggle,
+  strategySaving = false,
+  strategyLocked = false,
 }: {
   onAction:      (id: ActionId) => void;
   submitting:    boolean;
@@ -213,8 +215,13 @@ export const BillingSubNav = memo(function BillingSubNav({
   onPaymentMode: (m: "CASH" | "UPI" | "CARD" | "CREDIT") => void;
   isInterstate:  boolean;
   onInterstate:  (v: boolean) => void;
+  /** Persisted pharmacy setting (default LILA/FEFO) — the backend engine orders batches, this just reflects it. */
   lifa:          boolean;
   onLifaToggle:  () => void;
+  /** True while the setting is being saved. */
+  strategySaving?: boolean;
+  /** True when the current user may not change shop policy (cashier / pharmacist). */
+  strategyLocked?: boolean;
 }) {
   return (
     <div
@@ -237,24 +244,31 @@ export const BillingSubNav = memo(function BillingSubNav({
 
         <div className="h-5 w-px bg-slate-200 mx-0.5" />
 
-        {/* LIFA / LILA — batch selection strategy */}
+        {/* LIFA / LILA — pharmacy-wide batch-selection strategy. The backend
+            dispensing engine decides the actual batch order for every flow; this
+            toggles the saved setting (owners/managers only). */}
         <div className="flex items-center gap-1.5 group/lifa">
           <button
             onClick={onLifaToggle}
-            title={lifa
-              ? "LIFA — Last In, First Available. Newest batches dispensed first."
-              : "LILA — Last In, Last Available. Oldest batches dispensed first (FEFO)."}
+            disabled={strategyLocked || strategySaving}
+            title={strategyLocked
+              ? `Batch strategy: ${lifa ? "LIFA — newest batch first" : "LILA/FEFO — oldest batch first (default)"}. Only an owner or manager can change this.`
+              : lifa
+                ? "LIFA — newest received batch dispensed first. Click to switch back to LILA/FEFO (recommended)."
+                : "LILA / FEFO — oldest (soonest-expiring) batch dispensed first. The safe default. Click to switch to LIFA."}
             className={cn(
-              "text-[12px] font-bold px-2.5 py-1.5 rounded-lg border transition-colors",
+              "text-[12px] font-bold px-2.5 py-1.5 rounded-lg border transition-colors inline-flex items-center gap-1",
+              (strategyLocked || strategySaving) && "opacity-60 cursor-not-allowed",
               lifa
                 ? "border-blue-200 bg-blue-50 text-blue-600 hover:bg-blue-100"
                 : "border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100",
             )}
           >
+            {strategySaving && <Loader2 className="w-3 h-3 animate-spin" />}
             {lifa ? "LIFA" : "LILA"}
           </button>
           <span className="hidden group-hover/lifa:block text-[10px] text-slate-400 font-medium whitespace-nowrap">
-            {lifa ? "newest batch first" : "oldest batch first"}
+            {lifa ? "newest batch first" : "oldest batch first (default)"}
           </span>
         </div>
 

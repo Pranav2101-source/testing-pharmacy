@@ -98,6 +98,7 @@ public class InventoryService {
     private final ShelfRepository shelfRepository;
     private final RackRepository rackRepository;
     private final UserRepository userRepository;
+    private final com.checkup.pharmacy.modules.dispensing.DispensingService dispensingService;
     private final long reservationTtlMinutes;
 
     public InventoryService(InventoryRepository inventoryRepository,
@@ -110,6 +111,7 @@ public class InventoryService {
                             ShelfRepository shelfRepository,
                             RackRepository rackRepository,
                             UserRepository userRepository,
+                            com.checkup.pharmacy.modules.dispensing.DispensingService dispensingService,
                             @Value("${app.inventory.reservation-ttl-minutes:15}") long reservationTtlMinutes) {
         this.inventoryRepository = inventoryRepository;
         this.movementRepository = movementRepository;
@@ -121,6 +123,7 @@ public class InventoryService {
         this.shelfRepository = shelfRepository;
         this.rackRepository = rackRepository;
         this.userRepository = userRepository;
+        this.dispensingService = dispensingService;
         this.reservationTtlMinutes = reservationTtlMinutes;
     }
 
@@ -703,14 +706,48 @@ public class InventoryService {
         return expired.size();
     }
 
-    // ── FEFO (used by billing) ───────────────────────────────────────────────
+    // ── Batch selection (delegates ordering to the dispensing engine) ─────────
 
+    /**
+     * The single batch the dispensing engine would draw from first for
+     * {@code quantity} whole packs of this medicine, under the pharmacy's
+     * configured strategy (LILA/FEFO or LIFA — see {@link
+     * com.checkup.pharmacy.modules.dispensing.DispensingService}). Kept for the
+     * substitute-picker paths on the prescription triage screen; the primary
+     * prescription → cart path uses {@code /dispensing/prescriptions/{id}/plan}.
+     */
     @Transactional(readOnly = true)
     public InventoryResponse getFefoBatch(String medicineId, int quantity) {
         int qty = Math.max(quantity, 1);
-        List<Inventory> candidates = inventoryRepository.findFefoCandidates(
-                TenantContext.pharmacyId(), medicineId, Instant.now(), qty, PageRequest.of(0, 1));
-        return candidates.isEmpty() ? null : enrich(candidates).get(0);
+        List<Inventory> ordered = dispensingService.orderBatches(
+                inventoryRepository.findSellableBatchesForEffectiveMedicine(
+                        TenantContext.pharmacyId(), medicineId, Instant.now()));
+        for (Inventory b : ordered) {
+            if (b.getQuantity() - b.getReservedQuantity() >= qty) {
+                return enrich(List.of(b)).get(0);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Every sellable batch of a medicine, in the pharmacy's configured dispensing
+     * order — what the billing batch picker shows. The frontend no longer sorts
+     * batches itself; this is the authoritative order.
+     */
+    @Transactional(readOnly = true)
+    public List<InventoryResponse> dispensingBatches(String medicineId, String localMedicineId) {
+        String pharmacyId = TenantContext.pharmacyId();
+        Instant now = Instant.now();
+        List<Inventory> batches;
+        if (localMedicineId != null && !localMedicineId.isBlank()) {
+            batches = inventoryRepository.findSellableBatchesForLocalMedicine(pharmacyId, localMedicineId.trim(), now);
+        } else if (medicineId != null && !medicineId.isBlank()) {
+            batches = inventoryRepository.findSellableBatchesForEffectiveMedicine(pharmacyId, medicineId.trim(), now);
+        } else {
+            throw new BadRequestException("medicineId or localMedicineId is required");
+        }
+        return enrich(dispensingService.orderBatches(batches));
     }
 
     // ── Sales-velocity features (calibrate-stock, frequent quick-add) ────────
@@ -793,7 +830,7 @@ public class InventoryService {
         List<InventoryMovementRepository.MedicineSalesAggregateRow> ranked =
                 movementRepository.aggregateSalesByMedicine(pharmacyId, from, to);
 
-        // One FEFO query for the whole shortlist instead of one per medicine.
+        // One sellable-batch query for the whole shortlist instead of one per medicine.
         //
         // This powers the quick-add card on the billing screen, so it runs every time a
         // cashier opens a new bill. It used to issue a FEFO query per ranked medicine
@@ -805,17 +842,19 @@ public class InventoryService {
         // are ranked by sales volume, so needing to look past this many to find ten
         // in-stock items is not a real scenario, and the cap bounds both the IN list and
         // the rows returned.
+        //
+        // Which batch per medicine is the dispensing engine's call, not this method's —
+        // topBatchPerMedicine orders the candidates by the pharmacy's configured
+        // strategy (LILA/FEFO or LIFA), so Quick Add and a manual sale of the same
+        // medicine always agree on the batch.
         List<String> shortlist = ranked.stream()
                 .limit((long) FREQUENT_LIMIT * FREQUENT_CANDIDATE_MULTIPLIER)
                 .map(InventoryMovementRepository.MedicineSalesAggregateRow::getMedicineId)
                 .toList();
-        Map<String, Inventory> fefoByMedicineId = new HashMap<>();
-        if (!shortlist.isEmpty()) {
-            // Ordered by (medicineId, expiryDate), so the first row per medicine is FEFO.
-            for (Inventory candidate : inventoryRepository.findFefoCandidatesForMedicines(pharmacyId, shortlist, to, 1)) {
-                fefoByMedicineId.putIfAbsent(candidate.getMedicineId(), candidate);
-            }
-        }
+        Map<String, Inventory> fefoByMedicineId = shortlist.isEmpty()
+                ? Map.of()
+                : dispensingService.topBatchPerMedicine(
+                        inventoryRepository.findSellableBatchesForMedicines(pharmacyId, shortlist, to));
 
         Map<String, com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride> freqOverrides = new HashMap<>();
         for (var o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, shortlist)) {

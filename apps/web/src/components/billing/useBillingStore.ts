@@ -109,6 +109,8 @@ export function rxRequiredIssue(
 
 export type CartItem = {
   inventoryId:    string;
+  /** Catalogue medicine id — lets the cart re-query the dispensing engine (loose overflow, batch swap). Absent for a pharmacy-local medicine. */
+  medicineId?:    string;
   medicineName:   string;
   hsnCode:        string | null;
   schedule:       string | null;
@@ -136,6 +138,12 @@ export type CartItem = {
   looseUnits?:    number;
   /** Cashier waived the "that's N full strips" guard for this line — see LineIssue.override. */
   forceLoose?:    boolean;
+  /**
+   * false only when the pharmacist hand-picked this batch in the picker, overriding
+   * the dispensing engine's order. Recorded on the invoice line for the dispensing
+   * audit trail; defaults true (engine order).
+   */
+  batchAutoSelected?: boolean;
   /**
    * The prescribed line this sale fulfils. Only ever set for a substitution: the
    * server attributes everything else by matching the medicine, which cannot work
@@ -314,6 +322,7 @@ function recompute(item: NewCartItem & Partial<CartItem>): CartItem {
   );
   return {
     inventoryId:    item.inventoryId,
+    medicineId:     item.medicineId,
     prescriptionItemId: item.prescriptionItemId,
     medicineName:   item.medicineName,
     hsnCode:        item.hsnCode,
@@ -336,6 +345,7 @@ function recompute(item: NewCartItem & Partial<CartItem>): CartItem {
     // Cleared whenever the line leaves loose selling — the waiver is specific to
     // cutting a sealed strip for this exact quantity.
     forceLoose:     saleUnit === "LOOSE" ? item.forceLoose : undefined,
+    batchAutoSelected: item.batchAutoSelected,
     rate:           Math.round(effMrp * (1 - item.discount / 100) * 100) / 100,
     taxableAmount,
     cgst,

@@ -24,6 +24,7 @@ import { computeNetPayable, shortfallMessage } from "@/lib/billTotals";
 import { getStoredUser } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 import { saveDraft, getDraft, deleteDraft } from "@/lib/draftStorage";
+import { useDispensingStrategy } from "@/lib/useDispensingStrategy";
 import { saveSession, loadSession, clearSession, type AutoSaveSession } from "@/lib/autoSave";
 import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
 import { useInvoicePrintConfig } from "@/lib/useInvoicePrintConfig";
@@ -123,7 +124,11 @@ function NewBillInner() {
   const [showPrint,            setShowPrint]            = useState(false);
   const [showLabels,           setShowLabels]           = useState(false);
   const [showBreakdown,        setShowBreakdown]        = useState(false);
-  const [lifa,                 setLifa]                 = useState(true);
+  // Batch-selection strategy is a persisted pharmacy setting (default LILA/FEFO),
+  // not per-bill state. The backend dispensing engine is what actually orders
+  // batches; this drives the sub-nav toggle and the picker's label.
+  const dispensing = useDispensingStrategy();
+  const lifa = dispensing.lifa;
   const [savedInvoiceId,       setSavedInvoiceId]       = useState<string | null>(null);
   const [cancelConfirm,        setCancelConfirm]        = useState(false);
   const [cancelReason,         setCancelReason]         = useState("");
@@ -406,6 +411,9 @@ function NewBillInner() {
           // Only ever set for a substitution; the server attributes everything else
           // by matching the medicine.
           prescriptionItemId: i.prescriptionItemId,
+          // false only when a pharmacist hand-picked the batch over the engine's
+          // order — recorded on the invoice line for the dispensing audit trail.
+          batchAutoSelected: i.batchAutoSelected === false ? false : undefined,
         })),
       });
       const printData: PrintInvoiceData = {
@@ -510,7 +518,11 @@ function NewBillInner() {
   // Stable callbacks for BillingSubNav — prevents re-renders on every cart change
   const handlePaymentMode  = useCallback((m: "CASH"|"UPI"|"CARD"|"CREDIT") => setMeta({ paymentMode: m }), [setMeta]);
   const handleInterstate   = useCallback((v: boolean) => setMeta({ isInterstate: v }), [setMeta]);
-  const handleLifaToggle   = useCallback(() => setLifa((v) => !v), []);
+  const canChangeStrategy  = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
+  const handleLifaToggle   = useCallback(() => {
+    if (!canChangeStrategy) return;
+    dispensing.setStrategy(dispensing.strategy === "LIFA" ? "LILA_FEFO" : "LIFA");
+  }, [canChangeStrategy, dispensing]);
 
   return (
     <>
@@ -538,6 +550,8 @@ function NewBillInner() {
           onInterstate={handleInterstate}
           lifa={lifa}
           onLifaToggle={handleLifaToggle}
+          strategySaving={dispensing.saving}
+          strategyLocked={!canChangeStrategy}
         />
 
         {/* Action feedback toast (Save & New, coming-soon stubs) */}
@@ -675,6 +689,7 @@ function NewBillInner() {
           </div>
           <div className="flex-shrink-0 border-b border-slate-200 bg-white">
             <MedicineSearchCombobox
+              lifa={lifa}
               onOpenAlternatives={(med, autoSuggest) =>
                 setAltDrawer({ med, autoSuggest: autoSuggest ?? false })
               }

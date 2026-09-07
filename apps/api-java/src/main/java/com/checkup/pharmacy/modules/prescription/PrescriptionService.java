@@ -130,6 +130,15 @@ public class PrescriptionService {
      * one-off conversion — see {@code prescriptionToCart.ts} on the frontend for why THAT path
      * stays sequential-per-line instead of reusing this). Unmatched lines (no medicineId yet)
      * are omitted — there is nothing to check stock for until a pharmacist links one.
+     *
+     * <p>{@code Inventory.quantity} and {@code reservedQuantity} are both PACK counts —
+     * {@code quantity - reservedQuantity} alone is a pack-level number. A prescribed line's own
+     * quantity (calculated or clinic-stated) is always a PIECE count, so this converts every
+     * batch's unreserved packs to pieces via the medicine's {@code unitsPerPack} and adds its
+     * loose remainder before summing, exactly as {@code MedicineService.StockSummary} already
+     * does for the billing combobox — comparing a piece-based prescription quantity against a
+     * raw pack count would misreport a fully-stocked medicine as "low" or "out of stock" for no
+     * reason other than a unit mismatch.
      */
     @Transactional(readOnly = true)
     public PrescriptionStockResponse stockCheck(String id) {
@@ -145,12 +154,19 @@ public class PrescriptionService {
                 ? Map.of()
                 : inventoryRepository.findActiveNonExpiredByMedicineIdIn(rx.getPharmacyId(), medicineIds, Instant.now())
                         .stream().collect(Collectors.groupingBy(Inventory::getMedicineId));
+        Map<String, Integer> unitsPerPackByMedicineId = medicineIds.isEmpty()
+                ? Map.of()
+                : medicineRepository.findAllById(medicineIds).stream()
+                        .collect(Collectors.toMap(Medicine::getId,
+                                m -> m.getUnitsPerPack() != null && m.getUnitsPerPack() > 0 ? m.getUnitsPerPack() : 1));
 
         List<PrescriptionStockResponse.Item> result = items.stream()
                 .filter(i -> i.getMedicineId() != null)
                 .map(i -> {
+                    int unitsPerPack = unitsPerPackByMedicineId.getOrDefault(i.getMedicineId(), 1);
                     int available = batchesByMedicine.getOrDefault(i.getMedicineId(), List.of()).stream()
-                            .mapToInt(b -> Math.max(0, b.getQuantity() - b.getReservedQuantity()))
+                            .mapToInt(b -> Math.max(0, b.getQuantity() - b.getReservedQuantity()) * unitsPerPack
+                                    + b.getLooseUnits())
                             .sum();
                     String status = available == 0 ? "out_of_stock"
                             : available <= LOW_STOCK_QTY ? "low_stock" : "in_stock";
@@ -341,8 +357,8 @@ public class PrescriptionService {
         List<PrescriptionResponse.Item> itemResponses = items.stream()
                 .map(i -> new PrescriptionResponse.Item(i.getId(), i.getMedicineName(), i.getMedicineId(), i.getSchedule(),
                         i.getQuantity(), i.getDispensedQty(), i.getDosage(), i.getDuration(), i.getNotes(),
-                        i.getDispensedMedicineName(), i.isSubstituted(),
-                        suggestionsByItemId.getOrDefault(i.getId(), List.of())))
+                        i.getDispensedMedicineName(), i.isSubstituted(), i.isQuantityAutoCalculated(),
+                        i.getQuantityCalculationNote(), suggestionsByItemId.getOrDefault(i.getId(), List.of())))
                 .toList();
 
         // A line needs a human when the EMR's medicine name did not match the catalogue, OR
@@ -443,6 +459,15 @@ public class PrescriptionService {
      *
      * <p>Deliberately does not touch dispensedQty or the prescription's status. Linking says
      * "this is the product that was meant"; it does not assert anything was handed over.
+     *
+     * <p>If this line also still needs a quantity, linking is the moment its base unit first
+     * becomes known — an unmatched line had no medicine to check it against during ingest, so
+     * {@code needsQuantityConfirmation} was the only thing anyone could say about it. Now that a
+     * medicine is attached, the same calculation ingest already runs for a matched line runs
+     * here too (see {@link PrescriptionItem#calculateQuantityIfMissing}), so linking a Schedule-H
+     * "Paracetamol 1-0-1 x 6 days" line does not ALSO require typing "12" into
+     * {@code ConfirmQuantityPanel} right after — one pharmacist action resolves both gaps when
+     * the dosage supports it, and leaves a specific note when it does not.
      */
     @Transactional
     public PrescriptionResponse linkItemToMedicine(String prescriptionId, String itemId, String medicineId) {
@@ -464,6 +489,7 @@ public class PrescriptionService {
                 .orElseThrow(() -> new NotFoundException("Medicine not found"));
 
         item.linkMedicine(medicine.getId());
+        item.calculateQuantityIfMissing(medicine);
         itemRepository.save(item);
 
         return getById(rx.getId());

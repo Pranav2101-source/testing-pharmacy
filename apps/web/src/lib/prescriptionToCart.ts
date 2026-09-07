@@ -2,7 +2,10 @@ import { calcGstFromMrp, perPieceMrp } from "@pharmacy/utils";
 import { api } from "@/lib/api-client";
 import { DEFAULT_META } from "@/components/billing/useBillingStore";
 import type { CartItem, BillingMeta, SaleUnit } from "@/components/billing/useBillingStore";
-import type { AlternativeResult, AlternativeBatch } from "@pharmacy/types";
+import type {
+  AlternativeResult, AlternativeBatch,
+  DispensingPlan, DispensingPlanLine, DispensingAllocation,
+} from "@pharmacy/types";
 
 /**
  * Turns a prescription into a billing cart.
@@ -81,6 +84,14 @@ export type ResolvedCart = {
   /** Medicine names confirmed to have no sellable stock at all — the check succeeded and the answer was zero. */
   failures: string[];
   /**
+   * The exact, pharmacist-readable reason each blocked line could not be filled — from the
+   * dispensing engine ({@code DispensingPlan.Line.message}). Covers "no stock", "less than a
+   * full pack and loose selling is off", "medicine no longer in the catalogue", and partial /
+   * rounded-up outcomes. Keyed by medicine name so a caller can show the specific sentence
+   * instead of a blanket "not in stock".
+   */
+  reasons: { medicineName: string; message: string }[];
+  /**
    * Medicine names where the stock check itself failed (network error, server error) — NOT
    * confirmed absent. Kept separate from {@link failures} so the pharmacist is told "couldn't
    * check" rather than "not in stock", which would wrongly read as a confirmed answer when the
@@ -98,8 +109,21 @@ export type ResolvedCart = {
    * for this medicine (loose selling off here, or Schedule X) and the prescribed count fell
    * between whole packs — rounded up to the nearest full pack rather than shorting the
    * course. See {@link resolveSaleUnit}.
+   *
+   * <p>{@code medicineId}/{@code unitsPerPack}/{@code schedule} are present only for a line
+   * resolved through the normal FEFO path (not a pharmacist-chosen "Replace" substitute,
+   * which carries no catalogue medicineId in its {@link CartItem}) — see {@code
+   * PackRoundingModal}, the only reader of these three, for why: it needs them to offer
+   * "turn loose selling on and bill the exact amount instead" without a second lookup.
    */
-  roundedToPack: { medicineName: string; requested: number; dispensed: number }[];
+  roundedToPack: {
+    medicineName: string;
+    requested: number;
+    dispensed: number;
+    medicineId?: string;
+    unitsPerPack?: number;
+    schedule?: string | null;
+  }[];
   /** Lines a pharmacist explicitly chose to leave off this bill — see {@link ItemResolution}. */
   skipped: { medicineName: string; reason: "hold" | "remove" }[];
 };
@@ -117,20 +141,6 @@ export function billableLines(rx: BillablePrescription) {
 /** True once every line is catalogue-linked and something is still owed. */
 export function canBill(rx: BillablePrescription, needsReview: number) {
   return needsReview === 0 && billableLines(rx).length > 0;
-}
-
-/**
- * A blocking-confirm message for lines rounded UP to a full pack — the patient pays
- * for tablets they weren't prescribed, so the pharmacist has to see and accept it
- * rather than catch a toast mid-queue. Empty string when there is nothing to confirm.
- */
-export function roundUpConfirmMessage(rounded: ResolvedCart["roundedToPack"]): string {
-  if (rounded.length === 0) return "";
-  const lines = rounded.map((r) => `  • ${r.medicineName}: ${r.dispensed} instead of ${r.requested}`).join("\n");
-  const many = rounded.length > 1;
-  return `This pharmacy can't cut a strip for ${many ? "these medicines" : "this medicine"}, so the `
-    + `${many ? "lines are" : "line is"} rounded up to a full pack — the patient pays for the extra:\n\n`
-    + `${lines}\n\nBill it this way?`;
 }
 
 /**
@@ -159,11 +169,42 @@ export async function resolvePrescriptionToCart(
   const partials: ResolvedCart["partials"] = [];
   const roundedToPack: ResolvedCart["roundedToPack"] = [];
   const skipped: ResolvedCart["skipped"] = [];
-
-  // Sequential rather than Promise.all: these hit the same inventory rows, and a burst of
-  // parallel FEFO lookups on one prescription buys milliseconds while making the failure
-  // order non-deterministic in the message the pharmacist reads.
+  const reasons: ResolvedCart["reasons"] = [];
   const items: CartItem[] = [];
+
+  // ONE call: the backend dispensing engine resolves every billable line to real
+  // batches, in the pharmacy's configured order (LILA/FEFO or LIFA), with pack /
+  // loose / round-up already worked out. The frontend does not pick batches or
+  // reason about the strategy — see DispensingService / DispensingPlan.
+  let planByMedicine: Map<string, DispensingPlanLine[]>;
+  try {
+    const { data } = await api.get<{ data: DispensingPlan }>(
+      `/dispensing/prescriptions/${rx.id}/plan`,
+    );
+    planByMedicine = new Map();
+    for (const pl of data.data.lines) {
+      if (!pl.medicineId) continue;
+      const q = planByMedicine.get(pl.medicineId) ?? [];
+      q.push(pl);
+      planByMedicine.set(pl.medicineId, q);
+    }
+  } catch {
+    // The plan call itself failed (network/server) — NOT a confirmed "no stock".
+    // Every line the pharmacist did not explicitly resolve is "couldn't check".
+    planByMedicine = new Map();
+    for (const line of lines) {
+      const r = resolutions?.[line.id];
+      if (r?.action === "remove" || r?.action === "hold") {
+        skipped.push({ medicineName: line.medicineName, reason: r.action });
+      } else if (r?.action === "replace") {
+        items.push(r.cartItem);
+      } else {
+        checkFailed.push(line.medicineName);
+      }
+    }
+    return buildResult(rx, items, failures, checkFailed, partials, roundedToPack, skipped, reasons);
+  }
+
   for (const line of lines) {
     const resolution = resolutions?.[line.id];
 
@@ -172,10 +213,6 @@ export async function resolvePrescriptionToCart(
       continue;
     }
     if (resolution?.action === "replace") {
-      // Already a complete CartItem, built from the exact batch the pharmacist was shown —
-      // nothing left to resolve for this line. Still report it if the substitute could
-      // not cover the course, or was rounded UP to a full pack — the pharmacist accepts
-      // that the same way as for an ordinary line (see roundUpConfirmMessage).
       const ci = resolution.cartItem;
       items.push(ci);
       const owed = line.quantity - line.dispensedQty;
@@ -186,53 +223,90 @@ export async function resolvePrescriptionToCart(
     }
 
     const remaining = line.quantity - line.dispensedQty;
-    try {
-      const { data } = await api.get<{ data: FefoBatch | null }>(
-        `/inventory/fefo/${line.medicineId}`,
-        { params: { quantity: remaining } },
-      );
-      let batch = data.data;
+    // Match this prescribed line to its plan line by medicine; a queue handles a
+    // doctor prescribing the same medicine on two lines.
+    const planLine = line.medicineId ? planByMedicine.get(line.medicineId)?.shift() : undefined;
 
-      if (!batch) {
-        // No single batch's PACK count covers the full amount at face value — that check is
-        // itself pack-oriented and, for a medicine sold loose, routinely stricter than what
-        // is actually needed (one part-used strip covers plenty of pieces), so fall back to
-        // "earliest-expiring batch with ANY stock" (same FEFO ordering, just without the
-        // >= remaining floor) and let buildCartItem work out the real piece-level fill.
-        const partial = await api.get<{ data: FefoBatch | null }>(
-          `/inventory/fefo/${line.medicineId}`,
-          { params: { quantity: 1 } },
-        );
-        batch = partial.data.data;
-        if (!batch) {
-          failures.push(line.medicineName);
-          continue;
-        }
-      }
+    if (!planLine || planLine.allocations.length === 0) {
+      // The engine could not fill this line — carry its exact reason so the pharmacist
+      // sees "less than a full pack, loose selling off" rather than a blanket "no stock".
+      failures.push(line.medicineName);
+      if (planLine?.message) reasons.push({ medicineName: line.medicineName, message: planLine.message });
+      continue;
+    }
 
-      const built = buildCartItem(batch, line.schedule, remaining);
-      if (!built) {
-        // Nothing sellable under this pharmacy's settings — no stock at all, or less than
-        // one whole pack on the shelf for a medicine that cannot be sold loose here.
-        failures.push(line.medicineName);
-        continue;
-      }
-
-      const dispensed = built.saleUnit === "LOOSE" ? built.quantity : built.quantity * (built.unitsPerPack ?? 1);
-      if (dispensed < remaining) {
-        partials.push({ medicineName: line.medicineName, requested: remaining, available: dispensed });
-      } else if (dispensed > remaining) {
-        roundedToPack.push({ medicineName: line.medicineName, requested: remaining, dispensed });
-      }
-
-      items.push(built);
-    } catch {
-      // The check itself failed (network/server error) — NOT a confirmed "no stock". Kept
-      // out of `failures` so the pharmacist isn't told a wrong-but-confident "not in stock"
-      // for a medicine the check never actually got an answer about.
-      checkFailed.push(line.medicineName);
+    for (const alloc of planLine.allocations) {
+      items.push(cartItemFromAllocation(alloc, planLine.medicineId, line.medicineName, line.schedule));
+    }
+    if (planLine.message) reasons.push({ medicineName: line.medicineName, message: planLine.message });
+    if (planLine.shortfallPieces && planLine.shortfallPieces > 0) {
+      partials.push({
+        medicineName: line.medicineName,
+        requested: remaining,
+        available: planLine.dispensedPieces,
+      });
+    } else if (planLine.roundedUpToPieces && planLine.roundedUpToPieces > remaining) {
+      // medicineId/unitsPerPack/schedule travel with this entry so PackRoundingModal
+      // can offer "turn loose selling on and bill the exact amount" without a lookup.
+      roundedToPack.push({
+        medicineName: line.medicineName,
+        requested: remaining,
+        dispensed: planLine.roundedUpToPieces,
+        medicineId: line.medicineId ?? undefined,
+        unitsPerPack: planLine.allocations[0]?.unitsPerPack ?? undefined,
+        schedule: line.schedule,
+      });
     }
   }
+
+  return buildResult(rx, items, failures, checkFailed, partials, roundedToPack, skipped, reasons);
+}
+
+/** A dispensing-plan allocation → a finished cart row (money fields included). */
+function cartItemFromAllocation(
+  alloc: DispensingAllocation,
+  medicineId: string | null,
+  medicineName: string,
+  schedule: string | null,
+): CartItem {
+  return {
+    inventoryId: alloc.inventoryId,
+    medicineId: medicineId ?? undefined,
+    medicineName,
+    hsnCode: alloc.hsnCode,
+    schedule,
+    batchNumber: alloc.batchNumber,
+    expiryDate: alloc.expiryDate,
+    mrp: alloc.mrp,
+    quantity: alloc.quantity,
+    freeQty: 0,
+    discount: 0,
+    gstRate: alloc.gstRate,
+    availableStock: alloc.availableStock,
+    saleUnit: alloc.saleUnit,
+    unitsPerPack: alloc.unitsPerPack ?? undefined,
+    baseUnit: alloc.baseUnit ?? undefined,
+    allowLooseSale: alloc.allowLooseSale,
+    looseUnits: alloc.looseUnits,
+    rate: alloc.rate,
+    taxableAmount: alloc.taxableAmount,
+    cgst: alloc.cgst,
+    sgst: alloc.sgst,
+    igst: alloc.igst,
+    amount: alloc.amount,
+  };
+}
+
+function buildResult(
+  rx: BillablePrescription,
+  items: CartItem[],
+  failures: string[],
+  checkFailed: string[],
+  partials: ResolvedCart["partials"],
+  roundedToPack: ResolvedCart["roundedToPack"],
+  skipped: ResolvedCart["skipped"],
+  reasons: ResolvedCart["reasons"] = [],
+): ResolvedCart {
 
   return {
     items,
@@ -250,6 +324,7 @@ export async function resolvePrescriptionToCart(
     partials,
     roundedToPack,
     skipped,
+    reasons,
   };
 }
 

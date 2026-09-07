@@ -27,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -464,6 +465,18 @@ public class MedicineService {
      * (Add Stock, barcode mapping, the alternatives drawer) writes against a global
      * {@code medicineId} and must keep seeing catalogue-only results — a local
      * medicine's id is a {@code PharmacyMedicine} id, meaningless to those flows.
+     *
+     * <p>{@code includeLocal} also switches on stock-aware ranking: one batched join
+     * (see {@code InventoryRepository#findStockForEffectiveMedicineIds}/{@code
+     * #findStockForLocalMedicineIds} — never one query per result) enriches every hit
+     * with this pharmacy's own available quantity/loose units/price, then a stable
+     * sort moves every in-stock hit ahead of every out-of-stock one WITHOUT disturbing
+     * the text-match ordering within each group — an in-stock exact match still beats
+     * an in-stock substring match, and an out-of-stock exact match still beats an
+     * out-of-stock substring match. Skipped when {@code includeLocal} is false (Add
+     * Stock, alternatives, barcode mapping): those flows deliberately show every
+     * catalogue medicine regardless of this pharmacy's stock, so pushing zero-stock
+     * ones down would work against what they're for.
      */
     @Transactional(readOnly = true)
     public List<MedicineResponse> quickSearch(String q, int limit, boolean includeLocal) {
@@ -481,16 +494,48 @@ public class MedicineService {
             }
         }
         Map<String, PharmacyMedicineOverride> overrides = overridesByMedicineId(hits.stream().map(Medicine::getId).toList());
-        List<MedicineResponse> results = new ArrayList<>(
-                hits.stream().map(m -> toResponse(m, overrides.get(m.getId()))).toList());
 
-        if (includeLocal && results.size() < safeLimit) {
-            int remaining = safeLimit - results.size();
-            for (PharmacyMedicine lm : pharmacyMedicineRepository.findByPharmacyIdAndNameContainingIgnoreCaseAndMatchStatusNot(
+        List<PharmacyMedicine> localHits = List.of();
+        if (includeLocal && hits.size() < safeLimit) {
+            int remaining = safeLimit - hits.size();
+            localHits = pharmacyMedicineRepository.findByPharmacyIdAndNameContainingIgnoreCaseAndMatchStatusNot(
                     TenantContext.pharmacyId(), trimmed, com.checkup.pharmacy.common.enums.MedicineMatchStatus.LINKED,
-                    PageRequest.of(0, remaining))) {
-                results.add(toLocalResponse(lm));
+                    PageRequest.of(0, remaining));
+        }
+
+        Map<String, StockSummary> stockByMedicineId = Map.of();
+        Map<String, StockSummary> stockByLocalMedicineId = Map.of();
+        if (includeLocal) {
+            String pharmacyId = TenantContext.pharmacyId();
+            java.time.Instant now = java.time.Instant.now();
+            if (!hits.isEmpty()) {
+                stockByMedicineId = inventoryRepository
+                        .findStockForEffectiveMedicineIds(pharmacyId, hits.stream().map(Medicine::getId).toList(), now)
+                        .stream().collect(Collectors.toMap(
+                                com.checkup.pharmacy.modules.inventory.InventoryRepository.StockAggregateRow::getEffectiveId,
+                                StockSummary::from));
             }
+            if (!localHits.isEmpty()) {
+                stockByLocalMedicineId = inventoryRepository
+                        .findStockForLocalMedicineIds(pharmacyId, localHits.stream().map(PharmacyMedicine::getId).toList(), now)
+                        .stream().collect(Collectors.toMap(
+                                com.checkup.pharmacy.modules.inventory.InventoryRepository.StockAggregateRow::getEffectiveId,
+                                StockSummary::from));
+            }
+        }
+
+        Map<String, StockSummary> stockByMedicineIdFinal = stockByMedicineId;
+        List<MedicineResponse> results = new ArrayList<>(hits.stream()
+                .map(m -> toResponse(m, overrides.get(m.getId()), stockByMedicineIdFinal.get(m.getId())))
+                .toList());
+        for (PharmacyMedicine lm : localHits) {
+            results.add(toLocalResponse(lm, stockByLocalMedicineId.get(lm.getId())));
+        }
+
+        // Stable partition: in-stock first, out-of-stock last, preserving the relative
+        // (text-match-ranked) order that was already computed above within each group.
+        if (includeLocal) {
+            results.sort(Comparator.comparing(r -> !r.inStock()));
         }
         return results;
     }
@@ -645,15 +690,21 @@ public class MedicineService {
     }
 
     private MedicineResponse toResponse(Medicine m) {
-        return toResponse(m, (PharmacyMedicineOverride) null);
+        return toResponse(m, null, null);
+    }
+
+    private MedicineResponse toResponse(Medicine m, PharmacyMedicineOverride override) {
+        return toResponse(m, override, null);
     }
 
     /**
      * {@code override} is this pharmacy's row for the medicine (or null). Only the
      * POS-facing callers resolve it; the catalogue views pass null and get
-     * {@code allowLooseSale = false} with the catalogue's own pack size.
+     * {@code allowLooseSale = false} with the catalogue's own pack size. {@code stock}
+     * is this pharmacy's batched search-time stock summary (or null outside
+     * {@link #quickSearch}) — see {@link StockSummary}.
      */
-    private MedicineResponse toResponse(Medicine m, PharmacyMedicineOverride override) {
+    private MedicineResponse toResponse(Medicine m, PharmacyMedicineOverride override, StockSummary stock) {
         boolean allowLoose = override != null && override.isAllowLooseSale();
         boolean looseDefault = allowLoose && override.isLooseByDefault();
         Integer effectiveUpp = override != null && override.getUnitsPerPack() != null
@@ -663,7 +714,11 @@ public class MedicineService {
                 m.getCategory(), m.getSchedule(), m.getHsnCode(), m.getGstRate(), m.getForm(),
                 m.getStrength(), m.getUnit(), m.getPackSize(), m.isActive(),
                 effectiveUpp, com.checkup.pharmacy.common.util.BaseUnits.resolve(m.getBaseUnit(), m.getForm()),
-                allowLoose, looseDefault, false);
+                allowLoose, looseDefault, false,
+                stock != null && stock.hasStock(), stock != null ? stock.availableQuantity() : 0,
+                stock != null ? stock.looseUnitsOnHand() : 0,
+                stock != null ? stock.sellableUnits(allowLoose, effectiveUpp) : null,
+                stock != null ? stock.price() : null);
     }
 
     /**
@@ -673,12 +728,40 @@ public class MedicineService {
      * support yet (always inactive-for-that-purpose), no composition/category/packSize
      * on record.
      */
-    private MedicineResponse toLocalResponse(PharmacyMedicine m) {
+    private MedicineResponse toLocalResponse(PharmacyMedicine m, StockSummary stock) {
         return new MedicineResponse(
                 m.getId(), m.getName(), m.getGenericName(), m.getManufacturer(), null,
                 null, m.getSchedule(), m.getHsnCode(), m.getGstRate(), m.getForm(),
                 m.getStrength(), m.getUnit(), null, true,
-                null, null, false, false, true);
+                null, null, false, false, true,
+                stock != null && stock.hasStock(), stock != null ? stock.availableQuantity() : 0,
+                stock != null ? stock.looseUnitsOnHand() : 0, null,
+                stock != null ? stock.price() : null);
+    }
+
+    /**
+     * This pharmacy's batched stock summary for one medicine (or local medicine), from
+     * {@link com.checkup.pharmacy.modules.inventory.InventoryRepository#findStockForEffectiveMedicineIds}
+     * / {@code #findStockForLocalMedicineIds}. A missing row means zero stock — every
+     * caller passes {@code null} rather than a zeroed instance in that case.
+     */
+    private record StockSummary(int availableQuantity, int looseUnitsOnHand, BigDecimal price) {
+        boolean hasStock() {
+            return availableQuantity > 0 || looseUnitsOnHand > 0;
+        }
+
+        /** Total sellable base units — only meaningful (non-null) when this result is actually loose-sellable. */
+        Integer sellableUnits(boolean allowLooseSale, Integer unitsPerPack) {
+            return allowLooseSale && unitsPerPack != null
+                    ? availableQuantity * unitsPerPack + looseUnitsOnHand : null;
+        }
+
+        static StockSummary from(com.checkup.pharmacy.modules.inventory.InventoryRepository.StockAggregateRow row) {
+            return new StockSummary(
+                    row.getAvailableQuantity() != null ? row.getAvailableQuantity() : 0,
+                    row.getLooseUnitsOnHand() != null ? row.getLooseUnitsOnHand() : 0,
+                    row.getPrice());
+        }
     }
 
     private OverrideResponse toOverrideResponse(PharmacyMedicineOverride o, Integer catalogueUnitsPerPack) {

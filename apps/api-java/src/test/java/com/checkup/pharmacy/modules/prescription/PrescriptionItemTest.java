@@ -1,7 +1,10 @@
 package com.checkup.pharmacy.modules.prescription;
 
+import com.checkup.pharmacy.modules.medicine.Medicine;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -67,5 +70,114 @@ class PrescriptionItemTest {
 
         item.recordDispensed(6);
         assertThat(item.isFullyDispensed()).isTrue();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // calculateQuantityIfMissing() — the entity-level entry point EmrIntegrationService
+    // and PrescriptionService.linkItemToMedicine both call once a medicine is known for a
+    // line that still needs a quantity. See PrescriptionQuantityCalculatorTest for the
+    // calculator's own parsing rules; this covers what the ENTITY does with the result.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static Medicine tablet(Integer unitsPerPack) {
+        Medicine medicine = Medicine.create("Azithromycin 500", new BigDecimal("12"));
+        medicine.setPackaging(unitsPerPack, "TABLET");
+        return medicine;
+    }
+
+    @Test
+    @DisplayName("a calculable line gets the quantity, the auto-calculated flag, and a note explaining the formula")
+    void calculateQuantityIfMissingAppliesACalculableResult() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Azithromycin 500",
+                "med_1", null, 0, "1-0-1", "6 days", null);
+
+        item.calculateQuantityIfMissing(tablet(10));
+
+        assertThat(item.getQuantity()).isEqualTo(12);
+        assertThat(item.isQuantityAutoCalculated()).isTrue();
+        assertThat(item.needsQuantityConfirmation()).isFalse();
+        assertThat(item.getQuantityCalculationNote()).contains("1-0-1").contains("6 days").contains("12");
+    }
+
+    @Test
+    @DisplayName("a non-calculable line (ML) keeps its placeholder quantity but records why, for the pharmacist")
+    void calculateQuantityIfMissingRecordsAReasonWhenItCannotCalculate() {
+        Medicine syrup = Medicine.create("Cough Syrup", new BigDecimal("12"));
+        syrup.setPackaging(null, "ML");
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Cough Syrup",
+                "med_1", null, 0, "10ml-0-10ml", "6 days", null);
+
+        item.calculateQuantityIfMissing(syrup);
+
+        assertThat(item.getQuantity()).isZero();
+        assertThat(item.needsQuantityConfirmation()).isTrue();
+        assertThat(item.isQuantityAutoCalculated()).isFalse();
+        assertThat(item.getQuantityCalculationNote()).containsIgnoringCase("millilitres");
+    }
+
+    @Test
+    @DisplayName("a line that already has a real quantity is never recalculated over, even if the medicine "
+            + "and dosage would produce a different number")
+    void calculateQuantityIfMissingDoesNothingOnceAQuantityIsAlreadySet() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Azithromycin 500",
+                "med_1", null, 7, "1-0-1", "6 days", null);
+
+        item.calculateQuantityIfMissing(tablet(10));
+
+        assertThat(item.getQuantity()).as("the clinic's own 7 is untouched, not overwritten with the calculated 12")
+                .isEqualTo(7);
+        assertThat(item.isQuantityAutoCalculated()).isFalse();
+        assertThat(item.getQuantityCalculationNote()).isNull();
+    }
+
+    @Test
+    @DisplayName("a null medicine is a safe no-op, not an NPE — an unmatched line simply has nothing to check against")
+    void calculateQuantityIfMissingIsANoOpWithNoMedicine() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Unknown Drug",
+                null, null, 0, "1-0-1", "6 days", null);
+
+        item.calculateQuantityIfMissing(null);
+
+        assertThat(item.getQuantity()).isZero();
+        assertThat(item.needsQuantityConfirmation()).isTrue();
+        assertThat(item.getQuantityCalculationNote()).isNull();
+    }
+
+    @Test
+    @DisplayName("confirming a quantity by hand clears any earlier calculation flag and note")
+    void confirmQuantityClearsTheCalculationState() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Cough Syrup",
+                "med_1", null, 0, "10ml-0-10ml", "6 days", null);
+        item.recordQuantityCalculationNote("This medicine is measured in millilitres...");
+
+        item.confirmQuantity(100);
+
+        assertThat(item.getQuantity()).isEqualTo(100);
+        assertThat(item.isQuantityAutoCalculated()).isFalse();
+        assertThat(item.getQuantityCalculationNote())
+                .as("the refusal note no longer describes this line once a human has settled it")
+                .isNull();
+    }
+
+    @Test
+    @DisplayName("an EMR amendment clears the previous calculation state — the caller re-derives it from the new data")
+    void applyEmrAmendmentClearsThePreviousCalculationState() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Azithromycin 500",
+                "med_1", null, 0, "1-0-1", "6 days", null);
+        item.calculateQuantityIfMissing(tablet(10));
+        assertThat(item.isQuantityAutoCalculated()).isTrue();
+
+        // The clinic re-pushed this line with a different dosage; applyEmrAmendment overwrites
+        // the fields but is never itself responsible for recalculating — that is the caller's
+        // job (see EmrIntegrationService.applyAmendment), same division of labour as ingest.
+        item.applyEmrAmendment("Azithromycin 500", "med_1", null, 0, "1-1-1", "3 days", null);
+
+        assertThat(item.isQuantityAutoCalculated())
+                .as("the OLD calculation no longer describes this line's new dosage")
+                .isFalse();
+        assertThat(item.getQuantityCalculationNote()).isNull();
+        assertThat(item.needsQuantityConfirmation())
+                .as("quantity was reset to the amendment's own 0 and not yet recalculated")
+                .isTrue();
     }
 }

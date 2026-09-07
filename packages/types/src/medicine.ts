@@ -54,6 +54,18 @@ export type MedicineSearchResult = {
   // includeLocal=true (the billing combobox). Callers must not pass this id to any
   // endpoint that expects a global medicineId (alternatives, classification, barcode).
   isLocal?: boolean;
+  // ── Stock (billing search only, includeLocal=true) ────────────────────────
+  // Computed backend-side from one batched join over the whole result page —
+  // never recompute these from other fields; the backend owns FEFO/loose/pricing.
+  inStock?: boolean;
+  // Whole packs on hand, unreserved.
+  availableQuantity?: number;
+  looseUnitsOnHand?: number;
+  // Total sellable base units (availableQuantity * unitsPerPack + looseUnitsOnHand).
+  // Only set when this result is actually loose-sellable.
+  sellableUnits?: number | null;
+  // MRP of the earliest-expiring in-stock batch — what FEFO will actually charge next.
+  price?: number | null;
 };
 
 export type AlternativeBatch = {

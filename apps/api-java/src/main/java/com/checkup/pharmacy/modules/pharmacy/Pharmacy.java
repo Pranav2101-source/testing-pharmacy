@@ -77,6 +77,14 @@ public class Pharmacy extends BaseEntity {
     @Column(name = "billingPreferences")
     private String billingPreferences;
 
+    // Which in-stock batch the dispensing engine picks (see DispensingService).
+    // Shop policy, one value per pharmacy — snapshotted onto each Invoice at billing
+    // time so changing it never rewrites what a past bill did.
+    @JdbcTypeCode(SqlTypes.NAMED_ENUM)
+    @Column(name = "dispensingStrategy")
+    private com.checkup.pharmacy.common.enums.DispensingStrategy dispensingStrategy =
+            com.checkup.pharmacy.common.enums.DispensingStrategy.LILA_FEFO;
+
     // Per-pharmacy secret for the EMR machine-to-machine HMAC surface (see
     // EmrHmacAuthenticationFilter / EmrSecretCipher). AES-256-GCM ciphertext +
     // nonce + auth tag, base64 text columns — same at-rest shape as the EMR
@@ -209,6 +217,17 @@ public class Pharmacy extends BaseEntity {
     public String getBillingPreferences() { return billingPreferences; }
 
     public void setBillingPreferences(String billingPreferences) { this.billingPreferences = billingPreferences; }
+
+    /** Never null in practice (column is NOT NULL DEFAULT); falls back to the safe default defensively. */
+    public com.checkup.pharmacy.common.enums.DispensingStrategy getDispensingStrategy() {
+        return dispensingStrategy != null
+                ? dispensingStrategy
+                : com.checkup.pharmacy.common.enums.DispensingStrategy.DEFAULT;
+    }
+
+    public void setDispensingStrategy(com.checkup.pharmacy.common.enums.DispensingStrategy dispensingStrategy) {
+        this.dispensingStrategy = dispensingStrategy;
+    }
 
     public void setName(String name) { this.name = name; }
 

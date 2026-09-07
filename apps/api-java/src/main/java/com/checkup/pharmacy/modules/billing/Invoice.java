@@ -132,6 +132,16 @@ public class Invoice extends BaseEntity {
     @Column(name = "idempotencyKey")
     private String idempotencyKey;
 
+    /**
+     * The batch-selection strategy in effect when this bill was created — a
+     * snapshot, so a later change to {@code Pharmacy.dispensingStrategy} never
+     * rewrites what this sale actually did. Null only on rows that predate the
+     * column.
+     */
+    @Column(name = "dispensingStrategy")
+    @JdbcTypeCode(SqlTypes.NAMED_ENUM)
+    private com.checkup.pharmacy.common.enums.DispensingStrategy dispensingStrategy;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "customerId", insertable = false, updatable = false)
     private Customer customer;
@@ -204,6 +214,12 @@ public class Invoice extends BaseEntity {
     public void setPaymentStatus(PaymentStatus paymentStatus) {
         this.paymentStatus = paymentStatus;
     }
+
+    public void setDispensingStrategy(com.checkup.pharmacy.common.enums.DispensingStrategy dispensingStrategy) {
+        this.dispensingStrategy = dispensingStrategy;
+    }
+
+    public com.checkup.pharmacy.common.enums.DispensingStrategy getDispensingStrategy() { return dispensingStrategy; }
 
     public String getPharmacyId() { return pharmacyId; }
 

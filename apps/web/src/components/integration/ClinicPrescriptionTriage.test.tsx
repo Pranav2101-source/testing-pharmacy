@@ -158,3 +158,45 @@ describe("ClinicPrescriptionTriage: an unconfirmed-quantity line is never shown 
     expect(screen.getByRole("button", { name: /confirm/i })).toBeInTheDocument();
   });
 });
+
+describe("ClinicPrescriptionTriage: a calculated quantity is labelled, not indistinguishable from a stated one", () => {
+  it("shows a 'calculated' label next to a quantity PrescriptionQuantityCalculator derived", () => {
+    renderTriage(baseRx({
+      needsReview: 0,
+      items: [{
+        id: "i1", medicineName: "Azithromycin 500", medicineId: "med_1", schedule: null,
+        quantity: 12, dispensedQty: 0, dosage: "1-0-1", duration: "6 days",
+        quantityAutoCalculated: true, quantityCalculationNote: "Calculated: 1-0-1 x 6 days = 12",
+      }],
+    }));
+
+    expect(screen.getByText("calculated")).toBeInTheDocument();
+  });
+
+  it("shows no such label for a quantity the clinic itself sent", () => {
+    renderTriage(baseRx({
+      needsReview: 0,
+      items: [{
+        id: "i1", medicineName: "Paracetamol 500", medicineId: "med_1", schedule: null,
+        quantity: 10, dispensedQty: 0, dosage: "1-0-1", duration: "5 days",
+        quantityAutoCalculated: false,
+      }],
+    }));
+
+    expect(screen.queryByText("calculated")).not.toBeInTheDocument();
+  });
+
+  it("a fully-dispensed calculated line still reads as dispensed, not calculated", () => {
+    renderTriage(baseRx({
+      needsReview: 0,
+      items: [{
+        id: "i1", medicineName: "Azithromycin 500", medicineId: "med_1", schedule: null,
+        quantity: 12, dispensedQty: 12, dosage: "1-0-1", duration: "6 days",
+        quantityAutoCalculated: true,
+      }],
+    }));
+
+    expect(screen.getByText("dispensed")).toBeInTheDocument();
+    expect(screen.queryByText("calculated")).not.toBeInTheDocument();
+  });
+});

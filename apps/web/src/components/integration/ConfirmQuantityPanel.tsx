@@ -8,6 +8,15 @@ type UnconfirmedItem = {
   medicineName: string;
   quantity: number;
   dosage: string | null;
+  /**
+   * Why an automatic quantity couldn't be worked out for this line — e.g. "This medicine is
+   * measured in millilitres, not counted as whole units" or "The clinic sent no duration for
+   * this line". Null for a line nothing ever attempted a calculation for (an explicit
+   * clinic quantity was never missing in the first place, or the medicine isn't linked yet).
+   * Computed server-side by PrescriptionQuantityCalculator — never re-derived here, since
+   * explaining a refusal would mean re-implementing the same parsing rules twice.
+   */
+  quantityCalculationNote?: string | null;
 };
 
 /**
@@ -26,7 +35,7 @@ export default function ConfirmQuantityPanel({
   onConfirmed,
 }: {
   prescriptionId: string;
-  items: { id: string; medicineName: string; quantity: number; dosage: string | null }[];
+  items: UnconfirmedItem[];
   onConfirmed: () => void;
 }) {
   const unconfirmed: UnconfirmedItem[] = items.filter((i) => i.quantity <= 0);
@@ -43,8 +52,9 @@ export default function ConfirmQuantityPanel({
             {unconfirmed.length === 1 ? "s" : ""} a quantity confirmed
           </p>
           <p className="mt-0.5 text-xs text-sky-700">
-            The clinic sent these "as directed", with no fixed amount. Confirm how much to hand
-            over — the prescription cannot be completed until each one is set.
+            The clinic sent these with no fixed amount, and it couldn't be worked out
+            automatically — see the reason under each one. Confirm how much to hand over — the
+            prescription cannot be completed until each one is set.
           </p>
         </div>
       </div>
@@ -94,6 +104,9 @@ function UnconfirmedRow({
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-slate-800">{item.medicineName}</p>
           <p className="text-xs text-slate-500">{item.dosage || "No dosage given"} · quantity not stated</p>
+          {item.quantityCalculationNote && (
+            <p className="mt-0.5 text-xs text-amber-700">{item.quantityCalculationNote}</p>
+          )}
         </div>
         <form
           className="flex shrink-0 items-center gap-1.5"

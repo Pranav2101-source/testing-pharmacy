@@ -33,6 +33,8 @@ type InvoiceItem = {
   /** "LOOSE" — quantity is individual pieces cut from a strip; mrp/rate are per-piece. */
   saleUnit?: string;
   baseUnit?: string | null;
+  /** false — a pharmacist hand-picked this batch instead of the dispensing engine's choice. */
+  batchAutoSelected?: boolean;
   mrp: number;
   rate: number;
   discount: number;
@@ -51,6 +53,8 @@ type Invoice = {
   paymentMode: string;
   paymentStatus: string;
   isInterstate: boolean;
+  /** Batch-selection strategy in force when this bill was made — "LILA_FEFO" | "LIFA" | null (pre-dates the setting). */
+  dispensingStrategy?: string | null;
   prescriptionId: string | null;
   prescription: { id: string; prescriptionNumber: string; doctorName: string; patientName: string; status: string } | null;
   subtotal: number;
@@ -424,10 +428,18 @@ export default function BillDetailPage() {
 
         {/* Items table */}
         <div className="bg-white border border-slate-200 rounded-xl overflow-hidden mb-4">
-          <div className="px-5 py-3 border-b border-slate-100">
+          <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
             <h2 className="text-[13px] font-bold text-slate-700">
               Line Items <span className="text-slate-400 font-normal ml-1">({invoice.items.length})</span>
             </h2>
+            {invoice.dispensingStrategy && (
+              <span
+                title="The batch-selection strategy this bill was made under. Later changes to the pharmacy setting do not affect it."
+                className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 uppercase tracking-wide"
+              >
+                Batches: {invoice.dispensingStrategy === "LIFA" ? "LIFA (newest first)" : "LILA / FEFO"}
+              </span>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-[12.5px]">
@@ -456,7 +468,17 @@ export default function BillDetailPage() {
                       {isLoose && <span className="ml-1.5 text-[10px] font-bold px-1 py-0.5 rounded bg-amber-100 text-amber-700">LOOSE</span>}
                     </td>
                     <td className="px-4 py-2.5">
-                      <p className="text-slate-600 font-mono text-[11px]">{item.batchNumber}</p>
+                      <p className="text-slate-600 font-mono text-[11px]">
+                        {item.batchNumber}
+                        {item.batchAutoSelected === false && (
+                          <span
+                            title="A pharmacist hand-picked this batch instead of the dispensing engine's choice"
+                            className="ml-1.5 text-[9px] font-bold px-1 py-0.5 rounded bg-slate-100 text-slate-500 uppercase tracking-wide"
+                          >
+                            Manual
+                          </span>
+                        )}
+                      </p>
                       {item.location && (
                         <div className="flex items-center gap-0.5 mt-0.5">
                           <MapPin className="w-2.5 h-2.5 text-blue-400 flex-shrink-0" />

@@ -29,4 +29,11 @@ export const queryKeys = {
     /** Every batch including out-of-stock — what the cart's "change batch" swap picker needs. */
     byNameAll: (name: string) => ["medicine-stock-all", name] as const,
   },
+  dispensing: {
+    strategy: () => ["dispensing", "strategy"] as const,
+    /** Sellable batches for a medicine, already ordered by the pharmacy's strategy — the batch picker's authoritative list. */
+    batches:  (id: string, local: boolean) => ["dispensing", "batches", local ? "local" : "cat", id] as const,
+    /** Auto-dispensing plan for a whole prescription. */
+    prescriptionPlan: (id: string) => ["dispensing", "prescription-plan", id] as const,
+  },
 } as const;
