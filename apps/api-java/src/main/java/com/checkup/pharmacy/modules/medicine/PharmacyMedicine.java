@@ -116,6 +116,18 @@ public class PharmacyMedicine extends BaseEntity {
         }
     }
 
+    /**
+     * Reverses a link — a pharmacist confirmed the wrong global medicine and is undoing it.
+     * Lands on {@code KEPT_LOCAL}, not {@code PENDING}: going back to PENDING would let the
+     * background matcher (or the scheduled backstop) reconsider it and, if the wrong link was
+     * a deterministic EXACT_NAME/GENERIC_STRENGTH_FORM hit, silently re-create the very link a
+     * human just rejected. KEPT_LOCAL is a stable end state a human can still revisit manually.
+     */
+    public void unlink() {
+        this.linkedMedicineId = null;
+        this.matchStatus = MedicineMatchStatus.KEPT_LOCAL;
+    }
+
     public String getPharmacyId() { return pharmacyId; }
 
     public String getName() { return name; }

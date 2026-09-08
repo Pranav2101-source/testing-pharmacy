@@ -19,6 +19,21 @@ export function parsePackSize(text: string | null): number | undefined {
 }
 
 /**
+ * The volume/weight in one pack from free text — "100 ml" → 100, "15g" → 15,
+ * "1x100ml" → 100. For a MEASURED medicine (syrup/cream), where {@link parsePackSize}
+ * deliberately returns nothing because a bottle is not a unit of 1 ml. A prefill the
+ * pharmacist still eyeballs — never trusted or auto-applied.
+ */
+export function parseMeasuredPackSize(text: string | null | undefined): number | undefined {
+  if (!text) return undefined;
+  // ml / g only — NOT mg or mcg, which are a strength ("500mg"), never a pack volume.
+  const m = text.trim().match(/(?:^|[x×*]\s*)(\d{1,6})\s*(ml|millilitres?|milliliters?|g|gm|grams?)(?![a-z])/i);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return n >= 2 && n <= 100000 ? n : undefined;
+}
+
+/**
  * What the billing cart's PACK column shows — the catalogue's free-text `packSize`
  * when it actually describes the packaging, otherwise a computed "{unitsPerPack}/strip"
  * label. Display-only: this never writes back to the catalogue, and `unitsPerPack`

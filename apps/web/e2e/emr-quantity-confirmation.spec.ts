@@ -109,6 +109,45 @@ test.describe("EMR: a clinic line with no stated quantity", () => {
   });
 });
 
+test.describe("EMR: a dosage + duration the calculator can parse resolves automatically, with no pharmacist confirmation step", () => {
+  let token: string;
+  let clinic: { apiKey: string; apiSecret: string };
+  let page: Page;
+
+  test.beforeAll(async ({ browser, request }) => {
+    token = await apiLogin(request);
+    clinic = await pairClinic(request, token, `${CLINIC_ID}-calc`);
+    const context = await browser.newContext();
+    page = await context.newPage();
+    await loginAs(page);
+  });
+
+  test("1-0-1 x 6 days arrives already resolved to 12, labelled 'calculated', and is billable immediately", async ({ request }) => {
+    const rx = await pushFromClinic(request, clinic, "Calculated Qty Patient", `${CLINIC_ID}-calc`, null,
+        { dosage: "1-0-1", duration: "6 days" });
+    await openPrescription(page, rx.prescriptionNumber);
+
+    // No manual-confirmation banner or panel — the line already has a real quantity.
+    await expect(page.getByText(/still needs?/i)).toHaveCount(0);
+    await expect(page.getByText("not set")).toHaveCount(0);
+    await expect(page.getByRole("spinbutton", { name: /quantity for/i })).toHaveCount(0);
+
+    // The exact number PrescriptionQuantityCalculator computes, visibly labelled as computed
+    // rather than indistinguishable from a clinic-stated one.
+    await expect(page.getByText("12", { exact: true })).toBeVisible();
+    await expect(page.getByText("calculated", { exact: true })).toBeVisible();
+
+    await expect(page.getByRole("button", { name: "Continue to Billing" })).toBeEnabled();
+    await page.screenshot({ path: path.join(SHOTS, "8-auto-calculated-quantity.png"), fullPage: true });
+
+    // The calculated 12 flows into billing untouched — same path any clinic-stated quantity takes.
+    await page.getByRole("button", { name: "Continue to Billing" }).click();
+    await expect(page).toHaveURL(/\/dashboard\/billing\/new/, { timeout: 15_000 });
+    await expect(page.getByText(STOCKED_MEDICINE_NAME).first()).toBeVisible({ timeout: 10_000 });
+    await page.screenshot({ path: path.join(SHOTS, "9-auto-calculated-quantity-in-cart.png"), fullPage: true });
+  });
+});
+
 test.describe("EMR: Save as Draft (separate prescription, its own confirmed quantity)", () => {
   let token: string;
   let clinic: { apiKey: string; apiSecret: string };
@@ -123,7 +162,8 @@ test.describe("EMR: Save as Draft (separate prescription, its own confirmed quan
   });
 
   test("Save as Draft parks a normal (already-confirmed) clinic prescription in Sales -> Drafts", async ({ request }) => {
-    const rx = await pushFromClinic(request, clinic, "Draft Patient", `${CLINIC_ID}-draft`, 15);
+    const rx = await pushFromClinic(request, clinic, "Draft Patient", `${CLINIC_ID}-draft`, 15,
+        { dosage: "1-0-0", duration: "30 days" });
     await openPrescription(page, rx.prescriptionNumber);
 
     await expect(page.getByRole("button", { name: "Save as Draft" })).toBeEnabled({ timeout: 10_000 });
@@ -298,22 +338,33 @@ async function pairClinic(request: APIRequestContext, token: string, clinicId: s
   return { apiKey: paired.apiKey, apiSecret: paired.apiSecret };
 }
 
-/** Pushes a prescription with NO quantity on its one line — the "as directed" case. */
+/**
+ * Pushes a prescription with NO quantity on its one line — the "as directed" case.
+ *
+ * <p>Genuinely no dosage/duration by default: PrescriptionQuantityCalculator now resolves a
+ * missing quantity from those two fields when they form a recognizable pattern (see
+ * PrescriptionQuantityCalculatorTest), so a line carrying "1-0-0"/"30 days" is no longer an
+ * unconfirmed placeholder — it is a calculated 30, and the manual-confirmation panel this
+ * describe block exists to test would never appear for it. "As directed" here means what a
+ * clinic sends when there truly is no fixed dose to compute from; {@code dosage}/{@code
+ * duration} are opt-in via {@code item} for tests (like the Save as Draft one below) that push
+ * an explicit quantity and don't care whether a dosing pattern rides along with it.
+ */
 async function pushFromClinic(
   request: APIRequestContext,
   clinic: { apiKey: string; apiSecret: string },
   patientName: string,
   clinicId: string = CLINIC_ID,
   quantity: number | null = null,
+  item: Record<string, unknown> = {},
 ) {
   const emrPrescriptionId = `e2e-rx-qty-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const item: Record<string, unknown> = {
+  const fullItem: Record<string, unknown> = {
     emrItemId: "i1",
     medicineName: STOCKED_MEDICINE_NAME,
-    dosage: "1-0-0",
-    duration: "30 days",
+    ...item,
   };
-  if (quantity !== null) item.quantity = quantity;
+  if (quantity !== null) fullItem.quantity = quantity;
 
   const res = await post(request, `${API}/integration/prescriptions`, {
     headers: { "X-API-KEY": clinic.apiKey, "X-API-SECRET": clinic.apiSecret },
@@ -323,7 +374,7 @@ async function pushFromClinic(
       prescribedDate: new Date().toISOString(),
       patient: { emrPatientId: "p1", name: patientName, age: 34, phone: "9876500033", gender: "F" },
       doctor: { emrDoctorId: "d1", name: "Dr Anand Rao", registrationNo: "TN-44321" },
-      items: [item],
+      items: [fullItem],
     },
   });
   expect(res.ok(), `clinic push for ${patientName} (${res.status()}): ${await res.text()}`).toBeTruthy();

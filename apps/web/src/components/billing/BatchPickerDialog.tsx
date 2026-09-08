@@ -55,17 +55,23 @@ export function fmtExpiry(iso: string) {
 export const BatchPickerDialog = memo(function BatchPickerDialog({
   medicineName,
   batches,
+  lifa = false,
   onSelect,
   onClose,
 }: {
   medicineName: string;
   batches:      InventoryBatch[];
+  /** Display only — batches arrive pre-ordered by the caller's chosen strategy
+   *  (see MedicineSearchCombobox's sortBatchesByStrategy); this just labels it correctly. */
+  lifa?:        boolean;
   onSelect:     (batch: InventoryBatch) => void;
   onClose:      () => void;
 }) {
-  // Batch that already has cut tablets floats to the top, so a loose sale draws
-  // from the open strip instead of cutting a new one.
-  const sorted = [...batches].sort((a, b) => (b.looseUnits ?? 0 ? 1 : 0) - (a.looseUnits ?? 0 ? 1 : 0));
+  // Order is the backend dispensing engine's — GET /dispensing/batches already
+  // returns these sorted by the pharmacy's configured strategy (LILA/FEFO or
+  // LIFA). The picker shows that order verbatim rather than re-sorting; a
+  // pharmacist picking a different row is the manual-override path.
+  const sorted = batches;
   const selectable = sorted.map((b) => expiryStatus(b.expiryDate).color !== "red" && b.medicine.isActive);
   const firstSelectable = selectable.findIndex(Boolean);
 
@@ -125,7 +131,8 @@ export const BatchPickerDialog = memo(function BatchPickerDialog({
             <p className="text-[10px] font-bold text-blue-500 uppercase tracking-wider mb-0.5">Select a Batch</p>
             <p className="font-bold text-slate-900 text-[15px] truncate">{medicineName}</p>
             <p className="text-[11px] text-slate-400">
-              {batches.length} batch{batches.length !== 1 ? "es" : ""} available · FIFO order · ↑↓ then Enter
+              {batches.length} batch{batches.length !== 1 ? "es" : ""} available ·{" "}
+              {lifa ? "newest first (LIFA)" : "FEFO order"} · ↑↓ then Enter
             </p>
           </div>
           <button

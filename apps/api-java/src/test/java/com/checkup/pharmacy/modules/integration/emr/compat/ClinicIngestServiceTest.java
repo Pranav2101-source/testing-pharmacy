@@ -108,7 +108,15 @@ class ClinicIngestServiceTest {
         when(prescriptionRepository
                 .findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(any(), any(), any()))
                 .thenReturn(Optional.empty());
-        when(intake.ingest(any())).thenReturn(snapshot());
+        // intake is mocked, so this stubs what the REAL ingest pipeline would actually produce for
+        // a line with no quantity, no dosage and no duration: PrescriptionQuantityCalculator has
+        // nothing to work with, so the line stays at the zero placeholder — still unconfirmed, not
+        // silently resolved. See countsAResolvedCalculatedQuantityAsNotUnconfirmed below for the
+        // sibling case where dosage + duration DO let ingest resolve it.
+        when(intake.ingest(any())).thenReturn(new EmrPrescriptionSnapshot("ph_1", "rx_1", "RX-000001",
+                "clinic-apollo-01", "rx-778", null, "RECEIVED", Instant.now(),
+                List.of(new EmrPrescriptionSnapshot.Item("item-1", "med_1", "Paracetamol 500mg", 0, 0)),
+                List.of()));
 
         ClinicIngestRequest request = new ClinicIngestRequest(
                 "clinic-apollo-01", "rx-778", null, null, null,
@@ -121,6 +129,37 @@ class ClinicIngestServiceTest {
 
         assertThat(captureNativeRequest().items().get(0).quantity()).isZero();
         assertThat(response.unconfirmedQuantityCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("a quantity ingest calculated from dosage + duration is NOT counted as still unconfirmed")
+    void countsAResolvedCalculatedQuantityAsNotUnconfirmed() {
+        when(prescriptionRepository
+                .findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(any(), any(), any()))
+                .thenReturn(Optional.empty());
+        // The clinic sent no quantity, but ingest (the real EmrIntegrationService, mocked out
+        // here) was able to calculate one from dosage + duration — the stored line, and
+        // therefore this response, must reflect the RESOLVED state, not the request's original
+        // gap. Regression test for the count having been read off the request instead of the
+        // stored snapshot, which reported a line as still needing a pharmacist after ingest had
+        // already settled it.
+        when(intake.ingest(any())).thenReturn(new EmrPrescriptionSnapshot("ph_1", "rx_1", "RX-000001",
+                "clinic-apollo-01", "rx-778", null, "RECEIVED", Instant.now(),
+                List.of(new EmrPrescriptionSnapshot.Item("item-1", "med_1", "Paracetamol 500mg", 12, 0)),
+                List.of()));
+
+        ClinicIngestRequest request = new ClinicIngestRequest(
+                "clinic-apollo-01", "rx-778", null, null, null,
+                new ClinicIngestRequest.Patient(null, "Asha Verma", null, null, null, null),
+                new ClinicIngestRequest.Doctor(null, "Dr. Meera Rao", null, null, null),
+                List.of(new ClinicIngestRequest.Item("item-1", "Paracetamol 500mg", null, null,
+                        null, "1-0-1", null, "6 days", null, null, null, null)));
+
+        ClinicIngestResponse response = service.ingest(request);
+
+        assertThat(response.unconfirmedQuantityCount())
+                .as("ingest already resolved this line to 12 — nothing left for a pharmacist to confirm")
+                .isZero();
     }
 
     @Test

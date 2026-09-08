@@ -47,10 +47,22 @@ public record PrescriptionResponse(
      *                    link, closest first. Always empty when medicineId is already set —
      *                    a matched line has nothing left to suggest. Never auto-applied: see
      *                    {@link Suggestion}.
+     * @param quantityAutoCalculated true when {@code quantity} was derived from this line's
+     *                    dosing pattern and duration because the clinic sent none — see
+     *                    {@link com.checkup.pharmacy.modules.prescription.PrescriptionQuantityCalculator}.
+     *                    Nothing behaves differently on the strength of it; it exists so the
+     *                    screen can say where the number came from, which a pharmacist
+     *                    reviewing the line is entitled to know.
+     * @param quantityCalculationNote a one-line explanation, or null when there is nothing to
+     *                    explain. Says HOW the quantity was calculated when
+     *                    {@code quantityAutoCalculated} is true, or WHY it could not be
+     *                    calculated (still {@code quantity <= 0}, waiting on a pharmacist) —
+     *                    the same reason a computer declined, in words meant for a person.
      */
     public record Item(String id, String medicineName, String medicineId, String schedule, int quantity,
                        int dispensedQty, String dosage, String duration, String notes,
-                       String dispensedMedicineName, boolean substituted, List<Suggestion> suggestions) {
+                       String dispensedMedicineName, boolean substituted, boolean quantityAutoCalculated,
+                       String quantityCalculationNote, List<Suggestion> suggestions) {
     }
 
     /**

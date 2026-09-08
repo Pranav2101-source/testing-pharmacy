@@ -1,5 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { packDisplayLabel } from "./packSize";
+import { packDisplayLabel, parseMeasuredPackSize } from "./packSize";
+
+describe("parseMeasuredPackSize", () => {
+  it("reads a volume/weight out of the pack-size text", () => {
+    expect(parseMeasuredPackSize("100ml")).toBe(100);
+    expect(parseMeasuredPackSize("100 ml")).toBe(100);
+    expect(parseMeasuredPackSize("60 mL bottle")).toBe(60);
+    expect(parseMeasuredPackSize("1 x 100ml")).toBe(100);
+    expect(parseMeasuredPackSize("15g")).toBe(15);
+    expect(parseMeasuredPackSize("20 gm tube")).toBe(20);
+  });
+
+  it("never mistakes a strength for a pack size", () => {
+    expect(parseMeasuredPackSize("500mg")).toBeUndefined();
+    expect(parseMeasuredPackSize("650 mg")).toBeUndefined();
+    expect(parseMeasuredPackSize("5mcg")).toBeUndefined();
+  });
+
+  it("returns nothing for a countable pack size or junk", () => {
+    expect(parseMeasuredPackSize("15 tablets")).toBeUndefined();
+    expect(parseMeasuredPackSize("10x15")).toBeUndefined();
+    expect(parseMeasuredPackSize(null)).toBeUndefined();
+    expect(parseMeasuredPackSize("")).toBeUndefined();
+    expect(parseMeasuredPackSize("1ml")).toBeUndefined(); // below the sane floor
+  });
+});
 
 /**
  * packDisplayLabel decides what the billing cart's PACK column shows — it never

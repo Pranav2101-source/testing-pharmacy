@@ -2,10 +2,12 @@ import { useState, useEffect } from "react";
 import { Loader2, RefreshCw, Plus, RotateCcw, Check, X, Eye, Building2 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { TableSkeletonRows } from "@/components/Skeleton";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/hooks/useToast";
 import type { SupplierReturn, Supplier } from "../types";
 import { SR_STATUS } from "../types";
 import { fmtDate, currency } from "../utils";
@@ -175,6 +177,9 @@ export function ReturnsTab({ suppliers }: { suppliers: Supplier[] }) {
   const [showCreate, setShow]   = useState(false);
   const [actionId, setAction]   = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [confirmSr, setConfirmSr] = useState<SupplierReturn | null>(null);
+  const [cancelSr,  setCancelSr]  = useState<SupplierReturn | null>(null);
+  const toast = useToast();
   const queryClient = useQueryClient();
 
   const { data, isPending, isFetching, refetch } = useQuery({
@@ -198,18 +203,24 @@ export function ReturnsTab({ suppliers }: { suppliers: Supplier[] }) {
     queryClient.invalidateQueries({ queryKey: ["purchases", "returns"] });
   }
 
-  async function confirm(id: string) {
-    if (!window.confirm("Confirm return? This will deduct inventory stock.")) return;
-    setAction(id);
-    try { await api.patch(`/supplier-returns/${id}/confirm`); invalidate(); }
-    catch (e: any) { alert(e?.response?.data?.error ?? "Failed"); } finally { setAction(null); }
+  async function confirmReturn(sr: SupplierReturn) {
+    setAction(sr.id);
+    try {
+      await api.patch(`/supplier-returns/${sr.id}/confirm`);
+      invalidate(); setConfirmSr(null);
+      toast.success(`${sr.returnNumber} confirmed — stock deducted`);
+    } catch (e) { toast.error(getErrorMessage(e, "Failed to confirm return")); }
+    finally { setAction(null); }
   }
 
-  async function cancel(id: string) {
-    if (!window.confirm("Cancel this return?")) return;
-    setAction(id);
-    try { await api.delete(`/supplier-returns/${id}`); invalidate(); }
-    catch {/* */} finally { setAction(null); }
+  async function cancelReturn(sr: SupplierReturn) {
+    setAction(sr.id);
+    try {
+      await api.delete(`/supplier-returns/${sr.id}`);
+      invalidate(); setCancelSr(null);
+      toast.success(`${sr.returnNumber} cancelled`);
+    } catch (e) { toast.error(getErrorMessage(e, "Failed to cancel return")); }
+    finally { setAction(null); }
   }
 
   return (
@@ -280,10 +291,10 @@ export function ReturnsTab({ suppliers }: { suppliers: Supplier[] }) {
                       cls="text-slate-600 border-slate-200 hover:bg-slate-50" />
                     {sr.status === "DRAFT" && (
                       <>
-                        <ActionBtn onClick={() => confirm(sr.id)} disabled={actionId === sr.id}
+                        <ActionBtn onClick={() => setConfirmSr(sr)} disabled={actionId === sr.id}
                           icon={actionId === sr.id ? Loader2 : Check} label="Confirm"
                           cls="text-blue-600 border-blue-200 hover:bg-blue-50" />
-                        <ActionBtn onClick={() => cancel(sr.id)} disabled={actionId === sr.id}
+                        <ActionBtn onClick={() => setCancelSr(sr)} disabled={actionId === sr.id}
                           icon={X} label="Cancel" cls="text-red-500 border-red-100 hover:bg-red-50" />
                       </>
                     )}
@@ -301,6 +312,35 @@ export function ReturnsTab({ suppliers }: { suppliers: Supplier[] }) {
         {showCreate && <CreateReturnModal suppliers={suppliers} onClose={() => setShow(false)} onDone={() => { setShow(false); invalidate(); }} />}
         {detailId  && <ReturnDetailModal id={detailId} onClose={() => setDetailId(null)} />}
       </AnimatePresence>
+
+      <ConfirmDialog
+        open={!!confirmSr}
+        tone="warning"
+        icon={RotateCcw}
+        title={confirmSr ? `Confirm ${confirmSr.returnNumber}?` : ""}
+        body={confirmSr && (
+          <>Stock for <strong className="text-slate-700">{confirmSr.itemCount} item{confirmSr.itemCount === 1 ? "" : "s"}</strong>{" "}
+          ({currency(confirmSr.totalAmount)}) will be deducted from inventory and credited to{" "}
+          <strong className="text-slate-700">{confirmSr.supplier.name}</strong>. This can't be undone.</>
+        )}
+        confirmLabel="Confirm Return"
+        cancelLabel="Not yet"
+        busy={actionId === confirmSr?.id}
+        onConfirm={() => confirmSr && confirmReturn(confirmSr)}
+        onCancel={() => actionId !== confirmSr?.id && setConfirmSr(null)}
+      />
+      <ConfirmDialog
+        open={!!cancelSr}
+        tone="danger"
+        icon={X}
+        title={cancelSr ? `Cancel ${cancelSr.returnNumber}?` : ""}
+        body="This deletes the draft return. No stock has been deducted yet."
+        confirmLabel="Cancel Return"
+        cancelLabel="Keep it"
+        busy={actionId === cancelSr?.id}
+        onConfirm={() => cancelSr && cancelReturn(cancelSr)}
+        onCancel={() => actionId !== cancelSr?.id && setCancelSr(null)}
+      />
     </div>
   );
 }

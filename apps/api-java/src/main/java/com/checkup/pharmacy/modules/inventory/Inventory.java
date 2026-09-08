@@ -298,9 +298,20 @@ public class Inventory extends BaseEntity {
     // deactivate flow (always "active") and no loose-sale support yet (unitsPerPack
     // is always null for one, same as an unclassified catalogue medicine today). ──
 
+    /** The id of whichever product this batch actually resolved against — global or local. */
+    public String productId() {
+        if (medicine != null) return medicine.getId();
+        return localMedicine != null ? localMedicine.getId() : null;
+    }
+
     public String productName() {
         if (medicine != null) return medicine.getName();
         return localMedicine != null ? localMedicine.getName() : null;
+    }
+
+    public String productGenericName() {
+        if (medicine != null) return medicine.getGenericName();
+        return localMedicine != null ? localMedicine.getGenericName() : null;
     }
 
     public String productHsnCode() {
@@ -321,6 +332,11 @@ public class Inventory extends BaseEntity {
     public String productForm() {
         if (medicine != null) return medicine.getForm();
         return localMedicine != null ? localMedicine.getForm() : null;
+    }
+
+    public String productStrength() {
+        if (medicine != null) return medicine.getStrength();
+        return localMedicine != null ? localMedicine.getStrength() : null;
     }
 
     /** A catalogue medicine can be deactivated; a local one cannot (no such flow yet), so it is always sellable. */

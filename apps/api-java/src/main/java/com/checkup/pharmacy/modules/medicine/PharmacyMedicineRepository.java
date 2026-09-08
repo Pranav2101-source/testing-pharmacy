@@ -1,6 +1,7 @@
 package com.checkup.pharmacy.modules.medicine;
 
 import com.checkup.pharmacy.common.enums.MedicineMatchStatus;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.time.Instant;
@@ -31,4 +32,14 @@ public interface PharmacyMedicineRepository extends JpaRepository<PharmacyMedici
     /** Scheduled backstop sweep: anything the async matcher missed (crash, pool saturation). */
     List<PharmacyMedicine> findByPharmacyIdAndMatchStatusAndCreatedAtBefore(
             String pharmacyId, MedicineMatchStatus matchStatus, Instant cutoff);
+
+    /** Every local medicine this pharmacy has, any status — backs the full directory view (not just pending review). */
+    List<PharmacyMedicine> findByPharmacyIdOrderByCreatedAtDesc(String pharmacyId);
+
+    /**
+     * Billing search's {@code includeLocal} merge — excludes {@code LINKED} rows, which already
+     * have a usable global identity, so surfacing both would just be the same product twice.
+     */
+    List<PharmacyMedicine> findByPharmacyIdAndNameContainingIgnoreCaseAndMatchStatusNot(
+            String pharmacyId, String name, MedicineMatchStatus excludedStatus, Pageable pageable);
 }

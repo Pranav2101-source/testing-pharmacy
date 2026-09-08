@@ -38,6 +38,13 @@ public record InvoiceResponse(
         boolean isCancelled,
         Instant cancelledAt,
         String cancelReason,
+        /**
+         * The batch-selection strategy in force when this bill was created —
+         * {@code LILA_FEFO}, {@code LIFA}, or null on bills that predate the setting.
+         * Part of the dispensing audit trail; a later change to the pharmacy setting
+         * does not touch this.
+         */
+        String dispensingStrategy,
         List<Item> items,
         List<PaymentResponse> payments,
         List<ReturnRef> returns,
@@ -67,6 +74,8 @@ public record InvoiceResponse(
                        BigDecimal mrp, BigDecimal rate,
                        BigDecimal purchaseRate,
                        BigDecimal discount, BigDecimal gstRate, BigDecimal cgst, BigDecimal sgst, BigDecimal igst,
-                       BigDecimal taxableAmount, BigDecimal amount, String location) {
+                       BigDecimal taxableAmount, BigDecimal amount, String location,
+                       /** false only if a pharmacist hand-picked this batch instead of the engine. */
+                       boolean batchAutoSelected) {
     }
 }

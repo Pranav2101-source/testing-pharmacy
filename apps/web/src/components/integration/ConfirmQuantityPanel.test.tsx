@@ -88,6 +88,24 @@ describe("ConfirmQuantityPanel", () => {
     expect(screen.getByRole("button", { name: /confirm/i })).toBeInTheDocument();
   });
 
+  it("shows the specific reason a quantity couldn't be calculated, not just a generic placeholder", () => {
+    renderPanel([{
+      id: "i1", medicineName: "Cough Syrup", quantity: 0, dosage: "10ml-0-10ml",
+      quantityCalculationNote: "This medicine is measured in millilitres, not counted as whole units "
+        + "— enter the quantity to dispense manually.",
+    }]);
+
+    expect(screen.getByText(/measured in millilitres/i)).toBeInTheDocument();
+  });
+
+  it("shows nothing extra for a line no calculation was ever attempted for", () => {
+    renderPanel([{ id: "i1", medicineName: "Vitamin D3", quantity: 0, dosage: null, quantityCalculationNote: null }]);
+
+    // Only the ordinary dosage caption — no per-line reason paragraph rendered underneath it.
+    expect(screen.getByText("No dosage given · quantity not stated")).toBeInTheDocument();
+    expect(screen.queryByText(/measured in|dosing pattern|not a plain daily schedule/i)).not.toBeInTheDocument();
+  });
+
   it("multiple unconfirmed lines are resolved independently", async () => {
     renderPanel([
       { id: "i1", medicineName: "Vitamin D3", quantity: 0, dosage: null },

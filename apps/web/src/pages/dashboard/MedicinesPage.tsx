@@ -19,6 +19,7 @@ import { PACKAGING_UNITS, PRODUCT_CATEGORIES, ProductTag } from "@/lib/product-t
 import { parsePackSize } from "@/lib/packSize";
 import { LooseSetupModal, candidateFromMedicine } from "@/components/inventory/LooseSetupModal";
 import { PendingLocalMedicinesPanel } from "@/components/purchases/PendingLocalMedicinesPanel";
+import { LocalMedicineDirectoryPanel } from "@/components/purchases/LocalMedicineDirectoryPanel";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1251,6 +1252,7 @@ export default function MedicinesPage() {
       )}
 
       <PendingLocalMedicinesPanel />
+      <LocalMedicineDirectoryPanel />
 
       {/* ── Table ────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-auto min-h-0">

@@ -11,6 +11,83 @@ import {
 } from "@/lib/billingPreferences";
 import type { ActionId, BillingActionPref } from "@/lib/billingPreferences";
 import { useState } from "react";
+import { useDispensingStrategy } from "@/lib/useDispensingStrategy";
+import { getStoredUser } from "@/lib/auth";
+import type { DispensingStrategy } from "@pharmacy/types";
+
+// ─── Dispensing strategy ──────────────────────────────────────────────────────
+
+const STRATEGY_OPTIONS: { id: DispensingStrategy; label: string; blurb: string }[] = [
+  {
+    id: "LILA_FEFO",
+    label: "LILA · FEFO",
+    blurb: "Earliest-expiring batch first. Sells older stock before it expires — recommended for almost every pharmacy.",
+  },
+  {
+    id: "LIFA",
+    label: "LIFA",
+    blurb: "Most recently received batch first. Choose this only if you deliberately want to move the freshest stock.",
+  },
+];
+
+function DispensingStrategySection({ onChanged }: { onChanged: () => void }) {
+  const { strategy, defaultStrategy, setStrategy, saving } = useDispensingStrategy();
+  const canChange = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
+
+  return (
+    <section className="bg-slate-50 rounded-2xl p-5">
+      <SectionHeader
+        title="Batch Dispensing Strategy"
+        description="Which in-stock batch the engine dispenses first — applied automatically to New Bill, Quick Add, Repeat Last Bill and clinic prescriptions. Expired, blocked, quarantined and out-of-stock batches are never used. Changing this affects only future bills."
+        badge="Pharmacy-wide"
+      />
+      <div className="grid gap-2 sm:grid-cols-2">
+        {STRATEGY_OPTIONS.map((opt) => {
+          const active = strategy === opt.id;
+          return (
+            <button
+              key={opt.id}
+              type="button"
+              disabled={!canChange || saving}
+              onClick={() => {
+                if (active || !canChange) return;
+                setStrategy(opt.id);
+                onChanged();
+              }}
+              className={cn(
+                "text-left rounded-xl border p-3.5 transition-colors",
+                active
+                  ? "border-blue-300 bg-blue-50 ring-1 ring-blue-200"
+                  : "border-slate-200 bg-white hover:border-slate-300",
+                (!canChange || saving) && "opacity-60 cursor-not-allowed",
+              )}
+            >
+              <div className="flex items-center gap-2">
+                <span className={cn("text-[13px] font-bold", active ? "text-blue-700" : "text-slate-700")}>
+                  {opt.label}
+                </span>
+                {opt.id === defaultStrategy && (
+                  <span className="text-[9px] font-bold bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded-full uppercase tracking-wide">
+                    Default
+                  </span>
+                )}
+                {active && (
+                  <span className="text-[9px] font-bold bg-blue-600 text-white px-1.5 py-0.5 rounded-full uppercase tracking-wide ml-auto">
+                    Active
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1 leading-snug">{opt.blurb}</p>
+            </button>
+          );
+        })}
+      </div>
+      {!canChange && (
+        <p className="text-[11px] text-slate-400 mt-2">Only an owner or manager can change this.</p>
+      )}
+    </section>
+  );
+}
 
 // ─── Section header ───────────────────────────────────────────────────────────
 
@@ -370,6 +447,8 @@ export default function BillingPreferencesPage() {
 
           {/* Left: config panels */}
           <div className="xl:col-span-2 space-y-6">
+
+            <DispensingStrategySection onChanged={flashSaved} />
 
             {/* Save Dropdown — core actions */}
             <section className="bg-slate-50 rounded-2xl p-5">

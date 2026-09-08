@@ -99,6 +99,15 @@ public class InvoiceItem extends IdOnlyEntity {
     @Column(name = "location")
     private String location;
 
+    /**
+     * {@code true} — the dispensing engine chose this batch under the invoice's
+     * strategy (see {@link Invoice#getDispensingStrategy()}). {@code false} — a
+     * pharmacist overrode it in the batch picker. Part of the dispensing audit
+     * trail. Defaults {@code true}: legacy lines predate the picker override flag.
+     */
+    @Column(name = "batchAutoSelected")
+    private boolean batchAutoSelected = true;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "inventoryId", insertable = false, updatable = false)
     private Inventory inventory;
@@ -153,6 +162,17 @@ public class InvoiceItem extends IdOnlyEntity {
         this.baseUnit = baseUnit;
         return this;
     }
+
+    /**
+     * Records whether the engine picked this batch ({@code true}) or a pharmacist
+     * overrode it ({@code false}). Chainable off {@link #create}; defaults {@code true}.
+     */
+    public InvoiceItem withBatchAutoSelected(boolean autoSelected) {
+        this.batchAutoSelected = autoSelected;
+        return this;
+    }
+
+    public boolean isBatchAutoSelected() { return batchAutoSelected; }
 
     public String getPharmacyId() { return pharmacyId; }
 

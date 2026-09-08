@@ -114,6 +114,29 @@ class MedicineIT extends AbstractPostgresIT {
     }
 
     @Test
+    @DisplayName("a measured medicine whose pack-size text and units-per-pack disagree is rejected")
+    void contradictoryMeasuredPackSizeRejected() {
+        var req = new CreateMedicineRequest("Cough Syrup Mix " + unique(), "Dextromethorphan", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Syrup", "5mg/5ml", "Bottle",
+                "200ml bottle", 100, "ML");
+        assertThatThrownBy(() -> medicineService.create(req))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("200 ml")
+                .hasMessageContaining("own");
+    }
+
+    @Test
+    @DisplayName("a measured medicine whose pack-size text and units-per-pack agree is fine")
+    void coherentMeasuredPackSizeAccepted() {
+        var req = new CreateMedicineRequest("Cough Syrup OK " + unique(), "Dextromethorphan", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Syrup", "5mg/5ml", "Bottle",
+                "100ml", 100, "ML");
+        var created = medicineService.create(req);
+        assertThat(created.unitsPerPack()).isEqualTo(100);
+        assertThat(created.baseUnit()).isEqualTo("ML");
+    }
+
+    @Test
     @DisplayName("an unrecognised base unit is rejected")
     void badBaseUnitRejected() {
         var req = new CreateMedicineRequest("Bad Unit Med " + unique(), null, "Mfr", null, null, null, null,

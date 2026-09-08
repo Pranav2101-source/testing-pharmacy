@@ -3,6 +3,7 @@ package com.checkup.pharmacy.modules.medicine;
 import com.checkup.pharmacy.common.api.ApiResponse;
 import com.checkup.pharmacy.modules.medicine.dto.CreateLocalMedicineRequest;
 import com.checkup.pharmacy.modules.medicine.dto.LinkLocalMedicineRequest;
+import com.checkup.pharmacy.modules.medicine.dto.LocalMedicineResponse;
 import com.checkup.pharmacy.modules.medicine.dto.PendingLocalMedicineResponse;
 import com.checkup.pharmacy.modules.medicine.dto.PharmacyMedicineResponse;
 import jakarta.validation.Valid;
@@ -44,10 +45,28 @@ public class PharmacyMedicineController {
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(service.create(req)));
     }
 
-    /** Local medicines the background matcher found a fuzzy candidate for — needs a human to confirm. */
+    /**
+     * Local medicines the background matcher found a fuzzy candidate for — needs a human to
+     * confirm. OWNER/MANAGER only, matching every other endpoint on this controller: the
+     * corresponding review panel is already gated client-side, but a CASHIER/PHARMACIST hitting
+     * this directly had no server-side check backing that.
+     */
     @GetMapping("/pending")
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER')")
     public ApiResponse<List<PendingLocalMedicineResponse>> pending() {
         return ApiResponse.ok(service.listPending());
+    }
+
+    /**
+     * Every local medicine this pharmacy has, any status — the full directory, not just pending
+     * review. OWNER/MANAGER only — see {@link #pending()}. Billing's own discovery of local
+     * medicines (the combobox's {@code includeLocal} search) does not go through this controller,
+     * so this gate has no effect on the POS.
+     */
+    @GetMapping
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER')")
+    public ApiResponse<List<LocalMedicineResponse>> list() {
+        return ApiResponse.ok(service.listAll());
     }
 
     /** Confirms (or manually picks) the global catalogue link — additive, never rewrites past GRNs/sales. */
@@ -55,5 +74,12 @@ public class PharmacyMedicineController {
     @PreAuthorize("hasAnyRole('OWNER', 'MANAGER')")
     public ApiResponse<PharmacyMedicineResponse> link(@PathVariable String id, @Valid @RequestBody LinkLocalMedicineRequest req) {
         return ApiResponse.ok(service.confirmLink(id, req.medicineId()));
+    }
+
+    /** Undoes a link — a pharmacist confirmed the wrong global medicine. Never rewrites past GRNs/sales. */
+    @PatchMapping("/{id}/unlink")
+    @PreAuthorize("hasAnyRole('OWNER', 'MANAGER')")
+    public ApiResponse<PharmacyMedicineResponse> unlink(@PathVariable String id) {
+        return ApiResponse.ok(service.unlink(id));
     }
 }

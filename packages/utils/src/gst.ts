@@ -41,13 +41,20 @@ export function perPieceMrp(packMrp: number, unitsPerPack: number | null | undef
   return Math.floor(Math.round((packMrp / unitsPerPack) * 1e6) / 1e4) / 100;
 }
 
-/** Short label for a loose line's unit — "tab", "cap", "ml", "gm", "u". */
+/**
+ * Short label for a loose line's unit — "tab", "cap", "mL", "g", "u".
+ *
+ * Kept as its own tiny function (rather than routed through {@code saleUnitModel})
+ * because every receipt/ledger call site has only the sale-time {@code baseUnit}
+ * snapshot to hand, not the whole medicine. {@code saleUnitModel().looseUnitShort}
+ * returns the identical set for callers that do have the medicine.
+ */
 export function baseUnitShort(baseUnit: string | null | undefined): string {
   switch (baseUnit) {
     case "TABLET":  return "tab";
     case "CAPSULE": return "cap";
-    case "ML":      return "ml";
-    case "GM":      return "gm";
+    case "ML":      return "mL";
+    case "GM":      return "g";
     default:        return "u";
   }
 }

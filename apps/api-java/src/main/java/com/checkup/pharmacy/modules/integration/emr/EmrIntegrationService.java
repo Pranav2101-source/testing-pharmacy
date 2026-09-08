@@ -148,6 +148,11 @@ public class EmrIntegrationService {
                         blankToNull(item.duration()), blankToNull(item.notes()));
                 })
                 .toList();
+        // Every medicine these lines resolved to is already in hand from the match above, so
+        // deriving the missing quantities costs no further queries. See PrescriptionItem's own
+        // calculateQuantityIfMissing for why an unmatched line is left without a note here.
+        items.forEach(item -> item.calculateQuantityIfMissing(
+                resolvedByExternalItemId.get(item.getExternalEmrItemId())));
         itemRepository.saveAll(items);
         return snapshot(prescription, items, List.of(), Instant.now());
     }
@@ -230,6 +235,7 @@ public class EmrIntegrationService {
                 saved.add(current);
             }
         }
+        applyCalculatedQuantities(saved, resolvedByExternalItemId);
         itemRepository.saveAll(saved);
 
         // Whatever is left in the map was on the prescription before this push and is not
@@ -263,6 +269,48 @@ public class EmrIntegrationService {
 
     private static boolean sameName(String a, String b) {
         return MedicineMatcher.normalize(a).equals(MedicineMatcher.normalize(b));
+    }
+
+    /**
+     * Fills in the quantity for lines the clinic sent without one, where the dosing pattern and
+     * duration establish it beyond doubt — see {@link PrescriptionQuantityCalculator}.
+     *
+     * <p>A line the calculator declines is left exactly as it was: quantity zero, which is the
+     * existing "a pharmacist settles this at the counter" placeholder. Nothing downstream needs
+     * to know a calculation happened — a derived quantity is an ordinary quantity, and flows
+     * through stock, pack/loose resolution and billing by the same path as a clinic-stated one.
+     *
+     * <p>The amendment path reaches here with two kinds of line: ones just re-matched against
+     * the catalogue (whose Medicine is already in hand) and ones whose name did not change
+     * (whose medicine has to be read back). Only the second kind, and only when it actually
+     * needs a quantity, costs a query — one batched read for all of them, never one per line.
+     */
+    private void applyCalculatedQuantities(List<PrescriptionItem> items,
+                                           Map<String, Medicine> resolvedByExternalItemId) {
+        List<PrescriptionItem> needQuantity = items.stream()
+                .filter(PrescriptionItem::needsQuantityConfirmation)
+                .filter(item -> item.getMedicineId() != null)
+                .toList();
+        if (needQuantity.isEmpty()) {
+            return;
+        }
+
+        Map<String, Medicine> byMedicineId = new LinkedHashMap<>();
+        resolvedByExternalItemId.values().forEach(medicine -> byMedicineId.put(medicine.getId(), medicine));
+        List<String> unread = needQuantity.stream()
+                .map(PrescriptionItem::getMedicineId)
+                .filter(id -> !byMedicineId.containsKey(id))
+                .distinct()
+                .toList();
+        if (!unread.isEmpty()) {
+            medicineRepository.findAllById(unread).forEach(medicine -> byMedicineId.put(medicine.getId(), medicine));
+        }
+
+        // An unmatched line (medicineId == null, filtered out above already) is left without a
+        // calculation note on purpose: ReviewIngestedItemsPanel already blocks it for a
+        // different reason (no catalogue medicine), and a quantity-refusal note on top of that
+        // would answer a question the pharmacist has not reached yet.
+        needQuantity.forEach(item -> item.calculateQuantityIfMissing(byMedicineId.get(item.getMedicineId())));
     }
 
     @Transactional(readOnly = true)
@@ -357,9 +405,19 @@ public class EmrIntegrationService {
                         null, null, null, null, 0, null, match.strategy().startsWith("AMBIGUOUS"));
             }
             List<Inventory> batches = stock.getOrDefault(medicine.getId(), List.of());
-            int available = batches.stream().mapToInt(b -> Math.max(0, b.getQuantity() - b.getReservedQuantity())).sum();
+            // quantity/reservedQuantity are PACK counts; availableQuantity here is a PIECE count
+            // (what a prescription's own quantity — calculated or clinic-stated — is always
+            // measured in), so unreserved packs are converted via unitsPerPack and the batch's
+            // own loose remainder is added, same as MedicineService.StockSummary does for the
+            // billing combobox. Without this, a fully-stocked medicine with e.g. unitsPerPack=10
+            // would report "5" instead of 50, understating it by an order of magnitude.
+            int unitsPerPack = medicine.getUnitsPerPack() != null && medicine.getUnitsPerPack() > 0
+                    ? medicine.getUnitsPerPack() : 1;
+            int available = batches.stream()
+                    .mapToInt(b -> Math.max(0, b.getQuantity() - b.getReservedQuantity()) * unitsPerPack + b.getLooseUnits())
+                    .sum();
             BigDecimal price = batches.stream()
-                    .filter(b -> b.getQuantity() - b.getReservedQuantity() > 0)
+                    .filter(b -> b.getQuantity() - b.getReservedQuantity() > 0 || b.getLooseUnits() > 0)
                     .map(Inventory::getMrp).filter(Objects::nonNull).min(BigDecimal::compareTo).orElse(null);
             return new EmrMedicineMatchResponse.Item(item.externalItemId(), match.strategy(), medicine.getId(),
                     medicine.getName(), medicine.getGenericName(), medicine.getStrength(), medicine.getForm(),

@@ -103,6 +103,15 @@ describe("planLooseSplit", () => {
     expect(r.shortfall).toBe(0);
   });
 
+  it("keeps the given order when the batches already come from the dispensing engine (LIFA / strategy-ordered)", () => {
+    // Both batches are needed to fill the 33-piece overflow (17 already on line A).
+    const soon = batch({ id: "SOON", quantity: 5, looseUnits: 0, expiryDate: "2026-11-01T00:00:00Z" });  // 75
+    const later = batch({ id: "LATER", quantity: 1, looseUnits: 0, expiryDate: "2028-01-01T00:00:00Z" }); // 15
+    // Backend returned LATER first (its strategy). The planner must NOT re-sort to FEFO.
+    const r = planLooseSplit(line, 50, cart, [later, soon], Date.now(), true);
+    expect(r.lines.map((l) => l.inventoryId)).toEqual(["LATER", "SOON"]);
+  });
+
   it("reports what it still can't fill after every batch is used", () => {
     const r = planLooseSplit(line, 60, cart, [batch({ id: "B", quantity: 1, looseUnits: 3 })]); // 18 available, 43 short
     expect(r.lines).toHaveLength(1);

@@ -3,8 +3,10 @@ import { RefreshCw, Plus, FileText, Check, X, Send, Building2, Paperclip } from 
 import { AnimatePresence } from "framer-motion";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { istRangeParams } from "@pharmacy/utils";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/hooks/useToast";
 import { useDebounce } from "@/hooks/useDebounce";
 import { queryKeys } from "@/lib/queryKeys";
 import { TableSkeletonRows } from "@/components/Skeleton";
@@ -32,7 +34,9 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
   const [approveId, setApproveId] = useState<string | null>(null);
   const [sharePoId, setSharePoId] = useState<string | null>(null);
   const [pdfId, setPdfId]         = useState<string | null>(null);
+  const [cancelPoId, setCancelPoId] = useState<string | null>(null);
   const queryClient = useQueryClient();
+  const toast = useToast();
 
   const dSearch = useDebounce(search, 350);
 
@@ -60,16 +64,19 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
   }
 
   async function cancelPO(id: string) {
-    if (!window.confirm("Cancel this purchase order?")) return;
     setAction(id);
-    try { await api.delete(`/purchases/orders/${id}`); invalidate(); }
-    catch {/* */} finally { setAction(null); }
+    try { await api.delete(`/purchases/orders/${id}`); invalidate(); setCancelPoId(null); toast.success("Purchase order cancelled"); }
+    catch (e) { toast.error(getErrorMessage(e, "Failed to cancel purchase order")); }
+    finally { setAction(null); }
   }
 
   async function approvePO(id: string, approved: boolean) {
     setApproveId(id);
-    try { await api.patch(`/purchases/orders/${id}/approve`, { approved }); invalidate(); }
-    catch (e: any) { alert(e?.response?.data?.error ?? "Failed"); } finally { setApproveId(null); }
+    try {
+      await api.patch(`/purchases/orders/${id}/approve`, { approved });
+      invalidate();
+      toast.success(approved ? "Purchase order approved" : "Purchase order rejected");
+    } catch (e) { toast.error(getErrorMessage(e, "Failed")); } finally { setApproveId(null); }
   }
 
   // Generate the actual Purchase Order document (not the source attachment the PO
@@ -93,7 +100,7 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
         phRes.data.data,
       );
     } catch {
-      alert("Could not generate the PO document. Please try again.");
+      toast.error("Could not generate the PO document. Please try again.");
     } finally {
       setPdfId(null);
     }
@@ -191,7 +198,7 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
                         cls="text-amber-600 border-amber-200 hover:bg-amber-50" />
                     )}
                     {!["RECEIVED", "CANCELLED"].includes(po.status) && (
-                      <ActionBtn onClick={() => cancelPO(po.id)} disabled={actionId === po.id}
+                      <ActionBtn onClick={() => setCancelPoId(po.id)} disabled={actionId === po.id}
                         icon={X} label="Cancel" cls="text-red-500 border-red-100 hover:bg-red-50" />
                     )}
                   </div>
@@ -217,6 +224,19 @@ export function POTab({ suppliers }: { suppliers: Supplier[] }) {
           />
         )}
       </AnimatePresence>
+
+      <ConfirmDialog
+        open={!!cancelPoId}
+        tone="danger"
+        icon={X}
+        title="Cancel this purchase order?"
+        body="The draft order is deleted. Nothing has been received or billed against it."
+        confirmLabel="Cancel PO"
+        cancelLabel="Keep it"
+        busy={actionId === cancelPoId}
+        onConfirm={() => cancelPoId && cancelPO(cancelPoId)}
+        onCancel={() => actionId !== cancelPoId && setCancelPoId(null)}
+      />
     </div>
   );
 }

@@ -46,20 +46,31 @@ public interface InvoiceItemRepository extends JpaRepository<InvoiceItem, String
     // (BillingService's looseUppOverrideByMedicineId). A wrong pack size here would
     // misreport a fast-mover as slow (or the reverse) for exactly the pharmacies that
     // bothered to correct the catalogue's default.
+    //
+    // Explicit LEFT JOINs to inventory/medicine — a local medicine (not yet in the
+    // global catalogue, see PharmacyMedicine) has inventory.medicine null, and the
+    // implicit path form (i.inventory.medicine.unitsPerPack) this used to use
+    // compiles to an INNER join, which dropped its line from these reports
+    // entirely (not just mispriced it — the whole row vanished, revenue included).
+    // A local medicine has no loose-sale support yet (see Inventory.productUnitsPerPack),
+    // so med being null here always falls through the COALESCE to the plain
+    // pack-quantity ELSE branch, which is the correct figure for it.
 
     @Query("""
             SELECT i.inventoryId AS inventoryId,
                    COALESCE(SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
-                                      ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END), 0) AS qty,
+                                      ELSE i.quantity * COALESCE(o.unitsPerPack, med.unitsPerPack, 1) END), 0) AS qty,
                    COALESCE(SUM(i.amount), 0) AS revenue
             FROM InvoiceItem i
+            LEFT JOIN i.inventory inv
+            LEFT JOIN inv.medicine med
             LEFT JOIN PharmacyMedicineOverride o
-              ON o.id.pharmacyId = i.invoice.pharmacyId AND o.id.medicineId = i.inventory.medicineId
+              ON o.id.pharmacyId = i.invoice.pharmacyId AND o.id.medicineId = inv.medicineId
             WHERE i.invoice.pharmacyId = :pharmacyId AND i.invoice.isCancelled = false
               AND i.invoice.createdAt >= :from AND i.invoice.createdAt <= :to
             GROUP BY i.inventoryId
             ORDER BY SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
-                               ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END) DESC
+                               ELSE i.quantity * COALESCE(o.unitsPerPack, med.unitsPerPack, 1) END) DESC
             """)
     List<MovementGroupRow> fastMovingInRange(@Param("pharmacyId") String pharmacyId,
                                              @Param("from") Instant from, @Param("to") Instant to, Limit limit);
@@ -67,18 +78,20 @@ public interface InvoiceItemRepository extends JpaRepository<InvoiceItem, String
     @Query("""
             SELECT i.inventoryId AS inventoryId,
                    COALESCE(SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
-                                      ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END), 0) AS qty,
+                                      ELSE i.quantity * COALESCE(o.unitsPerPack, med.unitsPerPack, 1) END), 0) AS qty,
                    COALESCE(SUM(i.amount), 0) AS revenue
             FROM InvoiceItem i
+            LEFT JOIN i.inventory inv
+            LEFT JOIN inv.medicine med
             LEFT JOIN PharmacyMedicineOverride o
-              ON o.id.pharmacyId = i.invoice.pharmacyId AND o.id.medicineId = i.inventory.medicineId
+              ON o.id.pharmacyId = i.invoice.pharmacyId AND o.id.medicineId = inv.medicineId
             WHERE i.invoice.pharmacyId = :pharmacyId AND i.invoice.isCancelled = false
               AND i.invoice.createdAt >= :from AND i.invoice.createdAt <= :to
             GROUP BY i.inventoryId
             HAVING SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
-                             ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END) >= :minQty
+                             ELSE i.quantity * COALESCE(o.unitsPerPack, med.unitsPerPack, 1) END) >= :minQty
             ORDER BY SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
-                               ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END) ASC
+                               ELSE i.quantity * COALESCE(o.unitsPerPack, med.unitsPerPack, 1) END) ASC
             """)
     List<MovementGroupRow> slowMovingInRange(@Param("pharmacyId") String pharmacyId,
                                              @Param("from") Instant from, @Param("to") Instant to,
@@ -87,16 +100,18 @@ public interface InvoiceItemRepository extends JpaRepository<InvoiceItem, String
     @Query("""
             SELECT i.inventoryId AS inventoryId,
                    COALESCE(SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
-                                      ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END), 0) AS qty,
+                                      ELSE i.quantity * COALESCE(o.unitsPerPack, med.unitsPerPack, 1) END), 0) AS qty,
                    COALESCE(SUM(i.amount), 0) AS revenue
             FROM InvoiceItem i
+            LEFT JOIN i.inventory inv
+            LEFT JOIN inv.medicine med
             LEFT JOIN PharmacyMedicineOverride o
-              ON o.id.pharmacyId = i.invoice.pharmacyId AND o.id.medicineId = i.inventory.medicineId
+              ON o.id.pharmacyId = i.invoice.pharmacyId AND o.id.medicineId = inv.medicineId
             WHERE i.invoice.pharmacyId = :pharmacyId AND i.invoice.isCancelled = false
               AND i.invoice.createdAt >= :since
             GROUP BY i.inventoryId
             ORDER BY SUM(CASE WHEN i.saleUnit = 'LOOSE' THEN i.quantity
-                               ELSE i.quantity * COALESCE(o.unitsPerPack, i.inventory.medicine.unitsPerPack, 1) END) DESC
+                               ELSE i.quantity * COALESCE(o.unitsPerPack, med.unitsPerPack, 1) END) DESC
             """)
     List<MovementGroupRow> topItemsSince(@Param("pharmacyId") String pharmacyId,
                                         @Param("since") Instant since, Limit limit);
@@ -185,14 +200,21 @@ public interface InvoiceItemRepository extends JpaRepository<InvoiceItem, String
      * <p>All five fetches are to-one, so pagination is applied in SQL. A collection
      * fetch here would instead trigger Hibernate's in-memory paging (HHH000104) and
      * defeat the entire point of the bound.
+     *
+     * <p>Checks BOTH {@code medicine.schedule} and {@code localMedicine.schedule} —
+     * exactly one of which is non-null per batch (see PharmacyMedicine). This is a
+     * statutory register; a controlled-substance sale of a medicine not yet linked
+     * to the global catalogue is still a real dispensing that must appear in it.
      */
     @Query("""
             SELECT i FROM InvoiceItem i
             LEFT JOIN FETCH i.invoice inv LEFT JOIN FETCH inv.customer LEFT JOIN FETCH inv.user
-            LEFT JOIN FETCH i.inventory inventory LEFT JOIN FETCH inventory.medicine
+            LEFT JOIN FETCH i.inventory inventory
+            LEFT JOIN FETCH inventory.medicine med
+            LEFT JOIN FETCH inventory.localMedicine lm
             WHERE inv.pharmacyId = :pharmacyId AND inv.isCancelled = false
               AND inv.createdAt >= :from AND inv.createdAt <= :to
-              AND inventory.medicine.schedule IN :schedules
+              AND (med.schedule IN :schedules OR lm.schedule IN :schedules)
             ORDER BY inv.createdAt DESC
             """)
     List<InvoiceItem> scheduleRegisterItems(@Param("pharmacyId") String pharmacyId,

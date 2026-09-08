@@ -39,9 +39,9 @@ public record GrnResponse(
     public record UserRef(String id, String name) {
     }
 
-    public record Item(String id, String medicineId, String medicineName, String batchNumber, Instant expiryDate,
-                       Integer orderedQty, int receivedQty, int freeQty, String purchaseUnit, int conversionFactor,
-                       BigDecimal purchaseRate, BigDecimal mrp, BigDecimal discount, BigDecimal gstRate,
-                       BigDecimal cgst, BigDecimal sgst, BigDecimal amount) {
+    public record Item(String id, String medicineId, String localMedicineId, String medicineName, String batchNumber,
+                       Instant expiryDate, Integer orderedQty, int receivedQty, int freeQty, String purchaseUnit,
+                       int conversionFactor, BigDecimal purchaseRate, BigDecimal mrp, BigDecimal discount,
+                       BigDecimal gstRate, BigDecimal cgst, BigDecimal sgst, BigDecimal amount) {
     }
 }

@@ -10,7 +10,10 @@ import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.ForbiddenException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.exception.UnprocessableEntityException;
+import com.checkup.pharmacy.common.util.BaseUnits;
 import com.checkup.pharmacy.common.util.DateRange;
+import com.checkup.pharmacy.common.util.PackSizeGuard;
+import com.checkup.pharmacy.common.util.PackUnits;
 import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.modules.inventory.dto.AddStockRequest;
 import com.checkup.pharmacy.modules.inventory.dto.AddStockResponse;
@@ -98,6 +101,7 @@ public class InventoryService {
     private final ShelfRepository shelfRepository;
     private final RackRepository rackRepository;
     private final UserRepository userRepository;
+    private final com.checkup.pharmacy.modules.dispensing.DispensingService dispensingService;
     private final long reservationTtlMinutes;
 
     public InventoryService(InventoryRepository inventoryRepository,
@@ -110,6 +114,7 @@ public class InventoryService {
                             ShelfRepository shelfRepository,
                             RackRepository rackRepository,
                             UserRepository userRepository,
+                            com.checkup.pharmacy.modules.dispensing.DispensingService dispensingService,
                             @Value("${app.inventory.reservation-ttl-minutes:15}") long reservationTtlMinutes) {
         this.inventoryRepository = inventoryRepository;
         this.movementRepository = movementRepository;
@@ -121,6 +126,7 @@ public class InventoryService {
         this.shelfRepository = shelfRepository;
         this.rackRepository = rackRepository;
         this.userRepository = userRepository;
+        this.dispensingService = dispensingService;
         this.reservationTtlMinutes = reservationTtlMinutes;
     }
 
@@ -165,7 +171,8 @@ public class InventoryService {
             throw new ForbiddenException("Only owners and managers can add stock");
         }
         String pharmacyId = TenantContext.pharmacyId();
-        medicineRepository.findById(req.medicineId()).orElseThrow(() -> new NotFoundException("Medicine not found"));
+        com.checkup.pharmacy.modules.medicine.Medicine medicine = medicineRepository.findById(req.medicineId())
+                .orElseThrow(() -> new NotFoundException("Medicine not found"));
         validateShelf(req.shelfId());
 
         // Re-read under a write lock when merging into an existing batch: mergeIncoming
@@ -196,7 +203,41 @@ public class InventoryService {
                 quantityBefore + req.quantity(), "OPENING_BALANCE", null,
                 merged ? "Manual stock entry (added to existing batch)" : "Manual stock entry (new batch)"));
 
-        return new AddStockResponse(enrich(List.of(inv)).get(0), merged);
+        // Skip on a merge: same batchNumber = same pack, so the check is meaningless
+        // and its 1-2 queries are pure waste on a routine re-stock.
+        String packWarning = merged ? null
+                : differentPackSizeWarning(medicine, pharmacyId, req.mrp(), inv.getId());
+        return new AddStockResponse(enrich(List.of(inv)).get(0), merged, packWarning);
+    }
+
+    /**
+     * A non-blocking note when the batch just received looks like a different pack
+     * size from the medicine's existing stock — only for a measured medicine where a
+     * wrong size would actually mis-price a sale (loose selling on here, or a
+     * structured pack size on record). See {@link PackSizeGuard}.
+     */
+    private String differentPackSizeWarning(Medicine medicine, String pharmacyId,
+                                            java.math.BigDecimal candidateMrp, String newBatchId) {
+        String baseUnit = BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm());
+        if (!PackUnits.isMeasured(baseUnit)) {
+            return null;
+        }
+        // A structured catalogue pack size already makes it "relevant" with no extra
+        // query; only fall back to the override lookup when the catalogue has none.
+        boolean relevant = medicine.getUnitsPerPack() != null || overrideRepository
+                .findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, java.util.Set.of(medicine.getId()))
+                .stream().anyMatch(o -> o.isAllowLooseSale() || o.getUnitsPerPack() != null);
+        if (!relevant) {
+            return null;
+        }
+        java.util.List<java.math.BigDecimal> existing = inventoryRepository
+                .findActiveNonExpiredByMedicineIdIn(pharmacyId, java.util.Set.of(medicine.getId()), java.time.Instant.now())
+                .stream()
+                .filter(b -> !b.getId().equals(newBatchId))
+                .map(Inventory::getMrp)
+                .toList();
+        return PackSizeGuard.differentPackSizeWarning(medicine.getName(),
+                PackUnits.packUnitLabel(medicine.getUnit(), baseUnit), candidateMrp, existing);
     }
 
     @Transactional
@@ -703,14 +744,48 @@ public class InventoryService {
         return expired.size();
     }
 
-    // ── FEFO (used by billing) ───────────────────────────────────────────────
+    // ── Batch selection (delegates ordering to the dispensing engine) ─────────
 
+    /**
+     * The single batch the dispensing engine would draw from first for
+     * {@code quantity} whole packs of this medicine, under the pharmacy's
+     * configured strategy (LILA/FEFO or LIFA — see {@link
+     * com.checkup.pharmacy.modules.dispensing.DispensingService}). Kept for the
+     * substitute-picker paths on the prescription triage screen; the primary
+     * prescription → cart path uses {@code /dispensing/prescriptions/{id}/plan}.
+     */
     @Transactional(readOnly = true)
     public InventoryResponse getFefoBatch(String medicineId, int quantity) {
         int qty = Math.max(quantity, 1);
-        List<Inventory> candidates = inventoryRepository.findFefoCandidates(
-                TenantContext.pharmacyId(), medicineId, Instant.now(), qty, PageRequest.of(0, 1));
-        return candidates.isEmpty() ? null : enrich(candidates).get(0);
+        List<Inventory> ordered = dispensingService.orderBatches(
+                inventoryRepository.findSellableBatchesForEffectiveMedicine(
+                        TenantContext.pharmacyId(), medicineId, Instant.now()));
+        for (Inventory b : ordered) {
+            if (b.getQuantity() - b.getReservedQuantity() >= qty) {
+                return enrich(List.of(b)).get(0);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Every sellable batch of a medicine, in the pharmacy's configured dispensing
+     * order — what the billing batch picker shows. The frontend no longer sorts
+     * batches itself; this is the authoritative order.
+     */
+    @Transactional(readOnly = true)
+    public List<InventoryResponse> dispensingBatches(String medicineId, String localMedicineId) {
+        String pharmacyId = TenantContext.pharmacyId();
+        Instant now = Instant.now();
+        List<Inventory> batches;
+        if (localMedicineId != null && !localMedicineId.isBlank()) {
+            batches = inventoryRepository.findSellableBatchesForLocalMedicine(pharmacyId, localMedicineId.trim(), now);
+        } else if (medicineId != null && !medicineId.isBlank()) {
+            batches = inventoryRepository.findSellableBatchesForEffectiveMedicine(pharmacyId, medicineId.trim(), now);
+        } else {
+            throw new BadRequestException("medicineId or localMedicineId is required");
+        }
+        return enrich(dispensingService.orderBatches(batches));
     }
 
     // ── Sales-velocity features (calibrate-stock, frequent quick-add) ────────
@@ -793,7 +868,7 @@ public class InventoryService {
         List<InventoryMovementRepository.MedicineSalesAggregateRow> ranked =
                 movementRepository.aggregateSalesByMedicine(pharmacyId, from, to);
 
-        // One FEFO query for the whole shortlist instead of one per medicine.
+        // One sellable-batch query for the whole shortlist instead of one per medicine.
         //
         // This powers the quick-add card on the billing screen, so it runs every time a
         // cashier opens a new bill. It used to issue a FEFO query per ranked medicine
@@ -805,17 +880,19 @@ public class InventoryService {
         // are ranked by sales volume, so needing to look past this many to find ten
         // in-stock items is not a real scenario, and the cap bounds both the IN list and
         // the rows returned.
+        //
+        // Which batch per medicine is the dispensing engine's call, not this method's —
+        // topBatchPerMedicine orders the candidates by the pharmacy's configured
+        // strategy (LILA/FEFO or LIFA), so Quick Add and a manual sale of the same
+        // medicine always agree on the batch.
         List<String> shortlist = ranked.stream()
                 .limit((long) FREQUENT_LIMIT * FREQUENT_CANDIDATE_MULTIPLIER)
                 .map(InventoryMovementRepository.MedicineSalesAggregateRow::getMedicineId)
                 .toList();
-        Map<String, Inventory> fefoByMedicineId = new HashMap<>();
-        if (!shortlist.isEmpty()) {
-            // Ordered by (medicineId, expiryDate), so the first row per medicine is FEFO.
-            for (Inventory candidate : inventoryRepository.findFefoCandidatesForMedicines(pharmacyId, shortlist, to, 1)) {
-                fefoByMedicineId.putIfAbsent(candidate.getMedicineId(), candidate);
-            }
-        }
+        Map<String, Inventory> fefoByMedicineId = shortlist.isEmpty()
+                ? Map.of()
+                : dispensingService.topBatchPerMedicine(
+                        inventoryRepository.findSellableBatchesForMedicines(pharmacyId, shortlist, to));
 
         Map<String, com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride> freqOverrides = new HashMap<>();
         for (var o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, shortlist)) {
@@ -1071,15 +1148,9 @@ public class InventoryService {
         if (rows.isEmpty()) {
             return List.of();
         }
-        List<String> medicineIds = rows.stream().map(Inventory::getMedicineId)
-                .filter(java.util.Objects::nonNull).distinct().toList();
-        Map<String, Medicine> medicinesById = new HashMap<>();
-        if (!medicineIds.isEmpty()) {
-            for (Medicine m : medicineRepository.findAllById(medicineIds)) {
-                medicinesById.put(m.getId(), m);
-            }
-        }
         // A batch received for a medicine not yet in the global catalogue — see PharmacyMedicine.
+        // Fetched BEFORE medicinesById below so a LINKED local medicine's own catalogue target
+        // can be folded into that one query too (see EffectiveMedicine).
         List<String> localMedicineIds = rows.stream().map(Inventory::getLocalMedicineId)
                 .filter(java.util.Objects::nonNull).distinct().toList();
         Map<String, com.checkup.pharmacy.modules.medicine.PharmacyMedicine> localMedicinesById = new HashMap<>();
@@ -1088,8 +1159,34 @@ public class InventoryService {
                 localMedicinesById.put(m.getId(), m);
             }
         }
-        // This pharmacy's loose-selling opt-in and pack-size override, per medicine.
-        // (A local medicine has no override row — loose selling isn't offered for one yet.)
+
+        // Direct catalogue links, plus the catalogue target of every LINKED local medicine — a
+        // batch resolved against a local identity a pharmacist has since confirmed IS a
+        // catalogue medicine (see PharmacyMedicine#confirmLink) gets that medicine's loose-sale/
+        // GST/etc. behaviour too, exactly like a batch received against the catalogue directly.
+        // Folded into ONE id set so both this query and the override query below stay single
+        // round trips regardless of how many rows are direct vs. linked-local.
+        Set<String> medicineIds = new java.util.HashSet<>();
+        for (Inventory inv : rows) {
+            if (inv.getMedicineId() != null) {
+                medicineIds.add(inv.getMedicineId());
+            }
+        }
+        for (var lm : localMedicinesById.values()) {
+            if (lm.getMatchStatus() == com.checkup.pharmacy.common.enums.MedicineMatchStatus.LINKED
+                    && lm.getLinkedMedicineId() != null) {
+                medicineIds.add(lm.getLinkedMedicineId());
+            }
+        }
+        Map<String, Medicine> medicinesById = new HashMap<>();
+        if (!medicineIds.isEmpty()) {
+            for (Medicine m : medicineRepository.findAllById(medicineIds)) {
+                medicinesById.put(m.getId(), m);
+            }
+        }
+        // This pharmacy's loose-selling opt-in and pack-size override, per (possibly linked)
+        // effective medicine. (A local medicine that is still PENDING/SUGGESTED/KEPT_LOCAL has
+        // no override row of its own — loose selling isn't offered for one yet.)
         Map<String, com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride> overridesById = new HashMap<>();
         if (!medicineIds.isEmpty()) {
             for (var o : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(TenantContext.pharmacyId(), medicineIds)) {
@@ -1112,8 +1209,12 @@ public class InventoryService {
 
         List<InventoryResponse> out = new ArrayList<>(rows.size());
         for (Inventory inv : rows) {
-            Medicine m = medicinesById.get(inv.getMedicineId());
-            var ov = m == null ? null : overridesById.get(inv.getMedicineId());
+            Medicine direct = medicinesById.get(inv.getMedicineId());
+            // Follows a LINKED local medicine through to its catalogue target; null for a
+            // genuinely local batch (PENDING/SUGGESTED/KEPT_LOCAL, or a LINKED one whose
+            // target has since vanished from the catalogue) — see EffectiveMedicine.
+            Medicine m = EffectiveMedicine.resolve(direct, inv.getLocalMedicineId(), localMedicinesById, medicinesById);
+            var ov = m == null ? null : overridesById.get(m.getId());
             Integer effectiveUpp = ov != null && ov.getUnitsPerPack() != null
                     ? ov.getUnitsPerPack()
                     : (m != null ? m.getUnitsPerPack() : null);
@@ -1129,8 +1230,9 @@ public class InventoryService {
                         allowLoose, looseDefault, m.getSchedule(), m.getPackSize());
             } else {
                 var lm = localMedicinesById.get(inv.getLocalMedicineId());
-                // Not in the global catalogue (yet) — no loose-sale support, no packSize label.
-                // isActive is always true: a local medicine has no deactivate flow.
+                // Not in the global catalogue (yet), or a local identity that is not (or no
+                // longer) LINKED to one — no loose-sale support, no packSize label. isActive
+                // is always true: a local medicine has no deactivate flow.
                 medRef = lm == null ? null : new InventoryResponse.MedicineRef(
                         lm.getId(), lm.getName(), lm.getGenericName(), lm.getForm(), lm.getStrength(), lm.getUnit(),
                         true, lm.getGstRate(), lm.getHsnCode(), null, null, false, false, lm.getSchedule(), null);

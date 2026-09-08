@@ -13,15 +13,14 @@ import { useToast } from "@/hooks/useToast";
 import { useBillingStore } from "@/components/billing/useBillingStore";
 import { saveDraft } from "@/lib/draftStorage";
 import {
-  resolvePrescriptionToCart,
   billableLines,
-  roundUpConfirmMessage,
   type BillablePrescription,
   type ItemResolution,
 } from "@/lib/prescriptionToCart";
 import ReviewIngestedItemsPanel from "@/components/integration/ReviewIngestedItemsPanel";
 import ConfirmQuantityPanel from "@/components/integration/ConfirmQuantityPanel";
 import StockActionPanel, { type StockInfo } from "@/components/integration/StockActionPanel";
+import { usePackRoundingDecision } from "@/hooks/usePackRoundingDecision";
 
 const SCHEDULE_TOOLTIP: Record<string, string> = {
   H:   "Schedule H — Prescription required",
@@ -70,6 +69,10 @@ type TriageItem = {
    *  from a pending in-session "Replace" decision, which nothing has been sold against yet. */
   dispensedMedicineName?: string | null;
   substituted?: boolean;
+  /** True when `quantity` was worked out from dosage × duration rather than sent by the clinic. */
+  quantityAutoCalculated?: boolean;
+  /** How the quantity was calculated, or why it couldn't be — see PrescriptionQuantityCalculator (backend). */
+  quantityCalculationNote?: string | null;
   suggestions?: { medicineId: string; name: string; genericName: string | null; strength: string | null; form: string | null; similarity: number }[];
 };
 
@@ -142,6 +145,8 @@ export default function ClinicPrescriptionTriage({
       return next;
     });
   }
+
+  const { resolveWithRoundingDecision, roundingModal } = usePackRoundingDecision();
 
   // Computed from the lines themselves rather than trusting rx.needsReview as one opaque
   // count — a line can be blocked for either reason (unmatched medicine, unconfirmed
@@ -240,20 +245,22 @@ export default function ClinicPrescriptionTriage({
   async function handleBillNow() {
     setBusy("bill");
     try {
-      const { items, meta, failures, checkFailed, partials, roundedToPack, skipped } =
-        await resolvePrescriptionToCart(rx, resolutions);
+      const resolved = await resolveWithRoundingDecision(rx, resolutions);
+      if (!resolved) return; // pharmacist cancelled at the pack-rounding decision
+      const { items, meta, failures, checkFailed, partials, skipped, reasons } = resolved;
       if (items.length === 0) {
-        toast.error(emptyCartMessage(failures, checkFailed, skipped));
+        // Prefer the engine's specific per-line reason over the generic "empty cart" text.
+        toast.error(reasons.length > 0
+          ? reasons.map((r) => `${r.medicineName}: ${r.message}`).join("  •  ")
+          : emptyCartMessage(failures, checkFailed, skipped));
         return;
       }
-      // Rounding a course up to a full pack overcharges the patient — block until the
-      // pharmacist accepts it rather than relying on a toast they might miss.
-      const roundMsg = roundUpConfirmMessage(roundedToPack);
-      if (roundMsg && !window.confirm(roundMsg)) return;
       // loadDraft (not addItem-per-line) so the cart is REPLACED. Appending would silently
       // merge this patient's prescription into whatever half-finished sale was already open.
       loadDraft(items, meta);
-      if (failures.length > 0) {
+      if (reasons.length > 0) {
+        for (const r of reasons) toast.warning(`${r.medicineName}: ${r.message}`);
+      } else if (failures.length > 0) {
         toast.error(`Not in stock: ${failures.join(", ")} — add manually or substitute`);
       }
       if (checkFailed.length > 0) {
@@ -276,14 +283,13 @@ export default function ClinicPrescriptionTriage({
   async function handleSaveDraft() {
     setBusy("draft");
     try {
-      const { items, meta, failures, checkFailed, partials, roundedToPack, skipped } =
-        await resolvePrescriptionToCart(rx, resolutions);
+      const resolved = await resolveWithRoundingDecision(rx, resolutions);
+      if (!resolved) return; // pharmacist cancelled at the pack-rounding decision
+      const { items, meta, failures, checkFailed, partials, roundedToPack, skipped } = resolved;
       if (items.length === 0) {
         toast.error(emptyCartMessage(failures, checkFailed, skipped));
         return;
       }
-      const roundMsg = roundUpConfirmMessage(roundedToPack);
-      if (roundMsg && !window.confirm(roundMsg)) return;
       saveDraft(items, meta);
       const notes = [
         failures.length > 0 ? `${failures.join(", ")} not in stock` : null,
@@ -445,6 +451,14 @@ export default function ClinicPrescriptionTriage({
                         <p className="text-[10px] text-slate-400 uppercase tracking-wide">
                           {unconfirmedQty ? "not set" : done ? "dispensed" : item.dispensedQty > 0 ? "left" : "qty"}
                         </p>
+                        {!unconfirmedQty && !done && item.quantityAutoCalculated && (
+                          <p
+                            title={item.quantityCalculationNote ?? "Calculated, not stated by the clinic"}
+                            className="text-[9.5px] font-semibold text-violet-500 cursor-help"
+                          >
+                            calculated
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -549,6 +563,7 @@ export default function ClinicPrescriptionTriage({
           </button>
         </div>
       </motion.div>
+      {roundingModal}
     </div>
   );
 }

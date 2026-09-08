@@ -74,11 +74,18 @@ public class MedicineController {
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.ok(medicineService.create(req)));
     }
 
-    /** Quick fuzzy search for the billing/GRN combobox — {@code GET /medicines?...} covers the full catalog page. */
+    /**
+     * Quick fuzzy search for the billing/GRN combobox — {@code GET /medicines?...} covers the
+     * full catalog page. {@code includeLocal} additionally merges this pharmacy's own
+     * not-yet-catalogued medicines (see {@link PharmacyMedicine}) — only the billing combobox
+     * passes it; every other caller (Add Stock, barcode mapping, alternatives) writes against
+     * a global medicineId and must keep seeing catalogue-only results.
+     */
     @GetMapping("/search")
     public ApiResponse<List<MedicineResponse>> search(
-            @RequestParam String q, @RequestParam(defaultValue = "8") int limit) {
-        return ApiResponse.ok(medicineService.quickSearch(q, limit));
+            @RequestParam String q, @RequestParam(defaultValue = "8") int limit,
+            @RequestParam(defaultValue = "false") boolean includeLocal) {
+        return ApiResponse.ok(medicineService.quickSearch(q, limit, includeLocal));
     }
 
     @GetMapping("/barcode/{code}")

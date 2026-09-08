@@ -569,6 +569,208 @@ class EmrIntegrationServiceTest {
                 .hasMessageContaining("Duplicate externalItemId");
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // Quantity calculation on ingest — see PrescriptionQuantityCalculator.
+    // Wired into ingest()/applyAmendment() as a fallback for a line the clinic
+    // sent with no usable quantity, using whatever medicine the matcher (or,
+    // for an unchanged-name amendment line, the existing link) resolved.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /** Builds a service with its own sequence-service mock, stubbed to hand out sequence 1. */
+    private static EmrIntegrationService serviceForIngest(PrescriptionRepository prescriptionRepository,
+                                                          PrescriptionItemRepository itemRepository,
+                                                          MedicineRepository medicineRepository) {
+        DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
+        when(sequenceService.next(any(), any(), any())).thenReturn(1);
+        return new EmrIntegrationService(prescriptionRepository, itemRepository, mock(InvoiceRepository.class),
+                medicineRepository, mock(InventoryRepository.class), sequenceService, mock(DoctorRepository.class));
+    }
+
+    private static List<PrescriptionItem> savedItems(PrescriptionItemRepository itemRepository) {
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<PrescriptionItem>> captor = ArgumentCaptor.forClass(List.class);
+        verify(itemRepository).saveAll(captor.capture());
+        return captor.getValue();
+    }
+
+    @Test
+    @DisplayName("ingest computes the quantity from dosage x duration when the clinic sent none")
+    void ingestComputesQuantityWhenMissing() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        EmrIntegrationService service = serviceForIngest(prescriptionRepository, itemRepository, medicineRepository);
+        authenticateAsMachine();
+
+        Medicine medicine = Medicine.create("Paracetamol 500", new BigDecimal("5"));
+        medicine.setPackaging(10, "TABLET");
+        when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of(medicine));
+        when(prescriptionRepository.findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
+                eq("ph-1"), eq("tenant-1"), eq("rx-1"))).thenReturn(Optional.empty());
+
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "Paracetamol 500", null, null, null,
+                0, "1-0-1", "6 days", null);
+        service.ingest(ingestRequest("Dr. Ann Smith", "John Doe", List.of(item)));
+
+        assertThat(savedItems(itemRepository)).singleElement().satisfies(saved -> {
+            assertThat(saved.getQuantity()).isEqualTo(12);
+            assertThat(saved.isQuantityAutoCalculated()).isTrue();
+        });
+    }
+
+    @Test
+    @DisplayName("an explicit EMR quantity is preserved and never recalculated over")
+    void ingestPreservesAnExplicitQuantity() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        EmrIntegrationService service = serviceForIngest(prescriptionRepository, itemRepository, medicineRepository);
+        authenticateAsMachine();
+
+        Medicine medicine = Medicine.create("Paracetamol 500", new BigDecimal("5"));
+        medicine.setPackaging(10, "TABLET");
+        when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of(medicine));
+        when(prescriptionRepository.findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
+                eq("ph-1"), eq("tenant-1"), eq("rx-1"))).thenReturn(Optional.empty());
+
+        // Dosage x duration would compute 12, but the clinic already stated 7 — its word wins.
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "Paracetamol 500", null, null, null,
+                7, "1-0-1", "6 days", null);
+        service.ingest(ingestRequest("Dr. Ann Smith", "John Doe", List.of(item)));
+
+        assertThat(savedItems(itemRepository)).singleElement().satisfies(saved -> {
+            assertThat(saved.getQuantity()).isEqualTo(7);
+            assertThat(saved.isQuantityAutoCalculated()).isFalse();
+        });
+    }
+
+    @Test
+    @DisplayName("a liquid medicine (ML base unit) is left for a pharmacist even with a clean-looking pattern")
+    void ingestDoesNotCalculateForLiquids() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        EmrIntegrationService service = serviceForIngest(prescriptionRepository, itemRepository, medicineRepository);
+        authenticateAsMachine();
+
+        Medicine syrup = Medicine.create("Cough Syrup", new BigDecimal("5"));
+        syrup.setPackaging(null, "ML");
+        when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of(syrup));
+        when(prescriptionRepository.findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
+                eq("ph-1"), eq("tenant-1"), eq("rx-1"))).thenReturn(Optional.empty());
+
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "Cough Syrup", null, null, null,
+                0, "10ml-0-10ml", "6 days", null);
+        service.ingest(ingestRequest("Dr. Ann Smith", "John Doe", List.of(item)));
+
+        assertThat(savedItems(itemRepository)).singleElement().satisfies(saved -> {
+            assertThat(saved.needsQuantityConfirmation()).isTrue();
+            assertThat(saved.isQuantityAutoCalculated()).isFalse();
+        });
+    }
+
+    @Test
+    @DisplayName("an unparseable dosage leaves the line for manual confirmation without failing ingest")
+    void ingestLeavesAmbiguousLinesForManualConfirmation() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        EmrIntegrationService service = serviceForIngest(prescriptionRepository, itemRepository, medicineRepository);
+        authenticateAsMachine();
+
+        Medicine medicine = Medicine.create("Paracetamol 500", new BigDecimal("5"));
+        medicine.setPackaging(10, "TABLET");
+        when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of(medicine));
+        when(prescriptionRepository.findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
+                eq("ph-1"), eq("tenant-1"), eq("rx-1"))).thenReturn(Optional.empty());
+
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "Paracetamol 500", null, null, null,
+                0, "As directed", null, null);
+        service.ingest(ingestRequest("Dr. Ann Smith", "John Doe", List.of(item)));
+
+        assertThat(savedItems(itemRepository)).singleElement().satisfies(saved -> {
+            assertThat(saved.needsQuantityConfirmation()).isTrue();
+            assertThat(saved.isQuantityAutoCalculated()).isFalse();
+        });
+    }
+
+    @Test
+    @DisplayName("an unmatched line (no catalogue medicine) is left alone — there is no base unit to calculate against")
+    void ingestDoesNotCalculateForAnUnmatchedLine() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        EmrIntegrationService service = serviceForIngest(prescriptionRepository, itemRepository, medicineRepository);
+        authenticateAsMachine();
+
+        when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of());
+        when(prescriptionRepository.findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
+                eq("ph-1"), eq("tenant-1"), eq("rx-1"))).thenReturn(Optional.empty());
+
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "Totally Unknown Brand", null, null, null,
+                0, "1-0-1", "6 days", null);
+        service.ingest(ingestRequest("Dr. Ann Smith", "John Doe", List.of(item)));
+
+        assertThat(savedItems(itemRepository)).singleElement().satisfies(saved -> {
+            assertThat(saved.getMedicineId()).isNull();
+            assertThat(saved.needsQuantityConfirmation()).isTrue();
+        });
+    }
+
+    @Test
+    @DisplayName("amendment computes the quantity for a newly-added line the same way ingest does")
+    void amendmentComputesQuantityForANewLine() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        EmrIntegrationService service = serviceWith(prescriptionRepository, itemRepository, medicineRepository);
+        authenticateAsMachine();
+
+        Prescription rx = emrPrescription();
+        when(itemRepository.findByPrescriptionId(rx.getId())).thenReturn(List.of());
+        Medicine medicine = Medicine.create("Azithromycin 500", new BigDecimal("5"));
+        medicine.setPackaging(6, "TABLET");
+        when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of(medicine));
+
+        var newItem = new EmrPrescriptionIngestRequest.Item("item-new", "Azithromycin 500", null, null, null,
+                0, "1-0-0", "3 days", null);
+        service.applyAmendment(rx, ingestRequest("Dr. Rao", "Asha Verma", List.of(newItem)));
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<PrescriptionItem>> captor = ArgumentCaptor.forClass(List.class);
+        verify(itemRepository).saveAll(captor.capture());
+        assertThat(captor.getValue()).singleElement().satisfies(saved -> {
+            assertThat(saved.getQuantity()).isEqualTo(3);
+            assertThat(saved.isQuantityAutoCalculated()).isTrue();
+        });
+    }
+
+    @Test
+    @DisplayName("amendment does not recompute over a quantity a pharmacist already confirmed")
+    void amendmentDoesNotRecalculateAnAlreadyConfirmedLine() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        EmrIntegrationService service = serviceWith(prescriptionRepository, itemRepository, medicineRepository);
+        authenticateAsMachine();
+
+        Prescription rx = emrPrescription();
+        // A pharmacist already confirmed 6 units by hand for this line, at the counter.
+        PrescriptionItem existingItem = PrescriptionItem.createFromEmr("ph-1", rx.getId(), "item-1", "Dolo 650",
+                "med-1", null, 6, "1-0-1", "6 days", null);
+        when(itemRepository.findByPrescriptionId(rx.getId())).thenReturn(List.of(existingItem));
+
+        // Same name, quantity re-sent as 6 (unchanged) — an ordinary retry/edit, not a
+        // clinic clearing the field back to "no quantity".
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "Dolo 650", null, null, null,
+                6, "1-0-1", "6 days", null);
+        service.applyAmendment(rx, ingestRequest("Dr. Rao", "Asha Verma", List.of(item)));
+
+        assertThat(existingItem.getQuantity()).isEqualTo(6);
+        assertThat(existingItem.isQuantityAutoCalculated()).isFalse();
+        verify(medicineRepository, never()).findAllById(any());
+    }
+
     private static EmrPrescriptionIngestRequest ingestRequest(String doctorName, String patientName,
                                                                List<EmrPrescriptionIngestRequest.Item> items) {
         return new EmrPrescriptionIngestRequest("tenant-1", "rx-1", null, doctorName, null, null,

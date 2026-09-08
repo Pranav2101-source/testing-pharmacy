@@ -27,6 +27,33 @@ type PickerState = {
   batches: InventoryBatch[];
 };
 
+// ── Stock display ────────────────────────────────────────────────────────────
+// Purely presentational — every number here (inStock/availableQuantity/
+// sellableUnits/price) is computed backend-side in one batched query
+// (MedicineService#quickSearch); this just formats what the API already sent.
+
+function stockLabel(med: MedicineSearchResult): { text: string; title?: string } | null {
+  if (typeof med.inStock !== "boolean") return null;
+  if (!med.inStock) return { text: "Out of stock" };
+  const qty = med.availableQuantity ?? 0;
+  if (med.allowLooseSale && med.sellableUnits != null && med.unitsPerPack) {
+    return {
+      text: `${qty}×${med.unitsPerPack}=${med.sellableUnits}`,
+      title: `${qty} pack${qty === 1 ? "" : "s"} × ${med.unitsPerPack} = ${med.sellableUnits} sellable units`,
+    };
+  }
+  return { text: `${qty} in stock` };
+}
+
+function fmtPrice(price: number | null | undefined) {
+  return price != null ? `₹${price.toFixed(2)}` : null;
+}
+
+// Batch selection order is decided BACKEND-side now — GET /dispensing/batches
+// returns this medicine's sellable batches (ACTIVE, in date, unreserved stock)
+// already sorted by the pharmacy's configured strategy (LILA/FEFO or LIFA). The
+// combobox no longer sorts or filters batches itself; see DispensingService.
+
 // ── Skeleton ──────────────────────────────────────────────────────────────────
 
 function SkeletonResult() {
@@ -44,8 +71,12 @@ function SkeletonResult() {
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function MedicineSearchCombobox({
+  lifa = false,
   onOpenAlternatives,
 }: {
+  /** LIFA (true) dispenses the newest batch first; LILA/default (false) is FEFO —
+   *  oldest/soonest-expiring batch first. See BillingSubNav's toggle. */
+  lifa?: boolean;
   onOpenAlternatives?: (med: MedicineSearchResult, autoSuggest?: boolean) => void;
 }) {
   const [query,    setQuery]    = useState("");
@@ -110,8 +141,11 @@ export function MedicineSearchCombobox({
   const { data: searchData, isFetching: loading } = useQuery({
     queryKey: ["medicine-search", debouncedQuery],
     queryFn:  () =>
+      // includeLocal: this pharmacy's own not-yet-catalogued medicines (see
+      // PharmacyMedicine) are billable stock too — the batch picker fix isn't enough
+      // if the medicine never shows up in this dropdown to begin with.
       api.get<{ data: MedicineSearchResult[] }>("/medicines/search", {
-        params: { q: debouncedQuery, limit: 8 },
+        params: { q: debouncedQuery, limit: 8, includeLocal: true },
       }).then((r) => r.data.data),
     enabled:         debouncedQuery.length > 0,
     staleTime:       60_000,
@@ -148,7 +182,7 @@ export function MedicineSearchCombobox({
 
   // ── Add a confirmed batch to cart ─────────────────────────────────────────
 
-  function addBatch(batch: InventoryBatch, med: MedicineSearchResult) {
+  function addBatch(batch: InventoryBatch, med: MedicineSearchResult, autoSelected = true) {
     if (!batch.medicine.isActive) {
       setStockError(`"${batch.medicine.name}" is discontinued and cannot be billed.`);
       return;
@@ -164,6 +198,7 @@ export function MedicineSearchCombobox({
     const looseByDefault = batch.medicine.looseByDefault ?? med.looseByDefault ?? false;
     addItem({
       inventoryId:    batch.id,
+      medicineId:     med.isLocal ? undefined : med.id,
       medicineName:   batch.medicine.name,
       hsnCode:        batch.medicine.hsnCode,
       schedule:       med.schedule,
@@ -182,6 +217,9 @@ export function MedicineSearchCombobox({
       baseUnit:       batch.medicine.baseUnit ?? med.baseUnit ?? undefined,
       allowLooseSale,
       looseUnits:     batch.looseUnits ?? 0,
+      // The engine's ordered list; false only when the pharmacist picked a row
+      // other than its top choice in the batch picker.
+      batchAutoSelected: autoSelected,
     });
 
     if (status.color !== "green") {
@@ -204,32 +242,37 @@ export function MedicineSearchCombobox({
   }
 
   // ── Fetch batches for a medicine (cached 30 s so repeat clicks are instant) ──
+  //
+  // GET /dispensing/batches returns this medicine's sellable batches already
+  // filtered (ACTIVE, in date, unreserved stock) AND already ordered by the
+  // pharmacy's configured strategy (LILA/FEFO or LIFA). The combobox does not
+  // sort, filter by expiry, or reason about the strategy — the backend engine is
+  // authoritative. See DispensingService.
 
-  // limit: 40 (not just enough for a picker's ~20) so this cache entry can also
-  // serve CartTable's loose-overflow split, which needs a wider candidate set than
-  // one batch picker screen — same query key, same shape, one fetch does both jobs.
-  function fetchBatches(name: string) {
+  function dispensingBatchesParams(med: MedicineSearchResult) {
+    return med.isLocal ? { localMedicineId: med.id } : { medicineId: med.id };
+  }
+
+  function fetchDispensingBatches(med: MedicineSearchResult) {
     return queryClient.fetchQuery({
-      queryKey: queryKeys.medicineStock.byName(name),
+      queryKey: queryKeys.dispensing.batches(med.id, !!med.isLocal),
       queryFn:  () =>
-        api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
-          // includeAlertCounts:false skips 2 unconditional COUNT queries this call
-          // never reads — a picker only wants the item rows, not the dashboard's alert badge.
-          params: { search: name, inStock: true, limit: 40, includeAlertCounts: false },
-        }).then((r) => r.data.data.items),
+        api.get<{ data: InventoryBatch[] }>("/dispensing/batches", {
+          params: dispensingBatchesParams(med),
+        }).then((r) => r.data.data),
       staleTime: 30_000,
     });
   }
 
   // Prefetch batches when the pharmacist hovers a result — by the time they
   // click, the data is already in cache and the batch picker appears instantly.
-  function prefetchBatches(name: string) {
+  function prefetchBatches(med: MedicineSearchResult) {
     void queryClient.prefetchQuery({
-      queryKey: queryKeys.medicineStock.byName(name),
+      queryKey: queryKeys.dispensing.batches(med.id, !!med.isLocal),
       queryFn:  () =>
-        api.get<{ data: { items: InventoryBatch[] } }>("/inventory", {
-          params: { search: name, inStock: true, limit: 40, includeAlertCounts: false },
-        }).then((r) => r.data.data.items),
+        api.get<{ data: InventoryBatch[] }>("/dispensing/batches", {
+          params: dispensingBatchesParams(med),
+        }).then((r) => r.data.data),
       staleTime: 30_000,
     });
   }
@@ -246,23 +289,16 @@ export function MedicineSearchCombobox({
     setAddingId(med.id);
 
     try {
-      const allBatches = await fetchBatches(med.name);
-
-      const now         = new Date();
-      // Sort FIFO (earliest expiry first) — already ordered by API, but be explicit
-      const liveBatches = allBatches
-        .filter((b) => new Date(b.expiryDate) > now)
-        .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+      // Already sellable + strategy-ordered by the backend engine.
+      const liveBatches = await fetchDispensingBatches(med);
 
       if (liveBatches.length === 0) {
         // If the medicine has a genericName, open the alternatives drawer automatically
         // instead of showing a plain error — keeps the billing flow moving.
-        if ((med.hasAlternatives || med.genericName) && onOpenAlternatives) {
+        if (!med.isLocal && (med.hasAlternatives || med.genericName) && onOpenAlternatives) {
           onOpenAlternatives(med, true);
-        } else if (allBatches.length > 0) {
-          setStockError(`All batches of "${med.name}" are expired.`);
         } else {
-          setStockError(`No stock available for "${med.name}".`);
+          setStockError(`No sellable stock for "${med.name}".`);
         }
         return;
       }
@@ -294,19 +330,13 @@ export function MedicineSearchCombobox({
     setAddingId(med.id);
 
     try {
-      const allBatches = await fetchBatches(med.name);
-      const now         = new Date();
-      const liveBatches = allBatches
-        .filter((b) => new Date(b.expiryDate) > now)
-        .sort((a, b) => new Date(a.expiryDate).getTime() - new Date(b.expiryDate).getTime());
+      const liveBatches = await fetchDispensingBatches(med);
 
       if (liveBatches.length === 0) {
-        if ((med.hasAlternatives || med.genericName) && onOpenAlternatives) {
+        if (!med.isLocal && (med.hasAlternatives || med.genericName) && onOpenAlternatives) {
           onOpenAlternatives(med, true);
-        } else if (allBatches.length > 0) {
-          setStockError(`All batches of "${med.name}" are expired.`);
         } else {
-          setStockError(`No stock available for "${med.name}".`);
+          setStockError(`No sellable stock for "${med.name}".`);
         }
         return;
       }
@@ -398,7 +428,7 @@ export function MedicineSearchCombobox({
       // Right Arrow → open alternatives for the focused result
       if (e.key === "ArrowRight") {
         const focused = results[cursor];
-        if ((focused?.hasAlternatives || focused?.genericName) && onOpenAlternatives) {
+        if (!focused?.isLocal && (focused?.hasAlternatives || focused?.genericName) && onOpenAlternatives) {
           e.preventDefault();
           onOpenAlternatives(focused);
           setOpen(false);
@@ -445,8 +475,11 @@ export function MedicineSearchCombobox({
           <BatchPickerDialog
             medicineName={pickerState.med.name}
             batches={pickerState.batches}
+            lifa={lifa}
             onSelect={(batch) => {
-              addBatch(batch, pickerState.med);
+              // The picker shows the engine's order; picking anything but the top
+              // row is a deliberate pharmacist override.
+              addBatch(batch, pickerState.med, batch.id === pickerState.batches[0]?.id);
               setPickerState(null);
             }}
             onClose={() => setPickerState(null)}
@@ -571,34 +604,50 @@ export function MedicineSearchCombobox({
               animate={{ opacity: 1, y: 0   }}
               exit={   { opacity: 0, y: -4  }}
               transition={{ duration: 0.14 }}
-              className="absolute z-50 left-0 right-0 top-full bg-white border border-slate-200 rounded-xl shadow-card-lg overflow-hidden max-h-72 overflow-y-auto"
+              className="absolute z-50 left-0 right-0 top-full bg-white border border-slate-200 rounded-xl shadow-card-lg overflow-hidden max-h-52 overflow-y-auto"
             >
               {loading && results.length === 0
                 ? [0, 1, 2].map((i) => <SkeletonResult key={i} />)
-                : results.map((med, i) => (
+                : results.map((med, i) => {
+                    const stock = stockLabel(med);
+                    const price = fmtPrice(med.price);
+                    return (
                     <li
                       key={med.id}
-                      onMouseEnter={() => { setCursor(i); prefetchBatches(med.name); }}
+                      onMouseEnter={() => { setCursor(i); prefetchBatches(med); }}
                       onMouseDown={() => selectMedicine(med)}
                       style={{ animationDelay: `${i * 20}ms`, animationFillMode: "both" }}
                       className={cn(
-                        "flex items-center gap-3 px-4 py-3 cursor-pointer border-b border-slate-50 last:border-0 group",
+                        "flex items-center gap-2.5 px-3.5 py-2 cursor-pointer border-b border-slate-50 last:border-0 group",
                         "transition-colors duration-75 animate-fade-in",
-                        i === cursor ? "bg-blue-100/70" : "hover:bg-blue-50/50"
+                        i === cursor ? "bg-blue-100/70" : "hover:bg-blue-50/50",
+                        // Out-of-stock catalogue results still rank in (see quickSearch's
+                        // in-stock-first partition) and are still selectable — just visually
+                        // deprioritized so a pharmacist can tell at a glance why it's last.
+                        stock && med.inStock === false && "opacity-60"
                       )}
                     >
                       <div className={cn(
-                        "w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0",
+                        "w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0",
                         i === cursor ? "bg-blue-100" : "bg-blue-50 group-hover:bg-blue-100"
                       )}>
-                        <Pill className="w-4 h-4 text-blue-500" />
+                        <Pill className="w-3.5 h-3.5 text-blue-500" />
                       </div>
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5 min-w-0">
-                          <p className="text-[15px] font-semibold text-slate-800 truncate">{med.name}</p>
-                          <ProductTag value={med.category} kind="category" size="xs" className="flex-shrink-0" />
-                          {canClassify && !med.category && (
+                          <p className="text-[14px] font-semibold text-slate-800 truncate">{med.name}</p>
+                          {med.isLocal ? (
+                            <span
+                              title="Not yet in the shared medicine catalogue — this pharmacy's own"
+                              className="pill bg-amber-100 text-amber-700 text-[10px] font-bold uppercase tracking-wide flex-shrink-0"
+                            >
+                              Local
+                            </span>
+                          ) : (
+                            <ProductTag value={med.category} kind="category" size="xs" className="flex-shrink-0" />
+                          )}
+                          {canClassify && !med.category && !med.isLocal && (
                             <button
                               onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setClassifyTarget(med); }}
                               title="Set category / packaging"
@@ -617,9 +666,23 @@ export function MedicineSearchCombobox({
                         </p>
                       </div>
 
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <div className="flex items-center gap-1 flex-shrink-0">
                         {med.packSize && (
-                          <span className="pill bg-slate-100 text-slate-500 text-[12px]">{med.packSize}</span>
+                          <span className="pill bg-slate-100 text-slate-500 text-[11px]">{med.packSize}</span>
+                        )}
+                        {/* One pill for stock + price, not two — halves how many badges this
+                            row needs to fit, which is what was pushing rows onto a second
+                            line and inflating the dropdown's real height past its cap. */}
+                        {stock && (
+                          <span
+                            title={stock.title}
+                            className={cn(
+                              "pill text-[10px] font-bold whitespace-nowrap",
+                              med.inStock ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-600"
+                            )}
+                          >
+                            {stock.text}{price && med.inStock ? ` · ${price}` : ""}
+                          </span>
                         )}
                         {/* Same badge CartTable shows once this is in the cart (see its "LOOSE OK"
                             pill) — surfaced here too so a cashier can tell before adding it, not
@@ -633,8 +696,9 @@ export function MedicineSearchCombobox({
                           <span className="pill bg-emerald-100 text-emerald-600 uppercase tracking-wide">↵</span>
                         )}
 
-                        {/* Alternatives — shown when alternatives confirmed, or medicine has a genericName */}
-                        {(med.hasAlternatives || med.genericName) && (
+                        {/* Alternatives — shown when alternatives confirmed, or medicine has a genericName.
+                            Never for a local medicine: it has no global medicineId to look alternatives up by. */}
+                        {!med.isLocal && (med.hasAlternatives || med.genericName) && (
                           <button
                             onMouseDown={(e) => {
                               e.preventDefault();
@@ -659,7 +723,8 @@ export function MedicineSearchCombobox({
                         <ChevronRight className="w-3.5 h-3.5 text-slate-300 group-hover:text-blue-400 transition-colors" />
                       </div>
                     </li>
-                  ))}
+                    );
+                  })}
             </motion.ul>
           )}
 

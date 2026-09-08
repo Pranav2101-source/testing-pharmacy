@@ -11,6 +11,7 @@ import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.ForbiddenException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.exception.UnprocessableEntityException;
+import com.checkup.pharmacy.common.concurrency.AdvisoryLock;
 import com.checkup.pharmacy.common.sequence.DocumentNumberFormat;
 import com.checkup.pharmacy.common.sequence.DocumentSequenceService;
 import com.checkup.pharmacy.common.util.DateRange;
@@ -19,10 +20,15 @@ import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryMovement;
 import com.checkup.pharmacy.modules.inventory.InventoryMovementRepository;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
+import com.checkup.pharmacy.common.util.BaseUnits;
+import com.checkup.pharmacy.common.util.PackSizeGuard;
+import com.checkup.pharmacy.common.util.PackUnits;
 import com.checkup.pharmacy.modules.medicine.GrnConfirmedEvent;
+import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineMatcher;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
 import com.checkup.pharmacy.modules.medicine.PharmacyMedicine;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride;
 import com.checkup.pharmacy.modules.medicine.PharmacyMedicineRepository;
 import com.checkup.pharmacy.modules.purchase.dto.ApprovePurchaseOrderRequest;
 import com.checkup.pharmacy.modules.purchase.dto.CreateGrnRequest;
@@ -93,6 +99,7 @@ public class PurchasesService {
     private final com.checkup.pharmacy.modules.pharmacy.PharmacyRepository pharmacyRepository;
     private final com.checkup.pharmacy.common.idempotency.DuplicateSubmitGuard duplicateSubmitGuard;
     private final ApplicationEventPublisher eventPublisher;
+    private final AdvisoryLock advisoryLock;
 
     public PurchasesService(PurchaseOrderRepository purchaseOrderRepository, GoodsReceiptNoteRepository grnRepository,
                             GRNItemRepository grnItemRepository, InventoryRepository inventoryRepository,
@@ -102,7 +109,7 @@ public class PurchasesService {
                             UserRepository userRepository, DocumentSequenceService sequenceService,
                             com.checkup.pharmacy.modules.pharmacy.PharmacyRepository pharmacyRepository,
                             com.checkup.pharmacy.common.idempotency.DuplicateSubmitGuard duplicateSubmitGuard,
-                            ApplicationEventPublisher eventPublisher) {
+                            ApplicationEventPublisher eventPublisher, AdvisoryLock advisoryLock) {
         this.pharmacyRepository = pharmacyRepository;
         this.purchaseOrderRepository = purchaseOrderRepository;
         this.grnRepository = grnRepository;
@@ -117,6 +124,7 @@ public class PurchasesService {
         this.sequenceService = sequenceService;
         this.duplicateSubmitGuard = duplicateSubmitGuard;
         this.eventPublisher = eventPublisher;
+        this.advisoryLock = advisoryLock;
     }
 
     // ── Purchase Orders ──────────────────────────────────────────────────────
@@ -478,12 +486,22 @@ public class PurchasesService {
             String localMedicineId = blankToNull(r.localMedicineId());
             if (medicineId == null && localMedicineId == null) {
                 String key = MedicineMatcher.normalize(r.medicineName());
-                PharmacyMedicine local = newLocalByNormalizedName.computeIfAbsent(key, k ->
-                        pharmacyMedicineRepository.findFirstByPharmacyIdAndNameIgnoreCase(pharmacyId, r.medicineName())
-                                .orElseGet(() -> pharmacyMedicineRepository.save(PharmacyMedicine.create(pharmacyId,
+                PharmacyMedicine local = newLocalByNormalizedName.computeIfAbsent(key, k -> {
+                    // Blocks any other transaction (another cashier's GRN, a "Save as Local
+                    // Medicine" call) racing to create this exact pharmacy+name until this
+                    // transaction commits or rolls back — see AdvisoryLock. Without this, two
+                    // GRNs naming the same brand-new medicine at the same moment could each miss
+                    // the other's uncommitted row and insert two identities for one product.
+                    advisoryLock.acquire(pharmacyId + "|pharmacy_medicine|" + k);
+                    return pharmacyMedicineRepository.findFirstByPharmacyIdAndNameIgnoreCase(pharmacyId, r.medicineName())
+                            .orElseGet(() -> {
+                                com.checkup.pharmacy.common.tax.GstRates.requireAllowed(r.gstRate());
+                                return pharmacyMedicineRepository.save(PharmacyMedicine.create(pharmacyId,
                                         r.medicineName(), blankToNull(r.manufacturer()), blankToNull(r.genericName()),
                                         blankToNull(r.strength()), blankToNull(r.form()), blankToNull(r.unit()),
-                                        blankToNull(r.hsnCode()), r.gstRate(), blankToNull(r.schedule())))));
+                                        blankToNull(r.hsnCode()), r.gstRate(), blankToNull(r.schedule())));
+                            });
+                });
                 localMedicineId = local.getId();
             }
             resolved.add(new ResolvedMedicine(medicineId, localMedicineId));
@@ -535,6 +553,9 @@ public class PurchasesService {
                 .orElseThrow(() -> new NotFoundException("Supplier not found"));
         List<GRNItem> items = grnItemRepository.findByGrnId(id);
         String userId = TenantContext.userId();
+        // One batched pass for the pack-size check (3 queries total, or 0-1 for a
+        // GRN with no measured lines) — NOT one lookup per line.
+        String packSizeWarning = collectPackSizeWarning(grn.getPharmacyId(), items);
 
         for (GRNItem item : items) {
             int totalQty = item.totalBaseUnits();
@@ -572,7 +593,71 @@ public class PurchasesService {
                 .filter(java.util.Objects::nonNull).distinct().toList();
         eventPublisher.publishEvent(new GrnConfirmedEvent(grn.getPharmacyId(), grn.getId(), localMedicineIds));
 
-        return toResponse(grn, supplier, items, null);
+        return toResponse(grn, supplier, items, packSizeWarning);
+    }
+
+    /**
+     * The non-blocking "this looks like a different pack size" note for a whole GRN,
+     * computed in ONE batched pass rather than 3 queries per line — see {@link
+     * PackSizeGuard} and the matching manual-add-stock check in {@code InventoryService}.
+     *
+     * <p>Only catalogue-linked measured (mL/g) medicines where loose selling or a
+     * structured pack size makes a wrong size actually mis-price a sale are checked;
+     * a GRN with none returns after a single {@code findAllById}. One warning per
+     * medicine, joined into a single sentence for the response's {@code warning} slot.
+     */
+    private String collectPackSizeWarning(String pharmacyId, List<GRNItem> items) {
+        Set<String> medicineIds = items.stream()
+                .map(GRNItem::getMedicineId).filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+        if (medicineIds.isEmpty()) {
+            return null;
+        }
+        Map<String, Medicine> medById = new HashMap<>();
+        medicineRepository.findAllById(medicineIds).forEach(m -> medById.put(m.getId(), m));
+
+        Set<String> measuredIds = medById.values().stream()
+                .filter(m -> PackUnits.isMeasured(BaseUnits.resolve(m.getBaseUnit(), m.getForm())))
+                .map(Medicine::getId).collect(Collectors.toSet());
+        if (measuredIds.isEmpty()) {
+            return null;
+        }
+        Map<String, PharmacyMedicineOverride> ovById = new HashMap<>();
+        overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, measuredIds)
+                .forEach(o -> ovById.put(o.getMedicineId(), o));
+
+        // A wrong size only mis-prices when the medicine is sold loose here, or a
+        // structured pack size is on record. Sealed-only + unclassified: tolerable.
+        Set<String> relevantIds = measuredIds.stream().filter(id -> {
+            PharmacyMedicineOverride ov = ovById.get(id);
+            boolean loose = ov != null && (ov.isAllowLooseSale() || ov.getUnitsPerPack() != null);
+            return loose || medById.get(id).getUnitsPerPack() != null;
+        }).collect(Collectors.toSet());
+        if (relevantIds.isEmpty()) {
+            return null;
+        }
+        Map<String, List<BigDecimal>> mrpsByMedicine = new HashMap<>();
+        for (Inventory b : inventoryRepository
+                .findActiveNonExpiredByMedicineIdIn(pharmacyId, relevantIds, Instant.now())) {
+            mrpsByMedicine.computeIfAbsent(b.getMedicineId(), k -> new ArrayList<>()).add(b.getMrp());
+        }
+
+        List<String> warnings = new ArrayList<>();
+        Set<String> checked = new HashSet<>();
+        for (GRNItem item : items) {
+            String mid = item.getMedicineId();
+            if (mid == null || !relevantIds.contains(mid) || !checked.add(mid)) {
+                continue;
+            }
+            Medicine m = medById.get(mid);
+            String w = PackSizeGuard.differentPackSizeWarning(
+                    m.getName(),
+                    PackUnits.packUnitLabel(m.getUnit(), BaseUnits.resolve(m.getBaseUnit(), m.getForm())),
+                    item.getMrp(), mrpsByMedicine.getOrDefault(mid, List.of()));
+            if (w != null) {
+                warnings.add(w);
+            }
+        }
+        return warnings.isEmpty() ? null : String.join(" ", warnings);
     }
 
     /** PARTIAL once any GRN is confirmed against the PO; RECEIVED once every named line's ordered qty is covered. */
@@ -782,10 +867,10 @@ public class PurchasesService {
                     .orElse(null);
         }
         List<GrnResponse.Item> itemResponses = items.stream()
-                .map(i -> new GrnResponse.Item(i.getId(), i.getMedicineId(), i.getMedicineName(), i.getBatchNumber(),
-                        i.getExpiryDate(), i.getOrderedQty(), i.getReceivedQty(), i.getFreeQty(), i.getPurchaseUnit(),
-                        i.getConversionFactor(), i.getPurchaseRate(), i.getMrp(), i.getDiscount(), i.getGstRate(),
-                        i.getCgst(), i.getSgst(), i.getAmount()))
+                .map(i -> new GrnResponse.Item(i.getId(), i.getMedicineId(), i.getLocalMedicineId(), i.getMedicineName(),
+                        i.getBatchNumber(), i.getExpiryDate(), i.getOrderedQty(), i.getReceivedQty(), i.getFreeQty(),
+                        i.getPurchaseUnit(), i.getConversionFactor(), i.getPurchaseRate(), i.getMrp(), i.getDiscount(),
+                        i.getGstRate(), i.getCgst(), i.getSgst(), i.getAmount()))
                 .toList();
         Map<String, GrnResponse.UserRef> actors = resolveGrnActors(List.of(grn));
         return new GrnResponse(grn.getId(), grn.getGrnNumber(), supplierRef, poRef, grn.getSupplierInvoiceNo(),

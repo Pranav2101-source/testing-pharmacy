@@ -8,6 +8,7 @@ import { fmtDate, currency, isOverdue, daysUntil, viewSourceUpload } from "../ut
 type GRNDetailItem = {
   id: string;
   medicineName: string;
+  localMedicineId: string | null;
   batchNumber: string;
   expiryDate: string;
   receivedQty: number;
@@ -158,7 +159,19 @@ export function GRNViewModal({ grnId, onClose }: { grnId: string; onClose: () =>
                 <tbody>
                   {grn.items.map((item) => (
                     <tr key={item.id} className="border-b border-slate-100 last:border-0 hover:bg-blue-50/20">
-                      <td className="px-3 py-2.5 font-semibold text-slate-800 max-w-[200px] truncate">{item.medicineName}</td>
+                      <td className="px-3 py-2.5 max-w-[200px]">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-semibold text-slate-800 truncate">{item.medicineName}</span>
+                          {item.localMedicineId && (
+                            <span
+                              title="Not yet in the shared medicine catalogue — saved as a local medicine for this pharmacy"
+                              className="shrink-0 pill bg-amber-100 text-amber-700 text-[10px] font-bold uppercase tracking-wide"
+                            >
+                              Local
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-3 py-2.5 text-slate-500 font-mono text-[11px]">{item.batchNumber}</td>
                       <td className="px-3 py-2.5 text-slate-500">{fmtDate(item.expiryDate)}</td>
                       <td className="px-3 py-2.5 tabular-nums text-slate-700">{item.receivedQty}</td>

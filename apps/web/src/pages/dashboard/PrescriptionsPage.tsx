@@ -21,7 +21,8 @@ import ReviewIngestedItemsPanel from "@/components/integration/ReviewIngestedIte
 import ConfirmQuantityPanel from "@/components/integration/ConfirmQuantityPanel";
 import ClinicPrescriptionTriage from "@/components/integration/ClinicPrescriptionTriage";
 import { useBillingStore } from "@/components/billing/useBillingStore";
-import { resolvePrescriptionToCart, canBill, roundUpConfirmMessage } from "@/lib/prescriptionToCart";
+import { canBill } from "@/lib/prescriptionToCart";
+import { usePackRoundingDecision } from "@/hooks/usePackRoundingDecision";
 import {
   normalizeIndianMobile,
   sanitizeProfessionalName,
@@ -56,6 +57,10 @@ type PrescriptionItem = {
   /** What was actually handed over, when it differs from what was prescribed. */
   dispensedMedicineName: string | null;
   substituted: boolean;
+  /** True when `quantity` was derived from dosage + duration rather than sent by the clinic. */
+  quantityAutoCalculated: boolean;
+  /** How the quantity was calculated, or why it couldn't be — see PrescriptionQuantityCalculator (backend). */
+  quantityCalculationNote: string | null;
   /** Near-name catalogue candidates for a line the matcher could not link. Always empty once medicineId is set. */
   suggestions: MedicineSuggestion[];
 };
@@ -716,6 +721,7 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
   const qc = useQueryClient();
   const navigate  = useNavigate();
   const loadDraft = useBillingStore((s) => s.loadDraft);
+  const { resolveWithRoundingDecision, roundingModal } = usePackRoundingDecision();
 
   useEffect(() => {
     api.get<{ data: Prescription }>(`/prescriptions/${initialRx.id}`)
@@ -770,7 +776,9 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
   async function billNow() {
     setBilling(true);
     try {
-      const { items, meta, failures, checkFailed, partials, roundedToPack } = await resolvePrescriptionToCart(rx);
+      const resolved = await resolveWithRoundingDecision(rx);
+      if (!resolved) return; // pharmacist cancelled at the pack-rounding decision
+      const { items, meta, failures, checkFailed, partials } = resolved;
       if (items.length === 0) {
         toast.error(
           failures.length === 0 && checkFailed.length > 0
@@ -779,10 +787,6 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
         );
         return;
       }
-      // Rounding a course up to a full pack overcharges the patient — block until the
-      // pharmacist accepts it, don't rely on a toast they might miss.
-      const roundMsg = roundUpConfirmMessage(roundedToPack);
-      if (roundMsg && !window.confirm(roundMsg)) return;
       loadDraft(items, meta);
       if (failures.length > 0) {
         toast.error(`Not in stock: ${failures.join(", ")} — add manually or substitute`);
@@ -962,6 +966,14 @@ function DetailModal({ rx: initialRx, onClose, onCancelled }: { rx: Prescription
                       </td>
                       <td className="px-3 py-2 text-center font-mono">
                         {item.quantity > 0 ? item.quantity : <span className="text-slate-300">—</span>}
+                        {item.quantity > 0 && item.quantityAutoCalculated && (
+                          <span
+                            title={item.quantityCalculationNote ?? undefined}
+                            className="block text-[10px] font-normal normal-case text-violet-600"
+                          >
+                            auto
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2 text-center font-mono text-blue-600">{item.dispensedQty}</td>
                       <td className="px-3 py-2 text-slate-600">{item.dosage || "—"}</td>

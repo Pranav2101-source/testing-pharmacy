@@ -1,6 +1,6 @@
 "use client";
 import { create } from "zustand";
-import { calcGstFromMrp, calcInvoiceTotals, perPieceMrp } from "@pharmacy/utils";
+import { calcGstFromMrp, calcInvoiceTotals, perPieceMrp, saleUnitModel, titleCaseUnit, pluraliseUnit } from "@pharmacy/utils";
 
 export type SaleUnit = "PACK" | "LOOSE";
 
@@ -40,12 +40,19 @@ export function lineIssue(item: CartItem): LineIssue | null {
   if (item.saleUnit !== "LOOSE") return null;
   const upp = item.unitsPerPack ?? 1;
   const name = item.medicineName;
+  // "Sell as Strip" for a tablet, "Sell as Bottle" for a syrup, "Sell as Tube" for
+  // a cream — the fix label and every message read the medicine's own sale-unit word.
+  const unit = saleUnitModel({
+    baseUnit: item.baseUnit, unitsPerPack: item.unitsPerPack,
+    allowLooseSale: item.allowLooseSale, schedule: item.schedule,
+  });
+  const P = titleCaseUnit(unit.packUnitLabel);
 
   if (upp <= 1) {
     return {
       code: "NO_PACK_SIZE",
       message: `"${name}" has no pack size on record, so it can't be sold loose.`,
-      fixLabel: "Sell as Strip",
+      fixLabel: `Sell as ${P}`,
       fix: { saleUnit: "PACK", quantity: 1 },
     };
   }
@@ -53,7 +60,7 @@ export function lineIssue(item: CartItem): LineIssue | null {
     return {
       code: "LOOSE_NOT_ENABLED",
       message: `Loose selling is off for "${name}".`,
-      fixLabel: "Sell as Strip",
+      fixLabel: `Sell as ${P}`,
       fix: { saleUnit: "PACK", quantity: Math.max(1, Math.ceil(item.quantity / upp)) },
     };
   }
@@ -61,7 +68,7 @@ export function lineIssue(item: CartItem): LineIssue | null {
     return {
       code: "SCHEDULE_X_LOOSE",
       message: `"${name}" is Schedule X — it must be sold in the original pack.`,
-      fixLabel: "Sell as Strip",
+      fixLabel: `Sell as ${P}`,
       fix: { saleUnit: "PACK", quantity: Math.max(1, Math.ceil(item.quantity / upp)) },
     };
   }
@@ -76,8 +83,9 @@ export function lineIssue(item: CartItem): LineIssue | null {
   if (q >= upp && q % upp === 0 && (item.looseUnits ?? 0) < q && enoughSealedStrips && !item.forceLoose) {
     return {
       code: "WHOLE_PACK_LOOSE",
-      message: `That's ${packs} full strip${packs === 1 ? "" : "s"} of "${name}" — sell it as Strip so the foil stays sealed.`,
-      fixLabel: `Sell ${packs} Strip${packs === 1 ? "" : "s"}`,
+      message: `That's ${packs} full ${pluraliseUnit(unit.packUnitLabel, packs)} of "${name}" `
+        + `— sell it as ${P} so ${packs === 1 ? "it stays" : "they stay"} sealed.`,
+      fixLabel: `Sell ${packs} ${titleCaseUnit(pluraliseUnit(unit.packUnitLabel, packs))}`,
       fix: { saleUnit: "PACK", quantity: packs },
       override: { label: "Cut it anyway", patch: { forceLoose: true } },
     };
@@ -109,6 +117,8 @@ export function rxRequiredIssue(
 
 export type CartItem = {
   inventoryId:    string;
+  /** Catalogue medicine id — lets the cart re-query the dispensing engine (loose overflow, batch swap). Absent for a pharmacy-local medicine. */
+  medicineId?:    string;
   medicineName:   string;
   hsnCode:        string | null;
   schedule:       string | null;
@@ -136,6 +146,12 @@ export type CartItem = {
   looseUnits?:    number;
   /** Cashier waived the "that's N full strips" guard for this line — see LineIssue.override. */
   forceLoose?:    boolean;
+  /**
+   * false only when the pharmacist hand-picked this batch in the picker, overriding
+   * the dispensing engine's order. Recorded on the invoice line for the dispensing
+   * audit trail; defaults true (engine order).
+   */
+  batchAutoSelected?: boolean;
   /**
    * The prescribed line this sale fulfils. Only ever set for a substitution: the
    * server attributes everything else by matching the medicine, which cannot work
@@ -314,6 +330,7 @@ function recompute(item: NewCartItem & Partial<CartItem>): CartItem {
   );
   return {
     inventoryId:    item.inventoryId,
+    medicineId:     item.medicineId,
     prescriptionItemId: item.prescriptionItemId,
     medicineName:   item.medicineName,
     hsnCode:        item.hsnCode,
@@ -336,6 +353,7 @@ function recompute(item: NewCartItem & Partial<CartItem>): CartItem {
     // Cleared whenever the line leaves loose selling — the waiver is specific to
     // cutting a sealed strip for this exact quantity.
     forceLoose:     saleUnit === "LOOSE" ? item.forceLoose : undefined,
+    batchAutoSelected: item.batchAutoSelected,
     rate:           Math.round(effMrp * (1 - item.discount / 100) * 100) / 100,
     taxableAmount,
     cgst,
