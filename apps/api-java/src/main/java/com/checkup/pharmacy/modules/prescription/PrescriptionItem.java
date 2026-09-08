@@ -3,6 +3,7 @@ package com.checkup.pharmacy.modules.prescription;
 import com.checkup.pharmacy.common.domain.CreatedAtEntity;
 import com.checkup.pharmacy.common.util.BaseUnits;
 import com.checkup.pharmacy.common.util.Cuid;
+import com.checkup.pharmacy.common.util.PackUnits;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -290,6 +291,54 @@ public class PrescriptionItem extends CreatedAtEntity {
         } else {
             recordQuantityCalculationNote(result.message());
         }
+    }
+
+    /**
+     * Drops a clinic-stated quantity back to the unconfirmed placeholder ({@code quantity = 0})
+     * when the matched medicine is a measured (mL/g) product with no pack size on record —
+     * {@code effectivePackSize} carries this pharmacy's override if set, else the catalogue's,
+     * else null.
+     *
+     * <p>Why a measured line with no pack size cannot be billed as sent: a clinic sends such a
+     * line as a millilitre / gram figure ("30 ml"), but with no mL-per-bottle recorded the
+     * dispensing engine can only read the bare number as a count of whole sealed bottles
+     * ({@code DispensingService.resolveChunk}, the {@code upp <= 1} branch) — a 30 ml course
+     * would bill as 30 bottles. Rather than guess, this line becomes a
+     * {@link #needsQuantityConfirmation()} line exactly like one the clinic sent "as directed":
+     * triage flags it, and a pharmacist settles the real amount at the counter, where
+     * {@code ConfirmQuantityPanel} for a measured medicine already asks for a bottle count and
+     * warns when the typed number looks like millilitres. The clinic's figure is kept in
+     * {@link #quantityCalculationNote} for the pharmacist to work from.
+     *
+     * <p>A no-op for a classified medicine (the figure resolves unambiguously as a mL/g count),
+     * a countable one (tablets/capsules were never ambiguous), a line already awaiting a
+     * quantity, an auto-calculated one, or a non-EMR line (a quantity typed into the native
+     * prescription form is entered in whatever unit that form shows).
+     */
+    public void deferAmbiguousMeasuredQuantity(Medicine medicine, Integer effectivePackSize) {
+        if (externalEmrItemId == null || medicine == null
+                || needsQuantityConfirmation() || quantityAutoCalculated) {
+            return;
+        }
+        if (effectivePackSize != null && effectivePackSize > 0) {
+            return;
+        }
+        String baseUnit = BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm());
+        if (!PackUnits.isMeasured(baseUnit)) {
+            return;
+        }
+        // Phrased to match PrescriptionQuantityCalculator's own "measured in …" refusal so the
+        // ConfirmQuantityPanel reads the packaging word ("bottles") and the volume unit
+        // ("millilitres") straight out of it — no second copy of that mapping on the client —
+        // and still carries the clinic's figure for the pharmacist to work from.
+        String volumeUnit = "GM".equals(baseUnit) ? "grams" : "millilitres";
+        String shortUnit = "GM".equals(baseUnit) ? "g" : "ml";
+        String packs = PackUnits.plural(PackUnits.packUnitLabel(null, baseUnit), 2);
+        this.quantityCalculationNote = "The clinic prescribed " + this.quantity + " " + shortUnit
+                + ", but this medicine is measured in " + volumeUnit + " with no pack size on record — "
+                + "enter the number of " + packs + " to dispense (whole sealed " + packs
+                + ", not the total " + volumeUnit + ").";
+        this.quantity = 0;
     }
 
     public boolean isQuantityAutoCalculated() {
