@@ -32,7 +32,7 @@ function rx(quantity: number): BillablePrescription {
 function alloc(over: Partial<DispensingAllocation> = {}): DispensingAllocation {
   return {
     inventoryId: "batch-1", batchNumber: "B-1", expiryDate: "2027-01-01T00:00:00Z",
-    saleUnit: "PACK", quantity: 1, unitsPerPack: 10, baseUnit: "TABLET",
+    saleUnit: "PACK", quantity: 1, unitsPerPack: 10, baseUnit: "TABLET", packSize: null,
     mrp: 20, unitMrp: 20, rate: 20, gstRate: 12, hsnCode: "3004",
     allowLooseSale: false, looseUnits: 0, availableStock: 5,
     taxableAmount: 17.86, cgst: 1.07, sgst: 1.07, igst: 0, amount: 20,
@@ -108,6 +108,46 @@ describe("resolvePrescriptionToCart: the engine plan drives the cart", () => {
     expect(result.checkFailed).toEqual(["Paracetamol 500mg"]);
     expect(result.failures).toEqual([]);
     expect(result.items).toHaveLength(0);
+  });
+
+  it("a deferred measured line the pharmacist confirmed as 1 bottle bills 1 bottle, never the clinic's 30 ml", async () => {
+    // The prescription line now carries the pharmacist's confirmed count (1), not the
+    // clinic's original 30 — and the engine plan is built from that.
+    const syrupRx: BillablePrescription = {
+      ...rx(1),
+      items: [{ id: "item-1", medicineId: "med-syrup", medicineName: "Cough Syrup 100ml",
+        schedule: null, quantity: 1, dispensedQty: 0 }],
+    };
+    mockApi.get.mockResolvedValueOnce(planResponse(planLine({
+      medicineId: "med-syrup", medicineName: "Cough Syrup 100ml",
+      requestedPieces: 1, dispensedPieces: 1, roundedUpToPieces: null,
+      allocations: [alloc({
+        inventoryId: "syr-1", batchNumber: "SYR-1", saleUnit: "PACK", quantity: 1,
+        unitsPerPack: null, baseUnit: "ML", allowLooseSale: false,
+      })],
+    })));
+
+    const result = await resolvePrescriptionToCart(syrupRx);
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.saleUnit).toBe("PACK");
+    expect(result.items[0]!.quantity).toBe(1);          // 1 bottle — NOT 30
+    expect(result.roundedToPack).toEqual([]);           // measured lines never open PackRoundingModal
+    expect(result.partials).toEqual([]);
+  });
+
+  it("carries the catalogue packSize from the plan allocation onto the cart line (for the Pack column)", async () => {
+    mockApi.get.mockResolvedValueOnce(planResponse(planLine({
+      requestedPieces: 100, dispensedPieces: 100,
+      allocations: [alloc({ saleUnit: "PACK", quantity: 1, unitsPerPack: 100, baseUnit: "ML", packSize: "100ml" })],
+    })));
+
+    const result = await resolvePrescriptionToCart(rx(100));
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.packSize).toBe("100ml");
+    expect(result.items[0]!.baseUnit).toBe("ML");
+    expect(result.items[0]!.quantity).toBe(1);
   });
 
   it("a multi-batch allocation becomes multiple cart rows for the one prescribed line", async () => {

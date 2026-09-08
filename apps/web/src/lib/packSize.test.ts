@@ -62,4 +62,25 @@ describe("packDisplayLabel", () => {
     expect(packDisplayLabel(undefined, undefined)).toBe("—");
     expect(packDisplayLabel("", null)).toBe("—");
   });
+
+  it("always prefers a meaningful catalogue packSize over the computed fallback, for any base unit", () => {
+    expect(packDisplayLabel("100ml", 100, "ML")).toBe("100ml");
+    expect(packDisplayLabel("100ml bottle", 100, "ML")).toBe("100ml bottle");
+    expect(packDisplayLabel("15 tablets", 15, "TABLET")).toBe("15 tablets");
+  });
+
+  it("a measured medicine (ML/GM) with no usable packSize gets a volume/weight label, never '/strip'", () => {
+    expect(packDisplayLabel(null, 100, "ML")).toBe("100ml");
+    expect(packDisplayLabel(undefined, 60, "ml")).toBe("60ml");
+    expect(packDisplayLabel("1", 100, "ML")).toBe("100ml"); // bare number demoted
+    expect(packDisplayLabel(null, 30, "GM")).toBe("30g");
+    expect(packDisplayLabel(null, 30, "gm")).toBe("30g");
+  });
+
+  it("a countable medicine still gets the '/strip' fallback (base unit given or not)", () => {
+    expect(packDisplayLabel(null, 15, "TABLET")).toBe("15/strip");
+    expect(packDisplayLabel(null, 8, "CAPSULE")).toBe("8/strip");
+    expect(packDisplayLabel(null, 15, "EACH")).toBe("15/strip");
+    expect(packDisplayLabel(null, 15)).toBe("15/strip"); // unchanged when base unit omitted
+  });
 });

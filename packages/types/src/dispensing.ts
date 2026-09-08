@@ -21,6 +21,12 @@ export type DispensingAllocation = {
   quantity: number;
   unitsPerPack: number | null;
   baseUnit: string | null;
+  /**
+   * The medicine's free-text catalogue pack size ("100ml", "1x15"), or null when it has
+   * none. Display-only — lets the billing cart's Pack column show the real catalogue label
+   * instead of a computed fallback. Never used in any allocation, pricing or stock decision.
+   */
+  packSize: string | null;
   /** Printed pack MRP, always. */
   mrp: number;
   /** Per-piece MRP for LOOSE, equal to `mrp` for PACK. */

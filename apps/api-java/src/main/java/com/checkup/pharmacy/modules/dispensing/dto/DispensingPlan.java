@@ -60,6 +60,13 @@ public record DispensingPlan(
             int quantity,
             Integer unitsPerPack,
             String baseUnit,
+            /**
+             * The medicine's free-text catalogue pack size ("100ml", "1x15", "strip of 10"),
+             * or null when the catalogue has none. Display-only — carried so the billing cart's
+             * Pack column can show the real label instead of a computed fallback. Never used in
+             * any allocation, pricing or stock decision.
+             */
+            String packSize,
             /** Printed pack MRP, always. */
             BigDecimal mrp,
             /** Per-piece for a LOOSE line (pack MRP / unitsPerPack, rounded down); equals {@code mrp} for PACK. */

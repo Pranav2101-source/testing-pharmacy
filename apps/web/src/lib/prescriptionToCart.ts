@@ -304,6 +304,7 @@ function cartItemFromAllocation(
     saleUnit: alloc.saleUnit,
     unitsPerPack: alloc.unitsPerPack ?? undefined,
     baseUnit: alloc.baseUnit ?? undefined,
+    packSize: alloc.packSize ?? undefined,
     allowLooseSale: alloc.allowLooseSale,
     looseUnits: alloc.looseUnits,
     rate: alloc.rate,

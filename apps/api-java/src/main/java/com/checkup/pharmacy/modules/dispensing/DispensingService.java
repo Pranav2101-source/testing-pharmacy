@@ -321,7 +321,7 @@ public class DispensingService {
                         .findSellableBatchesForLocalMedicine(pharmacyId, local.getId(), now);
                 return new MedicineContext(null, local.getId(), local.getName(),
                         firstNonBlank(schedule, local.getSchedule()), local.getGstRate(), local.getHsnCode(),
-                        null, BaseUnits.resolve(null, local.getForm()), local.getUnit(), false, batches);
+                        null, BaseUnits.resolve(null, local.getForm()), local.getUnit(), null, false, batches);
             }
         }
 
@@ -344,7 +344,8 @@ public class DispensingService {
         boolean allowLoose = override != null && override.isAllowLooseSale() && upp != null && upp > 1;
         return new MedicineContext(m.getId(), null, m.getName(),
                 firstNonBlank(schedule, m.getSchedule()), m.getGstRate(), m.getHsnCode(),
-                upp, BaseUnits.resolve(m.getBaseUnit(), m.getForm()), m.getUnit(), allowLoose, sellableBatches);
+                upp, BaseUnits.resolve(m.getBaseUnit(), m.getForm()), m.getUnit(), m.getPackSize(),
+                allowLoose, sellableBatches);
     }
 
     // ── Allocation ───────────────────────────────────────────────────────────
@@ -495,7 +496,7 @@ public class DispensingService {
         int availableStock = Math.max(0, b.getQuantity() - b.getReservedQuantity());
         return new DispensingPlan.Allocation(
                 b.getId(), b.getBatchNumber(), b.getExpiryDate(), chunk.saleUnit(), chunk.quantity(),
-                ctx.unitsPerPack(), ctx.baseUnit(), packMrp, unitMrp, GstCalculator.round2(unitMrp),
+                ctx.unitsPerPack(), ctx.baseUnit(), ctx.packSize(), packMrp, unitMrp, GstCalculator.round2(unitMrp),
                 gstRate, ctx.hsnCode(), ctx.allowLooseSale(), Math.max(0, b.getLooseUnits()), availableStock,
                 gst.taxableAmount(), gst.cgst(), gst.sgst(), gst.igst(), gst.amount());
     }
@@ -522,6 +523,8 @@ public class DispensingService {
             String baseUnit,
             /** {@code Medicine.unit} — packaging word ("Strip", "Bottle", "Tube"), for pharmacist-facing messages. */
             String unit,
+            /** {@code Medicine.packSize} — free-text catalogue label ("100ml", "1x15"), display-only. */
+            String packSize,
             boolean allowLooseSale,
             List<Inventory> sellableBatches
     ) {

@@ -305,6 +305,42 @@ class DispensingIT extends AbstractPostgresIT {
     }
 
     @Test
+    @DisplayName("the medicine's free-text catalogue packSize is carried onto every allocation (for the cart's Pack column)")
+    void allocationCarriesTheCataloguePackSize() {
+        Medicine syrup = Medicine.create("Grilinctus Syrup", new BigDecimal("12"));
+        syrup.applyFields(null, null, null, null, null, null, new BigDecimal("12"),
+                "Syrup", null, "Bottle", "100ml bottle");
+        syrup.setPackaging(100, "ML");
+        medicineRepository.save(syrup);
+        Inventory inv = Inventory.create(pharmacyId, syrup.getId(), "GS1",
+                Instant.now().plus(200, ChronoUnit.DAYS), 4,
+                new BigDecimal("40.00"), new BigDecimal("80.00"), 5, 2);
+        inventoryRepository.save(inv);
+        entityManager.flush();
+        entityManager.clear();
+
+        DispensingPlan.Line line = dispensingService.plan(List.of(
+                new DispensingPlanRequest.Line(syrup.getId(), null, 100, null))).lines().get(0);
+
+        assertThat(line.allocations()).singleElement().satisfies(a -> {
+            assertThat(a.packSize()).isEqualTo("100ml bottle");
+            assertThat(a.saleUnit()).isEqualTo("PACK");
+            assertThat(a.quantity()).isEqualTo(1);
+            assertThat(a.baseUnit()).isEqualTo("ML");
+        });
+    }
+
+    @Test
+    @DisplayName("a medicine with no catalogue packSize carries null — the frontend computes a label from unitsPerPack")
+    void allocationPackSizeIsNullWhenTheCatalogueHasNone() {
+        batch("NO-PACKSIZE", 200, Instant.now().minus(1, ChronoUnit.DAYS), 3);
+
+        DispensingPlan.Line line = planFor(10).lines().get(0); // seed medicine: no packSize set
+
+        assertThat(line.allocations().get(0).packSize()).isNull();
+    }
+
+    @Test
     @DisplayName("with loose selling on, a part-pack quantity is dispensed as loose pieces")
     void loosePiecesWhenLooseOn() {
         batch("LOOSEOK", 100, Instant.now().minus(1, ChronoUnit.DAYS), 5);
