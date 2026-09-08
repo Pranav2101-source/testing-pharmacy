@@ -106,6 +106,30 @@ describe("ConfirmQuantityPanel", () => {
     expect(screen.queryByText(/measured in|dosing pattern|not a plain daily schedule/i)).not.toBeInTheDocument();
   });
 
+  it("blocks confirming a measured line when the typed count is the clinic's millilitre figure", async () => {
+    const { onConfirmed } = renderPanel([{
+      id: "i1", medicineName: "Cough Syrup 100ml", quantity: 0, dosage: "3ml-0-3ml",
+      quantityCalculationNote: "The clinic prescribed 30 ml, but this medicine is measured in millilitres "
+        + "with no pack size on record — enter the number of bottles to dispense (whole sealed bottles, "
+        + "not the total millilitres).",
+    }]);
+
+    const input = screen.getByRole("spinbutton", { name: /number of bottles/i });
+
+    // 30 = the clinic's mL figure typed in by mistake — hard-blocked.
+    await userEvent.type(input, "30");
+    expect(screen.getByText(/that's the 30 millilitres the clinic prescribed/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /confirm/i })).toBeDisabled();
+
+    // 1 bottle — the real answer — is accepted.
+    await userEvent.clear(input);
+    await userEvent.type(input, "1");
+    expect(screen.getByRole("button", { name: /confirm/i })).toBeEnabled();
+    await userEvent.click(screen.getByRole("button", { name: /confirm/i }));
+    expect(mockApi.patch).toHaveBeenCalledWith("/prescriptions/rx_1/items/i1/quantity", { quantity: 1 });
+    expect(onConfirmed).toHaveBeenCalled();
+  });
+
   it("multiple unconfirmed lines are resolved independently", async () => {
     renderPanel([
       { id: "i1", medicineName: "Vitamin D3", quantity: 0, dosage: null },

@@ -80,6 +80,18 @@ function unitFromNote(note: string | null | undefined): string | null {
   return m ? m[1]! : null;
 }
 
+/**
+ * The total volume/weight the clinic prescribed, read out of the deferral note
+ * ("The clinic prescribed 30 ml, but…"). Used only to catch the pharmacist typing
+ * that millilitre figure back in where a bottle count belongs — the exact mistake
+ * that turns "30 ml" into "30 sealed bottles" on the bill. Null for a note that
+ * names no figure (a countable medicine, an older note).
+ */
+function clinicVolumeFromNote(note: string | null | undefined): number | null {
+  const m = note?.match(/prescribed\s+(\d+)\s*(?:ml|milli|g\b|gram)/i);
+  return m ? parseInt(m[1]!, 10) : null;
+}
+
 function UnconfirmedRow({
   prescriptionId,
   item,
@@ -96,12 +108,20 @@ function UnconfirmedRow({
   const parsed = parseInt(value, 10);
   const valid = Number.isInteger(parsed) && parsed > 0;
   const unit = unitFromNote(item.quantityCalculationNote);
-  // A measured medicine (bottles/tubes) billed in double digits from a prescription is
-  // almost always the total mL/g typed in by mistake — flag it, don't block it.
-  const looksLikeVolume = !!unit && valid && parsed > 20;
+  const clinicVolume = clinicVolumeFromNote(item.quantityCalculationNote);
+  const measuredUnit = item.quantityCalculationNote?.match(/measured in (\w+)/)?.[1] ?? "amount";
+  // A measured line asks for a BOTTLE / TUBE count. Entering a number at or above the
+  // clinic's total volume means the millilitres were typed in by mistake — this is
+  // exactly how "30 ml" became "30 sealed bottles" on a real bill. Block it outright
+  // rather than the old soft warning.
+  const enteredVolumeByMistake =
+    !!unit && valid && clinicVolume != null && clinicVolume >= 10 && parsed >= clinicVolume;
+  // Fallback nudge when the note names no figure to compare against — still just a warning.
+  const looksLikeVolume = !!unit && valid && !enteredVolumeByMistake && parsed > 20;
+  const canConfirm = valid && !confirming && !enteredVolumeByMistake;
 
   async function confirm() {
-    if (!valid) return;
+    if (!valid || enteredVolumeByMistake) return;
     setConfirming(true);
     try {
       await api.patch(`/prescriptions/${prescriptionId}/items/${item.id}/quantity`, { quantity: parsed });
@@ -142,7 +162,7 @@ function UnconfirmedRow({
           {unit && <span className="text-xs text-slate-400">{unit}</span>}
           <button
             type="submit"
-            disabled={!valid || confirming}
+            disabled={!canConfirm}
             className="inline-flex items-center gap-1.5 rounded-lg border border-sky-300 bg-sky-50 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {confirming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
@@ -150,10 +170,15 @@ function UnconfirmedRow({
           </button>
         </form>
       </div>
+      {enteredVolumeByMistake && (
+        <p className="mt-1.5 text-xs font-medium text-red-600">
+          {parsed} {unit}? That's the {clinicVolume} {measuredUnit} the clinic prescribed — enter how many
+          sealed {unit} to hand over (usually 1), not the total {measuredUnit}.
+        </p>
+      )}
       {looksLikeVolume && (
         <p className="mt-1.5 text-xs text-amber-700">
-          {parsed} {unit}? Enter how many sealed {unit} to hand over — not the total {" "}
-          {item.quantityCalculationNote?.match(/measured in (\w+)/)?.[1] ?? "amount"}.
+          {parsed} {unit}? Enter how many sealed {unit} to hand over — not the total {measuredUnit}.
         </p>
       )}
     </div>

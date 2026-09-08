@@ -159,6 +159,111 @@ class PrescriptionItemTest {
                 .isNull();
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // deferAmbiguousMeasuredQuantity() — a clinic-stated quantity for a measured
+    // (mL/g) medicine with no pack size on record cannot be told apart from a
+    // count of whole bottles, so it is set aside for a pharmacist rather than
+    // billed as N sealed packs. See DispensingService.resolveChunk (upp <= 1).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private static Medicine syrup(Integer unitsPerPack) {
+        Medicine medicine = Medicine.create("Melgain 60ml", new BigDecimal("12"));
+        medicine.setPackaging(unitsPerPack, "ML");
+        return medicine;
+    }
+
+    @Test
+    @DisplayName("a clinic quantity for a measured, unclassified medicine is dropped back to needs-confirmation, "
+            + "keeping the clinic's figure in the note")
+    void deferAmbiguousMeasuredQuantitySetsAsideAnUnclassifiedMeasuredLine() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 30, "3ml-0-3ml", "5 days", null);
+
+        item.deferAmbiguousMeasuredQuantity(syrup(null), null);
+
+        assertThat(item.getQuantity()).isZero();
+        assertThat(item.needsQuantityConfirmation()).isTrue();
+        assertThat(item.isQuantityAutoCalculated()).isFalse();
+        assertThat(item.getQuantityCalculationNote())
+                .contains("30 ml").containsIgnoringCase("no pack size");
+    }
+
+    @Test
+    @DisplayName("a classified measured medicine keeps its clinic quantity — the figure resolves unambiguously as mL")
+    void deferAmbiguousMeasuredQuantityLeavesAClassifiedMeasuredLineAlone() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 30, "3ml-0-3ml", "5 days", null);
+
+        item.deferAmbiguousMeasuredQuantity(syrup(60), 60);
+
+        assertThat(item.getQuantity()).isEqualTo(30);
+        assertThat(item.needsQuantityConfirmation()).isFalse();
+        assertThat(item.getQuantityCalculationNote()).isNull();
+    }
+
+    @Test
+    @DisplayName("an effective pack size from a pharmacy override (catalogue still null) also keeps the clinic quantity")
+    void deferAmbiguousMeasuredQuantityRespectsAnOverridePackSize() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 30, "3ml-0-3ml", "5 days", null);
+
+        item.deferAmbiguousMeasuredQuantity(syrup(null), 100);
+
+        assertThat(item.getQuantity()).isEqualTo(30);
+        assertThat(item.needsQuantityConfirmation()).isFalse();
+    }
+
+    @Test
+    @DisplayName("a countable (tablet) medicine is never affected — its quantity was never ambiguous")
+    void deferAmbiguousMeasuredQuantityIgnoresCountableMedicines() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Azithromycin 500",
+                "med_1", null, 15, "1-0-0", "5 days", null);
+
+        item.deferAmbiguousMeasuredQuantity(tablet(null), null);
+
+        assertThat(item.getQuantity()).isEqualTo(15);
+        assertThat(item.needsQuantityConfirmation()).isFalse();
+        assertThat(item.getQuantityCalculationNote()).isNull();
+    }
+
+    @Test
+    @DisplayName("a non-EMR line (typed into the native prescription form) is never second-guessed")
+    void deferAmbiguousMeasuredQuantityIgnoresNonEmrLines() {
+        PrescriptionItem item = PrescriptionItem.create("ph_1", "rx_1", "Melgain", "med_1",
+                null, 2, "3ml-0-3ml", "5 days", null);
+
+        item.deferAmbiguousMeasuredQuantity(syrup(null), null);
+
+        assertThat(item.getQuantity()).isEqualTo(2);
+        assertThat(item.needsQuantityConfirmation()).isFalse();
+    }
+
+    @Test
+    @DisplayName("a line that already needs a quantity is left for the calculator / pharmacist, not touched here")
+    void deferAmbiguousMeasuredQuantityIsANoOpForAnAlreadyUnconfirmedLine() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 0, "3ml-0-3ml", "5 days", null);
+
+        item.deferAmbiguousMeasuredQuantity(syrup(null), null);
+
+        assertThat(item.getQuantity()).isZero();
+        assertThat(item.getQuantityCalculationNote()).isNull();
+    }
+
+    @Test
+    @DisplayName("confirming the quantity afterwards clears the deferral note, same as any other placeholder")
+    void confirmingAfterDeferralClearsTheNote() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 30, "3ml-0-3ml", "5 days", null);
+        item.deferAmbiguousMeasuredQuantity(syrup(null), null);
+
+        item.confirmQuantity(1);
+
+        assertThat(item.getQuantity()).isEqualTo(1);
+        assertThat(item.needsQuantityConfirmation()).isFalse();
+        assertThat(item.getQuantityCalculationNote()).isNull();
+    }
+
     @Test
     @DisplayName("an EMR amendment clears the previous calculation state — the caller re-derives it from the new data")
     void applyEmrAmendmentClearsThePreviousCalculationState() {

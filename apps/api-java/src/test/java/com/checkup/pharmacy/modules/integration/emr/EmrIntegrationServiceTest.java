@@ -14,6 +14,7 @@ import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository;
 import com.checkup.pharmacy.modules.prescription.Prescription;
 import com.checkup.pharmacy.modules.prescription.PrescriptionItem;
 import com.checkup.pharmacy.modules.prescription.PrescriptionItemRepository;
@@ -85,7 +86,8 @@ class EmrIntegrationServiceTest {
         DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
         DoctorRepository doctorRepository = mock(DoctorRepository.class);
         EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
-                invoiceRepository, medicineRepository, inventoryRepository, sequenceService, doctorRepository);
+                invoiceRepository, medicineRepository, mock(PharmacyMedicineOverrideRepository.class),
+                inventoryRepository, sequenceService, doctorRepository);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new UserPrincipal("machine", "ph-1", Role.OWNER, "emr@machine.local"), null, List.of()));
 
@@ -119,7 +121,8 @@ class EmrIntegrationServiceTest {
         DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
         DoctorRepository doctorRepository = mock(DoctorRepository.class);
         EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
-                invoiceRepository, medicineRepository, inventoryRepository, sequenceService, doctorRepository);
+                invoiceRepository, medicineRepository, mock(PharmacyMedicineOverrideRepository.class),
+                inventoryRepository, sequenceService, doctorRepository);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new UserPrincipal("machine", "ph-1", Role.OWNER, "emr@machine.local"), null, List.of()));
 
@@ -152,7 +155,8 @@ class EmrIntegrationServiceTest {
         DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
         DoctorRepository doctorRepository = mock(DoctorRepository.class);
         EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
-                invoiceRepository, medicineRepository, inventoryRepository, sequenceService, doctorRepository);
+                invoiceRepository, medicineRepository, mock(PharmacyMedicineOverrideRepository.class),
+                inventoryRepository, sequenceService, doctorRepository);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new UserPrincipal("machine", "ph-1", Role.OWNER, "emr@machine.local"), null, List.of()));
         when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of());
@@ -176,7 +180,8 @@ class EmrIntegrationServiceTest {
         DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
         DoctorRepository doctorRepository = mock(DoctorRepository.class);
         EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
-                invoiceRepository, medicineRepository, inventoryRepository, sequenceService, doctorRepository);
+                invoiceRepository, medicineRepository, mock(PharmacyMedicineOverrideRepository.class),
+                inventoryRepository, sequenceService, doctorRepository);
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(
                 new UserPrincipal("machine", "ph-1", Role.OWNER, "emr@machine.local"), null, List.of()));
 
@@ -478,7 +483,8 @@ class EmrIntegrationServiceTest {
         PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
         DoctorRepository doctorRepository = mock(DoctorRepository.class);
         EmrIntegrationService service = new EmrIntegrationService(prescriptionRepository, itemRepository,
-                mock(InvoiceRepository.class), mock(MedicineRepository.class), mock(InventoryRepository.class),
+                mock(InvoiceRepository.class), mock(MedicineRepository.class),
+                mock(PharmacyMedicineOverrideRepository.class), mock(InventoryRepository.class),
                 mock(DocumentSequenceService.class), doctorRepository);
         authenticateAsMachine();
 
@@ -580,10 +586,19 @@ class EmrIntegrationServiceTest {
     private static EmrIntegrationService serviceForIngest(PrescriptionRepository prescriptionRepository,
                                                           PrescriptionItemRepository itemRepository,
                                                           MedicineRepository medicineRepository) {
+        return serviceForIngest(prescriptionRepository, itemRepository, medicineRepository,
+                mock(PharmacyMedicineOverrideRepository.class));
+    }
+
+    private static EmrIntegrationService serviceForIngest(PrescriptionRepository prescriptionRepository,
+                                                          PrescriptionItemRepository itemRepository,
+                                                          MedicineRepository medicineRepository,
+                                                          PharmacyMedicineOverrideRepository overrideRepository) {
         DocumentSequenceService sequenceService = mock(DocumentSequenceService.class);
         when(sequenceService.next(any(), any(), any())).thenReturn(1);
         return new EmrIntegrationService(prescriptionRepository, itemRepository, mock(InvoiceRepository.class),
-                medicineRepository, mock(InventoryRepository.class), sequenceService, mock(DoctorRepository.class));
+                medicineRepository, overrideRepository, mock(InventoryRepository.class),
+                sequenceService, mock(DoctorRepository.class));
     }
 
     private static List<PrescriptionItem> savedItems(PrescriptionItemRepository itemRepository) {
@@ -666,6 +681,90 @@ class EmrIntegrationServiceTest {
         assertThat(savedItems(itemRepository)).singleElement().satisfies(saved -> {
             assertThat(saved.needsQuantityConfirmation()).isTrue();
             assertThat(saved.isQuantityAutoCalculated()).isFalse();
+        });
+    }
+
+    @Test
+    @DisplayName("a clinic quantity for a measured medicine with no pack size is set aside for confirmation, "
+            + "not billed as N bottles")
+    void ingestDefersAmbiguousMeasuredQuantity() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        EmrIntegrationService service = serviceForIngest(prescriptionRepository, itemRepository, medicineRepository);
+        authenticateAsMachine();
+
+        Medicine syrup = Medicine.create("Melgain", new BigDecimal("12"));
+        syrup.setPackaging(null, "ML");
+        when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of(syrup));
+        when(prescriptionRepository.findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
+                eq("ph-1"), eq("tenant-1"), eq("rx-1"))).thenReturn(Optional.empty());
+
+        // The clinic computed 30 (ml). With no mL-per-bottle on record the dispensing engine
+        // would read that as 30 whole bottles — so it must not flow straight through.
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "Melgain", null, null, null,
+                30, "3ml-0-3ml", "5 days", null);
+        service.ingest(ingestRequest("Dr. Ann Smith", "John Doe", List.of(item)));
+
+        assertThat(savedItems(itemRepository)).singleElement().satisfies(saved -> {
+            assertThat(saved.getQuantity()).isZero();
+            assertThat(saved.needsQuantityConfirmation()).isTrue();
+            assertThat(saved.getQuantityCalculationNote()).contains("30 ml");
+        });
+    }
+
+    @Test
+    @DisplayName("a clinic quantity for a CLASSIFIED measured medicine flows through unchanged — 30 ml is unambiguous")
+    void ingestKeepsAMeasuredQuantityWhenThePackSizeIsKnown() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        EmrIntegrationService service = serviceForIngest(prescriptionRepository, itemRepository, medicineRepository);
+        authenticateAsMachine();
+
+        Medicine syrup = Medicine.create("Melgain 60ml", new BigDecimal("12"));
+        syrup.setPackaging(60, "ML");
+        when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of(syrup));
+        when(prescriptionRepository.findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
+                eq("ph-1"), eq("tenant-1"), eq("rx-1"))).thenReturn(Optional.empty());
+
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "Melgain 60ml", null, null, null,
+                30, "3ml-0-3ml", "5 days", null);
+        service.ingest(ingestRequest("Dr. Ann Smith", "John Doe", List.of(item)));
+
+        assertThat(savedItems(itemRepository)).singleElement().satisfies(saved -> {
+            assertThat(saved.getQuantity()).isEqualTo(30);
+            assertThat(saved.needsQuantityConfirmation()).isFalse();
+        });
+    }
+
+    @Test
+    @DisplayName("a pharmacy pack-size override (catalogue still unclassified) is enough to let the quantity through")
+    void ingestRespectsAnOverridePackSizeForMeasuredLines() {
+        PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
+        PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
+        MedicineRepository medicineRepository = mock(MedicineRepository.class);
+        PharmacyMedicineOverrideRepository overrideRepository = mock(PharmacyMedicineOverrideRepository.class);
+        EmrIntegrationService service = serviceForIngest(prescriptionRepository, itemRepository, medicineRepository,
+                overrideRepository);
+        authenticateAsMachine();
+
+        Medicine syrup = Medicine.create("Melgain", new BigDecimal("12"));
+        syrup.setPackaging(null, "ML");
+        when(medicineRepository.findActiveForEmrMatch(any(), any())).thenReturn(List.of(syrup));
+        when(prescriptionRepository.findByPharmacyIdAndExternalEmrTenantIdAndExternalEmrPrescriptionId(
+                eq("ph-1"), eq("tenant-1"), eq("rx-1"))).thenReturn(Optional.empty());
+        var override = com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride.create("ph-1", syrup.getId());
+        override.applyLoosePos(false, 100);
+        when(overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(eq("ph-1"), any())).thenReturn(List.of(override));
+
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "Melgain", null, null, null,
+                30, "3ml-0-3ml", "5 days", null);
+        service.ingest(ingestRequest("Dr. Ann Smith", "John Doe", List.of(item)));
+
+        assertThat(savedItems(itemRepository)).singleElement().satisfies(saved -> {
+            assertThat(saved.getQuantity()).isEqualTo(30);
+            assertThat(saved.needsQuantityConfirmation()).isFalse();
         });
     }
 
@@ -779,16 +878,25 @@ class EmrIntegrationServiceTest {
 
     private static EmrIntegrationService serviceWith(PrescriptionRepository prescriptionRepository) {
         return new EmrIntegrationService(prescriptionRepository, mock(PrescriptionItemRepository.class),
-                mock(InvoiceRepository.class), mock(MedicineRepository.class), mock(InventoryRepository.class),
+                mock(InvoiceRepository.class), mock(MedicineRepository.class),
+                mock(PharmacyMedicineOverrideRepository.class), mock(InventoryRepository.class),
                 mock(DocumentSequenceService.class), mock(DoctorRepository.class));
     }
 
     private static EmrIntegrationService serviceWith(PrescriptionRepository prescriptionRepository,
                                                       PrescriptionItemRepository itemRepository,
                                                       MedicineRepository medicineRepository) {
+        return serviceWith(prescriptionRepository, itemRepository, medicineRepository,
+                mock(PharmacyMedicineOverrideRepository.class));
+    }
+
+    private static EmrIntegrationService serviceWith(PrescriptionRepository prescriptionRepository,
+                                                      PrescriptionItemRepository itemRepository,
+                                                      MedicineRepository medicineRepository,
+                                                      PharmacyMedicineOverrideRepository overrideRepository) {
         return new EmrIntegrationService(prescriptionRepository, itemRepository,
-                mock(InvoiceRepository.class), medicineRepository, mock(InventoryRepository.class),
-                mock(DocumentSequenceService.class), mock(DoctorRepository.class));
+                mock(InvoiceRepository.class), medicineRepository, overrideRepository,
+                mock(InventoryRepository.class), mock(DocumentSequenceService.class), mock(DoctorRepository.class));
     }
 
     private static void authenticateAsMachine() {

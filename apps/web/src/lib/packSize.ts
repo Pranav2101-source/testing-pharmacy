@@ -35,25 +35,38 @@ export function parseMeasuredPackSize(text: string | null | undefined): number |
 
 /**
  * What the billing cart's PACK column shows — the catalogue's free-text `packSize`
- * when it actually describes the packaging, otherwise a computed "{unitsPerPack}/strip"
- * label. Display-only: this never writes back to the catalogue, and `unitsPerPack`
- * itself is untouched — it stays exactly what the loose-selling math already trusts as
- * its source of truth. This function only decides what a cashier reads.
+ * when it actually describes the packaging, otherwise a computed label from
+ * `unitsPerPack` and the base unit ("15/strip" for a tablet, "100ml" for a syrup,
+ * "100g" for a cream). Display-only: this never writes back to the catalogue, and
+ * `unitsPerPack` itself is untouched — it stays exactly what the loose-selling math
+ * already trusts as its source of truth. This function only decides what a cashier reads.
  *
  * A bare number ("1", "10" — digits and nothing else) tells a cashier nothing about
  * what's actually in the pack: tablets, ml, capsules. That's indistinguishable from a
  * lazily-entered catalogue row, so it's treated the same as an empty packSize — but
- * only demoted when unitsPerPack gives something better to show instead. With no
- * unitsPerPack to fall back to, the bare number is still shown as-is: it's poor, but
+ * only demoted when `unitsPerPack` gives something better to show instead. With no
+ * `unitsPerPack` to fall back to, the bare number is still shown as-is: it's poor, but
  * it's the only data there is.
+ *
+ * The base unit matters for the fallback: a measured medicine (syrup, cream — ML/GM) is
+ * a bottle/tube of that volume, NOT "N/strip", so its computed label is "{n}ml" / "{n}g".
+ * A tablet or capsule keeps the "{n}/strip" form. `baseUnit` is optional — omitted, the
+ * label falls back to the tablet-era "{n}/strip", which is what every non-measured line
+ * has always shown.
  */
 export function packDisplayLabel(
   packSize: string | null | undefined,
   unitsPerPack: number | null | undefined,
+  baseUnit?: string | null,
 ): string {
   const trimmed = (packSize ?? "").trim();
   const isBareNumber = /^\d+$/.test(trimmed);
   if (trimmed && !isBareNumber) return trimmed;
-  if (unitsPerPack && unitsPerPack > 0) return `${unitsPerPack}/strip`;
+  if (unitsPerPack && unitsPerPack > 0) {
+    const bu = baseUnit?.trim().toUpperCase();
+    if (bu === "ML") return `${unitsPerPack}ml`;
+    if (bu === "GM") return `${unitsPerPack}g`;
+    return `${unitsPerPack}/strip`;
+  }
   return trimmed || "—";
 }

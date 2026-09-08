@@ -20,6 +20,8 @@ import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineMatcher;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository;
 import com.checkup.pharmacy.modules.prescription.Prescription;
 import com.checkup.pharmacy.modules.prescription.PrescriptionItem;
 import com.checkup.pharmacy.modules.prescription.PrescriptionItemRepository;
@@ -51,6 +53,7 @@ public class EmrIntegrationService {
     private final PrescriptionItemRepository itemRepository;
     private final InvoiceRepository invoiceRepository;
     private final MedicineRepository medicineRepository;
+    private final PharmacyMedicineOverrideRepository overrideRepository;
     private final InventoryRepository inventoryRepository;
     private final DocumentSequenceService sequenceService;
     private final DoctorRepository doctorRepository;
@@ -59,6 +62,7 @@ public class EmrIntegrationService {
                                  PrescriptionItemRepository itemRepository,
                                  InvoiceRepository invoiceRepository,
                                  MedicineRepository medicineRepository,
+                                 PharmacyMedicineOverrideRepository overrideRepository,
                                  InventoryRepository inventoryRepository,
                                  DocumentSequenceService sequenceService,
                                  DoctorRepository doctorRepository) {
@@ -66,6 +70,7 @@ public class EmrIntegrationService {
         this.itemRepository = itemRepository;
         this.invoiceRepository = invoiceRepository;
         this.medicineRepository = medicineRepository;
+        this.overrideRepository = overrideRepository;
         this.inventoryRepository = inventoryRepository;
         this.sequenceService = sequenceService;
         this.doctorRepository = doctorRepository;
@@ -149,10 +154,9 @@ public class EmrIntegrationService {
                 })
                 .toList();
         // Every medicine these lines resolved to is already in hand from the match above, so
-        // deriving the missing quantities costs no further queries. See PrescriptionItem's own
+        // settling the quantities costs no further medicine queries. See PrescriptionItem's own
         // calculateQuantityIfMissing for why an unmatched line is left without a note here.
-        items.forEach(item -> item.calculateQuantityIfMissing(
-                resolvedByExternalItemId.get(item.getExternalEmrItemId())));
+        resolveIngestedQuantities(pharmacyId, items, resolvedByExternalItemId);
         itemRepository.saveAll(items);
         return snapshot(prescription, items, List.of(), Instant.now());
     }
@@ -235,7 +239,7 @@ public class EmrIntegrationService {
                 saved.add(current);
             }
         }
-        applyCalculatedQuantities(saved, resolvedByExternalItemId);
+        resolveIngestedQuantities(existing.getPharmacyId(), saved, resolvedByExternalItemId);
         itemRepository.saveAll(saved);
 
         // Whatever is left in the map was on the prescription before this push and is not
@@ -272,45 +276,79 @@ public class EmrIntegrationService {
     }
 
     /**
-     * Fills in the quantity for lines the clinic sent without one, where the dosing pattern and
-     * duration establish it beyond doubt — see {@link PrescriptionQuantityCalculator}.
+     * Settles every matched line's quantity now that its medicine — and so its base unit and
+     * pack size — is known:
+     * <ul>
+     *   <li>a line the clinic sent <b>without</b> a quantity is calculated from its dosing
+     *       pattern and duration where those establish it beyond doubt — see
+     *       {@link PrescriptionQuantityCalculator}. A line the calculator declines is left as
+     *       quantity zero, the existing "a pharmacist settles this at the counter" placeholder;
+     *   <li>a line the clinic <b>did</b> send a quantity for, whose medicine is a measured
+     *       (mL/g) product with no pack size on record, is dropped back to that same placeholder
+     *       rather than billed as N whole bottles — see
+     *       {@link PrescriptionItem#deferAmbiguousMeasuredQuantity}.
+     * </ul>
+     * Nothing downstream needs to know which path a line took — a derived or deferred quantity
+     * flows through stock, pack/loose resolution and billing by the same route as a
+     * clinic-stated one.
      *
-     * <p>A line the calculator declines is left exactly as it was: quantity zero, which is the
-     * existing "a pharmacist settles this at the counter" placeholder. Nothing downstream needs
-     * to know a calculation happened — a derived quantity is an ordinary quantity, and flows
-     * through stock, pack/loose resolution and billing by the same path as a clinic-stated one.
+     * <p>An unmatched line (medicineId == null) is left untouched on purpose:
+     * {@code ReviewIngestedItemsPanel} already blocks it for having no catalogue medicine, and
+     * a quantity note on top of that would answer a question the pharmacist has not reached yet.
      *
-     * <p>The amendment path reaches here with two kinds of line: ones just re-matched against
-     * the catalogue (whose Medicine is already in hand) and ones whose name did not change
-     * (whose medicine has to be read back). Only the second kind, and only when it actually
-     * needs a quantity, costs a query — one batched read for all of them, never one per line.
+     * <p>Query profile is unchanged for the calculate path: one batched medicine read, only on
+     * the amendment path, only for a line whose name did not change (its Medicine is not in
+     * hand). The defer path adds only one batched override read, and never a medicine read — a
+     * clinic-stated line whose name did not change was already guarded on the push that created
+     * it, so it is enough to re-check the lines whose medicine is freshly resolved.
      */
-    private void applyCalculatedQuantities(List<PrescriptionItem> items,
+    private void resolveIngestedQuantities(String pharmacyId, List<PrescriptionItem> items,
                                            Map<String, Medicine> resolvedByExternalItemId) {
+        Map<String, Medicine> resolvedByMedicineId = new LinkedHashMap<>();
+        resolvedByExternalItemId.values().forEach(medicine -> resolvedByMedicineId.put(medicine.getId(), medicine));
+
+        // ── Calculate a quantity for a line the clinic sent without one ──
         List<PrescriptionItem> needQuantity = items.stream()
                 .filter(PrescriptionItem::needsQuantityConfirmation)
                 .filter(item -> item.getMedicineId() != null)
                 .toList();
-        if (needQuantity.isEmpty()) {
+        if (!needQuantity.isEmpty()) {
+            Map<String, Medicine> byMedicineId = new LinkedHashMap<>(resolvedByMedicineId);
+            List<String> unread = needQuantity.stream()
+                    .map(PrescriptionItem::getMedicineId)
+                    .filter(id -> !byMedicineId.containsKey(id))
+                    .distinct()
+                    .toList();
+            if (!unread.isEmpty()) {
+                medicineRepository.findAllById(unread).forEach(m -> byMedicineId.put(m.getId(), m));
+            }
+            needQuantity.forEach(item -> item.calculateQuantityIfMissing(byMedicineId.get(item.getMedicineId())));
+        }
+
+        // ── Set aside a clinic quantity we cannot safely bill: a measured (mL/g) line whose
+        //    medicine has no pack size, catalogue or override — see the method doc. ──
+        List<PrescriptionItem> statedForFreshMedicine = items.stream()
+                .filter(item -> !item.needsQuantityConfirmation())
+                .filter(item -> item.getMedicineId() != null)
+                .filter(item -> resolvedByMedicineId.containsKey(item.getMedicineId()))
+                .toList();
+        if (statedForFreshMedicine.isEmpty()) {
             return;
         }
-
-        Map<String, Medicine> byMedicineId = new LinkedHashMap<>();
-        resolvedByExternalItemId.values().forEach(medicine -> byMedicineId.put(medicine.getId(), medicine));
-        List<String> unread = needQuantity.stream()
+        Set<String> medicineIds = statedForFreshMedicine.stream()
                 .map(PrescriptionItem::getMedicineId)
-                .filter(id -> !byMedicineId.containsKey(id))
-                .distinct()
-                .toList();
-        if (!unread.isEmpty()) {
-            medicineRepository.findAllById(unread).forEach(medicine -> byMedicineId.put(medicine.getId(), medicine));
+                .collect(Collectors.toSet());
+        Map<String, Integer> overridePackSize = overrideRepository
+                .findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, medicineIds).stream()
+                .filter(o -> o.getUnitsPerPack() != null)
+                .collect(Collectors.toMap(PharmacyMedicineOverride::getMedicineId,
+                        PharmacyMedicineOverride::getUnitsPerPack));
+        for (PrescriptionItem item : statedForFreshMedicine) {
+            Medicine medicine = resolvedByMedicineId.get(item.getMedicineId());
+            Integer effectivePackSize = overridePackSize.getOrDefault(item.getMedicineId(),
+                    medicine.getUnitsPerPack());
+            item.deferAmbiguousMeasuredQuantity(medicine, effectivePackSize);
         }
-
-        // An unmatched line (medicineId == null, filtered out above already) is left without a
-        // calculation note on purpose: ReviewIngestedItemsPanel already blocks it for a
-        // different reason (no catalogue medicine), and a quantity-refusal note on top of that
-        // would answer a question the pharmacist has not reached yet.
-        needQuantity.forEach(item -> item.calculateQuantityIfMissing(byMedicineId.get(item.getMedicineId())));
     }
 
     @Transactional(readOnly = true)

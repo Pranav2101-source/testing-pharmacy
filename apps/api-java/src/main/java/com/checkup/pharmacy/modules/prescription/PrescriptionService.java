@@ -16,6 +16,8 @@ import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository;
 import com.checkup.pharmacy.modules.prescription.dto.CreatePrescriptionRequest;
 import com.checkup.pharmacy.modules.prescription.dto.NewPrescriptionCountResponse;
 import com.checkup.pharmacy.modules.prescription.dto.PrescriptionItemRequest;
@@ -62,13 +64,16 @@ public class PrescriptionService {
     private final DoctorRepository doctorRepository;
     private final UploadRepository uploadRepository;
     private final MedicineRepository medicineRepository;
+    private final PharmacyMedicineOverrideRepository overrideRepository;
     private final InventoryRepository inventoryRepository;
     private final DocumentSequenceService sequenceService;
     private final ApplicationEventPublisher eventPublisher;
 
     public PrescriptionService(PrescriptionRepository prescriptionRepository, PrescriptionItemRepository itemRepository,
                                DoctorRepository doctorRepository, UploadRepository uploadRepository,
-                               MedicineRepository medicineRepository, InventoryRepository inventoryRepository,
+                               MedicineRepository medicineRepository,
+                               PharmacyMedicineOverrideRepository overrideRepository,
+                               InventoryRepository inventoryRepository,
                                DocumentSequenceService sequenceService,
                                ApplicationEventPublisher eventPublisher) {
         this.prescriptionRepository = prescriptionRepository;
@@ -76,6 +81,7 @@ public class PrescriptionService {
         this.doctorRepository = doctorRepository;
         this.uploadRepository = uploadRepository;
         this.medicineRepository = medicineRepository;
+        this.overrideRepository = overrideRepository;
         this.inventoryRepository = inventoryRepository;
         this.sequenceService = sequenceService;
         this.eventPublisher = eventPublisher;
@@ -468,6 +474,11 @@ public class PrescriptionService {
      * "Paracetamol 1-0-1 x 6 days" line does not ALSO require typing "12" into
      * {@code ConfirmQuantityPanel} right after — one pharmacist action resolves both gaps when
      * the dosage supports it, and leaves a specific note when it does not.
+     *
+     * <p>If the line instead already carries a clinic quantity and the linked medicine turns
+     * out to be a measured (mL/g) product with no pack size on record, that quantity is set
+     * aside for confirmation rather than trusted — same reasoning as EMR ingest, see
+     * {@link PrescriptionItem#deferAmbiguousMeasuredQuantity}.
      */
     @Transactional
     public PrescriptionResponse linkItemToMedicine(String prescriptionId, String itemId, String medicineId) {
@@ -490,6 +501,13 @@ public class PrescriptionService {
 
         item.linkMedicine(medicine.getId());
         item.calculateQuantityIfMissing(medicine);
+        if (!item.needsQuantityConfirmation()) {
+            Integer effectivePackSize = overrideRepository
+                    .findByIdPharmacyIdAndIdMedicineId(pharmacyId, medicine.getId())
+                    .map(PharmacyMedicineOverride::getUnitsPerPack)
+                    .orElse(medicine.getUnitsPerPack());
+            item.deferAmbiguousMeasuredQuantity(medicine, effectivePackSize);
+        }
         itemRepository.save(item);
 
         return getById(rx.getId());

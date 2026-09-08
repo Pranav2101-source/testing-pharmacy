@@ -5,6 +5,8 @@ import com.checkup.pharmacy.modules.billing.BillingService;
 import com.checkup.pharmacy.modules.billing.dto.CreateInvoiceRequest;
 import com.checkup.pharmacy.modules.billing.dto.InvoiceItemRequest;
 import com.checkup.pharmacy.modules.billing.dto.InvoiceResponse;
+import com.checkup.pharmacy.modules.dispensing.DispensingService;
+import com.checkup.pharmacy.modules.dispensing.dto.DispensingPlan;
 import com.checkup.pharmacy.modules.integration.emr.EmrIntegrationService;
 import com.checkup.pharmacy.modules.integration.emr.dto.EmrPrescriptionIngestRequest;
 import com.checkup.pharmacy.modules.integration.emr.dto.EmrPrescriptionSnapshot;
@@ -60,6 +62,7 @@ class EmrQuantityCalculationEndToEndIT extends AbstractPostgresIT {
 
     @Autowired private EmrIntegrationService emrIntegrationService;
     @Autowired private PrescriptionService prescriptionService;
+    @Autowired private DispensingService dispensingService;
     @Autowired private BillingService billingService;
     @Autowired private PharmacyRepository pharmacyRepository;
     @Autowired private MedicineRepository medicineRepository;
@@ -234,5 +237,126 @@ class EmrQuantityCalculationEndToEndIT extends AbstractPostgresIT {
         // refusal does not contaminate the rest of the same ingest call.
         assertThat(tablet.getQuantity()).isEqualTo(12);
         assertThat(tablet.isQuantityAutoCalculated()).isTrue();
+    }
+
+    @Test
+    @DisplayName("a clinic-STATED quantity for a measured medicine with no pack size is set aside for "
+            + "confirmation, not billed as N sealed bottles")
+    void clinicQuantityForAnUnclassifiedMeasuredMedicineIsDeferred() {
+        Medicine unclassified = Medicine.create("Melgain Solution", new BigDecimal("12"));
+        unclassified.setPackaging(null, "ML");
+        medicineRepository.save(unclassified);
+
+        Medicine classified = Medicine.create("Grilinctus Syrup 100ml", new BigDecimal("12"));
+        classified.setPackaging(100, "ML");
+        medicineRepository.save(classified);
+        entityManager.flush();
+        entityManager.clear();
+
+        // Both lines carry the clinic's own computed volume (30 ml / 100 ml).
+        var ambiguous = new EmrPrescriptionIngestRequest.Item("item-1", "Melgain Solution", null, null, null,
+                30, "3ml-0-3ml", "5 days", null);
+        var unambiguous = new EmrPrescriptionIngestRequest.Item("item-2", "Grilinctus Syrup 100ml", null, null, null,
+                100, "5ml-5ml-5ml", "5 days", null);
+        var request = new EmrPrescriptionIngestRequest("tenant-1", "rx-" + unique(), null, "Dr. Rao", "MCI-1",
+                null, "Asha Verma", 30, null, null, null, null, null, List.of(ambiguous, unambiguous));
+
+        EmrPrescriptionSnapshot snapshot = emrIntegrationService.ingest(request);
+        List<PrescriptionItem> items = prescriptionItemRepository.findByPrescriptionId(snapshot.pharmacyPrescriptionId());
+
+        PrescriptionItem melgain = items.stream()
+                .filter(i -> i.getMedicineName().contains("Melgain")).findFirst().orElseThrow();
+        assertThat(melgain.getQuantity()).as("the ambiguous 30 is not trusted").isZero();
+        assertThat(melgain.needsQuantityConfirmation()).isTrue();
+        assertThat(melgain.getQuantityCalculationNote()).contains("30 ml").containsIgnoringCase("no pack size");
+
+        PrescriptionItem grilinctus = items.stream()
+                .filter(i -> i.getMedicineName().contains("Grilinctus")).findFirst().orElseThrow();
+        assertThat(grilinctus.getQuantity()).as("100 ml against a 100 ml bottle is unambiguous").isEqualTo(100);
+        assertThat(grilinctus.needsQuantityConfirmation()).isFalse();
+    }
+
+    @Test
+    @DisplayName("a pharmacy pack-size override is enough to let a measured clinic quantity through, "
+            + "even when the shared catalogue never classified the medicine")
+    void anOverridePackSizeLetsAMeasuredClinicQuantityThrough() {
+        Medicine unclassified = Medicine.create("Cetaphil Lotion", new BigDecimal("12"));
+        unclassified.setPackaging(null, "ML");
+        medicineRepository.save(unclassified);
+        PharmacyMedicineOverride override = PharmacyMedicineOverride.create(pharmacyId, unclassified.getId());
+        override.applyLoosePos(false, 250);
+        overrideRepository.save(override);
+        entityManager.flush();
+        entityManager.clear();
+
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "Cetaphil Lotion", null, null, null,
+                50, "twice daily", "5 days", null);
+        var request = new EmrPrescriptionIngestRequest("tenant-1", "rx-" + unique(), null, "Dr. Rao", "MCI-1",
+                null, "Asha Verma", 30, null, null, null, null, null, List.of(item));
+
+        EmrPrescriptionSnapshot snapshot = emrIntegrationService.ingest(request);
+        PrescriptionItem saved = prescriptionItemRepository
+                .findByPrescriptionId(snapshot.pharmacyPrescriptionId()).get(0);
+
+        assertThat(saved.getQuantity()).isEqualTo(50);
+        assertThat(saved.needsQuantityConfirmation()).isFalse();
+    }
+
+    @Test
+    @DisplayName("clinic 30 ml -> deferred -> pharmacist confirms 1 bottle: the dispensing plan and the bill "
+            + "draw 1 bottle, NEVER the clinic's 30")
+    void confirmedBottleCountIsWhatBillsNotTheClinicMillilitres() {
+        // An unclassified measured medicine with real stock on the shelf.
+        Medicine syrup = Medicine.create("Ambroxol Syrup", new BigDecimal("12"));
+        syrup.setPackaging(null, "ML");
+        medicineRepository.save(syrup);
+        Inventory batch = Inventory.create(pharmacyId, syrup.getId(), "SYR-" + unique(), future(),
+                8, new BigDecimal("40.00"), new BigDecimal("70.00"), 2, 2); // 8 sealed bottles
+        inventoryRepository.save(batch);
+        entityManager.flush();
+        entityManager.clear();
+
+        // 1) EMR sends the clinic's own computed volume: 30 ml.
+        var line = new EmrPrescriptionIngestRequest.Item("item-1", "Ambroxol Syrup", null, null, null,
+                30, "3ml-0-3ml", "5 days", null);
+        var request = new EmrPrescriptionIngestRequest("tenant-1", "rx-" + unique(), null, "Dr. Rao", "MCI-1",
+                null, "Asha Verma", 30, null, null, null, null, null, List.of(line));
+        String prescriptionId = emrIntegrationService.ingest(request).pharmacyPrescriptionId();
+
+        PrescriptionItem deferred = prescriptionItemRepository.findByPrescriptionId(prescriptionId).get(0);
+        assertThat(deferred.needsQuantityConfirmation()).as("30 ml is held, not billed as 30 bottles").isTrue();
+        String itemId = deferred.getId();
+
+        // 2) Pharmacist settles it at 1 bottle.
+        prescriptionService.confirmItemQuantity(prescriptionId, itemId, 1);
+        entityManager.flush();
+        entityManager.clear();
+        assertThat(prescriptionItemRepository.findByPrescriptionId(prescriptionId).get(0).getQuantity())
+                .as("the pharmacist's 1 stands — the clinic's 30 does not come back").isEqualTo(1);
+
+        // 3) The dispensing plan is what ClinicPrescriptionTriage / prescriptionToCart turns into
+        //    cart lines. Its allocation must be exactly 1 sealed bottle.
+        DispensingPlan plan = dispensingService.planForPrescription(prescriptionId);
+        assertThat(plan.lines()).singleElement().satisfies(pl -> {
+            assertThat(pl.roundedUpToPieces()).as("no phantom round-up to the clinic's 30").isNull();
+            assertThat(pl.allocations()).singleElement().satisfies(a -> {
+                assertThat(a.saleUnit()).isEqualTo("PACK");
+                assertThat(a.quantity()).as("1 sealed bottle billed, not 30").isEqualTo(1);
+            });
+        });
+
+        // 4) Billing that plan deducts exactly one bottle.
+        var invoice = billingService.createInvoice(new CreateInvoiceRequest(
+                null, "Asha Verma", null, null, "Dr. Rao", prescriptionId, "CASH", "PAID", null, null, null,
+                null, null, null, null, null,
+                List.of(new InvoiceItemRequest(batch.getId(), 1, null, BigDecimal.ZERO, null, "PACK", null))));
+        entityManager.flush();
+        entityManager.clear();
+        assertThat(invoice.items()).singleElement().satisfies(l -> {
+            assertThat(l.saleUnit()).isEqualTo("PACK");
+            assertThat(l.quantity()).isEqualTo(1);
+        });
+        assertThat(inventoryRepository.findById(batch.getId()).orElseThrow().getQuantity())
+                .as("8 bottles on hand - 1 sold").isEqualTo(7);
     }
 }

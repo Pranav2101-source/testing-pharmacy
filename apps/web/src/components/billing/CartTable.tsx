@@ -18,8 +18,10 @@ import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
 
 // Column grid — 12 cols: ItemName | Pack | Batch+Loc | Expiry | MRP | Qty | Free | D% | Rate | GST% | Amount | Del
+// Pack is wide enough (120px) for the pack-size label AND a "LOOSE OK" badge beside it —
+// at 80px the badge crushed "15/strip" down to a stray "1" (see CartRowPackColumn tests).
 // "Free" is scheme quantity (10+1): not charged, but deducted from the same batch.
-const COL = "grid-cols-[minmax(200px,1fr)_80px_104px_72px_80px_128px_56px_64px_90px_50px_104px_38px]";
+const COL = "grid-cols-[minmax(180px,1fr)_120px_104px_72px_80px_128px_56px_64px_90px_50px_104px_38px]";
 
 const CONTROLLED_BADGE: Record<string, string> = {
   H:  "bg-amber-100 text-amber-700 border-amber-200",
@@ -344,7 +346,7 @@ export const CartRow = memo(function CartRow({
   const isLoose   = item.saleUnit === "LOOSE";
   const upp       = item.unitsPerPack ?? 1;
   const canLoose  = !!item.allowLooseSale && upp > 1;
-  const packLabel = packDisplayLabel(item.packSize, item.unitsPerPack);
+  const packLabel = packDisplayLabel(item.packSize, item.unitsPerPack, item.baseUnit);
   const issue     = lineIssue(item);
   const looseOpensStrips = looseStripsOpened(item);
   // The sale-unit vocabulary for THIS line — "bottle"/"mL" for a syrup, "tube"/"g"
@@ -450,13 +452,14 @@ export const CartRow = memo(function CartRow({
         </div>
       </div>
 
-      {/* Pack — packDisplayLabel prefers the catalogue's free-text packSize, but only
-          when it's actually descriptive; a bare "1" reads as no better than having no
-          label at all, so it falls back to a computed unitsPerPack label instead. The
-          Strip/Tab choice itself lives on the Qty cell now. */}
-      <span className={cn("px-2.5 py-2 text-[13px] text-left truncate flex items-center gap-1",
+      {/* Pack — the medicine's real pack size: the catalogue's free-text packSize when it's
+          descriptive ("100ml", "1x15"), else a base-unit-aware computed label ("15/strip"
+          for a tablet, "100ml" for a syrup — never "/strip" for a liquid), see
+          packDisplayLabel. "LOOSE OK" rides beside it as a SECONDARY badge and never
+          replaces it. The Strip/Tab toggle itself lives on the Qty cell. */}
+      <span data-col="pack" className={cn("px-2.5 py-2 text-[13px] text-left flex items-center gap-1 min-w-0",
         packLabel !== "—" ? "text-slate-600 font-medium" : "text-slate-300")}>
-        <span className="truncate">{packLabel}</span>
+        <span data-pack-label className="min-w-0 truncate">{packLabel}</span>
         {canLoose && (
           <span className="flex-shrink-0 text-[8px] font-bold px-1 py-px rounded bg-amber-100 text-amber-700 leading-none">LOOSE OK</span>
         )}
