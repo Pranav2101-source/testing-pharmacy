@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { Loader2, RefreshCw, Plus, Check, X, Truck, Building2 } from "lucide-react";
+import { Loader2, RefreshCw, Plus, Check, X, Truck, Building2, PackageCheck, AlertTriangle } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { api } from "@/lib/api-client";
+import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { TableSkeletonRows } from "@/components/Skeleton";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/hooks/useToast";
 import type { GRN, Supplier } from "../types";
 import { fmtDate, currency } from "../utils";
 import { Pagination } from "../components/Pagination";
@@ -18,7 +20,15 @@ export function GateInwardTab({ suppliers }: { suppliers: Supplier[] }) {
   const [supplierId, setSupp] = useState("");
   const [actionId, setAction] = useState<string | null>(null);
   const [showCreate, setShow] = useState(false);
+  // Which GRN a styled dialog is asking about, and the pack-size note to acknowledge
+  // after a confirm — replaces window.confirm() / alert(), which read as browser junk
+  // on a consequential, un-undoable action.
+  const [confirmTarget, setConfirmTarget] = useState<GRN | null>(null);
+  const [cancelTarget,  setCancelTarget]  = useState<GRN | null>(null);
+  const [packWarning,   setPackWarning]   = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const queryClient = useQueryClient();
+  const toast = useToast();
 
   const { data, isPending, isFetching, refetch } = useQuery({
     queryKey: queryKeys.purchases.grn({ page, supplierId, status: "DRAFT" }),
@@ -101,19 +111,37 @@ export function GateInwardTab({ suppliers }: { suppliers: Supplier[] }) {
     queryClient.invalidateQueries({ queryKey: queryKeys.purchases.summary() });
   }
 
-  async function confirm(id: string) {
-    if (!window.confirm("Confirm this GRN? This will update inventory stock and cannot be undone.")) return;
-    setAction(id);
-    try { await api.patch(`/purchases/grn/${id}/confirm`); removeFromOwnList(id); invalidateOthers(); }
-    catch (e: any) { alert(e?.response?.data?.error ?? "Failed to confirm GRN"); }
-    finally { setAction(null); }
+  async function runConfirm(grn: GRN) {
+    setBusy(true);
+    setAction(grn.id);
+    try {
+      const res = await api.patch(`/purchases/grn/${grn.id}/confirm`);
+      removeFromOwnList(grn.id); invalidateOthers();
+      setConfirmTarget(null);
+      toast.success(`${grn.grnNumber} confirmed — stock added to inventory`);
+      // The stock is in regardless; a pack-size mismatch on any line is flagged, not blocked.
+      const warning = res.data?.data?.warning ?? res.data?.warning;
+      if (warning) setPackWarning(warning);
+    } catch (e) {
+      toast.error(getErrorMessage(e, "Failed to confirm GRN"));
+    } finally {
+      setBusy(false); setAction(null);
+    }
   }
 
-  async function cancel(id: string) {
-    if (!window.confirm("Cancel this GRN?")) return;
-    setAction(id);
-    try { await api.delete(`/purchases/grn/${id}`); removeFromOwnList(id); invalidateOthers(); }
-    catch {/* */} finally { setAction(null); }
+  async function runCancel(grn: GRN) {
+    setBusy(true);
+    setAction(grn.id);
+    try {
+      await api.delete(`/purchases/grn/${grn.id}`);
+      removeFromOwnList(grn.id); invalidateOthers();
+      setCancelTarget(null);
+      toast.success(`${grn.grnNumber} cancelled`);
+    } catch (e) {
+      toast.error(getErrorMessage(e, "Failed to cancel GRN"));
+    } finally {
+      setBusy(false); setAction(null);
+    }
   }
 
   return (
@@ -175,10 +203,10 @@ export function GateInwardTab({ suppliers }: { suppliers: Supplier[] }) {
                 <td className="px-4 py-3 text-[12px] text-slate-500">{fmtDate(grn.createdAt)}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1.5">
-                    <ActionBtn onClick={() => confirm(grn.id)} disabled={actionId === grn.id}
+                    <ActionBtn onClick={() => setConfirmTarget(grn)} disabled={actionId === grn.id}
                       icon={actionId === grn.id ? Loader2 : Check} label="Confirm"
                       cls="text-emerald-600 border-emerald-200 hover:bg-emerald-50" />
-                    <ActionBtn onClick={() => cancel(grn.id)} disabled={actionId === grn.id}
+                    <ActionBtn onClick={() => setCancelTarget(grn)} disabled={actionId === grn.id}
                       icon={X} label="Cancel" cls="text-red-500 border-red-100 hover:bg-red-50" />
                   </div>
                 </td>
@@ -193,6 +221,54 @@ export function GateInwardTab({ suppliers }: { suppliers: Supplier[] }) {
       <AnimatePresence>
         {showCreate && <CreateGRNModal suppliers={suppliers} onClose={() => setShow(false)} onDone={(_supplier, createdGrn) => handleCreated(createdGrn)} />}
       </AnimatePresence>
+
+      {/* Confirm — stock about to move, and it can't be undone. */}
+      <ConfirmDialog
+        open={!!confirmTarget}
+        tone="default"
+        icon={PackageCheck}
+        title={confirmTarget ? `Confirm ${confirmTarget.grnNumber}?` : ""}
+        body={confirmTarget && (
+          <>
+            Stock for <strong className="text-slate-700">{confirmTarget.itemCount ?? confirmTarget.items?.length ?? 0} item
+            {(confirmTarget.itemCount ?? confirmTarget.items?.length ?? 0) === 1 ? "" : "s"}</strong> from{" "}
+            <strong className="text-slate-700">{confirmTarget.supplier.name}</strong> ({currency(confirmTarget.totalAmount)})
+            will be added to inventory and the supplier ledger. This can't be undone.
+          </>
+        )}
+        confirmLabel="Confirm & Add Stock"
+        cancelLabel="Not yet"
+        busy={busy}
+        onConfirm={() => confirmTarget && runConfirm(confirmTarget)}
+        onCancel={() => !busy && setConfirmTarget(null)}
+      />
+
+      {/* Cancel a draft GRN. */}
+      <ConfirmDialog
+        open={!!cancelTarget}
+        tone="danger"
+        icon={X}
+        title={cancelTarget ? `Cancel ${cancelTarget.grnNumber}?` : ""}
+        body="This deletes the draft gate inward. Nothing has been added to stock yet."
+        confirmLabel="Cancel GRN"
+        cancelLabel="Keep it"
+        busy={busy}
+        onConfirm={() => cancelTarget && runCancel(cancelTarget)}
+        onCancel={() => !busy && setCancelTarget(null)}
+      />
+
+      {/* Stock is already in — but a line looks like a different pack size. */}
+      <ConfirmDialog
+        open={!!packWarning}
+        tone="warning"
+        icon={AlertTriangle}
+        title="Stock received — check the pack size"
+        body={packWarning}
+        confirmLabel="Got it"
+        cancelLabel={null}
+        onConfirm={() => setPackWarning(null)}
+        onCancel={() => setPackWarning(null)}
+      />
     </div>
   );
 }
