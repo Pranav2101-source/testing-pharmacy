@@ -68,6 +68,18 @@ export default function ConfirmQuantityPanel({
   );
 }
 
+/**
+ * The unit the pharmacist should be counting in, pulled straight out of the backend's
+ * own refusal sentence ("…enter the number of bottles to dispense…"). Keeping the noun
+ * in one place — {@code PrescriptionQuantityCalculator} — and reading it back here avoids
+ * a second copy of the base-unit → packaging-word mapping on the client, and it degrades
+ * to a plain "Qty" when the note doesn't name one (a countable medicine, or an older note).
+ */
+function unitFromNote(note: string | null | undefined): string | null {
+  const m = note?.match(/number of ([a-z]+) to dispense/i);
+  return m ? m[1]! : null;
+}
+
 function UnconfirmedRow({
   prescriptionId,
   item,
@@ -83,6 +95,10 @@ function UnconfirmedRow({
 
   const parsed = parseInt(value, 10);
   const valid = Number.isInteger(parsed) && parsed > 0;
+  const unit = unitFromNote(item.quantityCalculationNote);
+  // A measured medicine (bottles/tubes) billed in double digits from a prescription is
+  // almost always the total mL/g typed in by mistake — flag it, don't block it.
+  const looksLikeVolume = !!unit && valid && parsed > 20;
 
   async function confirm() {
     if (!valid) return;
@@ -119,10 +135,11 @@ function UnconfirmedRow({
             inputMode="numeric"
             value={value}
             onChange={(e) => setValue(e.target.value)}
-            placeholder="Qty"
-            aria-label={`Quantity for ${item.medicineName}`}
-            className="w-16 rounded-lg border border-slate-200 px-2 py-1.5 text-sm text-center focus:border-sky-400 focus:outline-none"
+            placeholder={unit ? unit.charAt(0).toUpperCase() + unit.slice(1) : "Qty"}
+            aria-label={unit ? `Number of ${unit} for ${item.medicineName}` : `Quantity for ${item.medicineName}`}
+            className="w-20 rounded-lg border border-slate-200 px-2 py-1.5 text-sm text-center focus:border-sky-400 focus:outline-none"
           />
+          {unit && <span className="text-xs text-slate-400">{unit}</span>}
           <button
             type="submit"
             disabled={!valid || confirming}
@@ -133,6 +150,12 @@ function UnconfirmedRow({
           </button>
         </form>
       </div>
+      {looksLikeVolume && (
+        <p className="mt-1.5 text-xs text-amber-700">
+          {parsed} {unit}? Enter how many sealed {unit} to hand over — not the total {" "}
+          {item.quantityCalculationNote?.match(/measured in (\w+)/)?.[1] ?? "amount"}.
+        </p>
+      )}
     </div>
   );
 }

@@ -7,6 +7,7 @@ import {
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { getStoredUser } from "@/lib/auth";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { IconGridPicker } from "@/components/IconGridPicker";
 import { PACKAGING_UNITS, PRODUCT_CATEGORIES } from "@/lib/product-taxonomy";
 import { syncProductClassification } from "@/lib/product-cache";
@@ -44,6 +45,9 @@ export function AddStockModal({ onClose, onDone, onToast }: {
 
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState<string | null>(null);
+  // The stock is saved, but the backend flags this batch as a likely different pack
+  // size (see PackSizeGuard) — hold the modal open so the operator actually reads it.
+  const [packWarning, setPackWarning] = useState<string | null>(null);
 
   const canClassify = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
 
@@ -132,13 +136,19 @@ export function AddStockModal({ onClose, onDone, onToast }: {
         } catch { /* stock already saved — ignore */ }
       }
 
-      const merged = res.data?.meta?.merged === true;
+      const payload = res.data?.data ?? res.data;
+      const merged = payload?.merged === true || res.data?.meta?.merged === true;
       onToast(
         merged
           ? `Added ${quantity} to existing batch ${batchNumber.trim()} of ${picked!.name}`
           : `Stock added — ${picked!.name} (Batch ${batchNumber.trim()}, ${quantity} units)`,
         "success",
       );
+      if (payload?.warning) {
+        // Saved — but make the operator acknowledge the pack-size mismatch before the modal closes.
+        setPackWarning(payload.warning as string);
+        return;
+      }
       onDone();
     } catch (err) {
       setError(getErrorMessage(err, "Couldn't add stock. Please try again."));
@@ -325,6 +335,19 @@ export function AddStockModal({ onClose, onDone, onToast }: {
           </div>
         </form>
       </motion.div>
+
+      {/* Stock is already saved — hold for an acknowledgement when the batch looks
+          like a different pack size (see PackSizeGuard). */}
+      <ConfirmDialog
+        open={!!packWarning}
+        tone="warning"
+        title="Stock saved — check the pack size"
+        body={packWarning}
+        confirmLabel="Got it"
+        cancelLabel={null}
+        onConfirm={onDone}
+        onCancel={onDone}
+      />
     </div>
   );
 }

@@ -20,10 +20,15 @@ import com.checkup.pharmacy.modules.inventory.Inventory;
 import com.checkup.pharmacy.modules.inventory.InventoryMovement;
 import com.checkup.pharmacy.modules.inventory.InventoryMovementRepository;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
+import com.checkup.pharmacy.common.util.BaseUnits;
+import com.checkup.pharmacy.common.util.PackSizeGuard;
+import com.checkup.pharmacy.common.util.PackUnits;
 import com.checkup.pharmacy.modules.medicine.GrnConfirmedEvent;
+import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineMatcher;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
 import com.checkup.pharmacy.modules.medicine.PharmacyMedicine;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride;
 import com.checkup.pharmacy.modules.medicine.PharmacyMedicineRepository;
 import com.checkup.pharmacy.modules.purchase.dto.ApprovePurchaseOrderRequest;
 import com.checkup.pharmacy.modules.purchase.dto.CreateGrnRequest;
@@ -548,6 +553,9 @@ public class PurchasesService {
                 .orElseThrow(() -> new NotFoundException("Supplier not found"));
         List<GRNItem> items = grnItemRepository.findByGrnId(id);
         String userId = TenantContext.userId();
+        // One batched pass for the pack-size check (3 queries total, or 0-1 for a
+        // GRN with no measured lines) — NOT one lookup per line.
+        String packSizeWarning = collectPackSizeWarning(grn.getPharmacyId(), items);
 
         for (GRNItem item : items) {
             int totalQty = item.totalBaseUnits();
@@ -585,7 +593,71 @@ public class PurchasesService {
                 .filter(java.util.Objects::nonNull).distinct().toList();
         eventPublisher.publishEvent(new GrnConfirmedEvent(grn.getPharmacyId(), grn.getId(), localMedicineIds));
 
-        return toResponse(grn, supplier, items, null);
+        return toResponse(grn, supplier, items, packSizeWarning);
+    }
+
+    /**
+     * The non-blocking "this looks like a different pack size" note for a whole GRN,
+     * computed in ONE batched pass rather than 3 queries per line — see {@link
+     * PackSizeGuard} and the matching manual-add-stock check in {@code InventoryService}.
+     *
+     * <p>Only catalogue-linked measured (mL/g) medicines where loose selling or a
+     * structured pack size makes a wrong size actually mis-price a sale are checked;
+     * a GRN with none returns after a single {@code findAllById}. One warning per
+     * medicine, joined into a single sentence for the response's {@code warning} slot.
+     */
+    private String collectPackSizeWarning(String pharmacyId, List<GRNItem> items) {
+        Set<String> medicineIds = items.stream()
+                .map(GRNItem::getMedicineId).filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+        if (medicineIds.isEmpty()) {
+            return null;
+        }
+        Map<String, Medicine> medById = new HashMap<>();
+        medicineRepository.findAllById(medicineIds).forEach(m -> medById.put(m.getId(), m));
+
+        Set<String> measuredIds = medById.values().stream()
+                .filter(m -> PackUnits.isMeasured(BaseUnits.resolve(m.getBaseUnit(), m.getForm())))
+                .map(Medicine::getId).collect(Collectors.toSet());
+        if (measuredIds.isEmpty()) {
+            return null;
+        }
+        Map<String, PharmacyMedicineOverride> ovById = new HashMap<>();
+        overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, measuredIds)
+                .forEach(o -> ovById.put(o.getMedicineId(), o));
+
+        // A wrong size only mis-prices when the medicine is sold loose here, or a
+        // structured pack size is on record. Sealed-only + unclassified: tolerable.
+        Set<String> relevantIds = measuredIds.stream().filter(id -> {
+            PharmacyMedicineOverride ov = ovById.get(id);
+            boolean loose = ov != null && (ov.isAllowLooseSale() || ov.getUnitsPerPack() != null);
+            return loose || medById.get(id).getUnitsPerPack() != null;
+        }).collect(Collectors.toSet());
+        if (relevantIds.isEmpty()) {
+            return null;
+        }
+        Map<String, List<BigDecimal>> mrpsByMedicine = new HashMap<>();
+        for (Inventory b : inventoryRepository
+                .findActiveNonExpiredByMedicineIdIn(pharmacyId, relevantIds, Instant.now())) {
+            mrpsByMedicine.computeIfAbsent(b.getMedicineId(), k -> new ArrayList<>()).add(b.getMrp());
+        }
+
+        List<String> warnings = new ArrayList<>();
+        Set<String> checked = new HashSet<>();
+        for (GRNItem item : items) {
+            String mid = item.getMedicineId();
+            if (mid == null || !relevantIds.contains(mid) || !checked.add(mid)) {
+                continue;
+            }
+            Medicine m = medById.get(mid);
+            String w = PackSizeGuard.differentPackSizeWarning(
+                    m.getName(),
+                    PackUnits.packUnitLabel(m.getUnit(), BaseUnits.resolve(m.getBaseUnit(), m.getForm())),
+                    item.getMrp(), mrpsByMedicine.getOrDefault(mid, List.of()));
+            if (w != null) {
+                warnings.add(w);
+            }
+        }
+        return warnings.isEmpty() ? null : String.join(" ", warnings);
     }
 
     /** PARTIAL once any GRN is confirmed against the PO; RECEIVED once every named line's ordered qty is covered. */

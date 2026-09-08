@@ -280,6 +280,31 @@ class DispensingIT extends AbstractPostgresIT {
     }
 
     @Test
+    @DisplayName("a measured (mL) medicine rounds a part-bottle prescription up to whole bottles, phrased for a bottle")
+    void measuredMedicineRoundsUpToWholeBottles() {
+        // A 100 mL syrup, no loose selling — a 150 mL course cannot be half a bottle.
+        Medicine syrup = Medicine.create("Cough Syrup 100ml", new BigDecimal("12"));
+        syrup.setPackaging(100, "ML");
+        medicineRepository.save(syrup);
+        Inventory inv = Inventory.create(pharmacyId, syrup.getId(), "SYR1",
+                Instant.now().plus(200, ChronoUnit.DAYS), 5,
+                new BigDecimal("40.00"), new BigDecimal("80.00"), 5, 2);
+        inventoryRepository.save(inv);
+        entityManager.flush();
+        entityManager.clear();
+
+        DispensingPlan.Line line = dispensingService.plan(List.of(
+                new DispensingPlanRequest.Line(syrup.getId(), null, 150, null))).lines().get(0);
+
+        assertThat(line.allocations().get(0).saleUnit()).isEqualTo("PACK");
+        assertThat(line.allocations().get(0).quantity()).isEqualTo(2);   // 2 sealed bottles
+        assertThat(line.roundedUpToPieces()).isEqualTo(200);
+        assertThat(line.unmetReason()).isEqualTo("ROUNDED_UP");
+        // Phrased for a sealed bottle — never "cut a strip" / "enable loose selling".
+        assertThat(line.message()).contains("bottle").doesNotContain("loose").doesNotContain("strip");
+    }
+
+    @Test
     @DisplayName("with loose selling on, a part-pack quantity is dispensed as loose pieces")
     void loosePiecesWhenLooseOn() {
         batch("LOOSEOK", 100, Instant.now().minus(1, ChronoUnit.DAYS), 5);

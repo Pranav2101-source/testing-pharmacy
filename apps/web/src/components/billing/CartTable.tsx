@@ -9,9 +9,10 @@ import { useBillingStore, type CartItem, type NewCartItem, lineIssue, looseStrip
 import { EmptyBillState } from "./EmptyBillState";
 import { RecentItemsCard } from "./RecentItemsCard";
 import { BatchPickerDialog, type InventoryBatch, expiryStatus, getLocationLabel } from "./BatchPickerDialog";
-import { baseUnitShort } from "@pharmacy/utils";
-import { packDisplayLabel } from "@/lib/packSize";
-import { api } from "@/lib/api-client";
+import { baseUnitShort, saleUnitModel, titleCaseUnit, pluraliseUnit } from "@pharmacy/utils";
+import { packDisplayLabel, parseMeasuredPackSize } from "@/lib/packSize";
+import { api, getErrorMessage } from "@/lib/api-client";
+import { getStoredUser } from "@/lib/auth";
 import { queryKeys } from "@/lib/queryKeys";
 import { useToast } from "@/hooks/useToast";
 import { cn } from "@/lib/utils";
@@ -176,18 +177,7 @@ function looseLineFromBatch(b: InventoryBatch, template: CartItem, qty: number):
   };
 }
 
-/** Title-case label for the loose toggle button ("Tab", "Ml"). */
-function baseUnitLabel(b?: string): string {
-  switch (b) {
-    case "TABLET":  return "Tab";
-    case "CAPSULE": return "Cap";
-    case "ML":      return "Ml";
-    case "GM":      return "Gm";
-    default:        return "Loose";
-  }
-}
-
-const TH = "text-[11px] font-bold text-slate-500 uppercase tracking-wider text-right px-2.5 select-none whitespace-nowrap";
+const TH ="text-[11px] font-bold text-slate-500 uppercase tracking-wider text-right px-2.5 select-none whitespace-nowrap";
 
 // ─── Numeric cell ─────────────────────────────────────────────────
 /**
@@ -329,7 +319,7 @@ function SkeletonRow({ idx }: { idx: number }) {
 // keyboard shortcut without standing up the whole cart.
 export const CartRow = memo(function CartRow({
   item, idx, hasConflict, onKeyNav, onRemove, onQtyChange, onFreeQtyChange, onDiscountChange, onSwapBatch,
-  onQtySettled, onFreeSettled, onSaleUnitChange, onFixIssue,
+  onQtySettled, onFreeSettled, onSaleUnitChange, onFixIssue, onClassifyMeasured,
 }: {
   item: CartItem; idx: number; hasConflict: boolean;
   onKeyNav:         (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => void;
@@ -343,6 +333,8 @@ export const CartRow = memo(function CartRow({
   /** Called when a quantity cell is left, with the number that was typed into it. */
   onQtySettled:     (item: CartItem, typed: number) => void;
   onFreeSettled:    (item: CartItem, typed: number) => void;
+  /** Record how many base units (mL/g) are in one sealed pack of an as-yet-unclassified liquid/cream. */
+  onClassifyMeasured?: (item: CartItem, unitsPerPack: number) => void;
 }) {
   const now  = Date.now();
   const expiry = new Date(item.expiryDate).getTime();
@@ -355,6 +347,16 @@ export const CartRow = memo(function CartRow({
   const packLabel = packDisplayLabel(item.packSize, item.unitsPerPack);
   const issue     = lineIssue(item);
   const looseOpensStrips = looseStripsOpened(item);
+  // The sale-unit vocabulary for THIS line — "bottle"/"mL" for a syrup, "tube"/"g"
+  // for a cream, "strip"/"tab" for a tablet — so nothing below says "strip" for a
+  // bottle. Derived from the base unit (no medicine `unit`/`form` on a cart line;
+  // strip/bottle/tube covers every form this pharmacy actually stocks loose).
+  const sum        = saleUnitModel({
+    baseUnit: item.baseUnit, unitsPerPack: item.unitsPerPack,
+    allowLooseSale: item.allowLooseSale, schedule: item.schedule,
+  });
+  const packWord   = sum.packUnitLabel;                       // "strip" | "bottle" | "tube" | "unit"
+  const looseWord  = sum.looseUnitShort;                      // "tab" | "cap" | "mL" | "g" | "u"
   // Everything on a loose line — quantity, the cap, the stock hint — is in pieces.
   const effAvailable = item.availableStock == null
     ? undefined
@@ -525,7 +527,9 @@ export const CartRow = memo(function CartRow({
             onSettle={(typed) => onQtySettled(item, typed)}
             dataRow={idx}
             dataCol="qty"
-            title={canLoose ? `Press L to switch between strip and ${baseUnitShort(item.baseUnit)}` : undefined}
+            title={canLoose
+              ? `Press L to switch between ${packWord} and ${looseWord}`
+              : `Quantity in ${pluraliseUnit(packWord, item.quantity)}`}
             onKeyDown={(e) => onKeyNav(e, idx, "qty")}
             className={cn(
               "flex-1 min-w-0 text-center text-[16px] font-bold tabnum",
@@ -542,12 +546,12 @@ export const CartRow = memo(function CartRow({
           {canLoose && (
             <div
               role="group"
-              aria-label={`Sell ${item.medicineName} by strip or ${baseUnitShort(item.baseUnit)}`}
+              aria-label={`Sell ${item.medicineName} by ${packWord} or ${looseWord}`}
               className="flex flex-shrink-0 rounded-md border border-slate-200 overflow-hidden"
             >
               {([
-                { unit: "PACK" as const, label: "Strip" },
-                { unit: "LOOSE" as const, label: baseUnitLabel(item.baseUnit) },
+                { unit: "PACK" as const, label: titleCaseUnit(packWord) },
+                { unit: "LOOSE" as const, label: titleCaseUnit(looseWord) },
               ]).map(({ unit, label }, i) => {
                 const active = (unit === "LOOSE") === isLoose;
                 return (
@@ -590,7 +594,21 @@ export const CartRow = memo(function CartRow({
               transition={{ duration: 0.15 }}
               className="text-[9px] text-amber-600 font-semibold mt-0.5 text-center leading-none overflow-hidden"
             >
-              opens {looseOpensStrips} sealed strip{looseOpensStrips === 1 ? "" : "s"}
+              opens {looseOpensStrips} sealed {pluraliseUnit(packWord, looseOpensStrips)}
+            </motion.p>
+          )}
+          {/* Whole-unit line whose unit isn't the obvious "strip" — spell out that the
+              number is bottles / tubes / vials, so a syrup's "2" never reads as 2 mL. */}
+          {!canLoose && !isLoose && packWord !== "strip" && packWord !== "unit" && (
+            <motion.p
+              key="wholeunit"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.15 }}
+              className="text-[9px] text-slate-400 font-semibold mt-0.5 text-center leading-none overflow-hidden"
+            >
+              {pluraliseUnit(packWord, item.quantity)}
             </motion.p>
           )}
           {isLoose && (item.looseUnits ?? 0) > 0 && looseOpensStrips === 0 && (
@@ -637,7 +655,7 @@ export const CartRow = memo(function CartRow({
         />
         {isLoose && item.freeQty > 0 && (
           <p className="text-[9px] text-amber-600 font-semibold mt-0.5 text-center leading-none">
-            {baseUnitShort(item.baseUnit)}, not strips
+            {looseWord}, not {pluraliseUnit(packWord, 2)}
           </p>
         )}
       </div>
@@ -719,9 +737,74 @@ export const CartRow = memo(function CartRow({
         </button>
       </div>
     )}
+
+    {/* Unclassified liquid / cream — billing treats the Qty as whole {bottles/tubes}
+        (the only safe reading with no mL-per-bottle on record). Offer to record that
+        size once, so a future prescription for "150 mL" resolves to 2 bottles instead
+        of falling back to a plain count. Not an error — the sale is fine as-is. */}
+    {!issue && sum.measured && !sum.classified && item.medicineId && onClassifyMeasured && (
+      <MeasuredClassifyRow
+        packWord={packWord}
+        looseWord={looseWord}
+        packSizeText={item.packSize}
+        onSet={(n) => onClassifyMeasured(item, n)}
+      />
+    )}
     </>
   );
 });
+
+/** One-line inline prompt: "How many mL in one bottle? [__] Set" — see its only call site above. */
+function MeasuredClassifyRow({
+  packWord, looseWord, packSizeText, onSet,
+}: {
+  packWord: string;
+  looseWord: string;
+  /** Free-text pack size — a volume parsed out of it ("100ml" → 100) pre-fills the box, still eyeballed, never auto-saved. */
+  packSizeText?: string;
+  onSet: (unitsPerPack: number) => void;
+}) {
+  const [value, setValue] = useState(() => {
+    const parsed = parseMeasuredPackSize(packSizeText);
+    return parsed ? String(parsed) : "";
+  });
+  const [saving, setSaving] = useState(false);
+  const n = Number(value);
+  const valid = Number.isInteger(n) && n >= 2 && n <= 100000;
+
+  return (
+    <form
+      className="flex items-center gap-2 bg-blue-50/60 border-b border-blue-100 px-4 py-1.5"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!valid || saving) return;
+        setSaving(true);
+        onSet(n);
+      }}
+    >
+      <MapPin className="w-3.5 h-3.5 text-blue-400 flex-shrink-0 rotate-0" aria-hidden />
+      <span className="text-[12px] text-blue-800 flex-1">
+        How many {looseWord} in one sealed {packWord}? Set it once so prescriptions bill the right number of {pluraliseUnit(packWord, 2)}.
+      </span>
+      <input
+        type="text"
+        inputMode="numeric"
+        value={value}
+        onChange={(e) => setValue(e.target.value.replace(/\D/g, ""))}
+        placeholder={looseWord}
+        aria-label={`${looseWord} per ${packWord}`}
+        className="w-16 text-center text-[12px] border border-blue-200 rounded-md px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-blue-400/30 flex-shrink-0"
+      />
+      <button
+        type="submit"
+        disabled={!valid || saving}
+        className="text-[11px] font-bold px-2.5 py-1 rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-40 flex-shrink-0"
+      >
+        Set
+      </button>
+    </form>
+  );
+}
 
 // ─── CartTableRows ────────────────────────────────────────────────
 export function CartTableRows({
@@ -744,6 +827,10 @@ export function CartTableRows({
   const [swapBatches, setSwapBatches] = useState<InventoryBatch[]>([]);
   const toast = useToast();
   const queryClient = useQueryClient();
+  // Recording a pharmacy pack size writes an override — an OWNER/MANAGER action
+  // (see MedicineController#setLooseSettings). A cashier gets the safe whole-pack
+  // fallback with no dead-end button.
+  const canClassify = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
 
   /**
    * Say so when a typed quantity was not the quantity kept.
@@ -869,12 +956,38 @@ export function CartTableRows({
       batchAutoSelected: false,
     });
     if (next.forcedToPack) {
+      const packWord = saleUnitModel({
+        baseUnit: batch.medicine.baseUnit ?? swapTarget.baseUnit,
+        unitsPerPack: nextUpp, allowLooseSale: nextAllow, schedule: swapTarget.schedule,
+      }).packUnitLabel;
       toast.warning(`${batch.medicine.name}: the new batch doesn't sell loose — ${swapTarget.quantity} `
-        + `${baseUnitShort(swapTarget.baseUnit)} became ${next.quantity} whole pack${next.quantity === 1 ? "" : "s"}. Check the quantity.`);
+        + `${baseUnitShort(swapTarget.baseUnit)} became ${next.quantity} whole `
+        + `${pluraliseUnit(packWord, next.quantity)}. Check the quantity.`);
     }
     setSwapTarget(null);
     setSwapBatches([]);
   }, [swapTarget, replaceItem, toast]);
+
+  /**
+   * Record how many base units (mL/g) are in one sealed pack of a liquid/cream the
+   * catalogue never classified. Writes this pharmacy's own override — NOT loose
+   * selling (allowLooseSale stays false; a bottle still sells whole) — so a later
+   * prescription for "150 mL" resolves to 2 bottles instead of the plain-count
+   * fallback. Patches the live cart line too, so the fix shows without a reload.
+   */
+  const handleClassifyMeasured = useCallback(async (item: CartItem, unitsPerPack: number) => {
+    if (!item.medicineId) return;
+    try {
+      await api.patch(`/medicines/${item.medicineId}/loose-settings`, {
+        allowLooseSale: false, unitsPerPack, looseByDefault: false, confirmed: true,
+      });
+      patchLine(item.inventoryId, { unitsPerPack });
+      void queryClient.invalidateQueries({ queryKey: ["medicine-search"] });
+      toast.success(`${item.medicineName}: 1 pack = ${unitsPerPack}. Prescriptions will bill whole packs from now on.`);
+    } catch (err) {
+      toast.error(getErrorMessage(err, `Couldn't save the pack size for ${item.medicineName}`));
+    }
+  }, [patchLine, queryClient, toast]);
 
   const handleKeyNav = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>, idx: number, col: "qty" | "dis") => {
@@ -943,6 +1056,7 @@ export function CartTableRows({
                 onSwapBatch={handleSwapBatch}
                 onQtySettled={handleQtySettled}
                 onFreeSettled={handleFreeSettled}
+                onClassifyMeasured={canClassify ? handleClassifyMeasured : undefined}
               />
             ))}
           </AnimatePresence>

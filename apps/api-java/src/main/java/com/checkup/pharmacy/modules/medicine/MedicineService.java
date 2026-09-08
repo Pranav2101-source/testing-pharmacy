@@ -104,8 +104,24 @@ public class MedicineService {
         medicine.applyFields(req.genericName(), req.manufacturer(), req.composition(), req.category(),
                 req.schedule(), req.hsnCode(), gstRate, req.form(), req.strength(), req.unit(), req.packSize());
         medicine.setPackaging(req.unitsPerPack(), normalizeBaseUnit(req.baseUnit()));
+        rejectContradictoryPackSize(medicine);
         medicineRepository.save(medicine);
         return toResponse(medicine);
+    }
+
+    /**
+     * A measured medicine whose free-text pack size names one volume while its
+     * structured {@code unitsPerPack} says another is a SKU that disagrees with
+     * itself — the wrong number would mis-price every loose sale. Different sizes of
+     * the same syrup belong in their own catalogue entries (see PackSizeGuard).
+     */
+    private static void rejectContradictoryPackSize(Medicine medicine) {
+        String msg = com.checkup.pharmacy.common.util.PackSizeGuard.contradictoryPackSize(
+                com.checkup.pharmacy.common.util.BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm()),
+                medicine.getPackSize(), medicine.getUnitsPerPack());
+        if (msg != null) {
+            throw new BadRequestException(msg);
+        }
     }
 
     private static final Set<String> BASE_UNITS = Set.of("TABLET", "CAPSULE", "ML", "GM", "EACH");
@@ -133,6 +149,7 @@ public class MedicineService {
         medicine.applyFields(req.genericName(), req.manufacturer(), req.composition(), req.category(),
                 req.schedule(), req.hsnCode(), gstRate, req.form(), req.strength(), req.unit(), req.packSize());
         medicine.setPackaging(req.unitsPerPack(), normalizeBaseUnit(req.baseUnit()));
+        rejectContradictoryPackSize(medicine);
         return toResponse(medicine);
     }
 

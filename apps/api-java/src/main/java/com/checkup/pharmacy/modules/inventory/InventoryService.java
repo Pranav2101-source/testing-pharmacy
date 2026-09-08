@@ -10,7 +10,10 @@ import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.ForbiddenException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.exception.UnprocessableEntityException;
+import com.checkup.pharmacy.common.util.BaseUnits;
 import com.checkup.pharmacy.common.util.DateRange;
+import com.checkup.pharmacy.common.util.PackSizeGuard;
+import com.checkup.pharmacy.common.util.PackUnits;
 import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.modules.inventory.dto.AddStockRequest;
 import com.checkup.pharmacy.modules.inventory.dto.AddStockResponse;
@@ -168,7 +171,8 @@ public class InventoryService {
             throw new ForbiddenException("Only owners and managers can add stock");
         }
         String pharmacyId = TenantContext.pharmacyId();
-        medicineRepository.findById(req.medicineId()).orElseThrow(() -> new NotFoundException("Medicine not found"));
+        com.checkup.pharmacy.modules.medicine.Medicine medicine = medicineRepository.findById(req.medicineId())
+                .orElseThrow(() -> new NotFoundException("Medicine not found"));
         validateShelf(req.shelfId());
 
         // Re-read under a write lock when merging into an existing batch: mergeIncoming
@@ -199,7 +203,41 @@ public class InventoryService {
                 quantityBefore + req.quantity(), "OPENING_BALANCE", null,
                 merged ? "Manual stock entry (added to existing batch)" : "Manual stock entry (new batch)"));
 
-        return new AddStockResponse(enrich(List.of(inv)).get(0), merged);
+        // Skip on a merge: same batchNumber = same pack, so the check is meaningless
+        // and its 1-2 queries are pure waste on a routine re-stock.
+        String packWarning = merged ? null
+                : differentPackSizeWarning(medicine, pharmacyId, req.mrp(), inv.getId());
+        return new AddStockResponse(enrich(List.of(inv)).get(0), merged, packWarning);
+    }
+
+    /**
+     * A non-blocking note when the batch just received looks like a different pack
+     * size from the medicine's existing stock — only for a measured medicine where a
+     * wrong size would actually mis-price a sale (loose selling on here, or a
+     * structured pack size on record). See {@link PackSizeGuard}.
+     */
+    private String differentPackSizeWarning(Medicine medicine, String pharmacyId,
+                                            java.math.BigDecimal candidateMrp, String newBatchId) {
+        String baseUnit = BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm());
+        if (!PackUnits.isMeasured(baseUnit)) {
+            return null;
+        }
+        // A structured catalogue pack size already makes it "relevant" with no extra
+        // query; only fall back to the override lookup when the catalogue has none.
+        boolean relevant = medicine.getUnitsPerPack() != null || overrideRepository
+                .findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, java.util.Set.of(medicine.getId()))
+                .stream().anyMatch(o -> o.isAllowLooseSale() || o.getUnitsPerPack() != null);
+        if (!relevant) {
+            return null;
+        }
+        java.util.List<java.math.BigDecimal> existing = inventoryRepository
+                .findActiveNonExpiredByMedicineIdIn(pharmacyId, java.util.Set.of(medicine.getId()), java.time.Instant.now())
+                .stream()
+                .filter(b -> !b.getId().equals(newBatchId))
+                .map(Inventory::getMrp)
+                .toList();
+        return PackSizeGuard.differentPackSizeWarning(medicine.getName(),
+                PackUnits.packUnitLabel(medicine.getUnit(), baseUnit), candidateMrp, existing);
     }
 
     @Transactional

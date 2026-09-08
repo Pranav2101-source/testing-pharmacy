@@ -1,4 +1,4 @@
-import { calcGstFromMrp, perPieceMrp } from "@pharmacy/utils";
+import { calcGstFromMrp, perPieceMrp, isMeasuredBaseUnit } from "@pharmacy/utils";
 import { api } from "@/lib/api-client";
 import { DEFAULT_META } from "@/components/billing/useBillingStore";
 import type { CartItem, BillingMeta, SaleUnit } from "@/components/billing/useBillingStore";
@@ -218,7 +218,18 @@ export async function resolvePrescriptionToCart(
       const owed = line.quantity - line.dispensedQty;
       const given = ci.saleUnit === "LOOSE" ? ci.quantity : ci.quantity * (ci.unitsPerPack ?? 1);
       if (given < owed) partials.push({ medicineName: ci.medicineName, requested: owed, available: given });
-      else if (given > owed) roundedToPack.push({ medicineName: ci.medicineName, requested: owed, dispensed: given });
+      // A measured (mL/g) line billed over the prescribed volume is an expected round-up
+      // to whole sealed bottles/tubes, not a "cut the strip?" decision — surface it as a
+      // note (reasons), never through PackRoundingModal. Only countable units go there.
+      else if (given > owed && !isMeasuredBaseUnit(ci.baseUnit)) {
+        roundedToPack.push({ medicineName: ci.medicineName, requested: owed, dispensed: given });
+      } else if (given > owed) {
+        reasons.push({
+          medicineName: ci.medicineName,
+          message: `${owed} prescribed — billing ${given} (${ci.quantity} sealed `
+            + `${ci.quantity === 1 ? "pack" : "packs"}). A sealed pack can't be split.`,
+        });
+      }
       continue;
     }
 
@@ -245,7 +256,14 @@ export async function resolvePrescriptionToCart(
         requested: remaining,
         available: planLine.dispensedPieces,
       });
-    } else if (planLine.roundedUpToPieces && planLine.roundedUpToPieces > remaining) {
+    } else if (
+      planLine.roundedUpToPieces && planLine.roundedUpToPieces > remaining
+      && !isMeasuredBaseUnit(planLine.allocations[0]?.baseUnit)
+    ) {
+      // Countable units only. A measured (mL/g) line that rounded up to whole
+      // sealed bottles/tubes is expected — you cannot dispense half a bottle — so
+      // it never opens PackRoundingModal; the backend's `message` (already pushed to
+      // `reasons` above) is the inline note that explains it.
       // medicineId/unitsPerPack/schedule travel with this entry so PackRoundingModal
       // can offer "turn loose selling on and bill the exact amount" without a lookup.
       roundedToPack.push({
@@ -367,6 +385,11 @@ function resolveSaleUnit(
   const packs = Math.max(packsAvailable, 0);
 
   if (upp <= 1) {
+    // No structured pack multiple — this includes an unclassified syrup/cream, where
+    // the catalogue does not record how many mL/g are in a bottle/tube. The requested
+    // number is taken as a WHOLE-PACK count (bottles/tubes), never as loose mL to be
+    // divided into packs: there is no honest divisor. The quantity-entry UI labels the
+    // field with the pack unit so the pharmacist enters bottles, not mL.
     const quantity = Math.min(requestedPieces, packs);
     return quantity > 0 ? { saleUnit: "PACK", quantity } : null;
   }

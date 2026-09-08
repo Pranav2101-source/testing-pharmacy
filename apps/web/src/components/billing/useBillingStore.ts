@@ -1,6 +1,6 @@
 "use client";
 import { create } from "zustand";
-import { calcGstFromMrp, calcInvoiceTotals, perPieceMrp } from "@pharmacy/utils";
+import { calcGstFromMrp, calcInvoiceTotals, perPieceMrp, saleUnitModel, titleCaseUnit, pluraliseUnit } from "@pharmacy/utils";
 
 export type SaleUnit = "PACK" | "LOOSE";
 
@@ -40,12 +40,19 @@ export function lineIssue(item: CartItem): LineIssue | null {
   if (item.saleUnit !== "LOOSE") return null;
   const upp = item.unitsPerPack ?? 1;
   const name = item.medicineName;
+  // "Sell as Strip" for a tablet, "Sell as Bottle" for a syrup, "Sell as Tube" for
+  // a cream — the fix label and every message read the medicine's own sale-unit word.
+  const unit = saleUnitModel({
+    baseUnit: item.baseUnit, unitsPerPack: item.unitsPerPack,
+    allowLooseSale: item.allowLooseSale, schedule: item.schedule,
+  });
+  const P = titleCaseUnit(unit.packUnitLabel);
 
   if (upp <= 1) {
     return {
       code: "NO_PACK_SIZE",
       message: `"${name}" has no pack size on record, so it can't be sold loose.`,
-      fixLabel: "Sell as Strip",
+      fixLabel: `Sell as ${P}`,
       fix: { saleUnit: "PACK", quantity: 1 },
     };
   }
@@ -53,7 +60,7 @@ export function lineIssue(item: CartItem): LineIssue | null {
     return {
       code: "LOOSE_NOT_ENABLED",
       message: `Loose selling is off for "${name}".`,
-      fixLabel: "Sell as Strip",
+      fixLabel: `Sell as ${P}`,
       fix: { saleUnit: "PACK", quantity: Math.max(1, Math.ceil(item.quantity / upp)) },
     };
   }
@@ -61,7 +68,7 @@ export function lineIssue(item: CartItem): LineIssue | null {
     return {
       code: "SCHEDULE_X_LOOSE",
       message: `"${name}" is Schedule X — it must be sold in the original pack.`,
-      fixLabel: "Sell as Strip",
+      fixLabel: `Sell as ${P}`,
       fix: { saleUnit: "PACK", quantity: Math.max(1, Math.ceil(item.quantity / upp)) },
     };
   }
@@ -76,8 +83,9 @@ export function lineIssue(item: CartItem): LineIssue | null {
   if (q >= upp && q % upp === 0 && (item.looseUnits ?? 0) < q && enoughSealedStrips && !item.forceLoose) {
     return {
       code: "WHOLE_PACK_LOOSE",
-      message: `That's ${packs} full strip${packs === 1 ? "" : "s"} of "${name}" — sell it as Strip so the foil stays sealed.`,
-      fixLabel: `Sell ${packs} Strip${packs === 1 ? "" : "s"}`,
+      message: `That's ${packs} full ${pluraliseUnit(unit.packUnitLabel, packs)} of "${name}" `
+        + `— sell it as ${P} so ${packs === 1 ? "it stays" : "they stay"} sealed.`,
+      fixLabel: `Sell ${packs} ${titleCaseUnit(pluraliseUnit(unit.packUnitLabel, packs))}`,
       fix: { saleUnit: "PACK", quantity: packs },
       override: { label: "Cut it anyway", patch: { forceLoose: true } },
     };

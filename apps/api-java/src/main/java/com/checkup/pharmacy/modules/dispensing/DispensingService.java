@@ -7,6 +7,7 @@ import com.checkup.pharmacy.common.exception.BadRequestException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.util.BaseUnits;
 import com.checkup.pharmacy.common.util.GstCalculator;
+import com.checkup.pharmacy.common.util.PackUnits;
 import com.checkup.pharmacy.modules.audit.AuditEntry;
 import com.checkup.pharmacy.modules.audit.AuditService;
 import com.checkup.pharmacy.modules.dispensing.dto.DispensingPlan;
@@ -320,7 +321,7 @@ public class DispensingService {
                         .findSellableBatchesForLocalMedicine(pharmacyId, local.getId(), now);
                 return new MedicineContext(null, local.getId(), local.getName(),
                         firstNonBlank(schedule, local.getSchedule()), local.getGstRate(), local.getHsnCode(),
-                        null, BaseUnits.resolve(null, local.getForm()), false, batches);
+                        null, BaseUnits.resolve(null, local.getForm()), local.getUnit(), false, batches);
             }
         }
 
@@ -343,7 +344,7 @@ public class DispensingService {
         boolean allowLoose = override != null && override.isAllowLooseSale() && upp != null && upp > 1;
         return new MedicineContext(m.getId(), null, m.getName(),
                 firstNonBlank(schedule, m.getSchedule()), m.getGstRate(), m.getHsnCode(),
-                upp, BaseUnits.resolve(m.getBaseUnit(), m.getForm()), allowLoose, sellableBatches);
+                upp, BaseUnits.resolve(m.getBaseUnit(), m.getForm()), m.getUnit(), allowLoose, sellableBatches);
     }
 
     // ── Allocation ───────────────────────────────────────────────────────────
@@ -392,6 +393,12 @@ public class DispensingService {
         Integer shortfall = consumed < requiredPieces ? requiredPieces - consumed : null;
         Integer roundedUp = consumed > requiredPieces ? consumed : null;
         String unit = unitLabel(ctx.baseUnit());
+        // The sale-unit vocabulary for this medicine — "strip"/"bottle"/"tube" — and
+        // whether it is a measured volume/weight, so a bottle is never told to "cut a
+        // strip" and a part-bottle prescription reads as an expected round-up, not a fault.
+        String packWord = PackUnits.packUnitLabel(ctx.unit(), ctx.baseUnit());
+        boolean measured = PackUnits.isMeasured(ctx.baseUnit());
+        int packsRounded = consumed / Math.max(1, upp);
 
         String unmetReason = null;
         String message = null;
@@ -401,10 +408,13 @@ public class DispensingService {
                 message = "No in-date, sellable stock of \"" + ctx.name() + "\" at this pharmacy right now.";
             } else {
                 unmetReason = "NO_SELLABLE_UNIT";
-                message = "\"" + ctx.name() + "\" has stock, but less than one full pack"
-                        + (scheduleX ? " and Schedule X medicines can't be split into loose units"
-                                     : " and loose (cut-strip) selling is off for it here")
-                        + " — turn on loose selling for this medicine, or restock a full pack.";
+                message = measured
+                        ? "\"" + ctx.name() + "\" has stock, but less than one full sealed " + packWord
+                                + " on the shelf — restock a full " + packWord + "."
+                        : "\"" + ctx.name() + "\" has stock, but less than one full pack"
+                                + (scheduleX ? " and Schedule X medicines can't be split into loose units"
+                                             : " and loose (cut-strip) selling is off for it here")
+                                + " — turn on loose selling for this medicine, or restock a full pack.";
             }
         } else if (shortfall != null) {
             unmetReason = "PARTIAL";
@@ -412,10 +422,16 @@ public class DispensingService {
                     + shortfall + " " + unit + " short. Bill what's available and reorder, or substitute.";
         } else if (roundedUp != null) {
             unmetReason = "ROUNDED_UP";
-            message = requiredPieces + " " + unit + " was rounded up to " + consumed + " (" + (consumed / Math.max(1, upp))
-                    + " full pack" + (consumed / Math.max(1, upp) == 1 ? "" : "s") + ") because \"" + ctx.name()
-                    + "\" can't be sold as loose pieces here"
-                    + (scheduleX ? " (Schedule X)" : "") + ". Enable loose selling to bill the exact amount.";
+            message = measured
+                    // A sealed bottle/tube genuinely cannot be split — rounding up to whole
+                    // packs is the correct, expected outcome, not a policy workaround.
+                    ? requiredPieces + " " + unit + " prescribed — billing " + packsRounded + " "
+                            + PackUnits.plural(packWord, packsRounded) + " (" + consumed + " " + unit
+                            + "). A sealed " + packWord + " can't be split."
+                    : requiredPieces + " " + unit + " was rounded up to " + consumed + " (" + packsRounded
+                            + " full " + PackUnits.plural(packWord, packsRounded) + ") because \"" + ctx.name()
+                            + "\" can't be sold as loose pieces here"
+                            + (scheduleX ? " (Schedule X)" : "") + ". Enable loose selling to bill the exact amount.";
         }
 
         return new DispensingPlan.Line(ctx.medicineId(), ctx.localMedicineId(), ctx.name(), ctx.schedule(),
@@ -504,6 +520,8 @@ public class DispensingService {
             String hsnCode,
             Integer unitsPerPack,
             String baseUnit,
+            /** {@code Medicine.unit} — packaging word ("Strip", "Bottle", "Tube"), for pharmacist-facing messages. */
+            String unit,
             boolean allowLooseSale,
             List<Inventory> sellableBatches
     ) {

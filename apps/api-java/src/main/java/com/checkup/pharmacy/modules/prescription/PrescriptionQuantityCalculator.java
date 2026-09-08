@@ -167,12 +167,22 @@ public final class PrescriptionQuantityCalculator {
         if (!isCountable(baseUnit)) {
             // "Not recorded" and "genuinely measured" are different situations with different
             // fixes — one is a catalogue gap, the other is inherent to the medicine — so they
-            // get different sentences rather than one message papering over both.
-            String message = baseUnit == null || baseUnit.isBlank()
-                    ? "This medicine's dispensing unit isn't recorded in the catalogue, so a quantity can't be "
-                            + "calculated automatically — enter it manually."
-                    : "This medicine is measured in " + unitLabel(baseUnit)
-                            + ", not counted as whole units — enter the quantity to dispense manually.";
+            // get different sentences rather than one message papering over both. For a measured
+            // medicine the manual entry is a count of whole SEALED packs (bottles / tubes), never
+            // the total mL/g — say so, because that ambiguity is exactly how a "150 mL" course
+            // becomes "150 bottles" on the bill.
+            String message;
+            if (baseUnit == null || baseUnit.isBlank()) {
+                message = "This medicine's dispensing unit isn't recorded in the catalogue, so a quantity can't be "
+                        + "calculated automatically — enter it manually.";
+            } else {
+                String unit = unitLabel(baseUnit);
+                String packs = com.checkup.pharmacy.common.util.PackUnits.plural(
+                        com.checkup.pharmacy.common.util.PackUnits.packUnitLabel(null, baseUnit), 2);
+                message = "This medicine is measured in " + unit + ", not counted as whole units — "
+                        + "enter the number of " + packs + " to dispense (whole sealed " + packs
+                        + ", not the total " + unit + ").";
+            }
             return Result.refused(Reason.NOT_COUNTABLE_UNIT, message);
         }
         if (isBlank(dosage)) {
