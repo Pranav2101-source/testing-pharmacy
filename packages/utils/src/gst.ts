@@ -74,10 +74,15 @@ export function calcGstFromMrp(
   const taxableAmount = amountAfterDiscount / (1 + gstRate / 100);
   const totalGst      = amountAfterDiscount - taxableAmount;
 
-  // Round taxable and the half-GST components first; derive totals from
-  // rounded values so cgst+sgst===totalGst and taxable+totalGst===totalAmount.
+  // Round taxable and the half-GST components independently; the tax split stays
+  // rate-derived and, intra-state, CGST === SGST.
   const roundedTaxable = round(taxableAmount);
   const halfGst        = round(totalGst / 2);
+  // The line total is the price the customer pays for this line — MRP x qty less
+  // discount — NOT (taxable + tax). Deriving it from the rounded tax split made a
+  // clean 90.00 x 2 line read 179.99 and forced a phantom round-off. Mirrors
+  // GstCalculator.calcGstFromMrp in the Java API.
+  const grossAmount = round(amountAfterDiscount);
 
   if (isInterstate) {
     const igst = halfGst * 2; // keep symmetry with intra-state rounding
@@ -87,7 +92,7 @@ export function calcGstFromMrp(
       sgst:          0,
       igst,
       totalGst:      igst,
-      totalAmount:   roundedTaxable + igst,
+      totalAmount:   grossAmount,
     };
   }
 
@@ -97,7 +102,7 @@ export function calcGstFromMrp(
     sgst:          halfGst,
     igst:          0,
     totalGst:      halfGst * 2,
-    totalAmount:   roundedTaxable + halfGst * 2,
+    totalAmount:   grossAmount,
   };
 }
 
@@ -123,6 +128,7 @@ export function calcInvoiceTotals(
   let discountAmount = 0;
   let taxableAmount  = 0;
   let halfGstTotal   = 0;
+  let paidTotal      = 0;
 
   for (const item of items) {
     const lineTotal    = item.mrp * item.quantity;
@@ -137,10 +143,13 @@ export function calcInvoiceTotals(
     discountAmount += lineDiscount + (afterLineDiscount - afterDiscount);
     taxableAmount  += taxable;
     halfGstTotal   += gst / 2;
+    // The header total is the sum of the per-line prices the customer pays.
+    paidTotal      += round(afterDiscount);
   }
 
   const roundedTaxable = round(taxableAmount);
   const roundedHalf    = round(halfGstTotal);
+  const roundedPaid    = round(paidTotal);
 
   if (isInterstate) {
     const igst = roundedHalf * 2;
@@ -152,7 +161,7 @@ export function calcInvoiceTotals(
       sgst:           0,
       igst,
       totalGst:       igst,
-      totalAmount:    roundedTaxable + igst,
+      totalAmount:    roundedPaid,
     };
   }
 
@@ -164,7 +173,7 @@ export function calcInvoiceTotals(
     sgst:           roundedHalf,
     igst:           0,
     totalGst:       roundedHalf * 2,
-    totalAmount:    roundedTaxable + roundedHalf * 2,
+    totalAmount:    roundedPaid,
   };
 }
 

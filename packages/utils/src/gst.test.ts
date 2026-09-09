@@ -3,10 +3,14 @@ import { calcGstFromMrp, calcInvoiceTotals, calcPurchaseLineGST } from "./gst.js
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Every result must satisfy these two invariants regardless of inputs. */
+/** Every result must satisfy these invariants regardless of inputs. */
 function assertInvariants(r: ReturnType<typeof calcGstFromMrp>) {
   expect(r.cgst + r.sgst + r.igst).toBeCloseTo(r.totalGst, 10);
-  expect(r.taxableAmount + r.totalGst).toBeCloseTo(r.totalAmount, 10);
+  // `totalAmount` is the price the customer pays (MRP x qty less discount), NOT a sum of
+  // the rounded tax parts. Intra-state, the equal CGST/SGST split can leave (taxable + tax)
+  // a paisa either side of it — see calcGstFromMrp. So this reconciles to within one paisa,
+  // not exactly.
+  expect(Math.abs(r.taxableAmount + r.totalGst - r.totalAmount)).toBeLessThanOrEqual(0.01 + 1e-9);
   // intra-state and inter-state are mutually exclusive
   const isInterstate = r.igst > 0;
   if (isInterstate) {
@@ -140,6 +144,15 @@ describe("calcGstFromMrp", () => {
       expect(r.totalAmount).toBe(1120);
       assertInvariants(r);
     });
+
+    it("a clean ₹90 x 2 line totals exactly ₹180.00, not ₹179.99", () => {
+      // The live-review case: MRP 90, qty 2, 12% GST inclusive. The line total is the
+      // price paid (180.00); the odd tax paisa lands in the breakdown, not the total.
+      const r = calcGstFromMrp(90, 2, 0, 12);
+      expect(r.totalAmount).toBe(180);
+      expect(r.cgst).toBe(r.sgst);
+      expect(r.taxableAmount + r.totalGst).toBeCloseTo(179.99, 2); // a paisa under, by design
+    });
   });
 
   describe("12% GST — interstate", () => {
@@ -181,7 +194,8 @@ describe("calcGstFromMrp", () => {
       const r = calcGstFromMrp(111, 3, 7, 5);
       // cgst + sgst must equal totalGst exactly (not 4.9999999...)
       expect(r.cgst + r.sgst).toBe(r.totalGst);
-      expect(r.taxableAmount + r.totalGst).toBe(r.totalAmount);
+      // The line total is the discounted price paid: 111 x 3 = 333, less 7% = 309.69.
+      expect(r.totalAmount).toBe(309.69);
       assertInvariants(r);
     });
   });
@@ -274,7 +288,9 @@ describe("calcInvoiceTotals", () => {
     }));
     const r = calcInvoiceTotals(items);
     expect(r.cgst + r.sgst).toBe(r.totalGst);
-    expect(r.taxableAmount + r.totalGst).toBe(r.totalAmount);
+    // Header total = sum of the per-line prices paid; (taxable + tax) reconciles to within
+    // one paisa per line (equal CGST/SGST split), so a few paise across a 10-line bill.
+    expect(Math.abs(r.taxableAmount + r.totalGst - r.totalAmount)).toBeLessThanOrEqual(0.1);
   });
 
   it("all 100% discounted items → totalAmount is zero", () => {
@@ -447,9 +463,12 @@ describe("bill-level discount reduces the taxable value (s.15(3) CGST Act)", () 
     expect(discounted.totalAmount).toBeCloseTo(full.totalAmount * 0.9, 1);
   });
 
-  it("leaves the invoice adding up: taxable + GST === total", () => {
+  it("the invoice total is the discounted price paid", () => {
+    // 1000 less 10% = 900.00, GST-inclusive.
     const t = calcInvoiceTotals([line], false, 10);
-    expect(t.taxableAmount + t.totalGst).toBeCloseTo(t.totalAmount, 2);
+    expect(t.totalAmount).toBe(900);
+    // taxable + tax reconciles to within a paisa (equal CGST/SGST split).
+    expect(Math.abs(t.taxableAmount + t.totalGst - t.totalAmount)).toBeLessThanOrEqual(0.01 + 1e-9);
   });
 
   it("reports line and bill discounts as one figure", () => {
@@ -474,7 +493,7 @@ describe("bill-level discount reduces the taxable value (s.15(3) CGST Act)", () 
     expect(t.cgst).toBe(0);
     expect(t.sgst).toBe(0);
     expect(t.igst).toBeGreaterThan(0);
-    expect(t.taxableAmount + t.igst).toBeCloseTo(t.totalAmount, 2);
+    expect(Math.abs(t.taxableAmount + t.igst - t.totalAmount)).toBeLessThanOrEqual(0.01 + 1e-9);
   });
 
   it("zero and absent behave identically", () => {
