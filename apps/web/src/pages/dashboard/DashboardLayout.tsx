@@ -3,6 +3,7 @@ import { Outlet } from "react-router-dom";
 import { TopNav } from "@/components/layout/TopNav";
 import { HelpWidget } from "@/components/help/HelpWidget";
 import { CommandPalette } from "@/components/CommandPalette";
+import { usePrescriptionArrivalWatcher } from "@/hooks/usePrescriptionArrivalWatcher";
 
 function PageFallback() {
   return (
@@ -13,6 +14,9 @@ function PageFallback() {
 }
 
 export default function DashboardLayout() {
+  // App-wide: chime + toast when a clinic pushes a new prescription, on any screen.
+  usePrescriptionArrivalWatcher();
+
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-surface-secondary">
       <TopNav />
