@@ -17,6 +17,10 @@ type UnconfirmedItem = {
    * explaining a refusal would mean re-implementing the same parsing rules twice.
    */
   quantityCalculationNote?: string | null;
+  /** For a measured (mL/g) line: the clinical volume the clinic prescribed. Preferred over parsing the note. */
+  prescribedVolumeClinical?: number | null;
+  /** "ML" | "GM". */
+  clinicalUom?: string | null;
 };
 
 /**
@@ -107,21 +111,26 @@ function UnconfirmedRow({
 
   const parsed = parseInt(value, 10);
   const valid = Number.isInteger(parsed) && parsed > 0;
-  const unit = unitFromNote(item.quantityCalculationNote);
-  const clinicVolume = clinicVolumeFromNote(item.quantityCalculationNote);
-  const measuredUnit = item.quantityCalculationNote?.match(/measured in (\w+)/)?.[1] ?? "amount";
-  // A measured line asks for a BOTTLE / TUBE count. Entering a number at or above the
-  // clinic's total volume means the millilitres were typed in by mistake — this is
-  // exactly how "30 ml" became "30 sealed bottles" on a real bill. Block it outright
-  // rather than the old soft warning.
+  const unit = unitFromNote(item.quantityCalculationNote)
+    ?? (item.clinicalUom ? ((item.clinicalUom.toUpperCase() === "GM") ? "tubes" : "bottles") : null);
+  // Prefer the structured clinical volume; fall back to parsing the note for older rows.
+  const clinicVolume = item.prescribedVolumeClinical ?? clinicVolumeFromNote(item.quantityCalculationNote);
+  const measuredUnit = item.quantityCalculationNote?.match(/measured in (\w+)/)?.[1]
+    ?? (item.clinicalUom?.toUpperCase() === "GM" ? "grams" : "millilitres");
+  // A measured line asks for a BOTTLE / TUBE count. Entering a number at or above the clinic's
+  // total volume almost always means the millilitres were typed in by mistake — this is how
+  // "30 ml" became "30 sealed bottles" on a real bill. Warn prominently, but do NOT block:
+  // an unusual-but-real case (a very small bottle, a long course) must still be dispensable,
+  // and the millilitre-vs-pack ambiguity is now resolved automatically wherever a pack size
+  // is on record — this panel only ever sees the lines where it is not.
   const enteredVolumeByMistake =
     !!unit && valid && clinicVolume != null && clinicVolume >= 10 && parsed >= clinicVolume;
-  // Fallback nudge when the note names no figure to compare against — still just a warning.
+  // Fallback nudge when there is no figure to compare against — still just a warning.
   const looksLikeVolume = !!unit && valid && !enteredVolumeByMistake && parsed > 20;
-  const canConfirm = valid && !confirming && !enteredVolumeByMistake;
+  const canConfirm = valid && !confirming;
 
   async function confirm() {
-    if (!valid || enteredVolumeByMistake) return;
+    if (!valid) return;
     setConfirming(true);
     try {
       await api.patch(`/prescriptions/${prescriptionId}/items/${item.id}/quantity`, { quantity: parsed });

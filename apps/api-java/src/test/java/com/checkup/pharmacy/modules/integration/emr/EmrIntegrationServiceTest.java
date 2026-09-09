@@ -714,8 +714,8 @@ class EmrIntegrationServiceTest {
     }
 
     @Test
-    @DisplayName("a clinic quantity for a CLASSIFIED measured medicine flows through unchanged — 30 ml is unambiguous")
-    void ingestKeepsAMeasuredQuantityWhenThePackSizeIsKnown() {
+    @DisplayName("a clinic volume for a CLASSIFIED measured medicine is rounded up to whole bottles — 30 ml -> 1x 60 ml")
+    void ingestRoundsAMeasuredVolumeUpWhenThePackSizeIsKnown() {
         PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
         PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
         MedicineRepository medicineRepository = mock(MedicineRepository.class);
@@ -733,13 +733,15 @@ class EmrIntegrationServiceTest {
         service.ingest(ingestRequest("Dr. Ann Smith", "John Doe", List.of(item)));
 
         assertThat(savedItems(itemRepository)).singleElement().satisfies(saved -> {
-            assertThat(saved.getQuantity()).isEqualTo(30);
+            assertThat(saved.getRoundedPackCount()).isEqualTo(1);
+            assertThat(saved.getQuantity()).as("one whole 60 ml bottle").isEqualTo(60);
+            assertThat(saved.getPrescribedVolumeClinical()).isEqualByComparingTo("30");
             assertThat(saved.needsQuantityConfirmation()).isFalse();
         });
     }
 
     @Test
-    @DisplayName("a pharmacy pack-size override (catalogue still unclassified) is enough to let the quantity through")
+    @DisplayName("a pharmacy pack-size override (catalogue still unclassified) also rounds the volume up to whole bottles")
     void ingestRespectsAnOverridePackSizeForMeasuredLines() {
         PrescriptionRepository prescriptionRepository = mock(PrescriptionRepository.class);
         PrescriptionItemRepository itemRepository = mock(PrescriptionItemRepository.class);
@@ -763,7 +765,8 @@ class EmrIntegrationServiceTest {
         service.ingest(ingestRequest("Dr. Ann Smith", "John Doe", List.of(item)));
 
         assertThat(savedItems(itemRepository)).singleElement().satisfies(saved -> {
-            assertThat(saved.getQuantity()).isEqualTo(30);
+            assertThat(saved.getRoundedPackCount()).isEqualTo(1);
+            assertThat(saved.getQuantity()).as("one whole 100 ml bottle").isEqualTo(100);
             assertThat(saved.needsQuantityConfirmation()).isFalse();
         });
     }

@@ -9,6 +9,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
 
+import java.math.BigDecimal;
+
 /** Maps the Prisma `PrescriptionItem` model (table "prescription_items") — one prescribed drug line. */
 @Entity
 @Table(name = "prescription_items")
@@ -65,6 +67,30 @@ public class PrescriptionItem extends CreatedAtEntity {
      */
     @Column(name = "quantityCalculationNote")
     private String quantityCalculationNote;
+
+    /**
+     * The clinical volume/weight the clinic prescribed for a MEASURED (ML/GM) line, kept
+     * verbatim even after {@link #quantity} has been rounded up to a whole-pack target — see
+     * {@link #resolveMeasuredEmrQuantity}. Drives the "Prescribed: 105 ml" line on triage and
+     * the dosage line on the label. Null for a countable line and for any line the clinic sent
+     * as a plain unit count.
+     */
+    @Column(name = "prescribedVolumeClinical")
+    private BigDecimal prescribedVolumeClinical;
+
+    /** The unit {@link #prescribedVolumeClinical} is in — {@code "ML"} | {@code "GM"}. Null with no clinical volume. */
+    @Column(name = "clinicalUom")
+    private String clinicalUom;
+
+    /**
+     * Whole sealed packs the measured course was rounded UP to once the medicine's pack size
+     * was known ({@code ceil(prescribedVolumeClinical / effectiveUnitsPerPack)}). Null while
+     * the pack size is still unknown (the line is held for a pharmacist to enter a pack count)
+     * and for every countable line. Display/label/audit only — {@link #quantity} already holds
+     * the resolved dispense target in base units.
+     */
+    @Column(name = "roundedPackCount")
+    private Integer roundedPackCount;
 
     /**
      * What the patient actually received, when it differs from what was prescribed.
@@ -157,6 +183,11 @@ public class PrescriptionItem extends CreatedAtEntity {
         // actively misleading here, not just stale.
         this.quantityAutoCalculated = false;
         this.quantityCalculationNote = null;
+        // Same reasoning for the measured-line resolution: the caller re-runs
+        // resolveMeasuredEmrQuantity against the new figure and pack size.
+        this.prescribedVolumeClinical = null;
+        this.clinicalUom = null;
+        this.roundedPackCount = null;
     }
 
     public String getPharmacyId() { return pharmacyId; }
@@ -224,6 +255,12 @@ public class PrescriptionItem extends CreatedAtEntity {
      * reported to the caller as a clear error rather than a silent overwrite.
      */
     public void confirmQuantity(int quantity) {
+        // A measured (mL/g) line that was held for the pharmacist has no pack size on record,
+        // so the number they just entered IS the sealed-pack count — record it as such for the
+        // label ("Qty: 2 bottles") while keeping the clinic's clinical volume for the slip.
+        if (clinicalUom != null) {
+            this.roundedPackCount = quantity;
+        }
         this.quantity = quantity;
         // A person has now settled this number, so it is no longer a computed one — even if it
         // happens to equal what a calculation would have produced — and whatever note explained
@@ -294,49 +331,75 @@ public class PrescriptionItem extends CreatedAtEntity {
     }
 
     /**
-     * Drops a clinic-stated quantity back to the unconfirmed placeholder ({@code quantity = 0})
-     * when the matched medicine is a measured (mL/g) product with no pack size on record —
-     * {@code effectivePackSize} carries this pharmacy's override if set, else the catalogue's,
-     * else null.
+     * Resolves a measured (mL/g) EMR line now that its medicine — and so its base unit and
+     * pack size — is known. {@code effectivePackSize} carries this pharmacy's override pack
+     * size if set, else the catalogue's, else null.
      *
-     * <p>Why a measured line with no pack size cannot be billed as sent: a clinic sends such a
-     * line as a millilitre / gram figure ("30 ml"), but with no mL-per-bottle recorded the
-     * dispensing engine can only read the bare number as a count of whole sealed bottles
-     * ({@code DispensingService.resolveChunk}, the {@code upp <= 1} branch) — a 30 ml course
-     * would bill as 30 bottles. Rather than guess, this line becomes a
-     * {@link #needsQuantityConfirmation()} line exactly like one the clinic sent "as directed":
-     * triage flags it, and a pharmacist settles the real amount at the counter, where
-     * {@code ConfirmQuantityPanel} for a measured medicine already asks for a bottle count and
-     * warns when the typed number looks like millilitres. The clinic's figure is kept in
-     * {@link #quantityCalculationNote} for the pharmacist to work from.
+     * <p>A clinic's dose engine computes dose × frequency × duration, and for a syrup or a
+     * cream that product is inherently a <b>volume</b>: the {@code quantity} on the EMR wire is
+     * millilitres or grams, never a bottle count. Left as-is, the dispensing engine reads that
+     * bare number in base units — for an unclassified medicine ({@code unitsPerPack <= 1})
+     * "105" then means 105 <i>sealed bottles</i> ({@code DispensingService.resolveChunk}). This
+     * turns it into a dispensable whole-pack target and never lets the millilitre figure reach
+     * billing as a pack count.
      *
-     * <p>A no-op for a classified medicine (the figure resolves unambiguously as a mL/g count),
-     * a countable one (tablets/capsules were never ambiguous), a line already awaiting a
-     * quantity, an auto-calculated one, or a non-EMR line (a quantity typed into the native
-     * prescription form is entered in whatever unit that form shows).
+     * <ul>
+     *   <li><b>Pack size known.</b> {@link #prescribedVolumeClinical} keeps the clinic's
+     *       figure, {@link #roundedPackCount} = {@code ceil(volume / packSize)}, and
+     *       {@link #quantity} becomes {@code roundedPackCount * packSize} — the real dispense
+     *       target in base units, so {@link #isFullyDispensed()} and the dispensed write-back
+     *       both compare millilitres to millilitres. The line is ready to bill; triage shows
+     *       "105 ml → 2 bottles (95 ml over)".</li>
+     *   <li><b>Pack size unknown.</b> Same as an "as directed" line: {@link #quantity} drops to
+     *       the zero placeholder ({@link #needsQuantityConfirmation()}), the clinic's figure is
+     *       kept in {@link #quantityCalculationNote} and {@link #prescribedVolumeClinical}, and
+     *       a pharmacist enters the number of sealed packs at the counter, where
+     *       {@code ConfirmQuantityPanel} already asks for a bottle count.</li>
+     * </ul>
+     *
+     * <p>A no-op for a countable medicine (tablets/capsules were never ambiguous), a line
+     * already awaiting a quantity, an auto-calculated one, or a non-EMR line (a quantity typed
+     * into the native prescription form is entered in whatever unit that form shows).
      */
-    public void deferAmbiguousMeasuredQuantity(Medicine medicine, Integer effectivePackSize) {
+    public void resolveMeasuredEmrQuantity(Medicine medicine, Integer effectivePackSize) {
         if (externalEmrItemId == null || medicine == null
                 || needsQuantityConfirmation() || quantityAutoCalculated) {
-            return;
-        }
-        if (effectivePackSize != null && effectivePackSize > 0) {
             return;
         }
         String baseUnit = BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm());
         if (!PackUnits.isMeasured(baseUnit)) {
             return;
         }
-        // Phrased to match PrescriptionQuantityCalculator's own "measured in …" refusal so the
-        // ConfirmQuantityPanel reads the packaging word ("bottles") and the volume unit
-        // ("millilitres") straight out of it — no second copy of that mapping on the client —
-        // and still carries the clinic's figure for the pharmacist to work from.
+        int clinicalVolume = this.quantity;
+        this.prescribedVolumeClinical = BigDecimal.valueOf(clinicalVolume);
+        this.clinicalUom = baseUnit;
+
         String volumeUnit = "GM".equals(baseUnit) ? "grams" : "millilitres";
         String shortUnit = "GM".equals(baseUnit) ? "g" : "ml";
-        String packs = PackUnits.plural(PackUnits.packUnitLabel(null, baseUnit), 2);
-        this.quantityCalculationNote = "The clinic prescribed " + this.quantity + " " + shortUnit
+        String packWord = PackUnits.packUnitLabel(medicine.getUnit(), baseUnit);
+        String packWordPlural = PackUnits.plural(packWord, 2);
+
+        if (effectivePackSize != null && effectivePackSize > 0) {
+            int packs = (int) Math.ceil((double) clinicalVolume / effectivePackSize);
+            int target = packs * effectivePackSize;
+            this.roundedPackCount = packs;
+            this.quantity = target;
+            int excess = target - clinicalVolume;
+            this.quantityCalculationNote = "Clinic prescribed " + clinicalVolume + " " + shortUnit
+                    + " — dispensing " + packs + " sealed " + PackUnits.plural(packWord, packs)
+                    + " (" + target + " " + shortUnit
+                    + (excess > 0 ? ", " + excess + " " + shortUnit + " over" : "")
+                    + "). A sealed " + packWord + " can't be split.";
+            return;
+        }
+
+        // No pack size on record: hold for a pharmacist, exactly like an "as directed" line.
+        // Phrased to match PrescriptionQuantityCalculator's "measured in …" refusal so
+        // ConfirmQuantityPanel reads the packaging word and the volume unit straight out of it.
+        this.roundedPackCount = null;
+        this.quantityCalculationNote = "The clinic prescribed " + clinicalVolume + " " + shortUnit
                 + ", but this medicine is measured in " + volumeUnit + " with no pack size on record — "
-                + "enter the number of " + packs + " to dispense (whole sealed " + packs
+                + "enter the number of " + packWordPlural + " to dispense (whole sealed " + packWordPlural
                 + ", not the total " + volumeUnit + ").";
         this.quantity = 0;
     }
@@ -347,6 +410,24 @@ public class PrescriptionItem extends CreatedAtEntity {
 
     public String getQuantityCalculationNote() {
         return quantityCalculationNote;
+    }
+
+    public BigDecimal getPrescribedVolumeClinical() {
+        return prescribedVolumeClinical;
+    }
+
+    public String getClinicalUom() {
+        return clinicalUom;
+    }
+
+    public Integer getRoundedPackCount() {
+        return roundedPackCount;
+    }
+
+    /** True when this line is a measured (mL/g) course rounded up to whole sealed packs. */
+    public boolean isMeasuredRoundedUp() {
+        return roundedPackCount != null && prescribedVolumeClinical != null
+                && BigDecimal.valueOf((long) quantity).compareTo(prescribedVolumeClinical) > 0;
     }
 
     public String getDosage() { return dosage; }

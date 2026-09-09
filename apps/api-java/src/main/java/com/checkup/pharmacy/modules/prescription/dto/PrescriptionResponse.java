@@ -1,5 +1,6 @@
 package com.checkup.pharmacy.modules.prescription.dto;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 
@@ -59,10 +60,20 @@ public record PrescriptionResponse(
      *                    calculated (still {@code quantity <= 0}, waiting on a pharmacist) —
      *                    the same reason a computer declined, in words meant for a person.
      */
+    /**
+     * @param prescribedVolumeClinical for a measured (mL/g) line, the clinical volume/weight
+     *                    the clinic prescribed, kept verbatim even after {@code quantity} has
+     *                    been rounded up to a whole-pack target. Null for a countable line.
+     * @param clinicalUom the unit {@code prescribedVolumeClinical} is in — "ML" | "GM".
+     * @param roundedPackCount whole sealed packs a measured course was rounded up to; null
+     *                    while the pack size is unknown (line held for a pharmacist) and for a
+     *                    countable line. {@code quantity} is {@code roundedPackCount} × pack size.
+     */
     public record Item(String id, String medicineName, String medicineId, String schedule, int quantity,
                        int dispensedQty, String dosage, String duration, String notes,
                        String dispensedMedicineName, boolean substituted, boolean quantityAutoCalculated,
-                       String quantityCalculationNote, List<Suggestion> suggestions) {
+                       String quantityCalculationNote, BigDecimal prescribedVolumeClinical, String clinicalUom,
+                       Integer roundedPackCount, List<Suggestion> suggestions) {
     }
 
     /**

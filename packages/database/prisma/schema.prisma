@@ -955,6 +955,19 @@ model PrescriptionItem {
   // manual confirmation) — see PrescriptionQuantityCalculator.Result. Null when neither
   // ever applied (an explicit clinic quantity, or an unmatched line).
   quantityCalculationNote String?
+  // The clinical volume/weight the clinic prescribed for a MEASURED (ML/GM) line, kept
+  // verbatim — drives the "Prescribed: 105 ml" display and the dosage line on the label.
+  // Null for a countable line and for any line sent as a plain unit count.
+  prescribedVolumeClinical Decimal? @db.Decimal(12, 2)
+  // The unit `prescribedVolumeClinical` is in — "ML" | "GM". Null when there is no clinical
+  // volume on the line.
+  clinicalUom             String?
+  // Whole sealed packs the measured course was rounded UP to once the medicine's pack size
+  // is known: ceil(prescribedVolumeClinical / effectiveUnitsPerPack). Null while the pack
+  // size is still unknown (the line is held for a pharmacist to enter a pack count) and for
+  // every countable line. Display/label/audit only — `quantity` already holds the resolved
+  // dispense target in base units (roundedPackCount * unitsPerPack).
+  roundedPackCount        Int?
   // Set only when a substitute was handed over; NULL means "as prescribed".
   dispensedMedicineId   String?
   dispensedMedicineName String?

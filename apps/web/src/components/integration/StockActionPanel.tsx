@@ -14,8 +14,12 @@ import {
 import type { CartItem } from "@/components/billing/useBillingStore";
 import type { AlternativeResult } from "@pharmacy/types";
 import { useMedicineCatalogSearch, type MedicineHit } from "@/lib/useMedicineCatalogSearch";
+import { formatMeasuredAmount } from "@/lib/measuredUnits";
 
 export type StockInfo = { availableQty: number; stockStatus: "in_stock" | "low_stock" | "out_of_stock" };
+
+/** For a measured (mL/g) line: how to render its piece-count stock as sealed packs. */
+export type MeasuredStock = { clinicalUom: string; packSize: number | null };
 
 /** Same three-colour vocabulary as the billing alternatives drawer, so a pharmacist reads one stock language app-wide. */
 function StockDot({ status }: { status: StockInfo["stockStatus"] }) {
@@ -27,10 +31,15 @@ function StockDot({ status }: { status: StockInfo["stockStatus"] }) {
   );
 }
 
-function stockLabel(stock: StockInfo): string {
+function stockLabel(stock: StockInfo, measured?: MeasuredStock): string {
   if (stock.stockStatus === "out_of_stock") return "Out of stock";
-  if (stock.stockStatus === "low_stock") return `Low stock · ${stock.availableQty} left`;
-  return `In stock · ${stock.availableQty}`;
+  // `availableQty` is a piece count — individual mL/g for a measured line. Render it as whole
+  // sealed packs so this reads the same way the cart's "5 in stock" does, not "500".
+  const qty = measured
+    ? formatMeasuredAmount(stock.availableQty, measured.clinicalUom, measured.packSize)
+    : `${stock.availableQty}`;
+  if (stock.stockStatus === "low_stock") return `Low stock · ${qty} left`;
+  return `In stock · ${qty}`;
 }
 
 /**
@@ -49,6 +58,7 @@ export default function StockActionPanel({
   prescriptionItemId,
   stock,
   stockCheckFailed,
+  measured,
   resolution,
   onResolve,
   onClear,
@@ -60,6 +70,8 @@ export default function StockActionPanel({
   prescriptionItemId: string;
   /** Undefined while the stock check is still loading, or once it has given up (see stockCheckFailed). */
   stock: StockInfo | undefined;
+  /** Set for a measured (mL/g) line, so its piece-count stock reads as sealed packs. */
+  measured?: MeasuredStock;
   /** True once the stock-check request has exhausted its retries and definitively failed. */
   stockCheckFailed: boolean;
   resolution: ItemResolution | undefined;
@@ -160,7 +172,7 @@ export default function StockActionPanel({
       <div className="flex items-center gap-1.5 mt-1.5 text-[11.5px]">
         <StockDot status={stock.stockStatus} />
         <span className={stock.stockStatus === "low_stock" ? "text-amber-700 font-medium" : "text-emerald-700 font-medium"}>
-          {stockLabel(stock)}
+          {stockLabel(stock, measured)}
         </span>
       </div>
     );
