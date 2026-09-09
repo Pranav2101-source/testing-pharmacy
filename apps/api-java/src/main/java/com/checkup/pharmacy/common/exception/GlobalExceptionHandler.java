@@ -229,6 +229,39 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * A query that ran past its statement timeout — almost always a report asked over a
+     * date range far wider than intended (see {@code ReportsService.REPORT_QUERY_TIMEOUT_SECONDS}).
+     *
+     * <p>Without this it falls to the catch-all as an opaque 500 that says "the server is
+     * broken" when the truth is "that was too much to compute". 503 + a concrete next step
+     * ("narrow the range") is both accurate and actionable. Logged at WARN, not ERROR — a
+     * user picking too wide a window is not a defect.
+     */
+    @ExceptionHandler({
+            org.springframework.dao.QueryTimeoutException.class,
+            org.springframework.transaction.TransactionTimedOutException.class,
+    })
+    public ResponseEntity<ApiResponse<Void>> handleQueryTimeout(Exception ex) {
+        log.warn("Query/transaction timed out: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.fail("This report took too long to run. Try a narrower date range, "
+                        + "or wait a moment and retry."));
+    }
+
+    /**
+     * The database was briefly unreachable or the connection pool was exhausted while a
+     * request was in flight. Transient by nature, so a "retry in a moment" 503 is more
+     * honest than a 500 that implies the request itself was wrong.
+     */
+    @ExceptionHandler(org.springframework.dao.DataAccessResourceFailureException.class)
+    public ResponseEntity<ApiResponse<Void>> handleDataAccessResourceFailure(
+            org.springframework.dao.DataAccessResourceFailureException ex) {
+        log.error("Database resource failure", ex);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiResponse.fail("The database is temporarily unavailable. Please retry in a moment."));
+    }
+
+    /**
      * Last-resort catch-all: never leak stack traces or internals to the client,
      * but DO log the full exception server-side — otherwise a genuine bug is
      * invisible to everyone except whoever happens to be tailing the console.

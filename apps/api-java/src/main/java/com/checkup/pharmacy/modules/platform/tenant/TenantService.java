@@ -83,6 +83,7 @@ public class TenantService {
     private final PharmacyOnboardingService onboardingService;
     private final EntityManager entityManager;
     private final EmrSecretCipher emrSecretCipher;
+    private final com.checkup.pharmacy.security.AuthStatusCache authStatusCache;
 
     public TenantService(PharmacyRepository pharmacyRepository, UserRepository userRepository,
                          SubscriptionRepository subscriptionRepository,
@@ -90,7 +91,9 @@ public class TenantService {
                          CustomerRepository customerRepository, SupportTicketRepository ticketRepository,
                          AuditLogRepository auditLogRepository, AuditService auditService,
                          PasswordEncoder passwordEncoder, PharmacyOnboardingService onboardingService,
-                         EntityManager entityManager, EmrSecretCipher emrSecretCipher) {
+                         EntityManager entityManager, EmrSecretCipher emrSecretCipher,
+                         com.checkup.pharmacy.security.AuthStatusCache authStatusCache) {
+        this.authStatusCache = authStatusCache;
         this.pharmacyRepository = pharmacyRepository;
         this.userRepository = userRepository;
         this.subscriptionRepository = subscriptionRepository;
@@ -195,6 +198,9 @@ public class TenantService {
 
         if (revokesSessions(status)) {
             userRepository.bumpTokenVersionByPharmacyId(id);
+            // Rare (platform-admin suspend/archive) — a full drop is cheap and refills in
+            // seconds. Keeps a suspended tenant's users from lingering for the cache TTL.
+            authStatusCache.invalidateAll();
         }
 
         auditService.log(AuditEntry.of(AuditModule.TENANTS, "STATUS_CHANGED_TO_" + status, "PHARMACY")
@@ -257,6 +263,7 @@ public class TenantService {
 
         if (target != TenantStatus.ACTIVE && !ids.isEmpty()) {
             userRepository.bumpTokenVersionByPharmacyIds(ids);
+            authStatusCache.invalidateAll();
         }
 
         for (String pharmacyId : ids) {

@@ -68,13 +68,45 @@ public class CacheConfig implements CachingConfigurer {
     /** Cache name for the platform analytics dashboard. */
     public static final String ANALYTICS_DASHBOARD = "analyticsDashboard";
 
-    private final int analyticsTtlSeconds;
+    /** In-process (Caffeine) cache for the pharmacy home/sales dashboard stats — see the bean below. */
+    public static final String DASHBOARD_STATS = "dashboardStats";
 
-    public CacheConfig(@Value("${app.cache.analytics-ttl-seconds:300}") int analyticsTtlSeconds) {
+    private final int analyticsTtlSeconds;
+    private final int dashboardStatsTtlSeconds;
+
+    public CacheConfig(@Value("${app.cache.analytics-ttl-seconds:300}") int analyticsTtlSeconds,
+                       @Value("${app.cache.dashboard-stats-ttl-seconds:30}") int dashboardStatsTtlSeconds) {
         this.analyticsTtlSeconds = analyticsTtlSeconds;
+        this.dashboardStatsTtlSeconds = dashboardStatsTtlSeconds;
+    }
+
+    /**
+     * In-process cache manager for small, very-hot, tenant-scoped read aggregates —
+     * {@code getDashboardStats} first (nine serial aggregate queries, hit on every home
+     * and sales screen load). Caffeine rather than Redis: no network hop, no extra load
+     * on the single shared Redis instance, and the payload is a record held by reference
+     * so there is no serialization round-trip.
+     *
+     * <p>Not {@code @Primary} — the Redis manager stays the default so {@code @Cacheable}
+     * methods that need cross-instance sharing keep getting it. Callers opt in with
+     * {@code @Cacheable(cacheManager = "caffeineCacheManager")}.
+     *
+     * <p>Per-instance eviction only. At a 30s TTL a stale entry after a sale is bounded
+     * and acceptable for a glanceable overview; nothing here is a figure anyone files.
+     */
+    @Bean
+    public org.springframework.cache.CacheManager caffeineCacheManager() {
+        var manager = new org.springframework.cache.caffeine.CaffeineCacheManager();
+        manager.setCacheNames(java.util.List.of(DASHBOARD_STATS));
+        manager.setCaffeine(com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                .maximumSize(10_000)
+                .expireAfterWrite(Duration.ofSeconds(dashboardStatsTtlSeconds))
+                .recordStats());
+        return manager;
     }
 
     @Bean
+    @org.springframework.context.annotation.Primary
     public RedisCacheManager cacheManager(RedisConnectionFactory connectionFactory) {
         RedisCacheConfiguration base = RedisCacheConfiguration.defaultCacheConfig()
                 .serializeKeysWith(RedisSerializationContext.SerializationPair
