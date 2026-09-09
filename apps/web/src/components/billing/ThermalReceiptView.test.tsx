@@ -48,7 +48,8 @@ const INVOICE: PrintInvoiceData = {
   ],
   subtotal: 115, discountAmount: 10,
   taxableAmount: 98.22, cgst: 3.4, sgst: 3.4, igst: 0,
-  totalGst: 6.8, totalAmount: 105,
+  // taxable + tax = 105.02; roundOff brings it to a whole-rupee 105.00 payable.
+  totalGst: 6.8, totalAmount: 105, roundOff: -0.02,
 };
 
 /** Renders with a partial config; everything unset falls back to defaults. */
@@ -161,6 +162,16 @@ describe("totals follow the same toggles as A4/A5", () => {
     });
     expect(text).toContain("NET PAYABLE:");
     expect(text).toContain("105");
+  });
+
+  it("the totals block foots: taxable + tax + round-off == net payable", () => {
+    const text = renderReceipt();
+    // Round Off shows the stored footing delta, and the block adds up to a whole rupee.
+    expect(text).toContain("Round Off:");
+    expect(text).toContain("-0.02");
+    // 98.22 + 6.80 + (-0.02) = 105.00
+    expect(text).toContain("NET PAYABLE:");
+    expect(text).toMatch(/NET PAYABLE:\s*105\.00/);
   });
 });
 
