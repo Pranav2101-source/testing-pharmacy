@@ -70,6 +70,7 @@ public class AuthService {
     private final AuditService auditService;
     private final EmailService emailService;
     private final PharmacyOnboardingService onboardingService;
+    private final com.checkup.pharmacy.security.AuthStatusCache authStatusCache;
     private final String appUrl;
 
     public AuthService(UserRepository userRepository,
@@ -79,6 +80,7 @@ public class AuthService {
                        AuditService auditService,
                        EmailService emailService,
                        PharmacyOnboardingService onboardingService,
+                       com.checkup.pharmacy.security.AuthStatusCache authStatusCache,
                        @Value("${app.mail.app-url:http://localhost:3000}") String appUrl) {
         this.userRepository = userRepository;
         this.pharmacyRepository = pharmacyRepository;
@@ -87,6 +89,7 @@ public class AuthService {
         this.auditService = auditService;
         this.emailService = emailService;
         this.onboardingService = onboardingService;
+        this.authStatusCache = authStatusCache;
         this.appUrl = appUrl;
     }
 
@@ -212,6 +215,7 @@ public class AuthService {
         }
 
         user.bumpTokenVersion();
+        authStatusCache.invalidate(user.getId());
         return jwtService.issueTokens(user);
     }
 
@@ -219,6 +223,7 @@ public class AuthService {
     public void logout(String userId) {
         // Bumping tokenVersion invalidates every outstanding access + refresh token.
         userRepository.findById(userId).ifPresent(User::bumpTokenVersion);
+        authStatusCache.invalidate(userId);
     }
 
     @Transactional
@@ -232,6 +237,7 @@ public class AuthService {
 
         user.setPasswordHash(passwordEncoder.encode(req.newPassword()));
         user.bumpTokenVersion(); // force re-login everywhere
+        authStatusCache.invalidate(userId);
     }
 
     /** Always succeeds (never reveals whether the email is registered). */
@@ -294,6 +300,7 @@ public class AuthService {
         user.setPasswordHash(passwordEncoder.encode(req.password()));
         user.clearResetToken();
         user.bumpTokenVersion();
+        authStatusCache.invalidate(user.getId());
     }
 
     @Transactional(readOnly = true)

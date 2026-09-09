@@ -158,6 +158,29 @@ export type CartItem = {
    * when a different product was handed over.
    */
   prescriptionItemId?: string;
+  /**
+   * The clinic's dosing directions for this line ("5 ml three times a day for 7 days"),
+   * carried from the prescription so they can print on the label / slip. Display only —
+   * never affects pricing, quantity or stock.
+   */
+  dosageInstructions?: string;
+  /**
+   * A one-line note when a measured (mL/g) course was rounded up to whole sealed packs —
+   * "105 ml prescribed · billing 2 bottles (95 ml over)". INTERNAL — shown in the cart's
+   * "Internal Note" column, never printed on a patient receipt.
+   */
+  clinicalNote?: string;
+  /**
+   * The cashier-editable remarks for the patient, printed on the receipt / label. Seeded
+   * from the clinic's dosing directions ({@link dosageInstructions}); the cashier can edit
+   * it or add their own ("After food"). Display only — never affects pricing or stock.
+   */
+  patientRemarks?: string;
+  /** For a measured (mL/g) line: the clinical volume the clinic prescribed, and its UOM. */
+  prescribedVolumeClinical?: number;
+  clinicalUom?: string;
+  /** Whole sealed packs a measured course was rounded up to. */
+  roundedPackCount?: number;
   // computed
   rate:           number;
   taxableAmount:  number;
@@ -210,6 +233,8 @@ type BillingStore = {
   setSaleUnit: (inventoryId: string, saleUnit: SaleUnit) => void;
   /** Apply a verbatim patch to one line (used by the one-click "Fix" on a line issue). */
   patchLine: (inventoryId: string, patch: Partial<CartItem>) => void;
+  /** Update the cashier-editable patient remarks on one line (display only, no recompute). */
+  updatePatientRemarks: (inventoryId: string, patientRemarks: string) => void;
   /** Attributes a cart line to a prescribed line. Pass null to clear. */
   linkToPrescriptionItem: (inventoryId: string, prescriptionItemId: string | null) => void;
   setMeta: (patch: Partial<BillingMeta>) => void;
@@ -354,6 +379,14 @@ function recompute(item: NewCartItem & Partial<CartItem>): CartItem {
     // cutting a sealed strip for this exact quantity.
     forceLoose:     saleUnit === "LOOSE" ? item.forceLoose : undefined,
     batchAutoSelected: item.batchAutoSelected,
+    // Display-only fields carried straight through every edit path — a qty or discount
+    // change must not drop the clinic directions / patient remarks off the line.
+    dosageInstructions:       item.dosageInstructions,
+    clinicalNote:             item.clinicalNote,
+    patientRemarks:           item.patientRemarks,
+    prescribedVolumeClinical: item.prescribedVolumeClinical,
+    clinicalUom:              item.clinicalUom,
+    roundedPackCount:         item.roundedPackCount,
     rate:           Math.round(effMrp * (1 - item.discount / 100) * 100) / 100,
     taxableAmount,
     cgst,
@@ -453,6 +486,14 @@ export const useBillingStore = create<BillingStore>((set, get) => ({
   patchLine(inventoryId, patch) {
     set((s) => ({
       items: s.items.map((i) => (i.inventoryId === inventoryId ? recompute({ ...i, ...patch }) : i)),
+    }));
+  },
+
+  updatePatientRemarks(inventoryId, patientRemarks) {
+    set((s) => ({
+      items: s.items.map((i) =>
+        i.inventoryId === inventoryId ? { ...i, patientRemarks } : i
+      ),
     }));
   },
 

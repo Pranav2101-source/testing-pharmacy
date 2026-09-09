@@ -16,6 +16,10 @@ export type PrintInvoiceData = {
   customerAddress?: string;
   uhid?:            string;
   abha?:            string;
+  /** Buyer's GSTIN — printed in the "Wholesale Details" block on the tax-wholesale layout. */
+  buyerGstin?:      string;
+  /** Destination state for the "Place of Supply" line. */
+  placeOfSupply?:   string;
   prescriptionNo?:  string;
   doctorName?:      string;
   doctorRegNo?:     string;
@@ -36,6 +40,18 @@ export type PrintInvoiceData = {
     saleUnit?:     string;
     /** Base unit for a loose line ("TABLET" | "CAPSULE" | "ML" | "GM" | "EACH"), for the "/tab" label. */
     baseUnit?:     string | null;
+    /** Clinic dosing directions ("5 ml three times a day for 7 days"), for a prescription-sourced line. */
+    dosageInstructions?: string;
+    /**
+     * Cashier-editable patient remarks — seeded from {@link dosageInstructions}, may add
+     * "After food". This is the ONLY note printed for the patient.
+     */
+    patientRemarks?: string;
+    /**
+     * "105 ml prescribed · billing 2 bottles" — INTERNAL round-up note. Shown only in the
+     * cart's "Internal Note" column; never printed on a receipt.
+     */
+    clinicalNote?: string;
     discount:      number;
     gstRate:       number;
     rate:          number;
@@ -53,6 +69,17 @@ export type PrintInvoiceData = {
   igst:           number;
   totalGst:       number;
   totalAmount:    number;
+  /** Bill-level charge added on top of the goods (delivery, packaging). */
+  extraCharges?:  number;
+  /** Manual +/- adjustment (goodwill, correction). */
+  adjustmentAmount?: number;
+  /**
+   * The signed delta that makes the totals block foot from its own rows:
+   *   taxable + CGST + SGST + IGST + extraCharges + adjustmentAmount + roundOff == Net Payable
+   * Carries the rupee rounding AND the paisa the equal CGST/SGST split cannot represent.
+   * Pass the value `BillingService` stored; omitted → derived as just the rupee rounding.
+   */
+  roundOff?:      number;
 };
 
 // Pharmacy info passed down from the session context (or omitted for mock preview)
@@ -65,6 +92,8 @@ export type PharmacyProfile = {
   gstin?:      string;
   drugLicense?: string;
   fssai?:      string;
+  /** Home state — used as the fallback "Place of Supply" on the tax-wholesale layout. */
+  state?:      string;
 };
 
 type Props = {
@@ -115,8 +144,15 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
 
     const primary      = br.primaryColor || "#1a3080";
     const displayName  = br.pharmacyNameOverride || pharmacy.name;
-    const roundedTotal = Math.round(invoice.totalAmount);
-    const roundOff     = roundedTotal - invoice.totalAmount;
+    const extraCharges = invoice.extraCharges ?? 0;
+    const adjustment   = invoice.adjustmentAmount ?? 0;
+    // The totals block foots from its own rows:
+    //   taxable + CGST + SGST + IGST + extraCharges + adjustment + roundOff == Net Payable
+    const taxAndCharges = invoice.taxableAmount + invoice.totalGst + extraCharges + adjustment;
+    // Prefer the stored round-off (rupee rounding + the paisa the equal CGST/SGST split
+    // can't represent); otherwise derive just the rupee rounding so the block still foots.
+    const roundOff     = invoice.roundOff ?? (Math.round(taxAndCharges) - taxAndCharges);
+    const roundedTotal = Math.round(taxAndCharges + roundOff);
     const isInterstate = invoice.isInterstate ?? false;
 
     // Determine which GST columns to show
@@ -135,11 +171,17 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
       return acc;
     }, {});
 
-    // Paper size → pixel width
+    // Paper size → pixel width. `paper.marginMm` (4–25) overrides the page padding
+    // — the one page-geometry knob that means the same thing on the classic and
+    // tax-wholesale layouts. Falls back to the per-size default when unset.
+    const rawMargin = cfg.paper.marginMm;
+    const marginMm = typeof rawMargin === "number" && Number.isFinite(rawMargin)
+      ? Math.min(25, Math.max(4, rawMargin))
+      : null;
     const paperStyle: React.CSSProperties =
       cfg.paper.size === "A5"
-        ? { width: "148mm", minHeight: "210mm", padding: "8mm",  fontSize: "9px"  }
-        : { width: "210mm", minHeight: "297mm", padding: "10mm", fontSize: "10px" };
+        ? { width: "148mm", minHeight: "210mm", padding: `${marginMm ?? 8}mm`,  fontSize: "9px"  }
+        : { width: "210mm", minHeight: "297mm", padding: `${marginMm ?? 10}mm`, fontSize: "10px" };
 
     const thStyle: React.CSSProperties = {
       padding: "5px 6px",
@@ -301,6 +343,13 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
                   <td style={{ ...tdStyle(), fontWeight: 500 }}>
                     {item.medicineName}
                     {isLoose && <span style={{ fontWeight: 400, color: "#a16207", fontSize: "8.5px" }}> · loose</span>}
+                    {/* Patient-facing note only — the internal round-up note (clinicalNote)
+                        is deliberately never printed. */}
+                    {(item.patientRemarks ?? item.dosageInstructions) && (
+                      <div style={{ fontWeight: 600, color: "#111", fontSize: "8.5px" }}>
+                        Dosage: {item.patientRemarks ?? item.dosageInstructions}
+                      </div>
+                    )}
                   </td>
                   {col.showHsn      && <td style={tdStyle()}>{item.hsnCode || "—"}</td>}
                   {col.showBatch    && <td style={{ ...tdStyle(), fontFamily: "monospace" }}>{item.batchNumber}</td>}
@@ -400,9 +449,19 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
                   <span>IGST</span><span>{formatCurrency(invoice.igst)}</span>
                 </div>
               )}
+              {extraCharges > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid #f0f0f0" }}>
+                  <span>Extra Charges</span><span>{formatCurrency(extraCharges)}</span>
+                </div>
+              )}
+              {Math.abs(adjustment) >= 0.005 && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", borderBottom: "1px solid #f0f0f0" }}>
+                  <span>Adjustment</span><span>{adjustment > 0 ? "+" : "−"}{formatCurrency(Math.abs(adjustment))}</span>
+                </div>
+              )}
               {tot.showRoundOff && Math.abs(roundOff) >= 0.005 && (
                 <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: "#999", borderBottom: "1px solid #f0f0f0" }}>
-                  <span>Round Off</span><span>{roundOff > 0 ? "+" : ""}{roundOff.toFixed(2)}</span>
+                  <span>Round Off</span><span>{roundOff > 0 ? "+" : "−"}{Math.abs(roundOff).toFixed(2)}</span>
                 </div>
               )}
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0 4px", borderTop: `2px solid ${primary}`, fontWeight: 700, fontSize: "13px", marginTop: "4px" }}>

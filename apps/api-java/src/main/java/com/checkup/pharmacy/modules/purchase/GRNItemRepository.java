@@ -15,6 +15,79 @@ public interface GRNItemRepository extends JpaRepository<GRNItem, String> {
 
     List<GRNItem> findByGrnIdIn(List<String> grnIds);
 
+    // ── Purchase cost analysis ────────────────────────────────────────────────
+
+    interface CostAnalysisRow {
+        /** Effective medicine id — the catalogue id, or the local-medicine id when unlinked. */
+        String getMedicineId();
+        String getMedicineName();
+        long getTotalQty();
+        java.math.BigDecimal getTotalCost();
+        java.math.BigDecimal getTotalMrpValue();
+        long getBatches();
+    }
+
+    interface CostAnalysisTotalsRow {
+        java.math.BigDecimal getTotalCost();
+        java.math.BigDecimal getTotalMrpValue();
+        long getMedicineCount();
+    }
+
+    /**
+     * Purchase cost analysis, one row per medicine, aggregated and bounded BY THE DATABASE.
+     *
+     * <p>Previously the service loaded every GRN line for every confirmed receipt in the range
+     * into memory and grouped them in Java — unbounded by anything but how much a pharmacy
+     * bought, on a screen a pharmacist can point at a year. GROUP BY collapses it to one row
+     * per medicine (tens, not tens of thousands) and {@code Limit} keeps only the biggest
+     * spends, which is all the table shows.
+     *
+     * <p>Grouped on {@code COALESCE(medicineId, localMedicineId)} so a pharmacy's own
+     * not-yet-catalogued medicines (see {@link com.checkup.pharmacy.modules.medicine.PharmacyMedicine})
+     * each get their own row — the old null {@code medicineId} key merged every one of them
+     * into a single mislabelled line. {@code MAX(medicineName)} because a medicine renamed
+     * between two receipts still has one identity.
+     */
+    @Query("""
+            SELECT COALESCE(i.medicineId, i.localMedicineId) AS medicineId,
+                   MAX(i.medicineName) AS medicineName,
+                   COALESCE(SUM(i.receivedQty + i.freeQty), 0) AS totalQty,
+                   COALESCE(SUM(i.amount), 0) AS totalCost,
+                   COALESCE(SUM(i.mrp * (i.receivedQty + i.freeQty)), 0) AS totalMrpValue,
+                   COUNT(DISTINCT i.grnId) AS batches
+            FROM GRNItem i
+            JOIN GoodsReceiptNote g ON g.id = i.grnId
+            WHERE i.pharmacyId = :pharmacyId
+              AND CAST(g.status AS string) = 'CONFIRMED'
+              AND g.confirmedAt >= :from AND g.confirmedAt <= :to
+            GROUP BY COALESCE(i.medicineId, i.localMedicineId)
+            ORDER BY SUM(i.amount) DESC
+            """)
+    List<CostAnalysisRow> costAnalysisByMedicine(@Param("pharmacyId") String pharmacyId,
+                                                 @Param("from") java.time.Instant from,
+                                                 @Param("to") java.time.Instant to,
+                                                 org.springframework.data.domain.Limit limit);
+
+    /**
+     * Grand totals for the whole confirmed-purchase period — the figure the summary cards
+     * show. Deliberately separate from {@link #costAnalysisByMedicine}: the table is a
+     * top-N, but "total purchased this period" must be every rupee, or it disagrees with the
+     * Purchase page's own spend figure (which is a plain {@code SUM(totalAmount)}).
+     */
+    @Query("""
+            SELECT COALESCE(SUM(i.amount), 0) AS totalCost,
+                   COALESCE(SUM(i.mrp * (i.receivedQty + i.freeQty)), 0) AS totalMrpValue,
+                   COUNT(DISTINCT COALESCE(i.medicineId, i.localMedicineId)) AS medicineCount
+            FROM GRNItem i
+            JOIN GoodsReceiptNote g ON g.id = i.grnId
+            WHERE i.pharmacyId = :pharmacyId
+              AND CAST(g.status AS string) = 'CONFIRMED'
+              AND g.confirmedAt >= :from AND g.confirmedAt <= :to
+            """)
+    CostAnalysisTotalsRow costAnalysisTotals(@Param("pharmacyId") String pharmacyId,
+                                             @Param("from") java.time.Instant from,
+                                             @Param("to") java.time.Instant to);
+
     /**
      * Line-item counts for a page of GRNs in ONE query — the list view shows a count
      * per row but never the lines themselves, so fetching full items per GRN (an N+1)

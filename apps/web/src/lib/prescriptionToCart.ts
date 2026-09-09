@@ -35,8 +35,36 @@ export type BillablePrescription = {
     schedule: string | null;
     quantity: number;
     dispensedQty: number;
+    /** Clinic dosing directions — carried onto the cart line so they can print on the label. */
+    dosage?: string | null;
+    duration?: string | null;
+    /** For a measured (mL/g) line: the clinical volume the clinic prescribed. */
+    prescribedVolumeClinical?: number | null;
+    clinicalUom?: string | null;
+    /** Whole sealed packs a measured course was rounded up to. */
+    roundedPackCount?: number | null;
   }[];
 };
+
+/** "5 ml three times a day for 7 days" — the clinic's directions, joined for a label. */
+function dosageInstructionsOf(line: { dosage?: string | null; duration?: string | null }): string | undefined {
+  const parts = [line.dosage?.trim(), line.duration?.trim() ? `for ${line.duration.trim()}` : null].filter(Boolean);
+  return parts.length ? parts.join(" ") : undefined;
+}
+
+/** "105 ml prescribed · billing 2 bottles (95 ml over)" — only for a measured line that rounded up. */
+function clinicalNoteOf(line: {
+  prescribedVolumeClinical?: number | null;
+  clinicalUom?: string | null;
+  roundedPackCount?: number | null;
+}): string | undefined {
+  const volume = line.prescribedVolumeClinical;
+  const packs = line.roundedPackCount;
+  if (volume == null || !line.clinicalUom || packs == null || packs <= 0) return undefined;
+  const unit = line.clinicalUom.toUpperCase() === "GM" ? "g" : "ml";
+  const pack = line.clinicalUom.toUpperCase() === "GM" ? "tube" : "bottle";
+  return `${volume} ${unit} prescribed · billing ${packs} ${pack}${packs === 1 ? "" : "s"}`;
+}
 
 /**
  * A pharmacist's explicit decision for a line the stock check flagged, made inline on the
@@ -191,7 +219,7 @@ export async function resolvePrescriptionToCart(
   } catch {
     // The plan call itself failed (network/server) — NOT a confirmed "no stock".
     // Every line the pharmacist did not explicitly resolve is "couldn't check".
-    planByMedicine = new Map();
+    // (This branch returns below without ever reading planByMedicine.)
     for (const line of lines) {
       const r = resolutions?.[line.id];
       if (r?.action === "remove" || r?.action === "hold") {
@@ -247,7 +275,7 @@ export async function resolvePrescriptionToCart(
     }
 
     for (const alloc of planLine.allocations) {
-      items.push(cartItemFromAllocation(alloc, planLine.medicineId, line.medicineName, line.schedule));
+      items.push(cartItemFromAllocation(alloc, planLine.medicineId, line.medicineName, line.schedule, line));
     }
     if (planLine.message) reasons.push({ medicineName: line.medicineName, message: planLine.message });
     if (planLine.shortfallPieces && planLine.shortfallPieces > 0) {
@@ -286,6 +314,7 @@ function cartItemFromAllocation(
   medicineId: string | null,
   medicineName: string,
   schedule: string | null,
+  line?: BillablePrescription["items"][number],
 ): CartItem {
   return {
     inventoryId: alloc.inventoryId,
@@ -298,6 +327,12 @@ function cartItemFromAllocation(
     mrp: alloc.mrp,
     quantity: alloc.quantity,
     freeQty: 0,
+    dosageInstructions: line ? dosageInstructionsOf(line) : undefined,
+    clinicalNote: line ? clinicalNoteOf(line) : undefined,
+    // Raw numbers behind the cart's "Internal Note" microtext ("105 ml Rx · 95 ml excess").
+    prescribedVolumeClinical: line?.prescribedVolumeClinical ?? undefined,
+    clinicalUom: line?.clinicalUom ?? undefined,
+    roundedPackCount: line?.roundedPackCount ?? undefined,
     discount: 0,
     gstRate: alloc.gstRate,
     availableStock: alloc.availableStock,

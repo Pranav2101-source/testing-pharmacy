@@ -12,8 +12,11 @@ import { defaultInvoiceSettings, normalizeInvoiceSettings } from "@pharmacy/type
 import type { InvoiceSettingsConfig, PaperSize, InvoiceTheme, CustomField } from "@pharmacy/types";
 import { InvoicePrintView } from "@/components/billing/InvoicePrintView";
 import { ThermalReceiptView } from "@/components/billing/ThermalReceiptView";
+import { TaxWholesaleInvoiceView } from "@/components/billing/TaxWholesaleInvoiceView";
+import { A5LandscapeInvoiceView } from "@/components/billing/A5LandscapeInvoiceView";
 import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
 import { invalidateInvoicePrintConfigCache } from "@/lib/useInvoicePrintConfig";
+import { invoiceRendererFor } from "@/lib/invoiceRenderer";
 
 // ─── Mock data for the live preview ──────────────────────────────────────────
 
@@ -32,6 +35,8 @@ const MOCK_INVOICE: PrintInvoiceData = {
   paymentMode:      "CASH",
   paymentStatus:    "PAID",
   isInterstate:     false,
+  buyerGstin:       "07BBBBB1111B1Z1",
+  placeOfSupply:    "Delhi",
   items: [
     {
       medicineName: "Paracetamol 500mg",
@@ -67,6 +72,7 @@ const SECTIONS = [
   { id: "columns",   label: "Table Columns"    },
   { id: "totals",    label: "Financial Summary"},
   { id: "footer",    label: "Footer"           },
+  { id: "bank",      label: "Bank & Payment"   },
   { id: "numbering", label: "Numbering"        },
   { id: "custom",    label: "Custom Fields"    },
 ] as const;
@@ -223,7 +229,7 @@ export default function InvoiceSettingsPage() {
   const [error,    setError]    = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<SectionId>("paper");
 
-  const isThermal = config.paper.size === "thermal80" || config.paper.size === "thermal58";
+  const previewRenderer = invoiceRendererFor(config);
 
   // ── Load settings ──────────────────────────────────────────────
   useEffect(() => {
@@ -253,14 +259,19 @@ export default function InvoiceSettingsPage() {
     setSaving(true);
     setError(null);
     try {
-      // Strip currentSequence — it is managed server-side and must not be
-      // overwritten from the UI payload (would corrupt the invoice counter).
-      const { currentSequence: _seq, ...numberingToSave } = config.numbering;
-      const payload = { ...config, numbering: numberingToSave };
+      // Normalise the outgoing payload: re-asserts the GST-locked fields and
+      // stamps schemaVersion, so a non-compliant or unversioned config can never
+      // be persisted regardless of UI state. Then strip currentSequence — it is
+      // managed server-side and overwriting it from the UI corrupts the counter.
+      const normalized = normalizeInvoiceSettings(config);
+      const { currentSequence: _seq, ...numberingToSave } = normalized.numbering;
+      const payload = { ...normalized, numbering: numberingToSave };
       await api.put("/billing/settings", payload);
-      // Bust the module-level cache so BillingNewPage picks up the new config
-      // immediately on the next invoice print without a full page reload.
+      // Bust the shared print-config cache AND notify any billing screen that is
+      // already mounted, so the next bill prints with the new config without a
+      // page reload.
       invalidateInvoicePrintConfigCache();
+      setConfig(normalized);
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (err) {
@@ -309,58 +320,103 @@ export default function InvoiceSettingsPage() {
     switch (activeSection) {
 
       // ── Paper & Theme ────────────────────────────────────────────
-      case "paper": return (
+      case "paper": {
+        const isWholesale = config.theme === "tax-wholesale";
+        const scalePct = Math.round((config.paper.contentScale ?? 1) * 100);
+        const textSize = scalePct <= 95 ? "compact" : scalePct >= 105 ? "large" : "normal";
+        return (
         <div className="space-y-4">
-          <SectionCard title="Invoice Theme">
-            <div className="py-3 grid grid-cols-3 gap-2">
-              {(["classic", "modern", "minimal"] as InvoiceTheme[]).map(t => (
+          <SectionCard title="Invoice Format">
+            <div className="py-3 grid grid-cols-2 gap-2">
+              {([
+                { value: "classic",       label: "Standard",        icon: "📄", sub: "Portrait bill — A4 or A5, or a thermal receipt" },
+                { value: "tax-wholesale", label: "Tax / Wholesale",  icon: "🧾", sub: "A4 landscape — bordered item grid, bank box, buyer GSTIN" },
+              ] as { value: InvoiceTheme; label: string; icon: string; sub: string }[]).map(t => (
                 <button
-                  key={t}
-                  onClick={() => setSection("theme", t)}
+                  key={t.value}
+                  onClick={() => setSection("theme", t.value)}
                   className={cn(
-                    "rounded-xl border-2 p-3 text-[12px] font-semibold capitalize transition-all",
-                    config.theme === t
-                      ? "border-blue-600 bg-blue-50 text-blue-700"
-                      : "border-slate-200 hover:border-slate-300 text-slate-600"
+                    "rounded-xl border-2 p-3 text-left transition-all",
+                    (t.value === "tax-wholesale" ? isWholesale : !isWholesale)
+                      ? "border-blue-600 bg-blue-50"
+                      : "border-slate-200 hover:border-slate-300"
                   )}
                 >
-                  <div className="h-8 rounded-md mb-2 flex items-center justify-center text-[18px]">
-                    {t === "classic" ? "📄" : t === "modern" ? "✨" : "📋"}
-                  </div>
-                  {t}
+                  <div className="text-[18px] mb-1">{t.icon}</div>
+                  <p className={cn("text-[12px] font-semibold",
+                    (t.value === "tax-wholesale" ? isWholesale : !isWholesale) ? "text-blue-700" : "text-slate-700")}>
+                    {t.label}
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">{t.sub}</p>
                 </button>
               ))}
             </div>
           </SectionCard>
 
-          <SectionCard title="Paper Size">
-            <div className="py-3 grid grid-cols-2 gap-2">
-              {([
-                { value: "A4",        label: "A4",          sub: "210×297mm" },
-                { value: "A5",        label: "A5",          sub: "148×210mm" },
-                { value: "thermal80", label: "Thermal 80mm",sub: "Receipt printer" },
-                { value: "thermal58", label: "Thermal 58mm",sub: "Small receipt" },
-              ] as { value: PaperSize; label: string; sub: string }[]).map(opt => (
-                <button
-                  key={opt.value}
-                  onClick={() => setSection("paper", { size: opt.value })}
-                  className={cn(
-                    "rounded-xl border-2 p-3 text-left transition-all",
-                    config.paper.size === opt.value
-                      ? "border-blue-600 bg-blue-50"
-                      : "border-slate-200 hover:border-slate-300"
-                  )}
-                >
-                  <p className={cn("text-[13px] font-semibold", config.paper.size === opt.value ? "text-blue-700" : "text-slate-700")}>
-                    {opt.label}
-                  </p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">{opt.sub}</p>
-                </button>
-              ))}
-            </div>
-          </SectionCard>
+          {isWholesale ? (
+            <SectionCard title="Paper">
+              <p className="text-[12px] text-slate-500 py-3">
+                The Tax / Wholesale format always prints on <strong>A4 landscape</strong> (297 × 210&nbsp;mm).
+                Set the printer to A4 / Landscape.
+              </p>
+            </SectionCard>
+          ) : (
+            <SectionCard title="Paper Size">
+              <div className="py-3 grid grid-cols-2 gap-2">
+                {([
+                  { value: "A4",        label: "A4",             sub: "210×297mm portrait" },
+                  { value: "A5",        label: "A5 Half-Sheet",   sub: "210×148mm landscape — 2 per folded A4" },
+                  { value: "thermal80", label: "Thermal 80mm",    sub: "Receipt printer" },
+                  { value: "thermal58", label: "Thermal 58mm",    sub: "Small receipt" },
+                ] as { value: PaperSize; label: string; sub: string }[]).map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={() => setSection("paper", { size: opt.value })}
+                    className={cn(
+                      "rounded-xl border-2 p-3 text-left transition-all",
+                      config.paper.size === opt.value
+                        ? "border-blue-600 bg-blue-50"
+                        : "border-slate-200 hover:border-slate-300"
+                    )}
+                  >
+                    <p className={cn("text-[13px] font-semibold", config.paper.size === opt.value ? "text-blue-700" : "text-slate-700")}>
+                      {opt.label}
+                    </p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">{opt.sub}</p>
+                  </button>
+                ))}
+              </div>
+            </SectionCard>
+          )}
+
+          {config.paper.size !== "thermal58" && config.paper.size !== "thermal80" && (
+            <SectionCard title="Page Layout">
+              <NumberRow
+                label="Page margin (mm)"
+                value={config.paper.marginMm ?? (config.paper.size === "A5" ? 4 : 10)}
+                min={2} max={25}
+                onChange={v => setSection("paper", { marginMm: Math.min(25, Math.max(2, v)) })}
+              />
+              {(isWholesale || config.paper.size === "A5") && (
+                <SegmentRow
+                  label="Text size"
+                  value={textSize}
+                  onChange={v => setSection("paper", { contentScale: v === "compact" ? 0.9 : v === "large" ? 1.1 : 1 })}
+                  options={[
+                    { value: "compact", label: "Compact" },
+                    { value: "normal",  label: "Normal"  },
+                    { value: "large",   label: "Large"   },
+                  ]}
+                />
+              )}
+              <p className="text-[11px] text-slate-400 py-2">
+                Smaller margins and Compact text fit more lines on one page.
+              </p>
+            </SectionCard>
+          )}
         </div>
-      );
+        );
+      }
 
       // ── Branding ─────────────────────────────────────────────────
       case "branding": return (
@@ -426,6 +482,8 @@ export default function InvoiceSettingsPage() {
           <ToggleRow label="Prescription No."   value={config.patient.showPrescriptionNo} onChange={v => setSection("patient", { showPrescriptionNo: v })} />
           <ToggleRow label="Invoice Date & Time"value={config.patient.showInvoiceDate}    onChange={v => setSection("patient", { showInvoiceDate: v })} />
           <ToggleRow label="Cashier Name"       value={config.patient.showCashier}        onChange={v => setSection("patient", { showCashier: v })} />
+          <ToggleRow label="Place of Supply"    value={config.patient.showPlaceOfSupply}  onChange={v => setSection("patient", { showPlaceOfSupply: v })} sub="Destination state line on the invoice" />
+          <ToggleRow label="Buyer GSTIN / Wholesale" value={config.patient.showBuyerGstin} onChange={v => setSection("patient", { showBuyerGstin: v })} sub="Shows a Wholesale Details block on B2B bills (tax-wholesale layout)" />
         </SectionCard>
       );
 
@@ -482,9 +540,30 @@ export default function InvoiceSettingsPage() {
             )}
           </SectionCard>
           <SectionCard title="UPI / QR Code">
-            <ToggleRow label="Show UPI QR Code" value={config.footer.showQrCode} onChange={v => setSection("footer", { showQrCode: v })} />
+            <ToggleRow label="Show UPI QR Code" value={config.footer.showQrCode} onChange={v => setSection("footer", { showQrCode: v })} sub="Prints the UPI ID as text on the classic/thermal formats, and a scannable QR on Tax / Wholesale" />
             {config.footer.showQrCode && (
               <InputRow label="UPI ID" value={config.footer.upiId} onChange={v => setSection("footer", { upiId: v })} placeholder="pharmacy@upi" />
+            )}
+          </SectionCard>
+        </div>
+      );
+
+      // ── Bank & Payment ───────────────────────────────────────────
+      case "bank": return (
+        <div className="space-y-4">
+          <div className="flex items-start gap-2.5 bg-blue-50 border border-blue-200 rounded-xl px-3.5 py-2.5">
+            <AlertTriangle className="w-4 h-4 text-blue-500 flex-shrink-0 mt-0.5" strokeWidth={2} />
+            <p className="text-[12px] text-blue-700">The Bank Details box is drawn on the <strong>Tax / Wholesale</strong> layout. The other formats ignore it.</p>
+          </div>
+          <SectionCard title="Bank Details">
+            <ToggleRow label="Show Bank Details box" value={config.bank.show} onChange={v => setSection("bank", { show: v })} />
+            {config.bank.show && (
+              <>
+                <InputRow label="Bank Name"      value={config.bank.bankName}      onChange={v => setSection("bank", { bankName: v })}      placeholder="State Bank of India" />
+                <InputRow label="Account Number" value={config.bank.accountNumber} onChange={v => setSection("bank", { accountNumber: v })} placeholder="123456789012" />
+                <InputRow label="IFSC Code"      value={config.bank.ifsc}          onChange={v => setSection("bank", { ifsc: v })}          placeholder="SBIN0000123" />
+                <InputRow label="Branch"         value={config.bank.branch}        onChange={v => setSection("bank", { branch: v })}        placeholder="MG Road, City" />
+              </>
             )}
           </SectionCard>
         </div>
@@ -689,26 +768,39 @@ export default function InvoiceSettingsPage() {
 
           {/* Scaled preview */}
           <div className="flex-1 overflow-y-auto overflow-x-hidden flex items-start justify-center p-8">
-            {isThermal ? (
+            {previewRenderer === "thermal" ? (
               <div className="shadow-2xl rounded-sm overflow-hidden">
                 <ThermalReceiptView invoice={MOCK_INVOICE} config={config} />
               </div>
-            ) : (
-              <div
-                style={{
-                  transform: "scale(0.54)",
-                  transformOrigin: "top center",
-                  width: `${100 / 0.54}%`,
-                  pointerEvents: "none",
-                }}
-              >
-                <div className="flex justify-center">
-                  <div className="shadow-2xl">
-                    <InvoicePrintView invoice={MOCK_INVOICE} config={config} />
+            ) : (() => {
+              // Landscape formats are wider/shorter — scale them down more so the
+              // page fits the preview column at its true aspect ratio.
+              const previewScale =
+                previewRenderer === "wholesale"   ? 0.42 :
+                previewRenderer === "a5landscape" ? 0.58 :
+                0.54;
+              return (
+                <div
+                  style={{
+                    transform: `scale(${previewScale})`,
+                    transformOrigin: "top center",
+                    width: `${100 / previewScale}%`,
+                    pointerEvents: "none",
+                  }}
+                >
+                  <div className="flex justify-center">
+                    <div className="shadow-2xl">
+                      {previewRenderer === "a5landscape"
+                        ? <A5LandscapeInvoiceView invoice={MOCK_INVOICE} config={config} preview />
+                        : previewRenderer === "wholesale"
+                        ? <TaxWholesaleInvoiceView invoice={MOCK_INVOICE} config={config} />
+                        : <InvoicePrintView invoice={MOCK_INVOICE} config={config} />
+                      }
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
         </div>
       </div>

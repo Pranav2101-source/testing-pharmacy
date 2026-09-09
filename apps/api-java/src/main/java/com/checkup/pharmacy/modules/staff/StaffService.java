@@ -30,8 +30,11 @@ public class StaffService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final com.checkup.pharmacy.security.AuthStatusCache authStatusCache;
 
-    public StaffService(UserRepository userRepository, PasswordEncoder passwordEncoder) {
+    public StaffService(UserRepository userRepository, PasswordEncoder passwordEncoder,
+                        com.checkup.pharmacy.security.AuthStatusCache authStatusCache) {
+        this.authStatusCache = authStatusCache;
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
     }
@@ -91,6 +94,7 @@ public class StaffService {
                 user.activate();
             } else {
                 user.deactivate();
+                authStatusCache.invalidate(user.getId());
             }
         }
 
@@ -104,6 +108,7 @@ public class StaffService {
             throw new BadRequestException("At least one active owner is required");
         }
         user.deactivate();
+        authStatusCache.invalidate(user.getId());
     }
 
     private User load(String id) {

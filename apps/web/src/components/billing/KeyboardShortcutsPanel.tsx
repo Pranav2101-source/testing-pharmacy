@@ -120,7 +120,7 @@ export function KeyboardShortcutsPanel() {
                     <Row label="Open the batch picker" keys={<Kbd>←</Kbd>} />
                     <Row label="Open alternatives" keys={<Kbd>→</Kbd>} />
                     <Row label="Navigate / select, once open" keys={<><Kbd>↑</Kbd><Kbd>↓</Kbd><Kbd>↵</Kbd></>} />
-                    <Row label="Flip Strip / loose (in the Qty box)" keys={<Kbd>L</Kbd>} />
+                    <Row label="Flip Strip / loose (anywhere on a cart row)" keys={<Kbd>L</Kbd>} />
                   </Group>
 
                   <Group icon={ScanBarcode} iconBg="bg-sky-100" iconColor="text-sky-600" title="Barcode scanning">
@@ -132,11 +132,19 @@ export function KeyboardShortcutsPanel() {
                   </Group>
 
                   <Group icon={Save} iconBg="bg-emerald-100" iconColor="text-emerald-600" title="Save & bill">
-                    <Row label="Save & Print" keys={<Kbd>F9</Kbd>} />
+                    <Row label="Save & Print — save, print, next patient" keys={<Kbd>F9</Kbd>} />
+                    <Row label="Save & Print (when not in a field)" keys={<Kbd>Enter</Kbd>} />
                     <Row label="Save & New" keys={<Kbd>F8</Kbd>} />
-                    <Row label="Save as Draft" keys={<><Kbd>Ctrl</Kbd><Kbd>S</Kbd></>} />
+                    <Row label="Save as Draft" keys={<><Kbd>Ctrl/⌘</Kbd><Kbd>S</Kbd></>} />
                     <Row label="Set payment mode (Cash/UPI/Card/Credit)" keys={<><Kbd>Alt</Kbd><Kbd>1-4</Kbd></>} />
-                    <Row label="Dismiss receipt → next bill" keys={<Kbd>Esc</Kbd>} />
+                    <Row label="Dismiss the receipt, else clear the bill" keys={<Kbd>Esc</Kbd>} />
+                    <div className="flex items-center gap-1.5 pt-1.5 mt-1 border-t border-slate-100">
+                      <span className="text-[11px] text-slate-400 leading-snug">
+                        On most laptops the top row is media keys by default — press{" "}
+                        <Kbd>Fn</Kbd> <Kbd>F9</Kbd> / <Kbd>Fn</Kbd> <Kbd>F8</Kbd>, or turn on
+                        "F1–F12 as function keys" in your keyboard settings.
+                      </span>
+                    </div>
                   </Group>
 
                   <Group icon={Shuffle} iconBg="bg-amber-100" iconColor="text-amber-600" title="This cheat sheet">

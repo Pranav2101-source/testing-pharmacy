@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowRight } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { useBillingStore, type CartItem } from "@/components/billing/useBillingStore";
+import { formatMeasuredAmount, isResolvedMeasured, measuredPackSize } from "@/lib/measuredUnits";
 
 type RxItem = {
   id: string;
@@ -9,7 +10,19 @@ type RxItem = {
   medicineId: string | null;
   quantity: number;
   dispensedQty: number;
+  /** For a measured (mL/g) line: what the clinic prescribed, and the pack count it resolved to. */
+  clinicalUom?: string | null;
+  roundedPackCount?: number | null;
 };
+
+/** "2 bottles (200 ml) left" for a measured line, "8 left" otherwise — never a naked number. */
+function remainingLabel(line: RxItem): string {
+  const remaining = line.quantity - line.dispensedQty;
+  if (isResolvedMeasured(line)) {
+    return `${formatMeasuredAmount(remaining, line.clinicalUom, measuredPackSize(line))} left`;
+  }
+  return `${remaining} left`;
+}
 
 type RxRecord = {
   id: string;
@@ -79,7 +92,7 @@ export default function PrescriptionFulfilmentPanel({ prescriptionId }: { prescr
               <span className="min-w-0 flex-1 truncate text-slate-700">
                 {line.medicineName}
                 <span className={unconfirmedQty ? "text-amber-600" : "text-slate-400"}>
-                  {" "}· {unconfirmedQty ? "quantity not set" : `${line.quantity - line.dispensedQty} left`}
+                  {" "}· {unconfirmedQty ? "quantity not set" : remainingLabel(line)}
                 </span>
               </span>
               <ArrowRight className="h-3.5 w-3.5 shrink-0 text-slate-300" />

@@ -68,25 +68,39 @@ class GstCalculatorTest {
         }
 
         /**
-         * Documents a deliberate, legally-motivated inaccuracy rather than a defect.
+         * Documents a deliberate, legally-motivated inaccuracy rather than a defect — and
+         * WHERE it is now parked.
          *
-         * <p>GST requires CGST and SGST to be equal, and each is stored to 2dp. When
-         * the total tax is an odd number of paise the half cannot be represented, so
-         * the split rounds up on both sides and the invoice total lands a paisa above
-         * the MRP. The alternative — an unequal 7.63/7.62 split — reconciles to the
-         * rupee but is not a valid CGST/SGST pair.
+         * <p>GST requires CGST and SGST to be equal, and each is stored to 2dp. When the
+         * total tax is an odd number of paise the half cannot be represented, so the split
+         * rounds both sides the same way and (taxable + CGST + SGST) lands a paisa off the
+         * price. The alternative — an unequal 7.63/7.62 split — reconciles exactly but is
+         * not a valid CGST/SGST pair.
          *
-         * <p>If this test ever fails, someone has "fixed" the paisa and broken the
-         * equal-split requirement. Read this comment before changing it.
+         * <p>The line TOTAL now stays on the customer-facing price ({@code amount == 100.00}
+         * = MRP x qty): it is the gross, not a sum of the rounded tax parts. The unavoidable
+         * paisa therefore shows up as (taxable + CGST + SGST) summing to 100.01 in the tax
+         * breakdown — harmless on a B2C retail invoice, and far less confusing than the old
+         * behaviour where a clean Rs.90 x 2 line printed as 179.99 and every such bill
+         * carried a phantom round-off.
+         *
+         * <p>If this test fails because someone made (taxable + tax) sum exactly to
+         * {@code amount} again, check they did not either (a) push the line total back off
+         * the MRP, or (b) break the equal CGST/SGST split. Read this comment first.
          */
         @Test
-        @DisplayName("intra-state may land one paisa above MRP, because CGST must equal SGST")
-        void intraStateMayDifferByOnePaisaBecauseCgstMustEqualSgst() {
+        @DisplayName("intra-state: the line total is the price paid; the odd paisa lands in the tax split instead")
+        void intraStateTaxSplitMayNotSumExactlyToTheLineTotal() {
             var result = GstCalculator.calcGstFromMrp(bd("100"), 1, BigDecimal.ZERO, bd("18"), false);
 
             assertThat(result.cgst()).isEqualByComparingTo(bd("7.63"));
             assertThat(result.sgst()).isEqualByComparingTo(bd("7.63"));
-            assertThat(result.amount()).isEqualByComparingTo(bd("100.01"));
+            assertThat(result.amount())
+                    .as("the line total is what the customer pays — exactly the MRP")
+                    .isEqualByComparingTo(bd("100.00"));
+            assertThat(result.taxableAmount().add(result.cgst()).add(result.sgst()))
+                    .as("the equal split leaves the breakdown a paisa over — the documented tradeoff")
+                    .isEqualByComparingTo(bd("100.01"));
         }
 
         @Test
@@ -98,6 +112,19 @@ class GstCalculatorTest {
             // 450 / 1.05 = 428.5714... -> 428.57
             assertThat(result.taxableAmount()).isEqualByComparingTo(bd("428.57"));
             assertThat(result.taxableAmount().add(result.igst())).isEqualByComparingTo(bd("450.00"));
+        }
+
+        @Test
+        @DisplayName("a clean Rs.90 x 2 line totals exactly Rs.180.00, not Rs.179.99")
+        void cleanLineTotalsExactlyToTheMrp() {
+            // The live-review case: MRP 90, qty 2, 12% GST inclusive.
+            var result = GstCalculator.calcGstFromMrp(bd("90"), 2, BigDecimal.ZERO, bd("12"), false);
+
+            assertThat(result.amount()).isEqualByComparingTo(bd("180.00"));
+            assertThat(result.cgst()).isEqualByComparingTo(result.sgst());
+            assertThat(result.taxableAmount().add(result.totalGst()))
+                    .as("the odd tax paisa lands in the breakdown, a paisa under the line total")
+                    .isEqualByComparingTo(bd("179.99"));
         }
 
         @Test
@@ -207,8 +234,16 @@ class GstCalculatorTest {
                     assertThat(totals.igst()).as("igst, " + where).isEqualByComparingTo(igst);
                     assertThat(totals.totalGst()).as("totalGst, " + where)
                             .isEqualByComparingTo(cgst.add(sgst).add(igst));
-                    assertThat(totals.taxableAmount().add(totals.totalGst())).as("total, " + where)
-                            .isEqualByComparingTo(totals.totalAmount());
+                    // The header total is the sum of the LINE totals printed under it — the
+                    // customer-facing prices, added up — not (taxable + tax), which the equal
+                    // CGST/SGST split can leave a paisa off intra-state.
+                    BigDecimal paid = BigDecimal.ZERO;
+                    for (var line : lines) {
+                        paid = paid.add(GstCalculator.calcGstFromMrp(line.mrp(), line.quantity(),
+                                line.discountPct(), line.gstRate(), interstate, bd(billDiscount)).amount());
+                    }
+                    assertThat(totals.totalAmount()).as("total, " + where)
+                            .isEqualByComparingTo(paid.setScale(2, java.math.RoundingMode.HALF_UP));
                 }
             }
         }
@@ -292,7 +327,7 @@ class GstCalculatorTest {
             var billing = GstCalculator.calcGstFromMrp(bd("100"), 1, BigDecimal.ZERO, bd("18"), false);
 
             assertThat(purchase.amount()).isEqualByComparingTo(bd("118.00"));
-            assertThat(billing.amount()).isEqualByComparingTo(bd("100.01"));
+            assertThat(billing.amount()).isEqualByComparingTo(bd("100.00"));
         }
 
         @Test
@@ -400,10 +435,15 @@ class GstCalculatorTest {
         }
 
         @Test
-        @DisplayName("leaves the invoice adding up: taxable + GST == total")
-        void invoiceReconciles() {
+        @DisplayName("the invoice total is the discounted price the customer pays")
+        void invoiceTotalIsThePricePaid() {
+            // 1000 less 10% = 900.00, GST-inclusive.
             var t = GstCalculator.calcInvoiceTotals(oneLine, false, new BigDecimal("10"));
-            assertThat(t.taxableAmount().add(t.totalGst())).isEqualByComparingTo(t.totalAmount());
+            assertThat(t.totalAmount()).isEqualByComparingTo(new BigDecimal("900.00"));
+            // taxable + tax lands within a paisa of it — the equal CGST/SGST split, see
+            // FromMrp#intraStateTaxSplitMayNotSumExactlyToTheLineTotal.
+            assertThat(t.taxableAmount().add(t.totalGst()))
+                    .isCloseTo(new BigDecimal("900.00"), org.assertj.core.data.Offset.offset(new BigDecimal("0.01")));
         }
 
         @Test

@@ -21,6 +21,7 @@ import ReviewIngestedItemsPanel from "@/components/integration/ReviewIngestedIte
 import ConfirmQuantityPanel from "@/components/integration/ConfirmQuantityPanel";
 import StockActionPanel, { type StockInfo } from "@/components/integration/StockActionPanel";
 import { usePackRoundingDecision } from "@/hooks/usePackRoundingDecision";
+import { measuredWords, measuredPackSize, isResolvedMeasured } from "@/lib/measuredUnits";
 
 const SCHEDULE_TOOLTIP: Record<string, string> = {
   H:   "Schedule H — Prescription required",
@@ -54,6 +55,35 @@ function emptyCartMessage(
   return "None of these medicines are in stock right now";
 }
 
+/**
+ * For a measured (mL/g) prescription line, the two human sentences the pharmacist needs: what
+ * the clinic actually prescribed, and what will be handed over once it is rounded up to whole
+ * sealed packs (a bottle can't be split). Returns null for a countable line, or a measured line
+ * still held for a pack count (roundedPackCount not set yet).
+ */
+function measuredDispenseSummary(item: {
+  quantity: number;
+  prescribedVolumeClinical?: number | null;
+  clinicalUom?: string | null;
+  roundedPackCount?: number | null;
+  dosage?: string | null;
+  duration?: string | null;
+}) {
+  const volume = item.prescribedVolumeClinical;
+  const packs = item.roundedPackCount;
+  if (volume == null || !item.clinicalUom || packs == null || packs <= 0) return null;
+  const { unit, pack } = measuredWords(item.clinicalUom);
+  const packSize = Math.round(item.quantity / packs);
+  const excess = item.quantity - volume;
+  const dosePart = [item.dosage, item.duration].filter(Boolean).join(" · ");
+  return {
+    prescribed: `Prescribed: ${volume} ${unit}${dosePart ? ` (${dosePart})` : ""}`,
+    dispense: `Dispense: ${packs} ${pack}${packs === 1 ? "" : "s"} of ${packSize} ${unit}`,
+    excess: excess > 0 ? `${excess} ${unit} over` : null,
+    roundedUp: excess > 0,
+  };
+}
+
 type TriageItem = {
   id: string;
   medicineName: string;
@@ -73,6 +103,12 @@ type TriageItem = {
   quantityAutoCalculated?: boolean;
   /** How the quantity was calculated, or why it couldn't be — see PrescriptionQuantityCalculator (backend). */
   quantityCalculationNote?: string | null;
+  /** For a measured (mL/g) line: the clinical volume the clinic prescribed. Null for a countable line. */
+  prescribedVolumeClinical?: number | null;
+  /** "ML" | "GM" — the unit `prescribedVolumeClinical` is in. */
+  clinicalUom?: string | null;
+  /** Whole sealed packs a measured course was rounded up to; null while pack size unknown / countable. */
+  roundedPackCount?: number | null;
   suggestions?: { medicineId: string; name: string; genericName: string | null; strength: string | null; form: string | null; similarity: number }[];
 };
 
@@ -398,6 +434,14 @@ export default function ClinicPrescriptionTriage({
                 const done = !unconfirmedQty && remaining <= 0;
                 const needsPharmacistLink = item.medicineId === null || unconfirmedQty;
                 const detailLine = [item.dosage, item.duration].filter(Boolean).join(" · ") || "No dosage noted";
+                const measured = measuredDispenseSummary(item);
+                // The big number on the right: sealed-pack count for a measured line, piece
+                // count otherwise.
+                const qtyDisplay = unconfirmedQty
+                  ? "—"
+                  : measured
+                    ? `${item.roundedPackCount} ${measuredWords(item.clinicalUom).pack}${item.roundedPackCount === 1 ? "" : "s"}`
+                    : String(done ? item.quantity : remaining);
                 return (
                   <div
                     key={item.id}
@@ -432,9 +476,26 @@ export default function ClinicPrescriptionTriage({
                           )}
                         </div>
                         <p className="text-[11.5px] text-slate-500 mt-0.5">
-                          {detailLine}
+                          {measured ? measured.prescribed : detailLine}
                           {item.notes && <span className="text-slate-400"> · {item.notes}</span>}
                         </p>
+                        {measured && !done && (
+                          <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[11.5px] font-semibold text-violet-700">
+                              {measured.dispense}
+                            </span>
+                            {measured.roundedUp && (
+                              <>
+                                <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[9px] font-bold uppercase tracking-wide">
+                                  Rounded up
+                                </span>
+                                {measured.excess && (
+                                  <span className="text-[10.5px] text-amber-700">{measured.excess}</span>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
                         {item.substituted && item.dispensedMedicineName && (
                           <p className="text-[10.5px] text-violet-600 mt-0.5">
                             Already dispensed as <span className="font-semibold">{item.dispensedMedicineName}</span> on an earlier sale
@@ -443,10 +504,11 @@ export default function ClinicPrescriptionTriage({
                       </div>
                       <div className="text-right flex-shrink-0">
                         <p className={cn(
-                          "text-[15px] font-bold tabular-nums",
+                          measured ? "text-[12.5px]" : "text-[15px]",
+                          "font-bold tabular-nums",
                           unconfirmedQty ? "text-amber-600" : "text-slate-800",
                         )}>
-                          {unconfirmedQty ? "—" : done ? item.quantity : remaining}
+                          {qtyDisplay}
                         </p>
                         <p className="text-[10px] text-slate-400 uppercase tracking-wide">
                           {unconfirmedQty ? "not set" : done ? "dispensed" : item.dispensedQty > 0 ? "left" : "qty"}
@@ -473,6 +535,9 @@ export default function ClinicPrescriptionTriage({
                         prescriptionItemId={item.id}
                         stock={stockByItemId[item.id]}
                         stockCheckFailed={stockQuery.isError}
+                        measured={isResolvedMeasured(item)
+                          ? { clinicalUom: item.clinicalUom as string, packSize: measuredPackSize(item) }
+                          : undefined}
                         resolution={resolutions[item.id]}
                         onResolve={(r) => resolveItem(item.id, r)}
                         onClear={() => clearResolution(item.id)}

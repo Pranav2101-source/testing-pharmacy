@@ -161,6 +161,17 @@ public class BillingService {
 
     private static final java.time.ZoneOffset IST = java.time.ZoneOffset.ofHoursMinutes(5, 30);
 
+    /**
+     * Home / Sales dashboard stats — nine serial aggregate queries. Cached in-process for
+     * {@code app.cache.dashboard-stats-ttl-seconds} (default 30s) per pharmacy: this is hit
+     * on every home and sales screen load and by the reports Overview, so under load a busy
+     * pharmacy's staff would otherwise fire the whole set many times a minute against a
+     * small connection pool. The key is tenant-scoped (no-arg method + TenantAwareKeyGenerator).
+     * A 30s-stale glanceable overview is acceptable — no figure here is filed or reconciled.
+     */
+    @org.springframework.cache.annotation.Cacheable(
+            cacheNames = com.checkup.pharmacy.config.CacheConfig.DASHBOARD_STATS,
+            cacheManager = "caffeineCacheManager")
     @Transactional(readOnly = true)
     public com.checkup.pharmacy.modules.billing.dto.DashboardStatsResponse getDashboardStats() {
         String pharmacyId = TenantContext.pharmacyId();
@@ -539,9 +550,17 @@ public class BillingService {
         // storedPurchaseRate are per-piece and the batch is decremented in pieces below.
         // The line's stored `mrp` is ALWAYS the printed pack MRP (a reprint of a loose
         // sale then shows the real strip MRP); the per-piece price charged is `rate`.
+        // unitsPerPack is 1 for a pack line (the GST maths treats a pack line as one sellable
+        // unit). effUnitsPerPack is the medicine's REAL pack multiple regardless of pack/loose
+        // — needed to convert a whole-pack sale back into the base-unit (tablet / mL) count a
+        // prescription line is measured in when recording what was dispensed against it.
         record ResolvedLine(Inventory batch, InvoiceItemRequest req, BigDecimal gstRate, GstCalculator.MrpGstBreakdown gst,
-                            BigDecimal rate, BigDecimal storedPurchaseRate, int unitsPerPack,
+                            BigDecimal rate, BigDecimal storedPurchaseRate, int unitsPerPack, int effUnitsPerPack,
                             boolean loose, String location) {
+            /** Base units (tablets / mL / g) this line hands over — pieces for a loose line, packs × pack size otherwise. */
+            int dispensedBaseUnits() {
+                return loose ? req.quantity() : req.quantity() * Math.max(1, effUnitsPerPack);
+            }
         }
         List<ResolvedLine> lines = new ArrayList<>();
         List<GstCalculator.MrpLineInput> totalsInput = new ArrayList<>();
@@ -661,7 +680,24 @@ public class BillingService {
                     : batch.getPurchaseRate();
             String location = null; // shelf/rack location display is a Tier 2 inventory-list concern; not resolved here to avoid an extra join per line
 
-            lines.add(new ResolvedLine(batch, item, gstRate, gst, rate, storedPurchaseRate, unitsPerPack, loose, location));
+            // The medicine's real pack multiple, whichever way this line sells. For a loose
+            // line it is `unitsPerPack` (already validated > 1 above); for a pack line, resolve
+            // the same COALESCE(override, catalogue) the loose path uses. Kept out of a ternary
+            // on purpose — mixing `int unitsPerPack` with a nullable Integer there unboxes the
+            // Integer branch and NPEs on an unclassified medicine.
+            int effUnitsPerPack;
+            if (loose) {
+                effUnitsPerPack = unitsPerPack;
+            } else {
+                Integer effUppBox = looseUppOverrideByMedicineId.get(effMedicineId);
+                if (effUppBox == null) {
+                    effUppBox = eff != null ? eff.getUnitsPerPack() : batch.productUnitsPerPack();
+                }
+                effUnitsPerPack = effUppBox != null && effUppBox > 1 ? effUppBox : 1;
+            }
+
+            lines.add(new ResolvedLine(batch, item, gstRate, gst, rate, storedPurchaseRate, unitsPerPack,
+                    effUnitsPerPack, loose, location));
             totalsInput.add(new GstCalculator.MrpLineInput(batch.getMrp(), item.quantity(), item.discountOrZero(),
                     gstRate, unitsPerPack, loose));
         }
@@ -674,6 +710,9 @@ public class BillingService {
         GstCalculator.InvoiceTotals itemTotals =
                 GstCalculator.calcInvoiceTotals(totalsInput, isInterstate, req.billDiscountPctOrZero());
 
+        // The payable is the sum of the LINE totals the customer sees (itemTotals.totalAmount
+        // is exactly that) plus bill-level charges — not (taxable + GST), which the equal
+        // CGST/SGST split can leave a paisa short intra-state.
         BigDecimal preRound = itemTotals.totalAmount()
                 .add(req.extraChargesOrZero()).add(req.adjustmentAmountOrZero());
         // Refuse, rather than silently clamp to zero.
@@ -700,10 +739,13 @@ public class BillingService {
         // satisfies, from its own columns:
         //   taxableAmount + totalGst + extraCharges + adjustmentAmount + roundOff
         //     == totalAmount
-        // Before, the gap between taxable+GST and the total was an unexplained lump —
-        // the extra charges and the adjustment were never written down anywhere, so a
-        // bill that used them could not be reconciled by anyone afterwards.
-        BigDecimal roundOff = GstCalculator.round2(finalTotal.subtract(preRound));
+        // It now carries two things: the rupee rounding, AND the sub-paisa the equal
+        // CGST/SGST split cannot represent (which used to surface as a line total a paisa
+        // off the MRP). Derived from the stored TAX columns, not `preRound`, so the identity
+        // above holds against exactly the values written to the row.
+        BigDecimal taxColumnsTotal = itemTotals.taxableAmount().add(itemTotals.totalGst())
+                .add(req.extraChargesOrZero()).add(req.adjustmentAmountOrZero());
+        BigDecimal roundOff = GstCalculator.round2(finalTotal.subtract(taxColumnsTotal));
         // Already covers line AND bill discounts — see calcInvoiceTotals.
         BigDecimal discountAmount = GstCalculator.round2(itemTotals.discountAmount());
 
@@ -892,17 +934,24 @@ public class BillingService {
             // Otherwise by medicine, which is the granularity a prescription is written at.
             // Two batches of the same medicine on one bill are one dispensing event as far
             // as the prescription is concerned.
+            // A prescribed line's quantity is a BASE-UNIT count (12 tablets, 200 ml) — never a
+            // pack count. A whole-pack sale therefore has to be converted back to pieces before
+            // it is recorded against the line, or a 12-tablet course filled by one strip of 15
+            // records "1", never reaches isFullyDispensed(), and the prescription is stuck
+            // PARTIAL forever (and the EMR callback never flips to DISPENSED). A loose line is
+            // already in pieces. See ResolvedLine.dispensedBaseUnits().
             Map<String, Integer> dispensedByMedicineId = new HashMap<>();
             Map<String, Attribution> attributedByItemId = new HashMap<>();
             for (ResolvedLine line : lines) {
                 String linkedItemId = line.req().prescriptionItemId();
+                int dispensedBaseUnits = line.dispensedBaseUnits();
                 if (linkedItemId != null && !linkedItemId.isBlank()) {
                     attributedByItemId.merge(linkedItemId,
-                            new Attribution(line.req().quantity(), line.batch().getMedicineId(),
+                            new Attribution(dispensedBaseUnits, line.batch().getMedicineId(),
                                     line.batch().productName()),
                             Attribution::plus);
                 } else {
-                    dispensedByMedicineId.merge(line.batch().getMedicineId(), line.req().quantity(), Integer::sum);
+                    dispensedByMedicineId.merge(line.batch().getMedicineId(), dispensedBaseUnits, Integer::sum);
                 }
             }
             List<PrescriptionItem> settled =

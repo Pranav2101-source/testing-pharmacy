@@ -65,6 +65,14 @@
             <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
 
+        <!-- Caffeine — in-process cache for the hottest per-request reads (auth status,
+             dashboard stats). No network hop, no extra load on the single Redis. Version
+             managed by spring-boot-starter-parent. -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+
         <!-- Mail — replaces nodemailer (used once the mailer module is ported) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

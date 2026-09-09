@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   defaultInvoiceSettings,
   normalizeInvoiceSettings,
+  enforceGstLockedFields,
+  CURRENT_SCHEMA_VERSION,
   GST_LOCKED_FIELDS,
   type InvoiceSettingsConfig,
 } from "@pharmacy/types";
@@ -49,6 +51,30 @@ describe("filling out partial configs", () => {
     expect(result.numbering).toEqual(defaultInvoiceSettings.numbering);
     expect(result.policy).toEqual(defaultInvoiceSettings.policy);
     expect(result.theme).toBe("modern");
+  });
+
+  it("fills the bank section for a config saved before it existed", () => {
+    // TaxWholesaleInvoiceView reads config.bank.* without optional chaining.
+    const result = normalizeInvoiceSettings({ theme: "tax-wholesale" });
+    expect(result.bank).toEqual(defaultInvoiceSettings.bank);
+    expect(result.theme).toBe("tax-wholesale");
+  });
+
+  it("keeps stored bank details and fills the rest", () => {
+    const result = normalizeInvoiceSettings({ bank: { show: true, ifsc: "SBIN0000123" } as never });
+    expect(result.bank.show).toBe(true);
+    expect(result.bank.ifsc).toBe("SBIN0000123");
+    expect(result.bank.bankName).toBe("");
+  });
+
+  it("keeps the new patient toggles under the pharmacy's control", () => {
+    const result = normalizeInvoiceSettings({
+      patient: { showBuyerGstin: true, showPlaceOfSupply: false } as never,
+    });
+    expect(result.patient.showBuyerGstin).toBe(true);
+    expect(result.patient.showPlaceOfSupply).toBe(false);
+    // untouched sibling still defaults
+    expect(result.patient.showName).toBe(defaultInvoiceSettings.patient.showName);
   });
 
   it("preserves top-level scalars", () => {
@@ -196,5 +222,156 @@ describe("numbering and policy survive normalisation", () => {
 
   it("keeps a custom return window", () => {
     expect(normalizeInvoiceSettings({ policy: { returnWindowDays: 15 } }).policy.returnWindowDays).toBe(15);
+  });
+});
+
+// ─── Migration & fallback guard (zero data loss) ──────────────────────────────
+
+describe("deep merge — never crashes, never drops a preference", () => {
+  it("stamps the current schema version on every read", () => {
+    expect(normalizeInvoiceSettings({}).schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(normalizeInvoiceSettings(null).schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+    expect(normalizeInvoiceSettings({ schemaVersion: 1 } as never).schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+  });
+
+  it("survives a completely malformed stored value", () => {
+    // Postgres' json column would reject invalid syntax, but a valid-JSON value of
+    // the wrong TYPE can still land there (a bad migration, a hand edit).
+    for (const junk of ["nonsense", 42, true, [1, 2, 3], "", "null"] as unknown[]) {
+      expect(() => normalizeInvoiceSettings(junk as never)).not.toThrow();
+      expect(normalizeInvoiceSettings(junk as never)).toEqual(defaultInvoiceSettings);
+    }
+  });
+
+  it("a section stored with the wrong type falls back to its default, siblings survive", () => {
+    const result = normalizeInvoiceSettings({
+      totals: "corrupt" as never,
+      footer: { thankYouText: "See you soon" } as never,
+      branding: [] as never,
+    });
+    expect(result.totals).toEqual(defaultInvoiceSettings.totals);
+    expect(result.branding).toEqual(defaultInvoiceSettings.branding);
+    expect(result.footer.thankYouText).toBe("See you soon");           // kept
+    expect(result.footer.terms).toBe(defaultInvoiceSettings.footer.terms); // backfilled
+  });
+
+  it("a leaf stored with the wrong primitive type falls back", () => {
+    const result = normalizeInvoiceSettings({
+      numbering: { prefix: "BILL", counterLength: "8" } as never, // string where number expected
+      branding: { primaryColor: 123, watermarkText: "DUPLICATE" } as never,
+    });
+    expect(result.numbering.prefix).toBe("BILL");                        // kept
+    expect(result.numbering.counterLength).toBe(defaultInvoiceSettings.numbering.counterLength); // rejected
+    expect(result.branding.primaryColor).toBe(defaultInvoiceSettings.branding.primaryColor);    // rejected
+    expect(result.branding.watermarkText).toBe("DUPLICATE");             // kept
+  });
+
+  it("keeps a nullable field set either way", () => {
+    expect(normalizeInvoiceSettings({ branding: { logoUrl: "https://x/logo.png" } as never }).branding.logoUrl)
+      .toBe("https://x/logo.png");
+    expect(normalizeInvoiceSettings({ branding: { logoUrl: null } as never }).branding.logoUrl).toBeNull();
+  });
+
+  it("carries an optional stored-only key through (paper.marginMm has no default)", () => {
+    const result = normalizeInvoiceSettings({ paper: { size: "A5", marginMm: 6, contentScale: 1.1 } as never });
+    expect(result.paper.size).toBe("A5");
+    expect(result.paper.marginMm).toBe(6);
+    expect(result.paper.contentScale).toBe(1.1);
+  });
+
+  it("carries an unknown section from a NEWER client through untouched (forward-compat)", () => {
+    const result = normalizeInvoiceSettings({ futureSection: { enabled: true } } as never) as Record<string, unknown>;
+    expect(result.futureSection).toEqual({ enabled: true });
+    expect(result.header).toEqual(normalizeInvoiceSettings({}).header); // known sections still filled
+  });
+
+  it("does not share mutable state with the defaults", () => {
+    const before = JSON.stringify(defaultInvoiceSettings);
+    const a = normalizeInvoiceSettings({});
+    a.footer.terms = "mutated";
+    a.columns.showBatch = false;
+    (a.customFields as unknown[]).push({ id: "x", label: "X", show: true, position: "header" });
+    expect(JSON.stringify(defaultInvoiceSettings)).toBe(before);
+  });
+});
+
+describe("legacy v1 config → migrated forward with every preference intact", () => {
+  // A realistic blob written by the app BEFORE this round: no schemaVersion, no
+  // `bank` section, no `theme: "tax-wholesale"`, no `paper.marginMm`, no
+  // `patient.showBuyerGstin` / `showPlaceOfSupply`, and several deliberate
+  // customisations the pharmacy made.
+  const V1: Record<string, unknown> = {
+    theme: "classic",
+    paper: { size: "A4" },
+    branding: { primaryColor: "#0a7d34", pharmacyNameOverride: "Sri Sai Medicals", pharmacyNameStyle: "italic" },
+    header: { align: "left", showFssai: true, showEmail: true },
+    patient: { showCashier: true, showPrescriptionNo: true },
+    columns: { showFreeQty: true, showBatch: false },
+    totals: { showSavings: false, showRoundOff: false },
+    footer: { thankYouText: "Dhanyavaad!", terms: "No returns.\nExchange within 24h.", showSignature: true },
+    numbering: { prefix: "SSM", separator: "-", counterLength: 5, autoFinancialYear: false, financialYear: "2024-25" },
+    customFields: [{ id: "ward", label: "Ward / Bed", show: true, position: "header" }],
+    policy: { returnWindowDays: 7 },
+  };
+
+  const migrated = normalizeInvoiceSettings(V1);
+
+  it("bumps the schema version", () => {
+    expect(migrated.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
+  });
+
+  it("keeps EVERY v1 preference", () => {
+    expect(migrated.branding.primaryColor).toBe("#0a7d34");
+    expect(migrated.branding.pharmacyNameOverride).toBe("Sri Sai Medicals");
+    expect(migrated.branding.pharmacyNameStyle).toBe("italic");
+    expect(migrated.header.align).toBe("left");
+    expect(migrated.header.showFssai).toBe(true);
+    expect(migrated.patient.showCashier).toBe(true);
+    expect(migrated.columns.showFreeQty).toBe(true);
+    expect(migrated.columns.showBatch).toBe(false);
+    expect(migrated.totals.showSavings).toBe(false);
+    expect(migrated.totals.showRoundOff).toBe(false);
+    expect(migrated.footer.thankYouText).toBe("Dhanyavaad!");
+    expect(migrated.footer.terms).toBe("No returns.\nExchange within 24h.");
+    expect(migrated.footer.showSignature).toBe(true);
+    expect(migrated.numbering.prefix).toBe("SSM");
+    expect(migrated.numbering.counterLength).toBe(5);
+    expect(migrated.numbering.autoFinancialYear).toBe(false);
+    expect(migrated.numbering.financialYear).toBe("2024-25");
+    expect(migrated.customFields).toEqual([{ id: "ward", label: "Ward / Bed", show: true, position: "header" }]);
+    expect(migrated.policy.returnWindowDays).toBe(7);
+  });
+
+  it("backfills the v2 additions with their defaults", () => {
+    expect(migrated.bank).toEqual(defaultInvoiceSettings.bank);
+    expect(migrated.patient.showBuyerGstin).toBe(false);
+    expect(migrated.patient.showPlaceOfSupply).toBe(true);
+  });
+
+  it("still re-asserts the GST-locked fields", () => {
+    expect(migrated.columns.showHsn).toBe(true);
+    expect(migrated.totals.showCgst).toBe(true);
+    expect(migrated.header.showGstin).toBe(true);
+  });
+});
+
+describe("enforceGstLockedFields — the write-path guarantee", () => {
+  it("forces every GST-locked field on before the payload is sent", () => {
+    const tampered = {
+      ...defaultInvoiceSettings,
+      header:  { ...defaultInvoiceSettings.header,  showGstin: false },
+      columns: { ...defaultInvoiceSettings.columns, showHsn: false, showGstRate: false, showTaxable: false },
+      totals:  {
+        ...defaultInvoiceSettings.totals,
+        showTaxable: false, showCgst: false, showSgst: false, showIgst: false, showGstBreakdown: false,
+      },
+    } as InvoiceSettingsConfig;
+
+    const safe = enforceGstLockedFields(tampered);
+    for (const path of Object.keys(GST_LOCKED_FIELDS)) {
+      const [section, field] = path.split(".");
+      expect((safe as unknown as Record<string, Record<string, unknown>>)[section!]![field!]).toBe(true);
+    }
+    expect(safe.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
   });
 });

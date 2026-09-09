@@ -277,9 +277,9 @@ class EmrQuantityCalculationEndToEndIT extends AbstractPostgresIT {
     }
 
     @Test
-    @DisplayName("a pharmacy pack-size override is enough to let a measured clinic quantity through, "
+    @DisplayName("a pharmacy pack-size override rounds a measured clinic volume up to whole sealed packs, "
             + "even when the shared catalogue never classified the medicine")
-    void anOverridePackSizeLetsAMeasuredClinicQuantityThrough() {
+    void anOverridePackSizeRoundsAMeasuredClinicVolumeUp() {
         Medicine unclassified = Medicine.create("Cetaphil Lotion", new BigDecimal("12"));
         unclassified.setPackaging(null, "ML");
         medicineRepository.save(unclassified);
@@ -298,7 +298,9 @@ class EmrQuantityCalculationEndToEndIT extends AbstractPostgresIT {
         PrescriptionItem saved = prescriptionItemRepository
                 .findByPrescriptionId(snapshot.pharmacyPrescriptionId()).get(0);
 
-        assertThat(saved.getQuantity()).isEqualTo(50);
+        assertThat(saved.getRoundedPackCount()).as("ceil(50 / 250) — a sealed 250 ml pack can't be split").isEqualTo(1);
+        assertThat(saved.getQuantity()).as("dispense target is one whole 250 ml pack").isEqualTo(250);
+        assertThat(saved.getPrescribedVolumeClinical()).isEqualByComparingTo("50");
         assertThat(saved.needsQuantityConfirmation()).isFalse();
     }
 
@@ -358,5 +360,75 @@ class EmrQuantityCalculationEndToEndIT extends AbstractPostgresIT {
         });
         assertThat(inventoryRepository.findById(batch.getId()).orElseThrow().getQuantity())
                 .as("8 bottles on hand - 1 sold").isEqualTo(7);
+    }
+
+    @Test
+    @DisplayName("105 ml liquid Rx against a 100 ml bottle -> 2 sealed bottles -> billed -> 2 packs deducted -> "
+            + "prescription DISPENSED -> dispense callback queued (never 105 bottles, never stuck PARTIAL)")
+    void measuredLiquidRoundsToWholeBottlesBillsAndClosesThePrescription() {
+        // A classified 100 ml syrup, sold sealed only (no loose override).
+        Medicine syrup = medicineRepository.save(Medicine.create("Benadryl Cough Syrup 100ml", new BigDecimal("12")));
+        syrup.setPackaging(100, "ML");
+        medicineRepository.save(syrup);
+        Inventory batch = inventoryRepository.save(Inventory.create(pharmacyId, syrup.getId(), "BEN-" + unique(),
+                future(), 5, new BigDecimal("40.00"), new BigDecimal("90.00"), 2, 2)); // 5 sealed 100 ml bottles
+        entityManager.flush();
+        entityManager.clear();
+
+        // 1) EMR sends the clinic's own computed volume: 5 ml TDS x 7 days = 105 ml.
+        var line = new EmrPrescriptionIngestRequest.Item("item-1", "Benadryl Cough Syrup 100ml", null, null, null,
+                105, "5 ml three times a day", "7 days", null);
+        var request = new EmrPrescriptionIngestRequest("tenant-liquid", "rx-" + unique(), null, "Dr. Rao", "MCI-9",
+                null, "Asha Verma", 30, null, null, null, null, null, List.of(line));
+        String prescriptionId = emrIntegrationService.ingest(request).pharmacyPrescriptionId();
+
+        // 2) Ingest rounded 105 ml up to 2 sealed bottles and kept the clinical figure beside it.
+        PrescriptionItem ingested = prescriptionItemRepository.findByPrescriptionId(prescriptionId).get(0);
+        assertThat(ingested.getMedicineId()).isEqualTo(syrup.getId());
+        assertThat(ingested.getRoundedPackCount()).as("ceil(105 / 100)").isEqualTo(2);
+        assertThat(ingested.getQuantity()).as("dispense target in mL — 2 sealed 100 ml bottles").isEqualTo(200);
+        assertThat(ingested.getPrescribedVolumeClinical()).isEqualByComparingTo("105");
+        assertThat(ingested.getClinicalUom()).isEqualTo("ML");
+        assertThat(ingested.isMeasuredRoundedUp()).isTrue();
+        assertThat(ingested.needsQuantityConfirmation()).as("ready to bill, not held").isFalse();
+
+        // 3) The dispensing plan allocates exactly 2 sealed bottles.
+        DispensingPlan plan = dispensingService.planForPrescription(prescriptionId);
+        assertThat(plan.lines()).singleElement().satisfies(pl -> {
+            assertThat(pl.fullyAllocated()).isTrue();
+            assertThat(pl.allocations()).singleElement().satisfies(a -> {
+                assertThat(a.saleUnit()).isEqualTo("PACK");
+                assertThat(a.quantity()).as("2 bottles, never 105").isEqualTo(2);
+            });
+        });
+
+        // 4) Bill those 2 bottles.
+        InvoiceResponse invoice = billingService.createInvoice(new CreateInvoiceRequest(
+                null, "Asha Verma", null, null, "Dr. Rao", prescriptionId, "CASH", "PAID", null, null, null,
+                null, null, null, null, null,
+                List.of(new InvoiceItemRequest(batch.getId(), 2, null, BigDecimal.ZERO, null, "PACK", null))));
+        entityManager.flush();
+        entityManager.clear();
+        assertThat(invoice.items()).singleElement().satisfies(l -> {
+            assertThat(l.saleUnit()).isEqualTo("PACK");
+            assertThat(l.quantity()).as("2 bottles billed").isEqualTo(2);
+        });
+
+        // 5) Inventory dropped by exactly 2 whole packs — not 105, not by unitsPerPack.
+        assertThat(inventoryRepository.findById(batch.getId()).orElseThrow().getQuantity())
+                .as("5 bottles on hand - 2 sold").isEqualTo(3);
+
+        // 6) The write-back is in base units (mL): 2 packs x 100 = 200 recorded against the
+        //    prescribed 200 — so the line and the prescription both close, instead of the line
+        //    recording "2" against "200" and the prescription being stuck PARTIAL forever.
+        PrescriptionItem afterSale = prescriptionItemRepository.findByPrescriptionId(prescriptionId).get(0);
+        assertThat(afterSale.getDispensedQty()).isEqualTo(200);
+        assertThat(afterSale.isFullyDispensed()).isTrue();
+
+        Prescription prescription = prescriptionRepository.findByIdAndPharmacyId(prescriptionId, pharmacyId).orElseThrow();
+        assertThat(prescription.getStatus().name()).isEqualTo("DISPENSED");
+        // 7) A clinic prescription -> the dispense callback is queued (delivered AFTER_COMMIT).
+        assertThat(prescription.getDispenseNotifyStatus())
+                .as("callback queued so the clinic chart flips to DISPENSED").isEqualTo("PENDING");
     }
 }

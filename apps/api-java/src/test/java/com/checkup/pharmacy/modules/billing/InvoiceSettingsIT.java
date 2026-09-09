@@ -626,6 +626,28 @@ class InvoiceSettingsIT extends AbstractPostgresIT {
         }
 
         @Test
+        @DisplayName("the tax-wholesale layout config (theme + bank details) round-trips")
+        void taxWholesaleLayoutConfigRoundTrips() throws Exception {
+            // The client renders this layout entirely from the stored blob — nothing
+            // server-side reads `theme` or `bank`, so this is the only place the
+            // FE -> API -> DB -> API path for the new format is exercised.
+            saveSettings("{\"theme\":\"tax-wholesale\","
+                    + "\"bank\":{\"show\":true,\"bankName\":\"State Bank of India\","
+                    + "\"accountNumber\":\"123456789012\",\"ifsc\":\"SBIN0000123\",\"branch\":\"MG Road\"},"
+                    + "\"patient\":{\"showBuyerGstin\":true}}");
+
+            var stored = billingService.getInvoiceSettings();
+            assertThat(stored.get("theme").asText()).isEqualTo("tax-wholesale");
+            assertThat(stored.get("bank").get("show").asBoolean()).isTrue();
+            assertThat(stored.get("bank").get("ifsc").asText()).isEqualTo("SBIN0000123");
+            assertThat(stored.get("patient").get("showBuyerGstin").asBoolean()).isTrue();
+
+            // and it does not disturb numbering / return-window, which the server DOES read
+            var invoice = billingService.createInvoice(sale(1));
+            assertThat(invoice.invoiceNumber()).startsWith("INV/");
+        }
+
+        @Test
         @DisplayName("a pharmacy that never configured anything reads back null, not an error")
         void unconfiguredReadsBackNull() {
             assertThat(billingService.getInvoiceSettings()).isNull();

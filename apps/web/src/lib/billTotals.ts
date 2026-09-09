@@ -27,7 +27,14 @@
 export type NetPayable = {
   /** Payable before rupee-rounding. Negative when adjustments exceed the goods. */
   preRound: number;
-  /** Rounding delta applied to reach a whole rupee (Indian retail convention). */
+  /**
+   * The signed delta that makes the invoice foot from its own columns:
+   *   taxableAmount + totalGst + extraCharges + adjustmentAmount + roundOff == netPayable
+   * It carries the rupee rounding AND the sub-paisa the equal CGST/SGST split cannot
+   * represent (the line totals are the customer-facing prices, not a sum of rounded tax
+   * parts — see `calcGstFromMrp`). Mirrors `BillingService`'s stored `roundOff` exactly.
+   * Falls back to just the rupee rounding when the tax breakdown isn't supplied.
+   */
   roundOff: number;
   /** What the customer pays, rounded to the nearest rupee. */
   netPayable: number;
@@ -41,18 +48,25 @@ export type NetPayable = {
 
 export function computeNetPayable(params: {
   /**
-   * Item total after item-level discounts, the BILL-LEVEL discount, and GST.
-   *
-   * The bill discount used to be subtracted here, after tax. It now reduces the
-   * taxable value inside `calcInvoiceTotals` instead, because a discount recorded on
-   * the invoice is excluded from the value of the supply (s.15(3) CGST Act) — so it
-   * is already inside this figure and must not be applied a second time.
+   * Sum of the line totals the customer pays, after item- and bill-level discounts and GST
+   * — i.e. `calcInvoiceTotals(...).totalAmount`. Each line total is the gross price paid,
+   * not a sum of rounded tax parts (see `calcGstFromMrp`). The bill discount is already
+   * inside this figure (s.15(3) CGST Act — it reduces the taxable value in
+   * `calcInvoiceTotals`) and must not be applied again here.
    */
   itemsTotal: number;
   extraCharges: number;
   adjustmentAmount: number;
+  /**
+   * `taxableAmount + totalGst` from the same `calcInvoiceTotals` call. When supplied,
+   * `roundOff` is the delta that makes the invoice foot from its STORED columns —
+   * `taxable + tax + charges + adjustment + roundOff == netPayable` — matching
+   * `BillingService` exactly (it carries the rupee rounding plus the equal-split paisa).
+   * Omitted → `roundOff` is just the rupee rounding, as before.
+   */
+  taxAndGst?: number;
 }): NetPayable {
-  const { itemsTotal, extraCharges, adjustmentAmount } = params;
+  const { itemsTotal, extraCharges, adjustmentAmount, taxAndGst } = params;
 
   const preRound = itemsTotal + extraCharges + adjustmentAmount;
 
@@ -60,8 +74,15 @@ export function computeNetPayable(params: {
   // dispensing) and the backend allows it. Only a genuinely negative one is not.
   const shortfall = preRound < 0 ? Math.abs(preRound) : 0;
 
-  const roundOff = Math.round(preRound) - preRound;
-  return { preRound, roundOff, netPayable: preRound + roundOff, shortfall };
+  const netPayable = Math.round(preRound);
+  const roundOff = round2(
+    netPayable - (taxAndGst != null ? taxAndGst + extraCharges + adjustmentAmount : preRound),
+  );
+  return { preRound, roundOff, netPayable, shortfall };
+}
+
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
 /**

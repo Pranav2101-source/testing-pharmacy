@@ -101,6 +101,13 @@ public class ReportsController {
         return ApiResponse.ok(reportsService.customerInsights(from, to, limit));
     }
 
+    /** Identified customers billed per IST month for the trailing window (default 12) — new vs returning. */
+    @GetMapping("/customers/trend")
+    public ApiResponse<com.checkup.pharmacy.modules.reports.dto.CustomerTrendResponse> customerTrend(
+            @RequestParam(required = false) Integer months) {
+        return ApiResponse.ok(reportsService.customerTrend(months));
+    }
+
     /**
      * Regulars who have stopped coming, most valuable first — a call list.
      *
@@ -118,6 +125,21 @@ public class ReportsController {
     public ApiResponse<GstSummaryResponse> gst(@RequestParam(required = false) Instant from,
                                                @RequestParam(required = false) Instant to) {
         return ApiResponse.ok(reportsService.gstSummary(from, to));
+    }
+
+    /** Output tax per IST month for the trailing window (default 12 months) — the compliance trend chart. */
+    @GetMapping("/gst/trend")
+    public ApiResponse<com.checkup.pharmacy.modules.reports.dto.GstTrendResponse> gstTrend(
+            @RequestParam(required = false) Integer months) {
+        return ApiResponse.ok(reportsService.gstTrend(months));
+    }
+
+    /** The period's takings split by payment channel — cash / UPI / card. */
+    @GetMapping("/sales/payment-mix")
+    public ApiResponse<com.checkup.pharmacy.modules.reports.dto.PaymentMixResponse> paymentMix(
+            @RequestParam(required = false) Instant from,
+            @RequestParam(required = false) Instant to) {
+        return ApiResponse.ok(reportsService.paymentMix(from, to));
     }
 
     @GetMapping("/expiry")
@@ -193,9 +215,15 @@ public class ReportsController {
         return ApiResponse.ok(reportsService.slowMoving(from, to, limit, minQty));
     }
 
+    /**
+     * Batches not sold in {@code days} (default 90), worst capital-at-risk first. {@code limit}
+     * (default 100, max 500) caps the list; {@code totalCostAtRisk} in the body always covers
+     * every dead batch regardless.
+     */
     @GetMapping("/analytics/dead-stock")
-    public ApiResponse<DeadStockResponse> deadStock(@RequestParam(required = false) Integer days) {
-        return ApiResponse.ok(reportsService.deadStock(days));
+    public ApiResponse<DeadStockResponse> deadStock(@RequestParam(required = false) Integer days,
+                                                    @RequestParam(required = false) Integer limit) {
+        return ApiResponse.ok(reportsService.deadStock(days, limit));
     }
 
     @GetMapping("/inventory/valuation")

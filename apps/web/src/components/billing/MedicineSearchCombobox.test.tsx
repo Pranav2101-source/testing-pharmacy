@@ -67,8 +67,10 @@ describe("MedicineSearchCombobox: stock-aware search results", () => {
     await search("crocin");
 
     // Stock and price render as one combined pill (not two separate ones) —
-    // keeps the row to a single line so the dropdown's height cap holds.
-    expect(await screen.findByText("42×10=420 · ₹45.50")).toBeInTheDocument();
+    // keeps the row to a single line so the dropdown's height cap holds. The
+    // sellable-unit count is shown compact ("420 u"); the full pack breakdown
+    // lives on the pill's hover title.
+    expect(await screen.findByText("420 u · ₹45.50")).toBeInTheDocument();
   });
 
   it("shows a plain pack count for an in-stock, non-loose result", async () => {
@@ -83,7 +85,7 @@ describe("MedicineSearchCombobox: stock-aware search results", () => {
 
     await search("amox");
 
-    expect(await screen.findByText("6 in stock · ₹30.00")).toBeInTheDocument();
+    expect(await screen.findByText("6 pk · ₹30.00")).toBeInTheDocument();
   });
 
   it("labels a zero-stock catalogue result as Out of stock rather than hiding it", async () => {

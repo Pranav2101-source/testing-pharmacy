@@ -284,9 +284,10 @@ public class EmrIntegrationService {
      *       {@link PrescriptionQuantityCalculator}. A line the calculator declines is left as
      *       quantity zero, the existing "a pharmacist settles this at the counter" placeholder;
      *   <li>a line the clinic <b>did</b> send a quantity for, whose medicine is a measured
-     *       (mL/g) product with no pack size on record, is dropped back to that same placeholder
-     *       rather than billed as N whole bottles — see
-     *       {@link PrescriptionItem#deferAmbiguousMeasuredQuantity}.
+     *       (mL/g) product, is resolved to a whole-pack dispense target when the pack size is
+     *       known ({@code ceil(volume / packSize)} bottles), or dropped back to that same
+     *       placeholder when it is not — see
+     *       {@link PrescriptionItem#resolveMeasuredEmrQuantity}.
      * </ul>
      * Nothing downstream needs to know which path a line took — a derived or deferred quantity
      * flows through stock, pack/loose resolution and billing by the same route as a
@@ -325,8 +326,9 @@ public class EmrIntegrationService {
             needQuantity.forEach(item -> item.calculateQuantityIfMissing(byMedicineId.get(item.getMedicineId())));
         }
 
-        // ── Set aside a clinic quantity we cannot safely bill: a measured (mL/g) line whose
-        //    medicine has no pack size, catalogue or override — see the method doc. ──
+        // ── Resolve a clinic-stated measured (mL/g) quantity: round it up to whole sealed
+        //    packs when the pack size is known, or hold it for a pharmacist when it is not —
+        //    see the method doc. ──
         List<PrescriptionItem> statedForFreshMedicine = items.stream()
                 .filter(item -> !item.needsQuantityConfirmation())
                 .filter(item -> item.getMedicineId() != null)
@@ -347,7 +349,7 @@ public class EmrIntegrationService {
             Medicine medicine = resolvedByMedicineId.get(item.getMedicineId());
             Integer effectivePackSize = overridePackSize.getOrDefault(item.getMedicineId(),
                     medicine.getUnitsPerPack());
-            item.deferAmbiguousMeasuredQuantity(medicine, effectivePackSize);
+            item.resolveMeasuredEmrQuantity(medicine, effectivePackSize);
         }
     }
 

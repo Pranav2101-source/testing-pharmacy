@@ -364,7 +364,8 @@ public class PrescriptionService {
                 .map(i -> new PrescriptionResponse.Item(i.getId(), i.getMedicineName(), i.getMedicineId(), i.getSchedule(),
                         i.getQuantity(), i.getDispensedQty(), i.getDosage(), i.getDuration(), i.getNotes(),
                         i.getDispensedMedicineName(), i.isSubstituted(), i.isQuantityAutoCalculated(),
-                        i.getQuantityCalculationNote(), suggestionsByItemId.getOrDefault(i.getId(), List.of())))
+                        i.getQuantityCalculationNote(), i.getPrescribedVolumeClinical(), i.getClinicalUom(),
+                        i.getRoundedPackCount(), suggestionsByItemId.getOrDefault(i.getId(), List.of())))
                 .toList();
 
         // A line needs a human when the EMR's medicine name did not match the catalogue, OR
@@ -476,9 +477,9 @@ public class PrescriptionService {
      * the dosage supports it, and leaves a specific note when it does not.
      *
      * <p>If the line instead already carries a clinic quantity and the linked medicine turns
-     * out to be a measured (mL/g) product with no pack size on record, that quantity is set
-     * aside for confirmation rather than trusted — same reasoning as EMR ingest, see
-     * {@link PrescriptionItem#deferAmbiguousMeasuredQuantity}.
+     * out to be a measured (mL/g) product, that millilitre/gram figure is rounded up to whole
+     * sealed packs when the pack size is known, or held for confirmation when it is not — same
+     * reasoning as EMR ingest, see {@link PrescriptionItem#resolveMeasuredEmrQuantity}.
      */
     @Transactional
     public PrescriptionResponse linkItemToMedicine(String prescriptionId, String itemId, String medicineId) {
@@ -506,7 +507,7 @@ public class PrescriptionService {
                     .findByIdPharmacyIdAndIdMedicineId(pharmacyId, medicine.getId())
                     .map(PharmacyMedicineOverride::getUnitsPerPack)
                     .orElse(medicine.getUnitsPerPack());
-            item.deferAmbiguousMeasuredQuantity(medicine, effectivePackSize);
+            item.resolveMeasuredEmrQuantity(medicine, effectivePackSize);
         }
         itemRepository.save(item);
 

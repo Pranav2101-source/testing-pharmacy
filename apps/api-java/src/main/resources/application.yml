@@ -4,6 +4,27 @@ server:
   servlet:
     context-path: /
 
+  # ── Tomcat worker pool — sized to the DATABASE, not to memory ──────────────
+  # The default is 200 worker threads. Every request that touches the database
+  # (almost all of them) needs a connection from a pool of DB_POOL_MAX (5 on the
+  # Supabase Free pooler, 15-20 on RDS). With 200 threads and a 5-connection pool,
+  # 195 threads sit blocked in getConnection() for the full connection-timeout
+  # (10s) and then fail — turning a load spike into a 10-second-deep queue that
+  # makes the starvation worse.
+  #
+  # Capping threads near a small multiple of the pool gives fast backpressure
+  # instead: excess requests wait briefly in the OS accept queue and are refused
+  # quickly (a client can retry a "connection refused" cleanly; it cannot do much
+  # with a request that hung for 10s and then 500'd). Raise TOMCAT_MAX_THREADS
+  # together with DB_POOL_MAX.
+  tomcat:
+    threads:
+      max: ${TOMCAT_MAX_THREADS:48}
+      min-spare: ${TOMCAT_MIN_SPARE_THREADS:8}
+    accept-count: ${TOMCAT_ACCEPT_COUNT:100}
+    max-connections: ${TOMCAT_MAX_CONNECTIONS:2000}
+    connection-timeout: ${TOMCAT_CONNECTION_TIMEOUT:20s}
+
   # ── Response compression (BACKLOG A7) ──────────────────────────────────────
   # Measured before enabling this, against a pharmacy with ~1.2k invoices:
   #   reports/schedule-h  78 KB   reports/expiry  51 KB   medicines?limit=50  13 KB
@@ -85,6 +106,20 @@ spring:
       # told about by name rather than diagnosing from timeouts.
       leak-detection-threshold: ${DB_LEAK_DETECTION_MS:30000}
       validation-timeout: 3000
+      # Last-resort circuit breaker: a single statement that runs past this is killed by
+      # Postgres, freeing the connection rather than letting one runaway query (a lock
+      # wait, a cartesian blow-up, a report over a decade of data) pin 1-of-N connections
+      # indefinitely. Set high enough that no legitimate web request or migration
+      # statement reaches it — the reports module has its own tighter 25s transaction
+      # timeout, and this is only the floor under everything else.
+      #
+      # NOTE: runs as a session SET. It sticks on a direct connection (RDS) and on a
+      # session-mode pooler; a TRANSACTION-mode pooler (Supabase's default) may reset it
+      # between transactions, so on that setup the per-transaction @Transactional(timeout)
+      # on the heaviest endpoints is the real guard and this is belt-and-braces.
+      # Milliseconds (no unit) — Postgres reads a unitless value as ms, and this form
+      # also parses under H2's pg-compat mode that a couple of aspect-only tests use.
+      connection-init-sql: ${DB_STATEMENT_TIMEOUT_SQL:SET statement_timeout = 60000}
 
   jpa:
     hibernate:
@@ -143,6 +178,15 @@ spring:
       # set REDIS_URL to a real managed instance (Upstash, Redis Cloud, a Railway
       # addon, …) — without it this falls back to localhost, which won't exist there.
       url: ${REDIS_URL:redis://localhost:6379}
+      # Redis sits on the request path (rate limiting runs before every request).
+      # A slow or unreachable Redis must fail FAST so the fail-open path in
+      # RateLimitService can let the request through, rather than holding a Tomcat
+      # thread for the default multi-second socket timeout. 250ms command timeout,
+      # 500ms to establish the connection.
+      timeout: ${REDIS_TIMEOUT_MS:250}ms
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT_MS:500}ms
+      lettuce:
+        shutdown-timeout: 100ms
 
   # The mailer (D4) is built — see common/mail/EmailService — but it sends over
   # Resend's HTTPS API, not SMTP, so Spring's JavaMailSender is still unused and
@@ -229,9 +273,16 @@ app:
   ratelimit:
     # Blanket per-IP ceiling across the whole API (common/ratelimit/GlobalRateLimitFilter),
     # on top of the tighter per-endpoint limits on login/register/forgot-password. Deliberately
-    # generous — a pharmacy's whole staff often shares one NAT IP — sized to catch a scripted
-    # attacker, not a busy shift. Raise if a real location's legitimate traffic ever trips it.
-    global-per-ip-per-minute: ${GLOBAL_RATE_LIMIT_PER_MINUTE:400}
+    # generous — a pharmacy's whole staff often shares one NAT IP, and Indian mobile carriers
+    # put many customers behind one CGNAT address — sized to catch a scripted attacker, not a
+    # busy shift.
+    #
+    # Raised from 400 to 1200 for the ~500-user target: an active pharmacy screen makes
+    # several polled requests per minute (dashboard, prescription count, notifications),
+    # so a dozen staff on one office IP could legitimately approach the old ceiling.
+    # Keying on pharmacyId instead of IP is the real fix but needs the filter to run
+    # after authentication — deferred.
+    global-per-ip-per-minute: ${GLOBAL_RATE_LIMIT_PER_MINUTE:1200}
 
   # ── Row-Level Security (database-enforced tenant isolation) ────────────────
   # OFF by default. Turning this on makes every transaction set app.pharmacy_id,

@@ -150,6 +150,30 @@ describe("resolvePrescriptionToCart: the engine plan drives the cart", () => {
     expect(result.items[0]!.quantity).toBe(1);
   });
 
+  it("a measured line rounded up to 2 bottles carries the clinical directions and round-up note onto the cart", async () => {
+    const measuredRx: BillablePrescription = {
+      ...rx(200),
+      items: [{
+        id: "item-1", medicineId: "med-1", medicineName: "Benadryl Cough Syrup 100ml",
+        schedule: null, quantity: 200, dispensedQty: 0,
+        dosage: "5 ml three times a day", duration: "7 days",
+        prescribedVolumeClinical: 105, clinicalUom: "ML", roundedPackCount: 2,
+      }],
+    };
+    mockApi.get.mockResolvedValueOnce(planResponse(planLine({
+      medicineName: "Benadryl Cough Syrup 100ml", requestedPieces: 200, dispensedPieces: 200,
+      allocations: [alloc({ saleUnit: "PACK", quantity: 2, unitsPerPack: 100, baseUnit: "ML", packSize: "100ml" })],
+    })));
+
+    const result = await resolvePrescriptionToCart(measuredRx);
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.quantity).toBe(2); // 2 sealed bottles billed, never 105 or 200
+    expect(result.items[0]!.dosageInstructions).toBe("5 ml three times a day for 7 days");
+    expect(result.items[0]!.clinicalNote).toBe("105 ml prescribed · billing 2 bottles");
+    expect(result.roundedToPack).toEqual([]); // measured lines never open PackRoundingModal
+  });
+
   it("a multi-batch allocation becomes multiple cart rows for the one prescribed line", async () => {
     mockApi.get.mockResolvedValueOnce(planResponse(planLine({
       requestedPieces: 35, dispensedPieces: 35, fullyAllocated: true,

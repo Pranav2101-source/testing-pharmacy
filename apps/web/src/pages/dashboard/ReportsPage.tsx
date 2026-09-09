@@ -17,9 +17,15 @@ import { LoadErrorState } from "@/components/LoadErrorState";
 import { LooseTag } from "@/components/LooseTag";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { downloadCsv, downloadXlsx, type CellValue } from "@/lib/export";
+import { LayoutDashboard } from "lucide-react";
+import OverviewTab from "./reports/OverviewTab";
+import {
+  RevenueTrend as RevenueTrendChart, ChartCard, Donut, HBars, LegendRow, StackedBars,
+  C as CHARTC, SERIES, inrCompact, num,
+} from "./reports/chartKit";
 
 // ─── Types ────────────────────────────────────────────────────────
-type ReportTab       = "sales" | "customers" | "inventory" | "purchases" | "compliance" | "audit";
+type ReportTab       = "overview" | "sales" | "customers" | "inventory" | "purchases" | "compliance" | "audit";
 type ComplianceSubTab = "gst" | "gstr-3b" | "hsn-summary" | "schedule-h";
 type Period          = "today" | "week" | "month" | "year" | "custom";
 /** Chart bucket size. `month` keys are `YYYY-MM`; `day` keys are `YYYY-MM-DD`. */
@@ -153,6 +159,21 @@ interface ExpiryItem {
 function fmt(n: number | null | undefined) {
   return (n ?? 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
 }
+
+/**
+ * Two identity rows for a report that leaves the building — the pharmacy's name and,
+ * where we have it, its GSTIN, plus when it was generated. An accountant or a bank
+ * officer opening the workbook should not have to ask which shop it is for.
+ */
+function brandedHeader(title: string, gstin?: string | null): CellValue[][] {
+  const name = getStoredUser()?.pharmacyName ?? "Pharmacy";
+  const stamp = new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+  return [
+    [name, gstin ? `GSTIN ${gstin}` : ""],
+    [title, `Generated ${stamp}`],
+    [],
+  ];
+}
 function fmtK(n: number) {
   if (n >= 100000) return "₹" + (n / 100000).toFixed(1) + "L";
   if (n >= 1000)   return "₹" + (n / 1000).toFixed(1) + "K";
@@ -209,7 +230,12 @@ function getPeriodDates(period: Period, cf = "", ct = ""): { from: string; to: s
   // Derived from the IST calendar date, not new Date(y, 0, 1) — local midnight on
   // 1 January is 31 December in UTC, the same off-by-one istMonthStart exists to avoid.
   if (period === "year")  return { from: `${today.slice(0, 4)}-01-01`, to: today };
-  return { from: cf || today, to: ct || today };
+  // A custom range that is empty or inverted must not reach the API — the Sales/Customers/
+  // Purchases tabs auto-fetch on every selector change (no Generate button to gate it),
+  // and an inverted range widens to a sentinel-bounded "everything" on the server. Fall
+  // back to today until the pharmacist has picked a usable range; PeriodSelector shows why.
+  if (rangeError(cf, ct)) return { from: today, to: today };
+  return { from: cf, to: ct };
 }
 
 // ─── Date arithmetic on YYYY-MM-DD strings ───────────────────────
@@ -301,60 +327,33 @@ function PeriodSelector({ period, onChange, customFrom, customTo, onCustomChange
           {PERIOD_LABELS[p]}
         </button>
       ))}
-      {period === "custom" && (
-        <div className="flex items-center gap-2">
-          <input type="date" value={customFrom} max={customTo || toInputDate(new Date())}
-            onChange={e => onCustomChange(e.target.value, customTo)}
-            className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-[12px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400/30 focus:border-blue-400"
-          />
-          <span className="text-slate-400 text-[11px]">to</span>
-          <input type="date" value={customTo} min={customFrom} max={toInputDate(new Date())}
-            onChange={e => onCustomChange(customFrom, e.target.value)}
-            className="px-2.5 py-1.5 rounded-lg border border-slate-200 text-[12px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400/30 focus:border-blue-400"
-          />
-        </div>
-      )}
+      {period === "custom" && (() => {
+        const err = rangeError(customFrom, customTo);
+        return (
+          <div className="flex items-center gap-2">
+            <input type="date" value={customFrom} max={customTo || toInputDate(new Date())}
+              onChange={e => onCustomChange(e.target.value, customTo)}
+              className={cn("px-2.5 py-1.5 rounded-lg border text-[12px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400/30 focus:border-blue-400",
+                err ? "border-amber-300 bg-amber-50/50" : "border-slate-200")}
+            />
+            <span className="text-slate-400 text-[11px]">to</span>
+            <input type="date" value={customTo} min={customFrom} max={toInputDate(new Date())}
+              onChange={e => onCustomChange(customFrom, e.target.value)}
+              className={cn("px-2.5 py-1.5 rounded-lg border text-[12px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-400/30 focus:border-blue-400",
+                err ? "border-amber-300 bg-amber-50/50" : "border-slate-200")}
+            />
+            {err && (
+              <span className="text-[11px] font-semibold text-amber-700">
+                {err} <span className="font-normal text-amber-600">— showing today until then</span>
+              </span>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
 
-// ─── Chart tokens ────────────────────────────────────────────────
-/**
- * One series, one colour. The bar's LENGTH already encodes the value, so colouring bars by
- * how big they are would spend the only free channel restating what the reader can already
- * see — and it would make one time series look like several categories.
- *
- * <p>The bucket in progress is the single exception: a darker step of the same hue, with its
- * axis label carrying the real distinction by reading "Today". Hue supplements there; it is
- * never the only channel.
- *
- * <p>Both steps clear 3:1 against the card. The first pass used blue-200 for the bars, which
- * sits at 1.76:1 — legible on this monitor and invisible on a bright screen or a projector.
- */
-const CHART = {
-  bar: "#3b82f6",
-  barCurrent: "#1d4ed8",
-  /** A bucket that genuinely sold nothing: a floor stub, clearly zero but clearly present. */
-  barEmpty: "#e2e8f0",
-  grid: "#e9eef5",
-} as const;
-
-/**
- * Rounded axis ceiling, so ticks land on 2.5K / 5K / 10K rather than 4,283.
- *
- * <p>The ladder is deliberately fine. A coarse 1/2/5/10 ladder rounds a ₹21K peak up to a
- * ₹50K ceiling, and the tallest bar then reaches barely two-fifths of the plot with the top
- * half of the chart permanently empty — the shape of the week becomes unreadable because
- * every bar is squashed into the bottom. The half-steps keep the peak in the upper reaches
- * of the plot whatever the magnitude.
- */
-function niceCeiling(value: number): number {
-  if (value <= 0) return 1;
-  const magnitude = 10 ** Math.floor(Math.log10(value));
-  const normalised = value / magnitude;
-  const step = [1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 7.5, 10].find(s => normalised <= s) ?? 10;
-  return step * magnitude;
-}
 
 // ─── Figures ─────────────────────────────────────────────────────
 /**
@@ -432,170 +431,32 @@ function StatRow({ cols = 4, children }: { cols?: 3 | 4; children: React.ReactNo
   );
 }
 
-// ─── Revenue Bar Chart ───────────────────────────────────────────
-/**
- * The bar's own caption. A weekday reads well across a week and becomes noise across a
- * month, so the label follows the range rather than the bar: weekday for a week, day-of-month
- * for a month, short month name for month buckets.
- */
-function barLabel(key: string, bucket: Bucket, barCount: number, isCurrent: boolean): string {
-  if (bucket === "month") return new Date(`${key}-01T12:00:00Z`).toLocaleDateString("en-IN", { month: "short", timeZone: "UTC" });
-  if (isCurrent) return "Today";
-  const d = new Date(`${key}T12:00:00Z`);
-  return barCount <= 10
-    ? d.toLocaleDateString("en-IN", { weekday: "short", timeZone: "UTC" })
-    : String(d.getUTCDate());
-}
-
-/** Full bucket name for the tooltip — "Mon, 11 Aug" or "August 2026". */
-function bucketFullLabel(key: string, bucket: Bucket): string {
+// ─── Revenue trend (Recharts) ────────────────────────────────────
+/** Bar caption: "12 Aug" for day buckets, "Aug" for month buckets. */
+function trendLabel(key: string, bucket: Bucket): string {
   return bucket === "month"
-    ? new Date(`${key}-01T12:00:00Z`).toLocaleDateString("en-IN", { month: "long", year: "numeric", timeZone: "UTC" })
-    : new Date(`${key}T12:00:00Z`).toLocaleDateString("en-IN", { weekday: "short", day: "2-digit", month: "short", timeZone: "UTC" });
+    ? new Date(`${key}-01T12:00:00Z`).toLocaleDateString("en-IN", { month: "short", timeZone: "UTC" })
+    : new Date(`${key}T12:00:00Z`).toLocaleDateString("en-IN", { day: "2-digit", month: "short", timeZone: "UTC" });
 }
 
-const PLOT_HEIGHT = 132;
-const AXIS_WIDTH = 44;
-
-function RevenueChart({ days, loading, bucket }: { days: DailySalesPoint[]; loading: boolean; bucket: Bucket }) {
-  const [hovered, setHovered] = useState<number | null>(null);
-
-  const maxRev = days.length > 0 ? Math.max(...days.map(d => d.revenue)) : 0;
-  const ceiling = niceCeiling(maxRev);
-  const todayStr = toInputDate(new Date());
-  const currentKey = bucket === "month" ? todayStr.slice(0, 7) : todayStr;
-  // Past roughly a fortnight the captions collide, so only every nth is drawn. Every bar
-  // keeps its full value in the tooltip, so nothing is gated behind a missing label.
-  const labelEvery = days.length <= 14 ? 1 : Math.ceil(days.length / 12);
-
-  if (loading) {
-    return (
-      <div className="flex items-end gap-1.5" style={{ height: PLOT_HEIGHT + 20 }}>
-        {Array.from({ length: 7 }, (_, i) => (
-          <div key={i} className="flex-1 flex flex-col items-center gap-1.5">
-            <div className="w-full flex flex-col justify-end" style={{ height: PLOT_HEIGHT }}>
-              <div className="w-full max-w-[28px] mx-auto rounded-t skeleton" style={{ height: `${25 + i * 9}%` }} />
-            </div>
-            <span className="text-[9px] text-transparent">-</span>
-          </div>
-        ))}
-      </div>
-    );
+/**
+ * Revenue per bucket for the selected period, with the equivalent window before it drawn
+ * as a faint dashed line so "up or down on last time" is read at a glance rather than
+ * computed. Built on the shared Recharts kit ({@code chartKit}) — same axes, same tooltip,
+ * same colour language as every other chart in Reports.
+ */
+function RevenueChart({ days, prev, loading, bucket }: {
+  days: DailySalesPoint[]; prev?: DailySalesPoint[] | null; loading: boolean; bucket: Bucket;
+}) {
+  if (loading) return <div className="h-[230px] w-full rounded-xl skeleton" />;
+  if (days.length === 0) {
+    return <div className="h-[230px] flex items-center justify-center text-[12px] text-slate-400">No sales in this period</div>;
   }
-
-  const point = hovered !== null ? days[hovered] : undefined;
-
-  return (
-    <div className="relative">
-      <div className="flex">
-        {/* Three ticks only. The tooltip carries exact values, so a dense axis would just be
-            chrome competing with the data. */}
-        <div className="flex-shrink-0 relative" style={{ height: PLOT_HEIGHT, width: AXIS_WIDTH }}>
-          {[1, 0.5, 0].map(f => (
-            <span
-              key={f}
-              className="absolute right-2 text-[9px] font-semibold text-slate-400 tabular-nums -translate-y-1/2"
-              style={{ top: `${(1 - f) * 100}%` }}
-            >
-              {f === 0 ? "0" : fmtK(ceiling * f)}
-            </span>
-          ))}
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <div className="relative" style={{ height: PLOT_HEIGHT }}>
-            {/* Hairline, solid, one step off the surface — recessive by construction.
-                Dashed rules read as data and add noise a gridline should never add. */}
-            {[1, 0.5, 0].map(f => (
-              <div
-                key={f}
-                className="absolute left-0 right-0"
-                style={{ top: `${(1 - f) * 100}%`, height: 1, background: CHART.grid }}
-              />
-            ))}
-            <div className="absolute inset-0 flex items-end">
-              {days.map((d, i) => {
-                const isCurrent = d.date === currentKey;
-                const pct = ceiling > 0 ? (d.revenue / ceiling) * 100 : 0;
-                return (
-                  <div
-                    key={d.date}
-                    data-testid="chart-col"
-                    // The hit target is the whole column, not the bar: a 3px stub on a
-                    // zero day is impossible to hover, and those are exactly the days a
-                    // pharmacist wants to interrogate.
-                    className="flex-1 min-w-0 h-full flex items-end justify-center px-px"
-                    onMouseEnter={() => setHovered(i)}
-                    onMouseLeave={() => setHovered(null)}
-                  >
-                    <div
-                      className="w-full max-w-[28px] rounded-t-[4px] transition-[height,opacity] duration-500"
-                      style={{
-                        // A sold-nothing bucket is a visible floor stub, never a gap: the
-                        // reader has to be able to tell "no sales" from "no data".
-                        height: d.revenue > 0 ? `max(${pct}%, 4px)` : "3px",
-                        background: d.revenue > 0
-                          ? (isCurrent ? CHART.barCurrent : CHART.bar)
-                          : CHART.barEmpty,
-                        opacity: hovered === null || hovered === i ? 1 : 0.5,
-                      }}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="flex mt-1.5">
-            {days.map((d, i) => {
-              const isCurrent = d.date === currentKey;
-              const show = i % labelEvery === 0 || isCurrent;
-              return (
-                <div key={d.date} className="flex-1 min-w-0 text-center">
-                  <span className={cn(
-                    "text-[9px] font-semibold truncate block",
-                    isCurrent ? "text-blue-700 font-black" : "text-slate-400"
-                  )}>
-                    {show ? barLabel(d.date, bucket, days.length, isCurrent) : " "}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* An HTML chart is interactive by default. A `title` attribute is not a tooltip: it
-          waits a second, renders in the OS font, and cannot show a value and its context
-          together. */}
-      {point && hovered !== null && (() => {
-        const fraction = (hovered + 0.5) / days.length;
-        // Anchor the tooltip by whichever edge keeps it inside the card. Centring it on
-        // every bar hangs half of it off the plot at the first and last columns — and the
-        // last column is the one a pharmacist hovers most, because it is today.
-        const anchor = fraction < 0.14 ? "translate-x-0"
-          : fraction > 0.86 ? "-translate-x-full"
-          : "-translate-x-1/2";
-        return (
-        <div
-          className={cn("pointer-events-none absolute z-20 -translate-y-full", anchor)}
-          style={{
-            left: `calc(${AXIS_WIDTH}px + ((100% - ${AXIS_WIDTH}px) * ${fraction}))`,
-            top: PLOT_HEIGHT - 18,
-          }}
-        >
-          <div className="rounded-lg bg-slate-900 text-white px-2.5 py-1.5 shadow-lg whitespace-nowrap">
-            <p className="text-[10px] font-semibold text-slate-300">{bucketFullLabel(point.date, bucket)}</p>
-            <p className="text-[13px] font-black tabular-nums leading-tight">{"₹"}{fmt(point.revenue)}</p>
-            <p className="text-[10px] text-slate-300 tabular-nums">
-              {point.invoiceCount} {point.invoiceCount === 1 ? "bill" : "bills"} · {fmtK(point.gstCollected)} GST
-            </p>
-          </div>
-        </div>
-        );
-      })()}
-    </div>
-  );
+  const todayStr = toInputDate(new Date());
+  const currentKey = trendLabel(bucket === "month" ? todayStr.slice(0, 7) : todayStr, bucket);
+  const data = days.map(d => ({ label: trendLabel(d.date, bucket), revenue: d.revenue, bills: d.invoiceCount }));
+  const prevArr = prev && prev.length === days.length ? prev.map(p => p.revenue) : null;
+  return <RevenueTrendChart data={data} prev={prevArr} height={230} currentKey={currentKey} />;
 }
 
 
@@ -696,9 +557,18 @@ function MarginSection({ from, to, active }: { from: string; to: string; active:
 
   function handleExport() {
     if (!data) return;
+    // A batch sold below cost is in lossMakers AND, when the pharmacy has few enough
+    // batches, near the bottom of topContributors — union by inventoryId so the workbook
+    // lists each medicine once. topContributors first: it carries the friendlier ordering.
+    const seen = new Set<string>();
+    const rows = [...data.topContributors, ...data.lossMakers].filter(i => {
+      if (seen.has(i.inventoryId)) return false;
+      seen.add(i.inventoryId);
+      return true;
+    });
     downloadXlsx(`profit-${from}-to-${to}.xlsx`, [
       ["Medicine", "Batch", "Qty Sold", "Revenue (ex-GST)", "Cost", "Gross Profit", "Margin %"],
-      ...[...data.topContributors, ...data.lossMakers].map(i => [
+      ...rows.map(i => [
         i.medicine?.name ?? "Unknown", i.batchNumber ?? "", i.qtySold,
         i.revenueExGst, i.cogs, i.grossProfit, i.marginPct,
       ]),
@@ -873,6 +743,8 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
   const [fastItems, setFastItems]   = useState<FastMovingItem[]>([]);
   const [fastLoading, setFastLoading] = useState(false);
   const [fastError, setFastError]   = useState<string | null>(null);
+  const [slowItems, setSlowItems]   = useState<FastMovingItem[]>([]);
+  const [slowError, setSlowError]   = useState<string | null>(null);
 
   const { from, to } = getPeriodDates(period, customFrom, customTo);
   const bucket = bucketFor(from, to);
@@ -945,6 +817,35 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
 
   useVisibleLoad(active, `fast|${from}|${to}`, () => loadFast(from, to));
 
+  // Slowest movers — sold in the period, but barely. A "do not reorder" list, complementary
+  // to Dead Stock (which is "never sold at all"). An advisory, not a filed figure — a failure
+  // is shown in its own card so the pharmacist knows the list is incomplete, not that
+  // everything is moving fine.
+  const loadSlow = useCallback(async (f: string, t: string) => {
+    try {
+      const res = await api.get<{ success: boolean; data: { items: FastMovingItem[] } }>(
+        `/reports/analytics/slow-moving?from=${isoFrom(f)}&to=${isoTo(t)}&limit=20&minQty=1`
+      );
+      setSlowItems(res.data.data.items ?? []);
+      setSlowError(null);
+    } catch (e) {
+      setSlowError(getErrorMessage(e, "The slow-mover list didn't load — treat the reorder guidance below as incomplete."));
+      setSlowItems([]);
+    }
+  }, []);
+  useVisibleLoad(active, `slow|${from}|${to}`, () => loadSlow(from, to));
+
+  const slowMovers = useMemo(() => {
+    const map = new Map<string, { name: string; qtySold: number; revenue: number }>();
+    for (const item of slowItems) {
+      const key = item.medicine?.id ?? item.inventoryId;
+      const ex = map.get(key);
+      if (ex) { ex.qtySold += item.qtySold; ex.revenue += item.revenue; }
+      else map.set(key, { name: item.medicine?.name ?? "Unknown", qtySold: item.qtySold, revenue: item.revenue });
+    }
+    return Array.from(map.values()).sort((a, b) => a.qtySold - b.qtySold).slice(0, 8);
+  }, [slowItems]);
+
   // Aggregate fast-moving by medicine (same med may appear in multiple batches)
   const topMedicines = useMemo(() => {
     const map = new Map<string, { name: string; genericName: string | null; qtySold: number; revenue: number }>();
@@ -1014,7 +915,7 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
               value={chartLoading ? "—" : fmtK(chartTotals.revenue)}
               delta={!chartLoading && prevTotals ? <DeltaChip current={chartTotals.revenue} previous={prevTotals.revenue} /> : undefined}
               sub={!chartLoading && prevTotals
-                ? `vs ${fmtK(prevTotals.revenue)} in the previous ${daysInRange(from, to)} days (${fmtDate(previousRange(from, to).from)} – ${fmtDate(previousRange(from, to).to)})`
+                ? `vs ${fmtK(prevTotals.revenue)} in the previous ${daysInRange(from, to)} ${daysInRange(from, to) === 1 ? "day" : "days"} (${fmtDate(previousRange(from, to).from)} – ${fmtDate(previousRange(from, to).to)})`
                 : undefined}
             />
             <div className="flex items-start gap-8">
@@ -1039,7 +940,7 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
               <p className="text-[11px] text-slate-400">This is a loading problem — it does not mean there were no sales.</p>
             </div>
           ) : (
-            <RevenueChart days={chartDays} loading={chartLoading} bucket={bucket} />
+            <RevenueChart days={chartDays} prev={prevDays} loading={chartLoading} bucket={bucket} />
           )}
         </div>
       </Section>
@@ -1092,6 +993,13 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
           </div>
         ) : (
           <div>
+            <div className="px-5 py-4 border-b border-slate-100">
+              <HBars
+                data={[...topMedicines].sort((a, b) => b.revenue - a.revenue).slice(0, 8)
+                  .map(m => ({ label: m.name, value: m.revenue }))}
+                height={210} color={CHARTC.revenue} valueFormatter={inrCompact}
+              />
+            </div>
             <div className="grid grid-cols-[2fr_1fr_1fr_1fr] gap-4 px-5 py-2.5 border-b border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-wide">
               <span>Medicine</span>
               <span className="text-right">Qty Sold</span>
@@ -1118,6 +1026,30 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
           </div>
         )}
       </Section>
+
+      {/* Slowest movers — sold, but barely. The reorder list to leave alone. */}
+      {(slowMovers.length > 0 || slowError) && (
+        <Section title="Slowest Movers" icon={TrendingDown} iconBg="bg-slate-100" iconColor="text-slate-500"
+          action={<span className="text-[11px] text-slate-400 font-semibold">{rangeLabel} · fewest units first</span>}>
+          <div className="px-5 py-4">
+            {slowError ? (
+              <div className="flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" strokeWidth={2} />
+                <p className="text-[11px] text-amber-900 leading-relaxed">{slowError}</p>
+              </div>
+            ) : (
+              <>
+                <HBars
+                  data={slowMovers.map(m => ({ label: m.name, value: m.qtySold }))}
+                  height={Math.min(slowMovers.length, 8) * 26 + 20}
+                  color={CHARTC.cost} valueFormatter={(v) => `${v} sold`}
+                />
+                <p className="text-[10px] text-slate-400 mt-1">These sell slowly — hold off on reordering, and check them against Dead Stock and Expiry.</p>
+              </>
+            )}
+          </div>
+        </Section>
+      )}
     </div>
   );
 }
@@ -1135,6 +1067,82 @@ function SalesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setC
  * in for 90 days" is a fact about today, and scoping it to a reporting window would produce
  * the nonsense of someone being lapsed in March and not in April.
  */
+// ─── Customers: visual dashboard ────────────────────────────────
+/**
+ * Who is buying (new vs returning), who spends the most, and — the one that pays for
+ * itself — the lifetime value sitting in regulars who have stopped coming.
+ */
+function CustomersCharts({ insights, lapsed, lapsedError, trend, trendError, onRetryTrend, onExport }: {
+  insights: CustomerInsights | null; lapsed: LapsedReport | null; lapsedError: string | null;
+  trend: { month: string; billed: number; newCount: number; returning: number }[];
+  trendError: string | null; onRetryTrend: () => void;
+  onExport: () => void;
+}) {
+  const mix = useMemo(() => {
+    if (!insights) return [];
+    return [
+      { name: "Returning", value: num(insights.returningCustomers), color: CHARTC.revenue },
+      { name: "New", value: num(insights.newCustomers), color: CHARTC.customer },
+    ].filter(s => s.value > 0);
+  }, [insights]);
+  const topCustomers = useMemo(
+    () => (insights?.topCustomers ?? []).slice(0, 8).map(c => ({ label: c.name || "Unnamed", value: num(c.revenue) })),
+    [insights],
+  );
+  const lapsedValue = useMemo(
+    () => (lapsed?.items ?? []).slice(0, 8).map(c => ({ label: c.name || "Unnamed", value: num(c.lifetimeRevenue) })),
+    [lapsed],
+  );
+  if (!insights) return null;
+  return (
+   <div className="space-y-4">
+    {(trendError || (trend.length > 0 && trend.some(m => m.billed > 0))) && (
+      <ChartCard title="Customer base — last 12 months"
+        subtitle="Identified customers billed each month, first-timers vs regulars" height={210}
+        error={trendError} onRetry={onRetryTrend}>
+        <StackedBars
+          data={trend.map(m => ({
+            label: new Date(`${m.month}-01T12:00:00Z`).toLocaleDateString("en-IN", { month: "short", timeZone: "UTC" }),
+            Returning: m.returning, New: m.newCount,
+          }))}
+          series={[
+            { key: "Returning", name: "Returning", color: CHARTC.revenue },
+            { key: "New", name: "New", color: CHARTC.customer },
+          ]}
+          height={190} currency={false}
+        />
+      </ChartCard>
+    )}
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <ChartCard title="New vs returning" subtitle={`${insights.repeatRatePct.toFixed(0)}% repeat rate · ${insights.walkIns.bills} walk-in bills`} height={230}>
+        {mix.length === 0 ? <ChartsEmpty msg="No named customers this period" />
+          : <>
+              <Donut data={mix} height={160}
+                centerValue={`${insights.repeatRatePct.toFixed(0)}%`} centerLabel="Repeat" />
+              <LegendRow items={mix.map(s => ({ label: s.name, color: s.color, value: String(s.value) }))} />
+            </>}
+      </ChartCard>
+      <ChartCard title="Your best customers" subtitle="By spend, this period" height={230}>
+        {topCustomers.length === 0 ? <ChartsEmpty msg="No named customers this period" />
+          : <HBars data={topCustomers} height={210} color={CHARTC.customer} valueFormatter={inrCompact} />}
+      </ChartCard>
+      <ChartCard title="Lifetime value drifting away"
+        subtitle="Regulars gone 90+ days — a call usually works"
+        height={230}
+        error={lapsedError}
+        empty={!lapsedError && lapsedValue.length === 0 ? "No regulars have gone quiet" : null}
+        right={lapsedValue.length > 0 ? (
+          <button onClick={onExport} className="flex items-center gap-1 text-[10px] font-semibold text-slate-500 hover:text-slate-700 border border-slate-200 rounded-lg px-2 py-1">
+            <PhoneCall className="w-3 h-3" /> Call list
+          </button>
+        ) : undefined}>
+        <HBars data={lapsedValue} height={210} color={CHARTC.risk} valueFormatter={inrCompact} />
+      </ChartCard>
+    </div>
+   </div>
+  );
+}
+
 function CustomersTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setCustomTo, active }: {
   period: Period; setPeriod: (p: Period) => void;
   customFrom: string; setCustomFrom: (v: string) => void;
@@ -1149,6 +1157,15 @@ function CustomersTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
   const [lapsedLoading, setLapsedLoading] = useState(true);
   const [lapsedError, setLapsedError] = useState<string | null>(null);
   const [inactiveDays, setInactiveDays] = useState(90);
+  // 12-month new-vs-returning trend — window-independent, loaded once.
+  const [trend, setTrend] = useState<{ month: string; billed: number; newCount: number; returning: number }[]>([]);
+  const [trendError, setTrendError] = useState<string | null>(null);
+  const loadTrend = useCallback(() => {
+    api.get<{ success: boolean; data: { months: typeof trend } }>("/reports/customers/trend?months=12")
+      .then(r => { setTrend(r.data.data.months ?? []); setTrendError(null); })
+      .catch(e => setTrendError(getErrorMessage(e, "The 12-month customer trend didn't load.")));
+  }, []);
+  useEffect(() => { loadTrend(); }, [loadTrend]);
 
   const { from, to } = getPeriodDates(period, customFrom, customTo);
 
@@ -1221,6 +1238,14 @@ function CustomersTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
           onCustomChange={(f, t) => { setCustomFrom(f); setCustomTo(t); }}
         />
       </div>
+
+      {!insightsLoading && !insightsError && (
+        <CustomersCharts
+          insights={insights} lapsed={lapsed} lapsedError={lapsedError}
+          trend={trend} trendError={trendError} onRetryTrend={loadTrend}
+          onExport={exportLapsed}
+        />
+      )}
 
       {/* Period half */}
       <Section
@@ -1385,6 +1410,84 @@ function CustomersTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
   );
 }
 
+// ─── Inventory: visual dashboard ─────────────────────────────────
+/**
+ * The three questions an owner asks about stock, as pictures: where is my capital
+ * (value by category), what is about to be worthless (expiry runway), and what is
+ * already frozen (dead stock). Everything below is the same data as a working list.
+ */
+function InventoryCharts({
+  valItems, expiryItems, deadItems,
+  valLoading, expiryLoading, deadLoading,
+  valError, expiryError, deadError,
+  onRetryValuation, onRetryExpiry, onRetryDead,
+}: {
+  valItems: ValuationItem[]; expiryItems: ExpiryItem[]; deadItems: DeadStockItem[];
+  valLoading: boolean; expiryLoading: boolean; deadLoading: boolean;
+  valError: string | null; expiryError: string | null; deadError: string | null;
+  onRetryValuation: () => void; onRetryExpiry: () => void; onRetryDead: () => void;
+}) {
+  const byCategory = useMemo(() => {
+    const sorted = [...(valItems ?? [])].sort((a, b) => num(b.costValue) - num(a.costValue));
+    const top = sorted.slice(0, 7);
+    const rest = sorted.slice(7).reduce((s, v) => s + num(v.costValue), 0);
+    const rows = top.map((v, i) => ({ name: v.key || "Uncategorised", value: num(v.costValue), color: SERIES[i % SERIES.length] ?? "#cbd5e1" }));
+    if (rest > 0) rows.push({ name: "Other", value: rest, color: "#cbd5e1" });
+    return rows;
+  }, [valItems]);
+  const totalCost = (valItems ?? []).reduce((s, v) => s + num(v.costValue), 0);
+
+  const atRisk = useMemo(() => {
+    const val = (i: ExpiryItem) => num(i.mrp) * (num(i.quantity) + (num(i.looseUnits) > 0 ? 1 : 0));
+    const g = { expired: 0, m30: 0, m90: 0 };
+    for (const i of expiryItems ?? []) {
+      const d = daysUntil(i.expiryDate);
+      if (Number.isNaN(d)) continue;
+      if (d <= 0) g.expired += val(i);
+      else if (d <= 30) g.m30 += val(i);
+      else g.m90 += val(i);
+    }
+    return [
+      { label: "Already expired", value: g.expired },
+      { label: "Within 30 days", value: g.m30 },
+      { label: "31–90 days", value: g.m90 },
+    ].filter(r => r.value > 0);
+  }, [expiryItems]);
+
+  const deadTop = useMemo(
+    () => [...(deadItems ?? [])].sort((a, b) => num(b.costAtRisk) - num(a.costAtRisk)).slice(0, 6)
+      .map(d => ({ label: d.medicine?.name ?? "Unknown", value: num(d.costAtRisk) })),
+    [deadItems],
+  );
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <ChartCard title="Where your capital sits" subtitle="Stock at cost, by category" height={230}
+        loading={valLoading} error={valError} onRetry={onRetryValuation}
+        empty={!valLoading && !valError && byCategory.length === 0 ? "No stock on hand" : null}>
+        <Donut data={byCategory} height={160} centerValue={inrCompact(totalCost)} centerLabel="At cost" />
+        <LegendRow items={byCategory.slice(0, 5).map(c => ({ label: c.name, color: c.color, value: inrCompact(c.value) }))} />
+      </ChartCard>
+
+      <ChartCard title="Value about to be lost" subtitle="Stock at MRP, by expiry window" height={230}
+        loading={expiryLoading} error={expiryError} onRetry={onRetryExpiry}
+        empty={!expiryLoading && !expiryError && atRisk.length === 0 ? "Nothing expiring within 90 days" : null}>
+        <HBars data={atRisk} height={170} color={CHARTC.risk} valueFormatter={inrCompact} />
+      </ChartCard>
+
+      <ChartCard title="Capital frozen in dead stock" subtitle="Biggest non-movers, at cost" height={230}
+        loading={deadLoading} error={deadError} onRetry={onRetryDead}
+        empty={!deadLoading && !deadError && deadTop.length === 0 ? "No dead stock" : null}>
+        <HBars data={deadTop} height={170} color={CHARTC.loss} valueFormatter={inrCompact} />
+      </ChartCard>
+    </div>
+  );
+}
+
+function ChartsEmpty({ msg }: { msg: string }) {
+  return <div className="w-full h-full flex items-center justify-center text-[12px] text-slate-400">{msg}</div>;
+}
+
 // ─── Tab: Inventory ───────────────────────────────────────────────
 function InventoryTab() {
   const [expiryItems, setExpiryItems]   = useState<ExpiryItem[]>([]);
@@ -1520,6 +1623,13 @@ function InventoryTab() {
   return (
     <div className="space-y-4">
 
+      <InventoryCharts
+        valItems={valItems} expiryItems={expiryItems} deadItems={deadItems}
+        valLoading={valLoading} expiryLoading={expiryLoading} deadLoading={deadLoading}
+        valError={valError} expiryError={expiryError} deadError={deadError}
+        onRetryValuation={loadValuation} onRetryExpiry={loadExpiry} onRetryDead={() => loadDead(deadDays)}
+      />
+
       {/* Expiry Alerts */}
       <Section
         title="Expiry Alerts"
@@ -1606,6 +1716,7 @@ function InventoryTab() {
           <LoadErrorState
             title="Expiring stock could not be loaded"
             message={expiryError}
+            onRetry={loadExpiry}
             compact
           />
         ) : expiryItems.length === 0 ? (
@@ -1738,6 +1849,7 @@ function InventoryTab() {
           <LoadErrorState
             title="Stock valuation could not be loaded"
             message={valError}
+            onRetry={loadValuation}
             compact
           />
         ) : (
@@ -1785,6 +1897,39 @@ function InventoryTab() {
   );
 }
 
+// ─── Purchases: visual dashboard ────────────────────────────────
+/**
+ * Two pictures that turn a cost table into a negotiating position: where the money
+ * goes (top spend), and where it goes with the least to show for it (thin margins on
+ * high spend — the lines worth a call to the distributor).
+ */
+function PurchasesCharts({ items }: { items: CostAnalysisItem[] }) {
+  const byCost = useMemo(
+    () => [...(items ?? [])].sort((a, b) => num(b.totalCost) - num(a.totalCost)),
+    [items],
+  );
+  const topSpend = useMemo(
+    () => byCost.slice(0, 8).map(i => ({ label: i.medicineName || "Unknown", value: num(i.totalCost) })),
+    [byCost],
+  );
+  const thinMargins = useMemo(
+    () => byCost.slice(0, 12).sort((a, b) => num(a.marginPct) - num(b.marginPct)).slice(0, 8)
+      .map(i => ({ label: i.medicineName || "Unknown", value: num(i.marginPct) })),
+    [byCost],
+  );
+  if (!items || items.length === 0) return null;
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 px-5 py-4 border-b border-slate-100 bg-slate-50/30">
+      <ChartCard title="Where the money goes" subtitle="Top medicines by spend, this period" height={220} className="border-slate-100">
+        <HBars data={topSpend} height={200} color={CHARTC.cost} valueFormatter={inrCompact} />
+      </ChartCard>
+      <ChartCard title="Thinnest margins on your biggest buys" subtitle="Lowest MRP-vs-cost gap among top spend — worth a call" height={220} className="border-slate-100">
+        <HBars data={thinMargins} height={200} color={CHARTC.risk} valueFormatter={(v) => `${num(v).toFixed(1)}%`} />
+      </ChartCard>
+    </div>
+  );
+}
+
 // ─── Tab: Purchases ───────────────────────────────────────────────
 function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, setCustomTo, active }: {
   period: Period; setPeriod: (p: Period) => void;
@@ -1802,6 +1947,8 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
 
   const { from, to } = getPeriodDates(period, customFrom, customTo);
 
+  const [summary, setSummary] = useState<{ totalCost: number; totalMRPValue: number; overallMarginPct: number } | null>(null);
+
   const load = useCallback(async (f: string, t: string) => {
     setLoading(true);
     try {
@@ -1809,11 +1956,16 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
         `/reports/purchases/cost-analysis?from=${isoFrom(f)}&to=${isoTo(t)}&limit=50`
       );
       setItems(r.data.data.items ?? []);
+      setSummary(r.data.data.summary ?? null);
+      // Clear any earlier failure — without this a transient error stuck on screen and the
+      // Retry button refetched successfully but the error panel never went away.
+      setError(null);
     } catch (e) {
       // getErrorMessage keeps the server's wording — an inverted date range now comes
       // back naming both dates, which is more use than a generic failure string.
       setError(getErrorMessage(e, "Could not load the purchase cost analysis."));
       setItems([]);
+      setSummary(null);
     }
     finally { setLoading(false); }
   }, []);
@@ -1826,12 +1978,18 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
                            b.totalQty  - a.totalQty
   ), [items, sortKey]);
 
-  const totalCost   = items.reduce((s, i) => s + i.totalCost, 0);
-  const totalMRPVal = items.reduce((s, i) => s + i.totalMRPValue, 0);
-  const avgMargin   = totalMRPVal > 0 ? ((totalMRPVal - totalCost) / totalMRPVal) * 100 : 0;
+  // Period totals come from the server's own full-period aggregate, NOT from summing the
+  // table — the table is only the top 50 spends, so reducing it understated real spend and
+  // disagreed with the Purchase page's own figure. Falls back to the table sum pre-load.
+  const totalCost   = summary?.totalCost     ?? items.reduce((s, i) => s + i.totalCost, 0);
+  const totalMRPVal = summary?.totalMRPValue ?? items.reduce((s, i) => s + i.totalMRPValue, 0);
+  const avgMargin   = summary?.overallMarginPct ?? (totalMRPVal > 0 ? ((totalMRPVal - totalCost) / totalMRPVal) * 100 : 0);
 
   function handleExport() {
-    downloadXlsx("purchase-cost-analysis.xlsx", [
+    downloadXlsx(`purchase-cost-analysis-${from}-to-${to}.xlsx`, [
+      ...brandedHeader("Purchase Cost Analysis"),
+      ["Period total purchased", totalCost, "MRP value", totalMRPVal, "Avg margin %", Number(avgMargin.toFixed(2))],
+      [],
       ["Medicine","Total Qty","Total Cost","MRP Value","Avg Purchase Rate","Avg MRP","Margin %"],
       ...sorted.map(i => [i.medicineName, i.totalQty, i.totalCost, i.totalMRPValue, i.avgPurchaseRate, i.avgMRP, i.marginPct]),
     ], "Cost Analysis");
@@ -1868,7 +2026,7 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
           <div>
             {/* Summary */}
             <StatRow cols={3}>
-              <StatTile label="Total purchased" hint={`${items.length} medicines`} value={fmtK(totalCost)} />
+              <StatTile label="Total purchased" hint="confirmed receipts, whole period" value={fmtK(totalCost)} />
               <StatTile label="MRP value of stock" hint="at retail price" value={fmtK(totalMRPVal)} tone="accent" />
               <StatTile
                 label="Average margin" hint={avgMargin >= 20 ? "Healthy margin" : "Low margin"}
@@ -1876,6 +2034,7 @@ function PurchasesTab({ period, setPeriod, customFrom, setCustomFrom, customTo, 
                 tone={avgMargin >= 20 ? "good" : "warn"}
               />
             </StatRow>
+            <PurchasesCharts items={items} />
             {/* Sort controls */}
             <div className="grid grid-cols-[2.5fr_0.8fr_1fr_1fr_1fr_1.2fr] gap-3 px-5 py-2 border-b border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-wide">
               <span>Medicine</span>
@@ -2068,12 +2227,12 @@ function Gstr3bSection() {
           </button>
           {data && (
             <div className="flex items-center rounded-lg border border-slate-200 overflow-hidden">
-              <button onClick={() => downloadXlsx(`gstr-3b-${from}-to-${to}.xlsx`, exportRows(data), "GSTR-3B")}
+              <button onClick={() => downloadXlsx(`gstr-3b-${from}-to-${to}.xlsx`, [...brandedHeader("GSTR-3B working sheet", data.identity.gstin), ...exportRows(data)], "GSTR-3B")}
                 className="flex items-center gap-1 text-[11px] font-semibold text-slate-600 hover:text-slate-800 px-2 py-1.5 hover:bg-slate-50 transition-colors">
                 <Download className="w-3 h-3" /> Excel
               </button>
               <span className="w-px self-stretch bg-slate-200" aria-hidden="true" />
-              <button onClick={() => downloadCsv(`gstr-3b-${from}-to-${to}.csv`, exportRows(data))}
+              <button onClick={() => downloadCsv(`gstr-3b-${from}-to-${to}.csv`, [...brandedHeader("GSTR-3B working sheet", data.identity.gstin), ...exportRows(data)])}
                 title="Plain CSV — for Tally and other accounting imports"
                 className="text-[11px] font-semibold text-slate-400 hover:text-slate-700 px-2 py-1.5 hover:bg-slate-50 transition-colors">
                 CSV
@@ -2346,6 +2505,9 @@ function GstReportSection() {
   // period. Filing a return from numbers that silently defaulted is far worse than
   // seeing an error.
   const [error, setError] = useState<string | null>(null);
+  // Trailing-12-month liability trend — independent of the date range above, loaded once.
+  const [trend, setTrend] = useState<{ month: string; cgst: number; sgst: number; igst: number; totalGst: number }[]>([]);
+  const [trendError, setTrendError] = useState<string | null>(null);
 
   const invalidRange = rangeError(from, to);
 
@@ -2368,6 +2530,12 @@ function GstReportSection() {
     finally { setLoading(false); }
   }
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const loadTrend = useCallback(() => {
+    api.get<{ success: boolean; data: { months: typeof trend } }>("/reports/gst/trend?months=12")
+      .then(r => { setTrend(r.data.data.months ?? []); setTrendError(null); })
+      .catch(e => setTrendError(getErrorMessage(e, "The 12-month liability trend didn't load.")));
+  }, []);
+  useEffect(() => { loadTrend(); }, [loadTrend]);
 
   /**
    * One row set, two formats.
@@ -2395,10 +2563,10 @@ function GstReportSection() {
       ["Net Amount",  d._sum.totalAmount ?? 0],
     ];
   }
-  function exportExcel() { if (data) downloadXlsx(`gst-${from}-to-${to}.xlsx`, exportRows(data), "GST Summary"); }
+  function exportExcel() { if (data) downloadXlsx(`gst-${from}-to-${to}.xlsx`, [...brandedHeader("GST Summary"), ...exportRows(data)], "GST Summary"); }
   // CSV stays on the two compliance reports because an accountant feeds these to Tally,
   // which imports CSV. Everything else on this screen is read by a person, in Excel.
-  function exportCsvFile() { if (data) downloadCsv(`gst-${from}-to-${to}.csv`, exportRows(data)); }
+  function exportCsvFile() { if (data) downloadCsv(`gst-${from}-to-${to}.csv`, [...brandedHeader("GST Summary"), ...exportRows(data)]); }
 
   return (
     <Section
@@ -2438,6 +2606,26 @@ function GstReportSection() {
         </div>
       }
     >
+      {(trendError || (trend.length > 0 && trend.some(m => m.totalGst > 0))) && (
+        <div className="px-5 py-4 border-b border-slate-100">
+          <ChartCard title="Output tax liability — last 12 months" className="border-0 shadow-none p-0"
+            subtitle="What you owed each month, by head. IGST = inter-state sales." height={200}
+            error={trendError} onRetry={loadTrend}>
+            <StackedBars
+              data={trend.map(m => ({
+                label: new Date(`${m.month}-01T12:00:00Z`).toLocaleDateString("en-IN", { month: "short", timeZone: "UTC" }),
+                CGST: m.cgst, SGST: m.sgst, IGST: m.igst,
+              }))}
+              series={[
+                { key: "CGST", name: "CGST", color: "#4f46e5" },
+                { key: "SGST", name: "SGST", color: "#6366f1" },
+                { key: "IGST", name: "IGST", color: "#f59e0b" },
+              ]}
+              height={190}
+            />
+          </ChartCard>
+        </div>
+      )}
       {loading ? (
         <ListSkeleton rows={5} />
       ) : error ? (
@@ -2452,6 +2640,29 @@ function GstReportSection() {
           <div className="px-5 py-2.5 bg-slate-50/40 border-b border-slate-100">
             <p className="text-[11px] text-slate-500">{data._count} invoices · {fmtDate(from)} to {fmtDate(to)}</p>
           </div>
+          {(data._sum.totalGst ?? 0) > 0 && (() => {
+            const heads = [
+              { name: "CGST", value: data._sum.cgst ?? 0, color: "#4f46e5" },
+              { name: "SGST", value: data._sum.sgst ?? 0, color: "#6366f1" },
+              { name: "IGST", value: data._sum.igst ?? 0, color: "#f59e0b" },
+            ].filter(h => h.value > 0);
+            const taxable = data._sum.taxableAmount ?? 0;
+            const gst = data._sum.totalGst ?? 0;
+            const effRate = taxable > 0 ? (gst / taxable) * 100 : 0;
+            return (
+              <div className="grid grid-cols-1 sm:grid-cols-[200px_1fr] gap-4 px-5 py-4 border-b border-slate-100 items-center">
+                <Donut data={heads} height={150}
+                  centerValue={`${effRate.toFixed(1)}%`} centerLabel="Eff. rate" />
+                <div>
+                  <p className="text-[11px] text-slate-500 mb-2">
+                    Output tax collected this period, by head. IGST above zero means inter-state sales —
+                    those go to a different box on the return.
+                  </p>
+                  <LegendRow items={heads.map(h => ({ label: h.name, color: h.color, value: `₹${fmt(h.value)}` }))} />
+                </div>
+              </div>
+            );
+          })()}
           <div className="divide-y divide-slate-50">
             {[
               { label: "Gross Sales (before discount)", value: data._sum.subtotal,        style: "normal"    },
@@ -2558,8 +2769,8 @@ function HsnSummarySection() {
     ];
   }
   const hasRows = !!rows && rows.length > 0;
-  function exportExcel() { if (hasRows) downloadXlsx(`hsn-summary-${from}-to-${to}.xlsx`, exportRows(), "GSTR-1 HSN"); }
-  function exportCsvFile() { if (hasRows) downloadCsv(`hsn-summary-${from}-to-${to}.csv`, exportRows()); }
+  function exportExcel() { if (hasRows) downloadXlsx(`hsn-summary-${from}-to-${to}.xlsx`, [...brandedHeader("GSTR-1 HSN Summary"), ...exportRows()], "GSTR-1 HSN"); }
+  function exportCsvFile() { if (hasRows) downloadCsv(`hsn-summary-${from}-to-${to}.csv`, [...brandedHeader("GSTR-1 HSN Summary"), ...exportRows()]); }
 
   return (
     <Section
@@ -2612,6 +2823,17 @@ function HsnSummarySection() {
         </div>
       ) : (
         <div>
+          {rows.length > 1 && (
+            <div className="mb-3">
+              <HBars
+                data={[...rows].sort((a, b) => b.taxableAmount - a.taxableAmount).slice(0, 8)
+                  .map(r => ({ label: `${r.hsnCode} · ${r.gstRate}%`, value: r.taxableAmount }))}
+                height={Math.min(rows.length, 8) * 26 + 20}
+                color={CHARTC.gst} valueFormatter={inrCompact}
+              />
+              <p className="text-[10px] text-slate-400 mt-1">Taxable value by HSN / rate — where the return's Table 12 weight sits.</p>
+            </div>
+          )}
           {unclassified.length > 0 && (
             <div className="mb-3 rounded-lg bg-amber-50 border border-amber-200 px-3.5 py-2.5 flex gap-2">
               <AlertTriangle className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" strokeWidth={2} />
@@ -2857,13 +3079,17 @@ function AuditTab() {
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true);
-    api.get("/stock-audit/report")
+    setError(null);
+    api.get<{ success: boolean; data: AuditReport }>("/stock-audit/report")
       .then(({ data: r }) => setData(r.data))
-      .catch((e: any) => setError(e?.message ?? "Failed to load audit report"))
+      // getErrorMessage, like every other loader on this page — a raw axios
+      // "Request failed with status code 500" is not something to show a pharmacist.
+      .catch(e => setError(getErrorMessage(e, "Could not load the stock audit history.")))
       .finally(() => setLoading(false));
   }, []);
+  useEffect(() => { load(); }, [load]);
 
   function exportCsv() {
     if (!data) return;
@@ -2892,9 +3118,7 @@ function AuditTab() {
       {loading ? (
         <ListSkeleton rows={4} />
       ) : error ? (
-        <div className="flex items-center gap-2 p-4 text-red-600 text-[13px]">
-          <AlertTriangle className="w-4 h-4 flex-shrink-0" /> {error}
-        </div>
+        <LoadErrorState title="Stock audit history could not be loaded" message={error} onRetry={load} compact />
       ) : !data || data.sessions.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-slate-400">
           <ClipboardList className="w-10 h-10 text-slate-200 mb-3" strokeWidth={1.3} />
@@ -2971,26 +3195,31 @@ function AuditTab() {
 }
 
 // ─── Main Tabs config ─────────────────────────────────────────────
-const MAIN_TABS: { id: ReportTab; label: string; icon: React.ElementType; sub: string; ownerOnly?: boolean }[] = [
+// Every tab here is OWNER + MANAGER: the /dashboard/reports route guard and every
+// /reports + /stock-audit/report endpoint enforce exactly that, and the Profit & Margin
+// section a manager already sees carries the same cost/margin data Purchases does. There
+// is no report content that is OWNER-exclusive, so there is no per-tab role gate.
+const MAIN_TABS: { id: ReportTab; label: string; icon: React.ElementType; sub: string }[] = [
+  { id: "overview",   label: "Overview",   icon: LayoutDashboard, sub: "The scoreboard, and what to act on" },
   { id: "sales",      label: "Sales",      icon: TrendingUp,    sub: "Revenue, profit & top medicines" },
   { id: "customers",  label: "Customers",  icon: Users,         sub: "Repeat business & who stopped coming" },
   { id: "inventory",  label: "Inventory",  icon: Package2,      sub: "Expiry, dead stock, value"  },
-  { id: "purchases",  label: "Purchases",  icon: ShoppingCart,  sub: "Cost & margin analysis",    ownerOnly: true },
+  { id: "purchases",  label: "Purchases",  icon: ShoppingCart,  sub: "Cost & margin analysis"     },
   { id: "compliance", label: "Compliance", icon: FileCheck,     sub: "GST & Schedule H"           },
-  { id: "audit",      label: "Stock Audit",icon: ClipboardList, sub: "Approved audit P&L history", ownerOnly: true },
+  { id: "audit",      label: "Stock Audit",icon: ClipboardList, sub: "Approved audit P&L history" },
 ];
 
 // ─── Page ─────────────────────────────────────────────────────────
 export default function ReportsPage() {
   const role = useRef(getStoredUser()?.role ?? "CASHIER").current;
   const isManagerUp = role === "OWNER" || role === "MANAGER";
-  const visibleTabs = isManagerUp ? MAIN_TABS : MAIN_TABS.filter(t => !t.ownerOnly);
+  const visibleTabs = MAIN_TABS;
 
   // Deep-link support — e.g. /dashboard/reports?tab=purchases from Purchase page Quick Actions
   const [searchParams] = useSearchParams();
   const initialTab = (() => {
     const requested = searchParams.get("tab") as ReportTab | null;
-    return requested && visibleTabs.some(t => t.id === requested) ? requested : "sales";
+    return requested && visibleTabs.some(t => t.id === requested) ? requested : "overview";
   })();
   const [tab, setTab] = useState<ReportTab>(initialTab);
   const active = (visibleTabs.find(t => t.id === tab) ?? visibleTabs[0])!;
@@ -3044,6 +3273,11 @@ export default function ReportsPage() {
 
         {/* Tab content — mounted once, then shown/hidden via CSS (see keep-alive above) */}
         <div>
+          {mountedTabs.has("overview") && (
+            <div className={cn(tab !== "overview" && "hidden")}>
+              <OverviewTab active={tab === "overview"} onNavigate={(t) => setTab(t as ReportTab)} />
+            </div>
+          )}
           {mountedTabs.has("sales") && (
             <div className={cn(tab !== "sales" && "hidden")}>
               <SalesTab

@@ -70,8 +70,14 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
   const W         = CHAR_WIDTHS[paperKey]!;
   const paperW    = PAPER_PX[paperKey]!;
   const displayName = br.pharmacyNameOverride || pharmacy.name;
-  const roundedTotal = Math.round(invoice.totalAmount);
-  const roundOff     = roundedTotal - invoice.totalAmount;
+  const extraCharges = invoice.extraCharges ?? 0;
+  const adjustment   = invoice.adjustmentAmount ?? 0;
+  // The totals block foots from its own rows: taxable + tax + charges + adjustment + roundOff.
+  const taxAndCharges = invoice.taxableAmount + invoice.totalGst + extraCharges + adjustment;
+  // Stored footing delta (rupee rounding + the equal CGST/SGST split's odd paisa); the plain
+  // rupee rounding is the fallback for callers that don't pass one.
+  const roundOff     = invoice.roundOff ?? (Math.round(taxAndCharges) - taxAndCharges);
+  const roundedTotal = Math.round(taxAndCharges + roundOff);
   const isInterstate = invoice.isInterstate ?? false;
 
   // Same slab aggregation as InvoicePrintView, so both formats report identical
@@ -187,6 +193,14 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
               {col.showHsn && item.hsnCode && `HSN:${item.hsnCode}`}
             </div>
           )}
+          {/* Patient remarks — printed on the slip the patient takes home, so a syrup
+              course reads "5 ml 3 times a day for 7 days" even though the bill line is
+              "2 bottles". The internal round-up note (clinicalNote) is NEVER printed. */}
+          {(item.patientRemarks ?? item.dosageInstructions) && (
+            <div style={{ fontSize: "9px", color: "#000", fontWeight: 600, whiteSpace: "normal" }}>
+              {`  Dosage: ${item.patientRemarks ?? item.dosageInstructions}`}
+            </div>
+          )}
           {/* MRP line — only worth its own row when it differs from the sale rate,
               i.e. when a discount was applied. Printing "MRP 15.00 / Rate 15.00" on
               every line of a 58mm roll is noise and paper. */}
@@ -271,8 +285,11 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
       {!isInterstate && tot.showCgst && <div style={mono}>{row("CGST:", invoice.cgst.toFixed(2), W)}</div>}
       {!isInterstate && tot.showSgst && <div style={mono}>{row("SGST:", invoice.sgst.toFixed(2), W)}</div>}
       {isInterstate  && tot.showIgst && <div style={mono}>{row("IGST:", invoice.igst.toFixed(2), W)}</div>}
+      {extraCharges > 0 && <div style={mono}>{row("Extra Charges:", extraCharges.toFixed(2), W)}</div>}
+      {Math.abs(adjustment) >= 0.005 &&
+                           <div style={mono}>{row("Adjustment:", `${adjustment > 0 ? "+" : "-"}${Math.abs(adjustment).toFixed(2)}`, W)}</div>}
       {tot.showRoundOff && Math.abs(roundOff) >= 0.005 &&
-                           <div style={mono}>{row("Round Off:",    `${roundOff > 0 ? "+" : ""}${roundOff.toFixed(2)}`, W)}</div>}
+                           <div style={mono}>{row("Round Off:",    `${roundOff > 0 ? "+" : "-"}${Math.abs(roundOff).toFixed(2)}`, W)}</div>}
 
       <div style={{ ...mono, fontWeight: 700 }}>{line("=", W)}</div>
       <div style={{ ...mono, fontWeight: 700, fontSize: "13px" }}>

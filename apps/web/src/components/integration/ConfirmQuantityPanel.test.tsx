@@ -106,9 +106,10 @@ describe("ConfirmQuantityPanel", () => {
     expect(screen.queryByText(/measured in|dosing pattern|not a plain daily schedule/i)).not.toBeInTheDocument();
   });
 
-  it("blocks confirming a measured line when the typed count is the clinic's millilitre figure", async () => {
+  it("warns — but does not block — when the typed count is the clinic's millilitre figure", async () => {
     const { onConfirmed } = renderPanel([{
       id: "i1", medicineName: "Cough Syrup 100ml", quantity: 0, dosage: "3ml-0-3ml",
+      prescribedVolumeClinical: 30, clinicalUom: "ML",
       quantityCalculationNote: "The clinic prescribed 30 ml, but this medicine is measured in millilitres "
         + "with no pack size on record — enter the number of bottles to dispense (whole sealed bottles, "
         + "not the total millilitres).",
@@ -116,15 +117,17 @@ describe("ConfirmQuantityPanel", () => {
 
     const input = screen.getByRole("spinbutton", { name: /number of bottles/i });
 
-    // 30 = the clinic's mL figure typed in by mistake — hard-blocked.
+    // 30 = the clinic's mL figure typed in by mistake — warned prominently, but the
+    // pharmacist can still proceed (an unusual real case must stay dispensable, and the
+    // mL-vs-pack ambiguity is now auto-resolved wherever a pack size is on record).
     await userEvent.type(input, "30");
     expect(screen.getByText(/that's the 30 millilitres the clinic prescribed/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /confirm/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /confirm/i })).toBeEnabled();
 
-    // 1 bottle — the real answer — is accepted.
+    // 1 bottle — the ordinary answer — confirms cleanly with no warning.
     await userEvent.clear(input);
     await userEvent.type(input, "1");
-    expect(screen.getByRole("button", { name: /confirm/i })).toBeEnabled();
+    expect(screen.queryByText(/that's the 30 millilitres/i)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /confirm/i }));
     expect(mockApi.patch).toHaveBeenCalledWith("/prescriptions/rx_1/items/i1/quantity", { quantity: 1 });
     expect(onConfirmed).toHaveBeenCalled();

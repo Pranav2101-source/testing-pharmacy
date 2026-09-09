@@ -190,28 +190,31 @@ public final class GstCalculator {
         BigDecimal totalGstUnrounded = afterDiscount.subtract(taxableAmount);
 
         BigDecimal roundedTaxable = round2(taxableAmount);
+        // The line total IS the price the customer pays for this line — MRP x qty, less any
+        // discount. It is not derived from (taxable + tax): doing that made a clean 90.00 x 2
+        // line print as 179.99 and forced a phantom 1-paisa round-off onto every such bill.
+        // The tax split below is reported alongside it and stays rate-derived.
+        BigDecimal grossAmount = round2(afterDiscount);
 
         if (isInterstate) {
             // Round the tax ONCE. IGST is a single levy, so there is no equal-halves
-            // constraint to satisfy and no reason to go via a half value.
-            //
-            // Rounding a half and doubling it (as the intra-state branch must) would
-            // quantise IGST to even paise only, pushing the billed total off the MRP
-            // by a paisa in either direction — Rs.100 @ 18% became Rs.100.01, and
-            // Rs.450 @ 5% became Rs.449.99. That error is invisible per line and does
-            // not cancel out across an invoice, so it accumulates in GSTR-1.
+            // constraint to satisfy and no reason to go via a half value. taxable + igst
+            // already lands on the gross to the paisa, so nothing is given up here.
             BigDecimal igst = round2(totalGstUnrounded);
             return new MrpGstBreakdown(roundedTaxable, BigDecimal.ZERO, BigDecimal.ZERO, igst, igst,
-                    roundedTaxable.add(igst));
+                    grossAmount);
         }
 
-        // Intra-state: CGST and SGST must be equal and each stored to 2dp, so the
-        // half is what gets rounded and the total may legitimately land a paisa above
-        // the MRP. See GstCalculatorTest#intraStateMayDifferByOnePaisaBecauseCgstMustEqualSgst.
+        // Intra-state: CGST and SGST must be equal and each stored to 2dp. When the total tax
+        // is an odd number of paise the equal split rounds both halves the same way, so
+        // (taxable + CGST + SGST) can sit a paisa either side of `grossAmount`. The line total
+        // stays on the customer-facing price; the paisa lands in the tax breakdown instead,
+        // which for a B2C retail invoice is the harmless place for it. See
+        // GstCalculatorTest#intraStateTaxSplitMayNotSumExactlyToTheLineTotal.
         BigDecimal halfGst = round2(divide(totalGstUnrounded, BigDecimal.valueOf(2)));
         BigDecimal totalGst = halfGst.multiply(BigDecimal.valueOf(2));
         return new MrpGstBreakdown(roundedTaxable, halfGst, halfGst, BigDecimal.ZERO, totalGst,
-                roundedTaxable.add(totalGst));
+                grossAmount);
     }
 
     /**
@@ -262,6 +265,7 @@ public final class GstCalculator {
         BigDecimal cgst = BigDecimal.ZERO;
         BigDecimal sgst = BigDecimal.ZERO;
         BigDecimal igst = BigDecimal.ZERO;
+        BigDecimal paidTotal = BigDecimal.ZERO;
 
         for (MrpLineInput item : items) {
             // The SAME call the caller makes per line when it builds the stored line items,
@@ -288,6 +292,7 @@ public final class GstCalculator {
             cgst = cgst.add(line.cgst());
             sgst = sgst.add(line.sgst());
             igst = igst.add(line.igst());
+            paidTotal = paidTotal.add(line.amount());
         }
 
         // Already a sum of 2dp values — round2 here only normalises the scale.
@@ -297,9 +302,13 @@ public final class GstCalculator {
         // holds line by line, which is where GST actually requires it.
         BigDecimal totalGst = cgst.add(sgst).add(igst);
 
+        // The header total IS the sum of the line totals printed under it — the same
+        // customer-facing prices, added up. It is not re-derived as (taxable + tax): on an
+        // intra-state bill the equal CGST/SGST split can leave that a paisa off what the
+        // lines actually say, and the header must match the lines.
         return new InvoiceTotals(round2(subtotal), round2(discountAmount), roundedTaxable,
                 round2(cgst), round2(sgst), round2(igst), round2(totalGst),
-                roundedTaxable.add(totalGst));
+                round2(paidTotal));
     }
 
     /**

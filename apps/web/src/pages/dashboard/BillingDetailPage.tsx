@@ -12,11 +12,14 @@ import { api } from "@/lib/api-client";
 import { ListSkeleton } from "@/components/Skeleton";
 import { cn } from "@/lib/utils";
 import { useInvoicePrintConfig } from "@/lib/useInvoicePrintConfig";
+import { invoiceRendererFor } from "@/lib/invoiceRenderer";
 import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
 import { LooseLabelModal } from "@/components/LooseLabelModal";
 
 const InvoicePrintView  = lazy(() => import("@/components/billing/InvoicePrintView").then(m => ({ default: m.InvoicePrintView })));
 const ThermalReceiptView = lazy(() => import("@/components/billing/ThermalReceiptView").then(m => ({ default: m.ThermalReceiptView })));
+const TaxWholesaleInvoiceView = lazy(() => import("@/components/billing/TaxWholesaleInvoiceView").then(m => ({ default: m.TaxWholesaleInvoiceView })));
+const A5LandscapeInvoiceView = lazy(() => import("@/components/billing/A5LandscapeInvoiceView").then(m => ({ default: m.A5LandscapeInvoiceView })));
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,6 +68,9 @@ type Invoice = {
   igst: number;
   totalGst: number;
   totalAmount: number;
+  extraCharges: number;
+  adjustmentAmount: number;
+  roundOff: number;
   isCancelled: boolean;
   cancelledAt: string | null;
   cancelReason: string | null;
@@ -180,7 +186,7 @@ export default function BillDetailPage() {
   const looseItems = invoice.items.filter((i) => i.saleUnit === "LOOSE");
 
   // ─── Map invoice to PrintInvoiceData for the print view ──────
-  const isThermal = printConfig.paper.size === "thermal80" || printConfig.paper.size === "thermal58";
+  const rendererKind = invoiceRendererFor(printConfig);
   const printData: PrintInvoiceData = invoice ? {
     invoiceNumber:   invoice.invoiceNumber,
     createdAt:       invoice.createdAt,
@@ -193,6 +199,7 @@ export default function BillDetailPage() {
     paymentMode:     invoice.paymentMode,
     paymentStatus:   invoice.paymentStatus,
     isInterstate:    invoice.isInterstate,
+    placeOfSupply:   printPharmacy?.state || undefined,
     items: invoice.items.map(i => ({
       medicineName:  i.medicineName,
       hsnCode:       i.hsnCode,
@@ -220,6 +227,9 @@ export default function BillDetailPage() {
     igst:           invoice.igst,
     totalGst:       invoice.totalGst,
     totalAmount:    invoice.totalAmount,
+    extraCharges:     invoice.extraCharges,
+    adjustmentAmount: invoice.adjustmentAmount,
+    roundOff:         invoice.roundOff,
   } : {} as PrintInvoiceData;
 
   // ─────────────────────────────────────────────────────────────
@@ -229,8 +239,12 @@ export default function BillDetailPage() {
     {invoice && (
       <div className="hidden print:block">
         <Suspense fallback={null}>
-          {isThermal
+          {rendererKind === "thermal"
             ? <ThermalReceiptView invoice={printData} config={printConfig} pharmacy={printPharmacy} />
+            : rendererKind === "a5landscape"
+            ? <A5LandscapeInvoiceView invoice={printData} config={printConfig} pharmacy={printPharmacy} />
+            : rendererKind === "wholesale"
+            ? <TaxWholesaleInvoiceView invoice={printData} config={printConfig} pharmacy={printPharmacy} />
             : <InvoicePrintView  invoice={printData} config={printConfig} pharmacy={printPharmacy} />
           }
         </Suspense>

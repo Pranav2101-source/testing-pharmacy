@@ -369,6 +369,153 @@ public interface InventoryRepository extends JpaRepository<Inventory, String> {
     @Query("SELECT i FROM Inventory i LEFT JOIN FETCH i.medicine WHERE i.pharmacyId = :pharmacyId AND CAST(i.status AS string) = 'ACTIVE'")
     List<Inventory> findActiveWithMedicine(@Param("pharmacyId") String pharmacyId);
 
+    interface ValuationRow {
+        /** Effective medicine id — catalogue id, or local-medicine id when unlinked. */
+        String getMedicineId();
+        String getMedicineName();
+        String getCategory();
+        java.math.BigDecimal getCostValue();
+        java.math.BigDecimal getRetailValue();
+        long getTotalQty();
+    }
+
+    interface DeadStockRow {
+        String getId();
+        String getBatchNumber();
+        Instant getExpiryDate();
+        int getQuantity();
+        int getLooseUnits();
+        String getMedId();
+        String getMedName();
+        String getGenericName();
+        String getForm();
+        String getCategory();
+        Instant getLastSale();
+        /** Sealed packs + loose remainder as a pack fraction — the {@code packEquivalentQty} value. */
+        java.math.BigDecimal getPackEq();
+        java.math.BigDecimal getPurchaseRate();
+        java.math.BigDecimal getMrp();
+    }
+
+    /**
+     * Dead-stock candidates — active in-stock batches whose most recent SALE movement is
+     * older than {@code threshold} (or which have never sold) — ordered by capital at risk,
+     * bounded by {@code Pageable}.
+     *
+     * <p>Aggregated in SQL. This replaced {@code findActiveInStockWithMedicine} + a
+     * per-batch last-sale map + a Java filter loop: at a real pharmacy that pulled every
+     * active batch into the persistence context to throw most of them away. The last-sale
+     * join, the loose pack-equivalent value and the ordering all happen in Postgres now;
+     * only the worst {@code limit} rows cross the wire.
+     */
+    @Query(value = """
+            WITH last_sale AS (
+                SELECT "inventoryId" AS inv_id, MAX("createdAt") AS ts
+                FROM inventory_movements
+                WHERE "pharmacyId" = :pharmacyId AND type = 'SALE'
+                GROUP BY "inventoryId"
+            )
+            SELECT i.id AS id, i."batchNumber" AS batchNumber, i."expiryDate" AS expiryDate,
+                   i.quantity AS quantity, i."looseUnits" AS looseUnits,
+                   m.id AS medId, m.name AS medName, m."genericName" AS genericName,
+                   m.form AS form, m.category AS category,
+                   ls.ts AS lastSale,
+                   (i.quantity + CASE
+                        WHEN i."looseUnits" > 0 AND COALESCE(o."unitsPerPack", m."unitsPerPack", 1) > 1
+                        THEN i."looseUnits"::numeric / COALESCE(o."unitsPerPack", m."unitsPerPack", 1)
+                        ELSE 0 END) AS packEq,
+                   i."purchaseRate" AS purchaseRate, i.mrp AS mrp
+            FROM inventory i
+            LEFT JOIN medicines m ON m.id = i."medicineId"
+            LEFT JOIN pharmacy_medicine_overrides o
+              ON o."pharmacyId" = i."pharmacyId" AND o."medicineId" = i."medicineId"
+            LEFT JOIN last_sale ls ON ls.inv_id = i.id
+            WHERE i."pharmacyId" = :pharmacyId
+              AND i.status = 'ACTIVE'
+              AND (i.quantity > 0 OR i."looseUnits" > 0)
+              AND (ls.ts IS NULL OR ls.ts < :threshold)
+            ORDER BY (i.quantity + CASE
+                        WHEN i."looseUnits" > 0 AND COALESCE(o."unitsPerPack", m."unitsPerPack", 1) > 1
+                        THEN i."looseUnits"::numeric / COALESCE(o."unitsPerPack", m."unitsPerPack", 1)
+                        ELSE 0 END) * i."purchaseRate" DESC
+            """, nativeQuery = true)
+    List<DeadStockRow> deadStockCandidates(@Param("pharmacyId") String pharmacyId,
+                                           @Param("threshold") Instant threshold,
+                                           Pageable pageable);
+
+    /** Total capital at risk across EVERY dead batch (not just the page) — the headline figure. */
+    @Query(value = """
+            WITH last_sale AS (
+                SELECT "inventoryId" AS inv_id, MAX("createdAt") AS ts
+                FROM inventory_movements
+                WHERE "pharmacyId" = :pharmacyId AND type = 'SALE'
+                GROUP BY "inventoryId"
+            )
+            SELECT COALESCE(SUM(
+                (i.quantity + CASE
+                     WHEN i."looseUnits" > 0 AND COALESCE(o."unitsPerPack", m."unitsPerPack", 1) > 1
+                     THEN i."looseUnits"::numeric / COALESCE(o."unitsPerPack", m."unitsPerPack", 1)
+                     ELSE 0 END) * i."purchaseRate"), 0)
+            FROM inventory i
+            LEFT JOIN medicines m ON m.id = i."medicineId"
+            LEFT JOIN pharmacy_medicine_overrides o
+              ON o."pharmacyId" = i."pharmacyId" AND o."medicineId" = i."medicineId"
+            LEFT JOIN last_sale ls ON ls.inv_id = i.id
+            WHERE i."pharmacyId" = :pharmacyId
+              AND i.status = 'ACTIVE'
+              AND (i.quantity > 0 OR i."looseUnits" > 0)
+              AND (ls.ts IS NULL OR ls.ts < :threshold)
+            """, nativeQuery = true)
+    java.math.BigDecimal deadStockTotalAtRisk(@Param("pharmacyId") String pharmacyId,
+                                              @Param("threshold") Instant threshold);
+
+    /**
+     * Stock valuation, collapsed from batches to one row per medicine BY THE DATABASE.
+     *
+     * <p>Replaces {@link #findActiveWithMedicine} + a Java loop: that pulled every active
+     * batch row (tens of thousands at a real pharmacy) into the persistence context to
+     * produce a handful of category totals. The batch-to-medicine roll-up — the expensive
+     * part — now happens in SQL; the service only folds medicines into categories, which is
+     * cheap because the row count is now "distinct medicines in stock", not "batches".
+     *
+     * <p>Value per batch is {@code (sealed packs + loose remainder as a pack fraction) x
+     * rate} — identical to {@code ReportsService.packEquivalentQty}, so a batch cut down to
+     * nothing but an opened strip is still valued rather than priced at zero. The effective
+     * pack size is this pharmacy's override, else the catalogue's, else 1 — exactly how
+     * billing resolves it.
+     *
+     * <p><b>Excludes expired batches</b> ({@code expiryDate > :now}). Stock past its expiry
+     * date cannot legally be sold, so counting it at full MRP overstated what the shelves
+     * are worth. It is still surfaced — as an exposure to act on — by the expiry report and
+     * the GSTR-3B expired-stock section.
+     */
+    @Query(value = """
+            SELECT COALESCE(i."medicineId", i."localMedicineId") AS medicineId,
+                   COALESCE(MAX(m.name), 'Unknown') AS medicineName,
+                   MAX(m.category) AS category,
+                   COALESCE(SUM(
+                       (i.quantity + CASE
+                            WHEN i."looseUnits" > 0 AND COALESCE(o."unitsPerPack", m."unitsPerPack", 1) > 1
+                            THEN i."looseUnits"::numeric / COALESCE(o."unitsPerPack", m."unitsPerPack", 1)
+                            ELSE 0 END) * i."purchaseRate"), 0) AS costValue,
+                   COALESCE(SUM(
+                       (i.quantity + CASE
+                            WHEN i."looseUnits" > 0 AND COALESCE(o."unitsPerPack", m."unitsPerPack", 1) > 1
+                            THEN i."looseUnits"::numeric / COALESCE(o."unitsPerPack", m."unitsPerPack", 1)
+                            ELSE 0 END) * i.mrp), 0) AS retailValue,
+                   COALESCE(SUM(i.quantity), 0) AS totalQty
+            FROM inventory i
+            LEFT JOIN medicines m ON m.id = i."medicineId"
+            LEFT JOIN pharmacy_medicine_overrides o
+              ON o."pharmacyId" = i."pharmacyId" AND o."medicineId" = i."medicineId"
+            WHERE i."pharmacyId" = :pharmacyId
+              AND i.status = 'ACTIVE'
+              AND i."expiryDate" > :now
+            GROUP BY COALESCE(i."medicineId", i."localMedicineId")
+            """, nativeQuery = true)
+    List<ValuationRow> valuationByMedicine(@Param("pharmacyId") String pharmacyId,
+                                           @Param("now") java.time.Instant now);
+
     /**
      * Batches by id WITH their medicine, tenant-scoped — for report rows that already know the
      * ids they need (fast/slow-moving, EOD top sellers, margin report). Replaces

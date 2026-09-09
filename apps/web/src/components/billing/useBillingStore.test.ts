@@ -445,7 +445,9 @@ describe("getTotals", () => {
 
     const t = store().getTotals();
     expect(t.cgst).toBe(t.sgst);
-    expect(t.taxableAmount + t.totalGst).toBeCloseTo(t.totalAmount, 2);
+    // totalAmount is the sum of the line prices paid; the equal CGST/SGST split can leave
+    // (taxable + tax) a paisa off it per line — a few paise across this 3-line bill.
+    expect(Math.abs(t.taxableAmount + t.totalGst - t.totalAmount)).toBeLessThanOrEqual(0.1);
   });
 });
 
@@ -521,6 +523,52 @@ describe("schedule-H awareness", () => {
     expect(line().batchNumber).toBe("B-777");
     expect(line().expiryDate).toBe("2027-06-30T00:00:00Z");
     expect(line().hsnCode).toBe("3004");
+  });
+});
+
+describe("note fields survive a recompute (quantity / discount edit)", () => {
+  // recompute() rebuilds the line object from scratch on every edit path — the
+  // directions, the internal round-up note, the cashier's patient remarks and the
+  // measured clinical figures must all still be there afterwards, or the printed
+  // slip loses the dosage line and the Internal Note column goes blank mid-bill.
+  const withNotes = () => item({
+    dosageInstructions: "5 ml three times a day for 7 days",
+    clinicalNote: "105 ml prescribed · billing 2 bottles",
+    patientRemarks: "after food",
+    prescribedVolumeClinical: 105,
+    clinicalUom: "ML",
+    roundedPackCount: 2,
+    baseUnit: "ML",
+    unitsPerPack: 100,
+  });
+
+  it("keeps every note field across a quantity change", () => {
+    store().addItem(withNotes());
+    store().updateQty("inv-1", 2);
+    expect(line().dosageInstructions).toBe("5 ml three times a day for 7 days");
+    expect(line().clinicalNote).toBe("105 ml prescribed · billing 2 bottles");
+    expect(line().patientRemarks).toBe("after food");
+    expect(line().prescribedVolumeClinical).toBe(105);
+    expect(line().clinicalUom).toBe("ML");
+    expect(line().roundedPackCount).toBe(2);
+  });
+
+  it("keeps every note field across a discount change", () => {
+    store().addItem(withNotes());
+    store().updateDiscount("inv-1", 10);
+    expect(line().dosageInstructions).toBe("5 ml three times a day for 7 days");
+    expect(line().clinicalNote).toBe("105 ml prescribed · billing 2 bottles");
+    expect(line().patientRemarks).toBe("after food");
+    expect(line().prescribedVolumeClinical).toBe(105);
+  });
+
+  it("updatePatientRemarks changes only the remarks, leaving money and notes intact", () => {
+    store().addItem(withNotes());
+    const before = line().amount;
+    store().updatePatientRemarks("inv-1", "before food, avoid milk");
+    expect(line().patientRemarks).toBe("before food, avoid milk");
+    expect(line().dosageInstructions).toBe("5 ml three times a day for 7 days");
+    expect(line().amount).toBe(before);
   });
 });
 

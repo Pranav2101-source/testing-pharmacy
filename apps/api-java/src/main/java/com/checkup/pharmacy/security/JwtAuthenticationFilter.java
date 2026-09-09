@@ -39,10 +39,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
     private final UserRepository userRepository;
+    private final AuthStatusCache authStatusCache;
 
-    public JwtAuthenticationFilter(JwtService jwtService, UserRepository userRepository) {
+    public JwtAuthenticationFilter(JwtService jwtService, UserRepository userRepository,
+                                   AuthStatusCache authStatusCache) {
         this.jwtService = jwtService;
         this.userRepository = userRepository;
+        this.authStatusCache = authStatusCache;
     }
 
     @Override
@@ -83,17 +86,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             // query in the system, and it only needs two fields. Loading the whole
             // User pulled passwordHash and passwordResetToken into memory on every
             // request. See AuthStatus.
-            Optional<AuthStatus> maybeStatus =
-                    SystemContext.callAsSystem(() -> userRepository.findAuthStatusById(payload.sub()));
+            // Short-TTL in-process cache for the revocation read — see AuthStatusCache. Every
+            // path that revokes a session also evicts this entry, so a logout/deactivation is
+            // effective at once; the TTL only bounds a missed eviction or cross-instance lag.
+            Optional<AuthStatus> maybeStatus = authStatusCache.resolve(
+                    payload.sub(),
+                    () -> SystemContext.callAsSystem(() -> userRepository.findAuthStatusById(payload.sub())));
             if (maybeStatus.isEmpty()) {
                 return;
             }
             AuthStatus status = maybeStatus.get();
 
             // Revocation check: inactive user or stale token version => not authenticated.
-            // Deliberately still a live database read on every request rather than a
-            // cached one, so a logout or password change revokes sessions instantly
-            // across all instances. Caching this would trade that for throughput.
             if (!status.active() || status.tokenVersion() != payload.tokenVersion()) {
                 return;
             }

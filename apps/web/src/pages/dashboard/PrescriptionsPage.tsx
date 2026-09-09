@@ -12,8 +12,7 @@ import { format } from "date-fns";
 import { Link } from "react-router-dom";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
-import { detectNewArrivals, arrivalToastMessage } from "@/lib/prescriptionArrivals";
-import { playArrivalChime } from "@/lib/notifySound";
+import { detectNewArrivals } from "@/lib/prescriptionArrivals";
 import { markPrescriptionViewed } from "@/lib/prescriptionNewCount";
 import { useToast } from "@/hooks/useToast";
 import ClinicCallbackPanel, { type DispenseNotify, type CancelNotify } from "@/components/integration/ClinicCallbackPanel";
@@ -61,6 +60,14 @@ type PrescriptionItem = {
   quantityAutoCalculated: boolean;
   /** How the quantity was calculated, or why it couldn't be — see PrescriptionQuantityCalculator (backend). */
   quantityCalculationNote: string | null;
+  /** For a measured (mL/g) line: the clinical volume/weight the clinic prescribed, kept even after
+   *  `quantity` has been rounded up to a whole-pack target. Null for a countable line. */
+  prescribedVolumeClinical: number | null;
+  /** The unit `prescribedVolumeClinical` is in — "ML" | "GM". */
+  clinicalUom: string | null;
+  /** Whole sealed packs a measured course was rounded up to; null while the pack size is unknown
+   *  (line held for a pharmacist) and for a countable line. `quantity` = roundedPackCount × pack size. */
+  roundedPackCount: number | null;
   /** Near-name catalogue candidates for a line the matcher could not link. Always empty once medicineId is set. */
   suggestions: MedicineSuggestion[];
 };
@@ -1076,7 +1083,6 @@ export default function PrescriptionsPage() {
   const [showCreate,   setShowCreate]   = useState(false);
   const [detail,       setDetail]       = useState<Prescription | null>(null);
   const [triage,       setTriage]       = useState<Prescription | null>(null);
-  const toast = useToast();
 
   // reset page on filter change
   useEffect(() => { setPage(1); }, [search, statusFilter]);
@@ -1093,12 +1099,18 @@ export default function PrescriptionsPage() {
     queryFn:  () =>
       api.get<{ success: boolean; data: ListResponse }>(`/prescriptions?${params}`)
          .then(r => r.data.data),
-    staleTime: 8_000,
+    staleTime: 20_000,
     // A clinic pushes a prescription with nobody at this pharmacy having done anything —
     // without a poll it sits invisible until someone happens to reload. react-query only
     // polls while the tab is focused (refetchIntervalInBackground defaults to false), so
     // this doesn't run up API calls in a background tab.
-    refetchInterval: 8_000,
+    //
+    // The chime + toast for a genuine arrival is now the dashboard-wide watcher's job
+    // (usePrescriptionArrivalWatcher, riding the cheap /new-count poll), so this only
+    // needs to be brisk enough to refresh the visible list and its "New" pills — 20s,
+    // down from the old 8s. The watcher also invalidates this query the instant it
+    // chimes, so an arrival shows here immediately when the page is open.
+    refetchInterval: 20_000,
   });
 
   const qc = useQueryClient();
@@ -1110,6 +1122,9 @@ export default function PrescriptionsPage() {
   const seenIdsRef = useRef<Set<string> | null>(null);
   const [newlyArrivedIds, setNewlyArrivedIds] = useState<Set<string>>(new Set());
 
+  // Highlights freshly-arrived rows in-place (violet row + "New" pill). The audible
+  // chime + toast are handled app-wide by usePrescriptionArrivalWatcher, so this
+  // only tracks which rows to badge — no sound, no toast, no double alert.
   useEffect(() => {
     if (!data) return;
     const { arrived, isFirstLoad } = detectNewArrivals(data.items, seenIdsRef.current);
@@ -1125,9 +1140,7 @@ export default function PrescriptionsPage() {
       arrived.forEach((rx) => next.add(rx.id));
       return next;
     });
-    toast.info(arrivalToastMessage(arrived));
-    playArrivalChime();
-  }, [data, toast]);
+  }, [data]);
 
   // Marks a row acknowledged the moment a pharmacist actually looks at it — simpler than a
   // timer, and ties "seen" to the action that means it was seen.

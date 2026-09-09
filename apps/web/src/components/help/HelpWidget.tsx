@@ -63,17 +63,20 @@ const CATEGORIES: HelpCategory[] = [
       },
       {
         id: "billing-shortcuts", question: "Billing page shortcuts",
-        tags: ["billing", "shortcut", "f9", "f8", "ctrl s", "alt", "save", "print", "draft"],
+        tags: ["billing", "shortcut", "f9", "f8", "ctrl s", "alt", "save", "print", "draft", "enter", "escape"],
         blocks: [
           { type: "text", content: "These shortcuts are active only when you are on the New Bill page (/billing/new)." },
-          { type: "shortcut", keys: ["F9"],           desc: "Save & Print — finalise bill and open print dialog" },
+          { type: "shortcut", keys: ["F9"],           desc: "Save & Print — save, print, and move to the next patient (no preview pop-up on a standard bill)" },
+          { type: "shortcut", keys: ["Enter"],        desc: "Save & Print — same as F9, when the cursor is not inside a table/form field" },
           { type: "shortcut", keys: ["F8"],           desc: "Save & New — save bill and immediately open a fresh one" },
+          { type: "shortcut", keys: ["Esc"],          desc: "Dismiss the saved receipt if it is showing, otherwise clear the in-progress bill (asks first)" },
           { type: "shortcut", keys: ["Ctrl", "S"],    desc: "Save as Draft — park the bill without finalising" },
           { type: "shortcut", keys: ["Alt", "1"],     desc: "Switch payment mode to Cash" },
           { type: "shortcut", keys: ["Alt", "2"],     desc: "Switch payment mode to UPI" },
           { type: "shortcut", keys: ["Alt", "3"],     desc: "Switch payment mode to Card" },
           { type: "shortcut", keys: ["Alt", "4"],     desc: "Switch payment mode to Credit" },
           { type: "tip", content: "Alt+1–4 change the payment mode instantly without touching the mouse. Very useful at a busy counter." },
+          { type: "tip", content: "On most laptops F8/F9 are media keys by default — press Fn+F9 / Fn+F8, or enable \"F1–F12 as function keys\" in your keyboard settings." },
         ],
       },
       {

@@ -16,7 +16,6 @@ import com.checkup.pharmacy.modules.inventory.InventoryMovementRepository;
 import com.checkup.pharmacy.modules.inventory.InventoryRepository;
 import com.checkup.pharmacy.modules.pharmacy.Pharmacy;
 import com.checkup.pharmacy.modules.pharmacy.PharmacyRepository;
-import com.checkup.pharmacy.modules.purchase.GRNItem;
 import com.checkup.pharmacy.modules.purchase.GRNItemRepository;
 import com.checkup.pharmacy.modules.purchase.GoodsReceiptNoteRepository;
 import com.checkup.pharmacy.modules.supplierreturn.SupplierReturnRepository;
@@ -55,18 +54,29 @@ import java.util.Map;
 
 /**
  * Read-only analytics over billing/inventory/purchase data. Pure reporting —
- * no writes, so every method is {@code @Transactional(readOnly = true)}.
- * Grouping/margin math that Postgres could do in SQL is instead done in Java
- * for cost-analysis/valuation/dead-stock — these read a bounded, already
- * date-filtered row set (a pharmacy's GRN items or active stock, not the
- * whole table), so in-memory aggregation is simpler than hand-rolled JPQL
- * GROUP BY across three joined tables and costs nothing extra at this scale.
+ * no writes, so every method is {@code @Transactional(readOnly = true)}, and each
+ * carries a {@link #REPORT_QUERY_TIMEOUT_SECONDS}-second statement timeout: a report
+ * is never on the critical path of a sale, so a pathological range should fail its
+ * own request rather than hold one of a small pool of connections open indefinitely
+ * while the till waits behind it.
+ *
+ * <p>Sales trend, cost-analysis, valuation and dead-stock aggregate in SQL. The
+ * customer/margin/GST-compliance methods read an already date-filtered, row-capped
+ * set and finish the last fold in Java where a hand-rolled JPQL GROUP BY across three
+ * joined tables would be less legible for no measurable gain.
  */
 @Service
 public class ReportsService {
 
     private static final ZoneOffset IST = ZoneOffset.ofHoursMinutes(5, 30);
     private static final int TOP_ITEMS_LIMIT = 10;
+
+    /**
+     * Per-query timeout for every method here. Generous enough that a legitimate
+     * whole-year compliance query on a busy pharmacy never trips it, tight enough that
+     * a runaway range gives the connection back before the shop floor notices.
+     */
+    private static final int REPORT_QUERY_TIMEOUT_SECONDS = 25;
 
     /**
      * Safety bound on the Schedule register. Sized generously — a month of
@@ -152,7 +162,7 @@ public class ReportsService {
 
     // ── Sales ────────────────────────────────────────────────────────────────
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public DailySalesResponse dailySales(String dateStr) {
         String pharmacyId = TenantContext.pharmacyId();
         LocalDate resolved = dateStr != null ? LocalDate.parse(dateStr) : LocalDate.now(IST);
@@ -170,7 +180,7 @@ public class ReportsService {
      * Days with no sales come back as explicit zero rows so the caller can plot a continuous
      * axis without having to reconcile gaps itself.
      */
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public List<DailySalesResponse> dailySalesSeries(String fromStr, String toStr) {
         return dailySalesSeries(fromStr, toStr, null);
     }
@@ -188,7 +198,7 @@ public class ReportsService {
      * for a day. Anything unrecognised falls back to day bucketing rather than failing:
      * the worst case is a busier chart, which is not worth a 400 to a report screen.
      */
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public List<DailySalesResponse> dailySalesSeries(String fromStr, String toStr, String groupByParam) {
         boolean byMonth = "month".equalsIgnoreCase(groupByParam);
 
@@ -253,7 +263,64 @@ public class ReportsService {
                         round2(row.getGstCollected()));
     }
 
-    @Transactional(readOnly = true)
+    /**
+     * The period's takings by payment channel. Non-cancelled invoices only, valued at the
+     * billed total (what the customer paid), so the slices add up to the same headline the
+     * sales trend shows.
+     */
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
+    public com.checkup.pharmacy.modules.reports.dto.PaymentMixResponse paymentMix(Instant from, Instant to) {
+        validateRange(from, to);
+        Instant f = DateRange.from(from);
+        Instant t = DateRange.to(to);
+        var rows = invoiceRepository.paymentMixInRange(TenantContext.pharmacyId(), f, t);
+        BigDecimal total = rows.stream().map(r -> nz(r.getTotal())).reduce(BigDecimal.ZERO, BigDecimal::add);
+        long bills = rows.stream().mapToLong(InvoiceRepository.PaymentMixRow::getBills).sum();
+        List<com.checkup.pharmacy.modules.reports.dto.PaymentMixResponse.Slice> slices = new ArrayList<>();
+        for (var r : rows) {
+            BigDecimal amount = round2(nz(r.getTotal()));
+            slices.add(new com.checkup.pharmacy.modules.reports.dto.PaymentMixResponse.Slice(
+                    r.getMode() != null ? r.getMode() : "OTHER", amount, r.getBills(),
+                    round2(percentOf(amount, total))));
+        }
+        return new com.checkup.pharmacy.modules.reports.dto.PaymentMixResponse(round2(total), bills, slices);
+    }
+
+    /** Upper bound on the GST trend — five years of months, past what the chart can show anyway. */
+    private static final int MAX_GST_TREND_MONTHS = 60;
+
+    /**
+     * Output tax per IST calendar month across a window (default: the last 12 months).
+     * Zero-filled so the chart axis is continuous. See {@link #dailySalesSeries} for why the
+     * IST month bucket needs both {@code AT TIME ZONE} halves.
+     */
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
+    public com.checkup.pharmacy.modules.reports.dto.GstTrendResponse gstTrend(Integer monthsParam) {
+        int months = clamp(monthsParam, 12, 1, MAX_GST_TREND_MONTHS);
+        LocalDate today = LocalDate.now(IST);
+        java.time.YearMonth firstMonth = java.time.YearMonth.from(today).minusMonths(months - 1L);
+        java.time.YearMonth lastMonth = java.time.YearMonth.from(today);
+        Instant from = firstMonth.atDay(1).atStartOfDay(IST).toInstant();
+        Instant to = lastMonth.atEndOfMonth().plusDays(1).atStartOfDay(IST).toInstant().minusMillis(1);
+
+        Map<String, InvoiceRepository.GstMonthRow> byMonth = new LinkedHashMap<>();
+        for (var row : invoiceRepository.gstMonthlySeries(TenantContext.pharmacyId(), from, to)) {
+            byMonth.put(row.getMonth(), row);
+        }
+        List<com.checkup.pharmacy.modules.reports.dto.GstTrendResponse.Month> series = new ArrayList<>();
+        for (java.time.YearMonth m = firstMonth; !m.isAfter(lastMonth); m = m.plusMonths(1)) {
+            var row = byMonth.get(m.toString());
+            BigDecimal cgst = row != null ? round2(nz(row.getCgst())) : BigDecimal.ZERO.setScale(2);
+            BigDecimal sgst = row != null ? round2(nz(row.getSgst())) : BigDecimal.ZERO.setScale(2);
+            BigDecimal igst = row != null ? round2(nz(row.getIgst())) : BigDecimal.ZERO.setScale(2);
+            BigDecimal taxable = row != null ? round2(nz(row.getTaxable())) : BigDecimal.ZERO.setScale(2);
+            series.add(new com.checkup.pharmacy.modules.reports.dto.GstTrendResponse.Month(
+                    m.toString(), taxable, cgst, sgst, igst, cgst.add(sgst).add(igst)));
+        }
+        return new com.checkup.pharmacy.modules.reports.dto.GstTrendResponse(series);
+    }
+
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public GstSummaryResponse gstSummary(Instant from, Instant to) {
         validateRange(from, to);
         var agg = invoiceRepository.gstAggregate(TenantContext.pharmacyId(), DateRange.from(from), DateRange.to(to));
@@ -286,7 +353,7 @@ public class ReportsService {
      * response reports what share of revenue could actually be costed, so a number built
      * on partial data announces itself.
      */
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public MarginReportResponse marginReport(Instant from, Instant to, Integer limitParam) {
         validateRange(from, to);
         int limit = clamp(limitParam, 15, 1, 100);
@@ -396,7 +463,7 @@ public class ReportsService {
      * someone billed in July for the first time is new in July, someone billed in July who
      * also bought last year is not, and a range-local query cannot tell the two apart.
      */
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public CustomerInsightsResponse customerInsights(Instant from, Instant to, Integer limitParam) {
         validateRange(from, to);
         int limit = clamp(limitParam, 15, 1, 100);
@@ -443,6 +510,38 @@ public class ReportsService {
                 new CustomerInsightsResponse.WalkIns(walkInBills, round2(walkInShare)), top);
     }
 
+    /** Upper bound on the customer trend — the query is heavier than the GST one (two CTEs). */
+    private static final int MAX_CUSTOMER_TREND_MONTHS = 36;
+
+    /**
+     * Identified customers billed per IST month over a trailing window (default 12 months),
+     * split new vs returning on the customer's whole history. Zero-filled so the chart axis
+     * is continuous.
+     */
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
+    public com.checkup.pharmacy.modules.reports.dto.CustomerTrendResponse customerTrend(Integer monthsParam) {
+        int months = clamp(monthsParam, 12, 1, MAX_CUSTOMER_TREND_MONTHS);
+        LocalDate today = LocalDate.now(IST);
+        java.time.YearMonth firstMonth = java.time.YearMonth.from(today).minusMonths(months - 1L);
+        java.time.YearMonth lastMonth = java.time.YearMonth.from(today);
+        Instant from = firstMonth.atDay(1).atStartOfDay(IST).toInstant();
+        Instant to = lastMonth.atEndOfMonth().plusDays(1).atStartOfDay(IST).toInstant().minusMillis(1);
+
+        Map<String, InvoiceRepository.CustomerMonthRow> byMonth = new LinkedHashMap<>();
+        for (var row : invoiceRepository.customerMonthlySeries(TenantContext.pharmacyId(), from, to)) {
+            byMonth.put(row.getMonth(), row);
+        }
+        List<com.checkup.pharmacy.modules.reports.dto.CustomerTrendResponse.Month> series = new ArrayList<>();
+        for (java.time.YearMonth m = firstMonth; !m.isAfter(lastMonth); m = m.plusMonths(1)) {
+            var row = byMonth.get(m.toString());
+            long billed = row != null ? row.getBilled() : 0;
+            long newCount = row != null ? row.getNewCount() : 0;
+            series.add(new com.checkup.pharmacy.modules.reports.dto.CustomerTrendResponse.Month(
+                    m.toString(), billed, newCount, Math.max(billed - newCount, 0)));
+        }
+        return new com.checkup.pharmacy.modules.reports.dto.CustomerTrendResponse(series);
+    }
+
     /**
      * Regulars who have gone quiet, worth the most first.
      *
@@ -451,7 +550,7 @@ public class ReportsService {
      * are clamped rather than trusted, because this reads the customer's entire history and
      * an unbounded limit would hand back every name the pharmacy has ever billed.
      */
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public LapsedCustomersResponse lapsedCustomers(Integer inactiveDaysParam, Integer minVisitsParam,
                                                    Integer limitParam) {
         int inactiveDays = clamp(inactiveDaysParam, 90, 7, 730);
@@ -511,7 +610,7 @@ public class ReportsService {
      * more dangerous than one that says so, the gaps being invisible once the numbers are on
      * the page.
      */
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public Gstr3bResponse gstr3b(Instant from, Instant to) {
         validateRange(from, to);
         String pharmacyId = TenantContext.pharmacyId();
@@ -811,7 +910,7 @@ public class ReportsService {
                 a.igst().subtract(b.igst()), a.cgst().subtract(b.cgst()), a.sgst().subtract(b.sgst()));
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public List<ExpiryItemResponse> expiryReport(Integer daysParam, Integer limitParam) {
         int days = clamp(daysParam, 90, 1, 365);
         int limit = clamp(limitParam, 500, 1, 1000);
@@ -833,7 +932,7 @@ public class ReportsService {
 
     // ── Purchases ────────────────────────────────────────────────────────────
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public PurchaseSummaryResponse purchaseSummary(Instant from, Instant to) {
         validateRange(from, to);
         String pharmacyId = TenantContext.pharmacyId();
@@ -848,60 +947,60 @@ public class ReportsService {
                 grnAgg.getTotal());
     }
 
-    @Transactional(readOnly = true)
+    /**
+     * Purchase cost analysis for a range — a top-N table of the biggest spends, plus period
+     * grand totals.
+     *
+     * <p>Aggregated in SQL ({@code GROUP BY} medicine, {@code Limit} on the row set) rather
+     * than by loading every confirmed GRN line into memory: this feeds a screen a pharmacist
+     * can point at a whole year, and the old in-memory grouping was bounded only by how much
+     * the pharmacy bought.
+     *
+     * <p>The summary totals come from a SEPARATE query over the whole period, not from summing
+     * the table. The table is deliberately truncated to the top {@code limit} medicines; the
+     * "total purchased" figure must still be every rupee, or it silently understates spend and
+     * disagrees with the Purchase page's own total.
+     */
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public CostAnalysisResponse costAnalysis(Instant from, Instant to, Integer limitParam) {
         validateRange(from, to);
         int limit = clamp(limitParam, 50, 1, 100);
         String pharmacyId = TenantContext.pharmacyId();
-        List<String> grnIds = grnRepository.findConfirmedIdsInRange(pharmacyId, DateRange.from(from), DateRange.to(to));
-        List<GRNItem> grnItems = grnIds.isEmpty() ? List.of() : grnItemRepository.findByGrnIdIn(grnIds);
+        Instant f = DateRange.from(from);
+        Instant t = DateRange.to(to);
 
-        record Agg(String medicineName, int totalQty, BigDecimal totalCost, BigDecimal totalMRPValue, int batches) {
-        }
-        Map<String, Agg> byMedicine = new LinkedHashMap<>();
-        for (GRNItem item : grnItems) {
-            int qty = item.getReceivedQty() + item.getFreeQty();
-            Agg existing = byMedicine.get(item.getMedicineId());
-            if (existing == null) {
-                byMedicine.put(item.getMedicineId(), new Agg(item.getMedicineName(), qty, item.getAmount(),
-                        item.getMrp().multiply(BigDecimal.valueOf(qty)), 1));
-            } else {
-                byMedicine.put(item.getMedicineId(), new Agg(existing.medicineName(), existing.totalQty() + qty,
-                        existing.totalCost().add(item.getAmount()),
-                        existing.totalMRPValue().add(item.getMrp().multiply(BigDecimal.valueOf(qty))),
-                        existing.batches() + 1));
-            }
-        }
+        var totals = grnItemRepository.costAnalysisTotals(pharmacyId, f, t);
+        BigDecimal totalCost = round2(nz(totals.getTotalCost()));
+        BigDecimal totalMRPValue = round2(nz(totals.getTotalMrpValue()));
+        BigDecimal overallMargin = totalMRPValue.signum() > 0
+                ? totalMRPValue.subtract(totalCost).divide(totalMRPValue, 6, RoundingMode.HALF_UP)
+                        .multiply(BigDecimal.valueOf(100))
+                : BigDecimal.ZERO;
 
         List<CostAnalysisResponse.Item> items = new ArrayList<>();
-        for (var entry : byMedicine.entrySet()) {
-            Agg a = entry.getValue();
-            BigDecimal qtyDivisor = BigDecimal.valueOf(Math.max(a.totalQty(), 1));
-            BigDecimal avgPurchaseRate = a.totalCost().divide(qtyDivisor, 4, RoundingMode.HALF_UP);
-            BigDecimal avgMRP = a.totalMRPValue().divide(qtyDivisor, 4, RoundingMode.HALF_UP);
+        for (var row : grnItemRepository.costAnalysisByMedicine(pharmacyId, f, t, Limit.of(limit))) {
+            BigDecimal rowCost = nz(row.getTotalCost());
+            BigDecimal rowMrpValue = nz(row.getTotalMrpValue());
+            BigDecimal qtyDivisor = BigDecimal.valueOf(Math.max(row.getTotalQty(), 1));
+            BigDecimal avgPurchaseRate = rowCost.divide(qtyDivisor, 4, RoundingMode.HALF_UP);
+            BigDecimal avgMRP = rowMrpValue.divide(qtyDivisor, 4, RoundingMode.HALF_UP);
             BigDecimal marginPct = avgMRP.signum() > 0
                     ? avgMRP.subtract(avgPurchaseRate).divide(avgMRP, 6, RoundingMode.HALF_UP)
                             .multiply(BigDecimal.valueOf(100))
                     : BigDecimal.ZERO;
-            items.add(new CostAnalysisResponse.Item(entry.getKey(), a.medicineName(), a.totalQty(),
-                    round2(a.totalCost()), round2(a.totalMRPValue()), round2(avgPurchaseRate), round2(avgMRP),
-                    round2(marginPct), a.batches()));
+            items.add(new CostAnalysisResponse.Item(row.getMedicineId(), row.getMedicineName(),
+                    (int) Math.min(row.getTotalQty(), Integer.MAX_VALUE),
+                    round2(rowCost), round2(rowMrpValue), round2(avgPurchaseRate), round2(avgMRP),
+                    round2(marginPct), (int) Math.min(row.getBatches(), Integer.MAX_VALUE)));
         }
-        items.sort((x, y) -> y.totalCost().compareTo(x.totalCost()));
-        List<CostAnalysisResponse.Item> limited = items.size() > limit ? items.subList(0, limit) : items;
 
-        BigDecimal totalCost = limited.stream().map(CostAnalysisResponse.Item::totalCost).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal totalMRPValue = limited.stream().map(CostAnalysisResponse.Item::totalMRPValue).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal overallMargin = totalMRPValue.signum() > 0
-                ? totalMRPValue.subtract(totalCost).divide(totalMRPValue, 6, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100))
-                : BigDecimal.ZERO;
-
-        return new CostAnalysisResponse(new CostAnalysisResponse.Summary(totalCost, totalMRPValue, round2(overallMargin)), limited);
+        return new CostAnalysisResponse(
+                new CostAnalysisResponse.Summary(totalCost, totalMRPValue, round2(overallMargin)), items);
     }
 
     // ── Compliance ───────────────────────────────────────────────────────────
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public List<ScheduleHItemResponse> scheduleRegister(Instant from, Instant to, String schedule) {
         validateRange(from, to);
 
@@ -963,7 +1062,7 @@ public class ReportsService {
 
     // ── GSTR-1 HSN summary ───────────────────────────────────────────────────
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public HsnSummaryResponse hsnSummary(Instant from, Instant to) {
         validateRange(from, to);
         // Already one row per (HSN, rate) and already ordered — the query groups and
@@ -994,7 +1093,7 @@ public class ReportsService {
 
     // ── Movement analytics ───────────────────────────────────────────────────
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public FastMovingResponse fastMoving(Instant from, Instant to, Integer limitParam) {
         validateRange(from, to);
         int limit = clamp(limitParam, 20, 1, 50);
@@ -1003,8 +1102,9 @@ public class ReportsService {
         return new FastMovingResponse(enrichMovementGroups(grouped));
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public FastMovingResponse slowMoving(Instant from, Instant to, Integer limitParam, Integer minQtyParam) {
+        validateRange(from, to);
         int limit = clamp(limitParam, 20, 1, 50);
         int minQty = minQtyParam != null ? Math.max(minQtyParam, 0) : 1;
         var grouped = invoiceItemRepository.slowMovingInRange(TenantContext.pharmacyId(), DateRange.from(from),
@@ -1037,93 +1137,98 @@ public class ReportsService {
         return items;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public DeadStockResponse deadStock(Integer daysParam) {
+        return deadStock(daysParam, null);
+    }
+
+    /**
+     * Batches with no sale since the threshold, biggest capital-at-risk first.
+     *
+     * <p>Candidate selection, the last-sale lookup, the loose-remainder valuation and the
+     * ordering all run in SQL — see {@link InventoryRepository#deadStockCandidates}. Only the
+     * worst {@code limit} rows are materialised. {@code totalCostAtRisk} is a separate
+     * aggregate over every dead batch, so the headline stays true even though the list is
+     * capped.
+     */
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
+    public DeadStockResponse deadStock(Integer daysParam, Integer limitParam) {
         int days = clamp(daysParam, 90, 1, 3650);
+        int limit = clamp(limitParam, 100, 1, 500);
         String pharmacyId = TenantContext.pharmacyId();
         Instant threshold = Instant.now().minus(Duration.ofDays(days));
 
-        List<Inventory> activeItems = inventoryRepository.findActiveInStockWithMedicine(pharmacyId);
-        List<String> ids = activeItems.stream().map(Inventory::getId).toList();
-        Map<String, Instant> lastSaleById = ids.isEmpty() ? Map.of()
-                : inventoryMovementRepository.findLastSaleByInventoryIdIn(pharmacyId, ids).stream()
-                        .collect(java.util.stream.Collectors.toMap(
-                                InventoryMovementRepository.LastSaleRow::getInventoryId,
-                                InventoryMovementRepository.LastSaleRow::getLastSale));
-        Map<String, Integer> effectiveUpp = effectiveUnitsPerPackByMedicineId(pharmacyId, activeItems);
+        BigDecimal totalCostAtRisk = round2(nz(inventoryRepository.deadStockTotalAtRisk(pharmacyId, threshold)));
 
         List<DeadStockResponse.Item> items = new ArrayList<>();
-        for (Inventory inv : activeItems) {
-            Instant lastSale = lastSaleById.get(inv.getId());
-            if (lastSale != null && !lastSale.isBefore(threshold)) {
-                continue; // sold since the threshold — not dead stock
-            }
-            // Values a batch down to nothing but an opened strip's remainder correctly — see
-            // packEquivalentQty. A batch's `quantity` field itself stays a pack count, unchanged.
-            BigDecimal qty = packEquivalentQty(inv, effectiveUpp.getOrDefault(inv.getMedicineId(), 1));
-            BigDecimal costAtRisk = round2(qty.multiply(inv.getPurchaseRate()));
-            BigDecimal retailValue = round2(qty.multiply(inv.getMrp()));
-            var m = inv.getMedicine();
-            DeadStockResponse.MedicineRef medicineRef = m != null
-                    ? new DeadStockResponse.MedicineRef(m.getId(), m.getName(), m.getGenericName(), m.getForm(), m.getCategory())
+        for (var r : inventoryRepository.deadStockCandidates(pharmacyId, threshold, PageRequest.of(0, limit))) {
+            BigDecimal packEq = nz(r.getPackEq());
+            BigDecimal costAtRisk = round2(packEq.multiply(nz(r.getPurchaseRate())));
+            BigDecimal retailValue = round2(packEq.multiply(nz(r.getMrp())));
+            DeadStockResponse.MedicineRef medicineRef = r.getMedName() != null
+                    ? new DeadStockResponse.MedicineRef(r.getMedId(), r.getMedName(), r.getGenericName(),
+                            r.getForm(), r.getCategory())
                     : null;
-            items.add(new DeadStockResponse.Item(inv.getId(), inv.getBatchNumber(), inv.getExpiryDate(),
-                    inv.getQuantity(), inv.getLooseUnits(), costAtRisk, retailValue, lastSale, medicineRef));
+            items.add(new DeadStockResponse.Item(r.getId(), r.getBatchNumber(), r.getExpiryDate(),
+                    r.getQuantity(), r.getLooseUnits(), costAtRisk, retailValue, r.getLastSale(), medicineRef));
         }
-        items.sort((a, b) -> b.costAtRisk().compareTo(a.costAtRisk()));
-
-        BigDecimal totalCostAtRisk = round2(items.stream().map(DeadStockResponse.Item::costAtRisk)
-                .reduce(BigDecimal.ZERO, BigDecimal::add));
         return new DeadStockResponse(days, totalCostAtRisk, items);
     }
 
-    @Transactional(readOnly = true)
+    /**
+     * Stock valuation, grouped by medicine or by category.
+     *
+     * <p>The batch → medicine roll-up (with the loose-remainder pack-equivalent math) is done
+     * in SQL — see {@link InventoryRepository#valuationByMedicine}. The service only folds
+     * medicines into categories when asked, which is cheap: the row count coming back is
+     * "distinct medicines in stock", not "batches on hand".
+     */
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public ValuationResponse inventoryValuation(String groupByParam) {
         String groupBy = "category".equals(groupByParam) ? "category" : "medicine";
         String pharmacyId = TenantContext.pharmacyId();
-        List<Inventory> items = inventoryRepository.findActiveWithMedicine(pharmacyId);
-        Map<String, Integer> effectiveUpp = effectiveUnitsPerPackByMedicineId(pharmacyId, items);
+        var rows = inventoryRepository.valuationByMedicine(pharmacyId, Instant.now());
 
-        record Agg(String medicineName, String category, BigDecimal costValue, BigDecimal retailValue, int totalQty) {
+        record Agg(String medicineName, String category, BigDecimal costValue, BigDecimal retailValue, long totalQty) {
         }
         Map<String, Agg> grouped = new LinkedHashMap<>();
-        for (Inventory inv : items) {
-            var m = inv.getMedicine();
+        for (var r : rows) {
+            String name = r.getMedicineName() != null ? r.getMedicineName() : "Unknown";
+            String category = r.getCategory();
             String key = "category".equals(groupBy)
-                    ? (m != null && m.getCategory() != null ? m.getCategory() : "Uncategorized")
-                    : (m != null ? m.getName() : "Unknown");
-            // See packEquivalentQty — folds a batch's loose remainder into its value instead of
-            // pricing it at nothing. `totalQty` below is still the plain pack count (unchanged
-            // meaning); only the money is corrected.
-            BigDecimal qty = packEquivalentQty(inv, effectiveUpp.getOrDefault(inv.getMedicineId(), 1));
-            BigDecimal cost = qty.multiply(inv.getPurchaseRate());
-            BigDecimal retail = qty.multiply(inv.getMrp());
+                    ? (category != null && !category.isBlank() ? category : "Uncategorized")
+                    : name;
+            BigDecimal cost = nz(r.getCostValue());
+            BigDecimal retail = nz(r.getRetailValue());
             Agg existing = grouped.get(key);
             if (existing == null) {
-                grouped.put(key, new Agg(m != null ? m.getName() : "Unknown", m != null ? m.getCategory() : null,
-                        cost, retail, inv.getQuantity()));
+                grouped.put(key, new Agg(name, category, cost, retail, r.getTotalQty()));
             } else {
-                grouped.put(key, new Agg(existing.medicineName(), existing.category(), existing.costValue().add(cost),
-                        existing.retailValue().add(retail), existing.totalQty() + inv.getQuantity()));
+                grouped.put(key, new Agg(existing.medicineName(), existing.category(),
+                        existing.costValue().add(cost), existing.retailValue().add(retail),
+                        existing.totalQty() + r.getTotalQty()));
             }
         }
 
-        List<ValuationResponse.Item> rows = new ArrayList<>();
+        List<ValuationResponse.Item> items = new ArrayList<>();
         for (var entry : grouped.entrySet()) {
             Agg a = entry.getValue();
-            rows.add(new ValuationResponse.Item(entry.getKey(), a.medicineName(), a.category(), round2(a.costValue()),
-                    round2(a.retailValue()), a.totalQty()));
+            items.add(new ValuationResponse.Item(entry.getKey(), a.medicineName(), a.category(),
+                    round2(a.costValue()), round2(a.retailValue()),
+                    (int) Math.min(a.totalQty(), Integer.MAX_VALUE)));
         }
-        rows.sort((x, y) -> y.costValue().compareTo(x.costValue()));
+        items.sort((x, y) -> y.costValue().compareTo(x.costValue()));
 
-        BigDecimal totalCostValue = round2(rows.stream().map(ValuationResponse.Item::costValue).reduce(BigDecimal.ZERO, BigDecimal::add));
-        BigDecimal totalRetailValue = round2(rows.stream().map(ValuationResponse.Item::retailValue).reduce(BigDecimal.ZERO, BigDecimal::add));
-        return new ValuationResponse(groupBy, totalCostValue, totalRetailValue, rows);
+        BigDecimal totalCostValue = round2(items.stream().map(ValuationResponse.Item::costValue)
+                .reduce(BigDecimal.ZERO, BigDecimal::add));
+        BigDecimal totalRetailValue = round2(items.stream().map(ValuationResponse.Item::retailValue)
+                .reduce(BigDecimal.ZERO, BigDecimal::add));
+        return new ValuationResponse(groupBy, totalCostValue, totalRetailValue, items);
     }
 
     // ── EOD summary (homepage widget) ───────────────────────────────────────
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public EodSummaryResponse eodSummary() {
         String pharmacyId = TenantContext.pharmacyId();
         Instant todayStart = LocalDate.now(IST).atStartOfDay(IST).toInstant();
@@ -1151,53 +1256,12 @@ public class ReportsService {
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
-
-    /**
-     * A batch's value multiplier, in pack-equivalent units: whole packs plus whatever the
-     * loose remainder is worth as a fraction of a pack. Identical to {@code quantity} for a
-     * batch with no loose remainder — the overwhelming majority — so this only changes an
-     * answer for a batch that has had a strip cut open for cut-strip selling.
-     *
-     * <p>Reports used to read {@code Inventory.quantity} alone for every cost/valuation
-     * figure, which priced a batch reduced to nothing but a loose remainder (0 packs, some
-     * pieces) at exactly zero — real, sellable stock that had simply become invisible to
-     * valuation and dead-stock exposure. This is the fix, kept local to the money
-     * calculations: {@code quantity} itself keeps meaning "sealed packs" everywhere else.
-     */
-    private static BigDecimal packEquivalentQty(Inventory inv, int effectiveUnitsPerPack) {
-        if (inv.getLooseUnits() <= 0 || effectiveUnitsPerPack <= 1) {
-            return BigDecimal.valueOf(inv.getQuantity());
-        }
-        return BigDecimal.valueOf(inv.getQuantity())
-                .add(BigDecimal.valueOf(inv.getLooseUnits())
-                        .divide(BigDecimal.valueOf(effectiveUnitsPerPack), 10, RoundingMode.HALF_UP));
-    }
-
-    /**
-     * The effective (this pharmacy's override, else the catalogue's) units-per-pack for every
-     * medicine behind a list of batches — one batched lookup rather than a query per row.
-     * Medicines with no pack size on record are absent from the map; callers default to 1.
-     */
-    private Map<String, Integer> effectiveUnitsPerPackByMedicineId(String pharmacyId, List<Inventory> batches) {
-        List<String> medicineIds = batches.stream().map(Inventory::getMedicineId).distinct().toList();
-        if (medicineIds.isEmpty()) {
-            return Map.of();
-        }
-        Map<String, Integer> byId = new java.util.HashMap<>();
-        for (Inventory inv : batches) {
-            var m = inv.getMedicine();
-            if (m != null && m.getUnitsPerPack() != null) {
-                byId.put(inv.getMedicineId(), m.getUnitsPerPack());
-            }
-        }
-        // Overrides win over the catalogue value, exactly as billing resolves it.
-        for (var override : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, medicineIds)) {
-            if (override.getUnitsPerPack() != null) {
-                byId.put(override.getMedicineId(), override.getUnitsPerPack());
-            }
-        }
-        return byId;
-    }
+    //
+    // The loose-remainder pack-equivalent math (whole packs + looseUnits / effective
+    // pack size) that valuation and dead-stock need now lives in SQL — see
+    // InventoryRepository.valuationByMedicine and deadStockCandidates. The Java
+    // packEquivalentQty / effectiveUnitsPerPackByMedicineId helpers that used to do it
+    // per-batch here were removed with that move.
 
     private static int clamp(Integer value, int def, int min, int max) {
         int v = value != null ? value : def;
