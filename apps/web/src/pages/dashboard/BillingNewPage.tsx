@@ -16,6 +16,8 @@ import { CartTableHeader, CartTableRows } from "@/components/billing/CartTable";
 import { MedicineSearchCombobox } from "@/components/billing/MedicineSearchCombobox";
 import { AlternativesDrawer } from "@/components/billing/AlternativesDrawer";
 import { useBillingStore, lineIssue, rxRequiredIssue } from "@/components/billing/useBillingStore";
+import { useLooseSaleHotkey } from "@/components/billing/useLooseSaleHotkey";
+import { useBillingKeyboardShortcuts } from "@/components/billing/useBillingKeyboardShortcuts";
 import { InvoiceBreakdownModal } from "@/components/billing/InvoiceBreakdownModal";
 import type { MedicineSearchResult } from "@pharmacy/types";
 import { useQueryClient } from "@tanstack/react-query";
@@ -26,13 +28,43 @@ import { cn } from "@/lib/utils";
 import { saveDraft, getDraft, deleteDraft } from "@/lib/draftStorage";
 import { useDispensingStrategy } from "@/lib/useDispensingStrategy";
 import { saveSession, loadSession, clearSession, type AutoSaveSession } from "@/lib/autoSave";
-import type { PrintInvoiceData } from "@/components/billing/InvoicePrintView";
+import type { PrintInvoiceData, PharmacyProfile } from "@/components/billing/InvoicePrintView";
+import type { InvoiceSettingsConfig } from "@pharmacy/types";
 import { useInvoicePrintConfig } from "@/lib/useInvoicePrintConfig";
+import { invoiceRendererFor } from "@/lib/invoiceRenderer";
 import { LooseLabelModal } from "@/components/LooseLabelModal";
 
 const InvoicePrintView = lazy(() =>
   import("@/components/billing/InvoicePrintView").then((m) => ({ default: m.InvoicePrintView }))
 );
+const ThermalReceiptView = lazy(() =>
+  import("@/components/billing/ThermalReceiptView").then((m) => ({ default: m.ThermalReceiptView }))
+);
+const TaxWholesaleInvoiceView = lazy(() =>
+  import("@/components/billing/TaxWholesaleInvoiceView").then((m) => ({ default: m.TaxWholesaleInvoiceView }))
+);
+const A5LandscapeInvoiceView = lazy(() =>
+  import("@/components/billing/A5LandscapeInvoiceView").then((m) => ({ default: m.A5LandscapeInvoiceView }))
+);
+
+/**
+ * The saved-settings print view for the current bill — routes through
+ * {@link invoiceRendererFor} (thermal / a5landscape / wholesale / classic) so
+ * Save & Print honours the pharmacy's format. Previously this screen hard-coded
+ * the A4 InvoicePrintView, so thermal and the landscape formats never reached
+ * the printer from here.
+ */
+function InvoicePrintSurface({ invoice, config, pharmacy }: {
+  invoice: PrintInvoiceData;
+  config: InvoiceSettingsConfig;
+  pharmacy: PharmacyProfile | undefined;
+}) {
+  const kind = invoiceRendererFor(config);
+  if (kind === "thermal")     return <ThermalReceiptView invoice={invoice} config={config} pharmacy={pharmacy} />;
+  if (kind === "a5landscape") return <A5LandscapeInvoiceView invoice={invoice} config={config} pharmacy={pharmacy} />;
+  if (kind === "wholesale")   return <TaxWholesaleInvoiceView invoice={invoice} config={config} pharmacy={pharmacy} />;
+  return <InvoicePrintView invoice={invoice} config={config} pharmacy={pharmacy} />;
+}
 
 // ─── Error → conflict mapping ─────────────────────────────────────────────────
 // Parses backend error messages to find the specific cart item that caused the failure.
@@ -106,6 +138,10 @@ const AnimatedCount = memo(function AnimatedCount({
 // ─── New Bill page ─────────────────────────────────────────────────────────────
 
 function NewBillInner() {
+  // "L" flips Strip ⇄ loose for the active cart line from anywhere on the screen
+  // (CartRow handles it from inside a row; this covers the search box, buttons, …).
+  useLooseSaleHotkey();
+
   // Granular selectors — each re-renders only when its own slice changes
   const items    = useBillingStore((s) => s.items);
   const meta     = useBillingStore((s) => s.meta);
@@ -142,54 +178,6 @@ function NewBillInner() {
   const [sessionRecovery, setSessionRecovery] = useState<AutoSaveSession | null>(null);
   // Multi-tab awareness
   const [multiTabNotice, setMultiTabNotice] = useState<string | null>(null);
-
-  // Always-current ref so the keydown handler never closes over a stale handleSave.
-  // Initialized with a no-op; synced to the real callback after handleSave is declared below.
-  const handleSaveRef = useRef<(action?: ActionId) => Promise<void>>(async () => {});
-  // Same reason: Escape's meaning depends on whether the receipt overlay is up right
-  // now, and this handler is registered once at mount.
-  const showPrintRef = useRef(showPrint);
-  useEffect(() => { showPrintRef.current = showPrint; }, [showPrint]);
-  const closePrintRef = useRef<() => void>(() => {});
-
-  // F9 = Save & Print, F8 = Save & New, Ctrl+S = Draft, Alt+1..4 = payment mode,
-  // Escape = dismiss the receipt and jump straight to the next bill,
-  // / = jump back into medicine search from anywhere on the screen.
-  // Empty deps: registered once at mount; latest callbacks accessed via refs.
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "F9") { e.preventDefault(); void handleSaveRef.current("save_print"); }
-      if (e.key === "F8") { e.preventDefault(); void handleSaveRef.current("save_new"); }
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-        const tag = (e.target as HTMLElement).tagName;
-        if (tag !== "INPUT" && tag !== "TEXTAREA") {
-          e.preventDefault();
-          void handleSaveRef.current("save_draft");
-        }
-      }
-      if (e.key === "Escape" && showPrintRef.current) {
-        e.preventDefault();
-        closePrintRef.current();
-      }
-      if (e.key === "/" && !showPrintRef.current) {
-        const target = e.target as HTMLElement;
-        // Not while actually typing a "/" into a field (a discount note, a doctor
-        // name with a qualifier, etc.) — only when it's free, i.e. nothing text-
-        // editable currently has focus.
-        const typing = target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable;
-        if (!typing) {
-          e.preventDefault();
-          focusBillingSearch();
-        }
-      }
-      if (e.altKey) {
-        const map: Record<string, "CASH"|"UPI"|"CARD"|"CREDIT"> = { "1": "CASH", "2": "UPI", "3": "CARD", "4": "CREDIT" };
-        if (map[e.key]) { e.preventDefault(); setMeta({ paymentMode: map[e.key] }); }
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [setMeta]);
 
   // Idempotency key — prevents duplicate invoices on double-click or network retry
   const idempotencyKeyRef = useRef(crypto.randomUUID());
@@ -315,6 +303,14 @@ function NewBillInner() {
 
   const roundedTotal = Math.round(netPayable);
 
+  // A cut-strip (loose) line needs the cut-strip label the preview modal prints, so
+  // those bills keep the modal; every other Save & Print goes straight through.
+  const hasLooseLine = items.some((i) => i.saleUnit === "LOOSE");
+
+  // Guards a print/reset cycle so a stray second `afterprint` (or the safety timer)
+  // can't clear the invoice out from under the next bill.
+  const printCycleRef = useRef(0);
+
   const handleSave = useCallback(async (action: ActionId = "save_print") => {
     if (items.length === 0) return;
     if (submitting) return;          // guard: F9 + modal Submit race
@@ -369,7 +365,10 @@ function NewBillInner() {
     setError(null);
     setConflictInventoryIds(new Set());
     try {
-      const { data } = await api.post<{ data: { id: string; invoiceNumber: string; createdAt: string } }>("/billing", {
+      const { data } = await api.post<{ data: {
+        id: string; invoiceNumber: string; createdAt: string;
+        totalAmount: number; extraCharges: number; adjustmentAmount: number; roundOff: number;
+      } }>("/billing", {
         idempotencyKey:   idempotencyKeyRef.current,
         // The reservation session this cart has been holding stock under. The server
         // discounts our own hold when checking availability and releases it as part of
@@ -430,6 +429,9 @@ function NewBillInner() {
         paymentMode:      meta.paymentMode,
         paymentStatus:    meta.paymentStatus,
         isInterstate:     meta.isInterstate,
+        // "Place of Supply" on the tax-wholesale layout — the pharmacy's own
+        // registered state (buyer-state capture is a later follow-up).
+        placeOfSupply:    printPharmacy?.state || undefined,
         items:            items,
         subtotal:       totals.subtotal,
         // Include bill-level discount so the print receipt shows the true total savings
@@ -439,7 +441,13 @@ function NewBillInner() {
         sgst:           totals.sgst,
         igst:           totals.igst,
         totalGst:       totals.totalGst,
-        totalAmount:    roundedTotal,  // net payable after all adjustments
+        // From the SAVED invoice, so the printed receipt foots exactly against the row the
+        // server wrote — its roundOff carries both the rupee rounding and the equal-split
+        // paisa (see BillingService / GstCalculator).
+        totalAmount:      data.data.totalAmount,
+        extraCharges:     data.data.extraCharges,
+        adjustmentAmount: data.data.adjustmentAmount,
+        roundOff:         data.data.roundOff,
       };
       // Cleanup draft + session + regenerate idempotency key for next bill
       if (loadedDraftId) { deleteDraft(loadedDraftId); setLoadedDraftId(null); }
@@ -464,11 +472,41 @@ function NewBillInner() {
         setActionToast({ msg: `Invoice #${data.data.invoiceNumber} saved — ready for next bill`, type: "info" });
         setTimeout(() => setActionToast(null), 3500);
         focusBillingSearch();
-      } else {
-        // save_print (default): show print overlay
+      } else if (hasLooseLine) {
+        // Cut-strip lines: keep the preview modal so the pharmacist can print the
+        // legally-required loose-medicine label from it.
         setSavedInvoiceId(data.data.id);
         setInvoice(printData);
         setShowPrint(true);
+      } else {
+        // Standard Save & Print — no preview modal. Render the hidden print layer,
+        // fire the OS print dialog, and the moment printing finishes (or is
+        // dismissed) drop the invoice state and return focus to search for the next
+        // patient. The cart is already cleared above, so the screen is usable even
+        // if the browser never emits `afterprint`.
+        setSavedInvoiceId(data.data.id);
+        setInvoice(printData);
+
+        const cycle = ++printCycleRef.current;
+        const finish = () => {
+          if (printCycleRef.current !== cycle) return;   // a newer bill already took over
+          printCycleRef.current = 0;
+          window.removeEventListener("afterprint", finish);
+          clearTimeout(safety);
+          setInvoice(null);
+          setSavedInvoiceId(null);
+          setActionToast({ msg: `Invoice #${data.data.invoiceNumber} saved & printed — next patient`, type: "info" });
+          setTimeout(() => setActionToast(null), 3500);
+          focusBillingSearch();
+        };
+        // Safety net only: if `afterprint` never arrives the cart is still clear and
+        // usable — this just tidies the lingering hidden print layer.
+        const safety = setTimeout(finish, 20000);
+        window.addEventListener("afterprint", finish);
+        // Two frames: let React paint the hidden print layer before the dialog opens.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          try { window.print(); } catch { /* blocked — the safety timer still resets */ }
+        }));
       }
     } catch (err) {
       // getErrorMessage keeps the server's specific reason (insufficient stock, credit limit,
@@ -482,10 +520,7 @@ function NewBillInner() {
     } finally {
       setSubmitting(false);
     }
-  }, [items, meta, totals, roundedTotal, shortfall, loadedDraftId, clear, submitting]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Keep the ref current after every render so the keydown handler always dispatches
-  // to the latest handleSave (which closes over the correct loadedDraftId et al.).
-  useEffect(() => { handleSaveRef.current = handleSave; });
+  }, [items, meta, totals, roundedTotal, shortfall, loadedDraftId, clear, submitting, hasLooseLine]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleCancel = useCallback(async () => {
     if (!savedInvoiceId || !cancelReason.trim()) return;
@@ -513,7 +548,31 @@ function NewBillInner() {
     setCancelReason("");
     focusBillingSearch();
   }
-  useEffect(() => { closePrintRef.current = closePrint; });
+
+  // Clear the in-progress bill — the "Clear Bill" button and the Esc key both use
+  // this. Confirms only when there is something to lose.
+  const handleClearBill = useCallback(() => {
+    if (useBillingStore.getState().items.length === 0) return;
+    if (!confirm("Clear all items from this bill?")) return;
+    api.delete(`/inventory/reserve/${idempotencyKeyRef.current}`).catch(() => {});
+    clear();
+    clearSession();
+    focusBillingSearch();
+  }, [clear]);
+
+  // F9 = Save & Print, F8 = Save & New, Ctrl+S = Draft, "/" = focus search,
+  // Alt+1..4 = payment mode. Enter (outside an editable field) = Save & Print, and
+  // Esc = dismiss the receipt if it's up, else clear the in-progress bill. `onSave`
+  // is the exact same handler the Save button dispatches to; `handleSave` fast-paths
+  // Save & Print itself (no preview modal on a standard bill).
+  useBillingKeyboardShortcuts({
+    onSave: handleSave,
+    onClosePrint: closePrint,
+    onFocusSearch: focusBillingSearch,
+    onSetPaymentMode: (m) => setMeta({ paymentMode: m }),
+    isPrintOpen: showPrint,
+    onClearBill: handleClearBill,
+  });
 
   // Stable callbacks for BillingSubNav — prevents re-renders on every cart change
   const handlePaymentMode  = useCallback((m: "CASH"|"UPI"|"CARD"|"CREDIT") => setMeta({ paymentMode: m }), [setMeta]);
@@ -529,7 +588,7 @@ function NewBillInner() {
       {/* Print-only layer — uses saved pharmacy settings so the actual print matches the template */}
       {invoice && (
         <div className="hidden print:block">
-          <InvoicePrintView invoice={invoice} config={printConfig} pharmacy={printPharmacy} />
+          <InvoicePrintSurface invoice={invoice} config={printConfig} pharmacy={printPharmacy} />
         </div>
       )}
 
@@ -684,7 +743,10 @@ function NewBillInner() {
 
         {/* Zone 3: Cart table */}
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-          <div className="flex-shrink-0 border-b border-slate-200 bg-slate-50">
+          {/* `scrollbar-gutter: stable` + `overflow-hidden` reserve the same right-hand
+              gutter the rows' scroll container reserves, so header and body columns stay
+              aligned whether or not the cart is scrolling. */}
+          <div className="flex-shrink-0 border-b border-slate-200 bg-slate-50 overflow-hidden [scrollbar-gutter:stable]">
             <CartTableHeader />
           </div>
           <div className="flex-shrink-0 border-b border-slate-200 bg-white">
@@ -721,13 +783,7 @@ function NewBillInner() {
                 initial={{ opacity: 0, x: -8 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -8 }}
-                onClick={() => {
-                  if (confirm("Clear all items?")) {
-                    api.delete(`/inventory/reserve/${idempotencyKeyRef.current}`).catch(() => {});
-                    clear();
-                    clearSession();
-                  }
-                }}
+                onClick={handleClearBill}
                 className="text-[14px] text-white/40 hover:text-white/80 transition-colors mr-4 whitespace-nowrap"
               >
                 Clear Bill
@@ -884,7 +940,7 @@ function NewBillInner() {
               </div>
               <div className="p-8">
                 <div className="shadow-card-lg mx-auto" style={{ width: "fit-content" }}>
-                  <InvoicePrintView invoice={invoice} config={printConfig} pharmacy={printPharmacy} />
+                  <InvoicePrintSurface invoice={invoice} config={printConfig} pharmacy={printPharmacy} />
                 </div>
               </div>
             </motion.div>
