@@ -85,6 +85,24 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
     List<PaymentModeTotalRow> sumByPaymentModeInRange(@Param("pharmacyId") String pharmacyId,
                                                        @Param("from") Instant from, @Param("to") Instant to);
 
+    interface PaymentMixRow {
+        String getMode();
+        BigDecimal getTotal();
+        long getBills();
+    }
+
+    /** Sales value and bill count per payment mode for a range — the Reports payment-mix chart. */
+    @Query("""
+            SELECT CAST(i.paymentMode AS string) AS mode, COALESCE(SUM(i.totalAmount), 0) AS total, COUNT(i) AS bills
+            FROM Invoice i
+            WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false
+              AND i.createdAt >= :from AND i.createdAt <= :to
+            GROUP BY i.paymentMode
+            ORDER BY SUM(i.totalAmount) DESC
+            """)
+    List<PaymentMixRow> paymentMixInRange(@Param("pharmacyId") String pharmacyId,
+                                          @Param("from") Instant from, @Param("to") Instant to);
+
     /**
      * Cash taken over the counter: invoices raised in the window that were settled in
      * cash AT THE TILL.
@@ -260,6 +278,81 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
             """, nativeQuery = true)
     List<DailySalesRow> monthlySalesSeries(@Param("pharmacyId") String pharmacyId,
                                            @Param("from") Instant from, @Param("to") Instant to);
+
+    interface GstMonthRow {
+        String getMonth();
+        BigDecimal getTaxable();
+        BigDecimal getCgst();
+        BigDecimal getSgst();
+        BigDecimal getIgst();
+    }
+
+    /**
+     * Output-tax totals per IST calendar month — the "is my GST liability trending up"
+     * chart on the compliance tab. Same {@code AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'}
+     * month-bucket rule as {@link #monthlySalesSeries}: one half supplies the zone the naive
+     * column lacks, the other does the +5:30 shift, and getting it wrong files a month's tax
+     * under the wrong return. Months with no sales are simply absent; the caller zero-fills so
+     * the chart keeps a continuous axis.
+     */
+    @Query(value = """
+            SELECT to_char((i."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM') AS month,
+                   COALESCE(SUM(i."taxableAmount"), 0) AS taxable,
+                   COALESCE(SUM(i.cgst), 0) AS cgst,
+                   COALESCE(SUM(i.sgst), 0) AS sgst,
+                   COALESCE(SUM(i.igst), 0) AS igst
+            FROM invoices i
+            WHERE i."pharmacyId" = :pharmacyId AND i."isCancelled" = false
+              AND i."createdAt" >= :from AND i."createdAt" <= :to
+            GROUP BY 1
+            ORDER BY 1
+            """, nativeQuery = true)
+    List<GstMonthRow> gstMonthlySeries(@Param("pharmacyId") String pharmacyId,
+                                       @Param("from") Instant from, @Param("to") Instant to);
+
+    interface CustomerMonthRow {
+        String getMonth();
+        long getBilled();
+        long getNewCount();
+    }
+
+    /**
+     * Per IST month: how many distinct identified customers were billed, and how many of
+     * them were being billed here for the FIRST time ever. "Returning" is the remainder —
+     * the caller subtracts. New-vs-returning is decided on the customer's whole history
+     * (the {@code firsts} CTE is unbounded by the window), which is the point: someone
+     * whose first bill is in March is new in March and returning every month after, and a
+     * window-local query cannot tell those apart.
+     *
+     * <p>Grouped by {@code customerId}, never phone — see the class notes above. Both IST
+     * month buckets use the {@code AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata'} pair for
+     * the same reason {@link #monthlySalesSeries} does.
+     */
+    @Query(value = """
+            WITH firsts AS (
+                SELECT "customerId" AS cid, MIN("createdAt") AS first_bill
+                FROM invoices
+                WHERE "pharmacyId" = :pharmacyId AND "isCancelled" = false AND "customerId" IS NOT NULL
+                GROUP BY "customerId"
+            ),
+            monthly AS (
+                SELECT DISTINCT "customerId" AS cid,
+                       to_char(("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM') AS ym
+                FROM invoices
+                WHERE "pharmacyId" = :pharmacyId AND "isCancelled" = false AND "customerId" IS NOT NULL
+                  AND "createdAt" >= :from AND "createdAt" <= :to
+            )
+            SELECT monthly.ym AS month,
+                   COUNT(*) AS billed,
+                   COUNT(*) FILTER (
+                       WHERE to_char((firsts.first_bill AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date, 'YYYY-MM')
+                             = monthly.ym) AS newCount
+            FROM monthly JOIN firsts ON firsts.cid = monthly.cid
+            GROUP BY monthly.ym
+            ORDER BY monthly.ym
+            """, nativeQuery = true)
+    List<CustomerMonthRow> customerMonthlySeries(@Param("pharmacyId") String pharmacyId,
+                                                 @Param("from") Instant from, @Param("to") Instant to);
 
     // ── Customer analytics ─────────────────────────────────────────────────────
     //

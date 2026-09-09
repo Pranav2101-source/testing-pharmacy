@@ -95,7 +95,11 @@ class ReportsIT extends AbstractPostgresIT {
     }
 
     private void cashSale(int units) {
-        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID",
+        saleVia("CASH", units);
+    }
+
+    private void saleVia(String paymentMode, int units) {
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, paymentMode, "PAID",
                 null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO, null))));
         flushAndClear();
@@ -354,6 +358,221 @@ class ReportsIT extends AbstractPostgresIT {
         // 100 units x Rs.50 cost, x Rs.100 retail
         assertThat(valuation.totalCostValue()).isEqualByComparingTo(new BigDecimal("5000.00"));
         assertThat(valuation.totalRetailValue()).isEqualByComparingTo(new BigDecimal("10000.00"));
+    }
+
+    @Test
+    @DisplayName("stock valuation excludes stock that is already past its expiry date")
+    void valuationExcludesExpiredStock() {
+        // The seeded batch (BATCH-1, expires in 365 days) is live and must be valued.
+        // A second batch of the same medicine, already expired, cannot be sold and so must
+        // not inflate what the shelves are worth — it is surfaced by the expiry report instead.
+        inventoryRepository.save(Inventory.create(pharmacyId, medicineId, "EXPIRED-VAL-1",
+                Instant.now().minus(3, ChronoUnit.DAYS), 40,
+                new BigDecimal("50.00"), new BigDecimal("100.00"), 10, 5));
+        flushAndClear();
+
+        var valuation = reportsService.inventoryValuation("medicine");
+
+        // Only BATCH-1's 100 packs: cost 5,000 / retail 10,000. The expired 40 packs are gone.
+        assertThat(valuation.totalCostValue()).isEqualByComparingTo(new BigDecimal("5000.00"));
+        assertThat(valuation.totalRetailValue()).isEqualByComparingTo(new BigDecimal("10000.00"));
+    }
+
+    @Test
+    @DisplayName("purchase cost analysis: the table is a top-N but 'total purchased' is every rupee")
+    void costAnalysisTotalCoversTheWholePeriodNotJustTheTable() {
+        var supplier = supplierRepository.save(
+                com.checkup.pharmacy.modules.supplier.Supplier.create(pharmacyId, "Bulk Distributor"));
+        flushAndClear();
+        // Three distinct medicines received; ask for a table of only the top 1.
+        for (int i = 0; i < 3; i++) {
+            Medicine m = medicineRepository.save(Medicine.create("CA Med " + i, new BigDecimal("12")));
+            var grn = purchasesService.createGrn(new com.checkup.pharmacy.modules.purchase.dto.CreateGrnRequest(
+                    supplier.getId(), null, "CA-INV-" + i + "-" + unique(), Instant.now(), null,
+                    List.of(new com.checkup.pharmacy.modules.purchase.dto.GrnItemRequest(
+                            m.getId(), null, "CA Med " + i, null, null, null, null, null, null, null, "CA-B" + i,
+                            Instant.now().plus(365, ChronoUnit.DAYS), 10, 10, 0, null, null,
+                            new BigDecimal("100.00"), new BigDecimal("150.00"), BigDecimal.ZERO, new BigDecimal("12"))),
+                    false, null));
+            purchasesService.confirmGrn(grn.id());
+            flushAndClear();
+        }
+
+        var report = reportsService.costAnalysis(hourAgo(), Instant.now(), 1);
+
+        assertThat(report.items()).as("table truncated to the single biggest spend").hasSize(1);
+        BigDecimal tableSum = report.items().stream()
+                .map(com.checkup.pharmacy.modules.reports.dto.CostAnalysisResponse.Item::totalCost)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertThat(report.summary().totalCost())
+                .as("summary covers all 3 receipts (10 units x 100 + 12% landed), not just the one row shown")
+                .isEqualByComparingTo(new BigDecimal("3360.00"));
+        assertThat(report.summary().totalCost())
+                .as("and it exceeds the truncated table's own sum")
+                .isGreaterThan(tableSum);
+    }
+
+    @Test
+    @DisplayName("slow-moving refuses an inverted date range like every other range report")
+    void slowMovingRejectsInvertedRange() {
+        assertThatThrownBy(() -> reportsService.slowMoving(
+                Instant.now(), Instant.now().minus(1, ChronoUnit.DAYS), null, null))
+                .isInstanceOf(com.checkup.pharmacy.common.exception.BadRequestException.class);
+    }
+
+    // ── Payment mix ──────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("payment mix splits the period's takings by channel and the slices reconcile")
+    void paymentMixSplitsTakingsByChannel() {
+        saleVia("CASH", 2); // Rs.200
+        saleVia("CASH", 1); // Rs.100
+        saleVia("UPI", 3);  // Rs.300
+
+        var mix = reportsService.paymentMix(hourAgo(), Instant.now());
+
+        assertThat(mix.bills()).isEqualTo(3);
+        assertThat(mix.total()).isEqualByComparingTo(new BigDecimal("600.00"));
+        assertThat(mix.slices()).extracting(s -> s.mode()).containsExactlyInAnyOrder("CASH", "UPI");
+        var cash = mix.slices().stream().filter(s -> s.mode().equals("CASH")).findFirst().orElseThrow();
+        assertThat(cash.amount()).isEqualByComparingTo(new BigDecimal("300.00"));
+        assertThat(cash.bills()).isEqualTo(2);
+        assertThat(mix.slices().stream().map(s -> s.amount()).reduce(BigDecimal.ZERO, BigDecimal::add))
+                .as("slices add up to the headline")
+                .isEqualByComparingTo(mix.total());
+        assertThat(mix.slices().stream().map(s -> s.sharePct()).reduce(BigDecimal.ZERO, BigDecimal::add))
+                .as("shares add up to ~100%")
+                .isEqualByComparingTo(new BigDecimal("100.00"));
+    }
+
+    @Test
+    @DisplayName("payment mix on a dead period is empty, not a divide-by-zero")
+    void paymentMixEmptyPeriodIsSafe() {
+        var mix = reportsService.paymentMix(
+                Instant.now().minus(400, ChronoUnit.DAYS), Instant.now().minus(399, ChronoUnit.DAYS));
+        assertThat(mix.total()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(mix.bills()).isZero();
+        assertThat(mix.slices()).isEmpty();
+    }
+
+    // ── GST liability trend ──────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("the GST trend returns one zero-filled row per month for the trailing window")
+    void gstTrendIsZeroFilledPerMonth() {
+        cashSale(2);
+
+        var trend = reportsService.gstTrend(6);
+
+        assertThat(trend.months()).hasSize(6);
+        assertThat(trend.months()).allSatisfy(m ->
+                assertThat(m.month()).as("YYYY-MM, never a fake day").hasSize(7));
+        var current = trend.months().get(5);
+        assertThat(current.totalGst()).isGreaterThan(BigDecimal.ZERO);
+        assertThat(current.totalGst())
+                .isEqualByComparingTo(current.cgst().add(current.sgst()).add(current.igst()));
+        // A month with no sales is still a row, at zero.
+        assertThat(trend.months().get(0).totalGst()).isEqualByComparingTo(BigDecimal.ZERO);
+        assertThat(trend.months().get(0).taxable()).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    @Test
+    @DisplayName("the GST trend buckets a sale into its IST month, not the UTC one")
+    void gstTrendBucketsByIstMonth() {
+        cashSale(2);
+        String invoiceId = onlyInvoiceId();
+        // 21:00 UTC on 31 March = 02:30 IST on 1 April.
+        setCreatedAt(invoiceId, Instant.parse("2026-03-31T21:00:00Z"));
+
+        // A window wide enough to contain both March and April 2026.
+        long monthsBack = java.time.temporal.ChronoUnit.MONTHS.between(
+                java.time.YearMonth.of(2026, 3),
+                java.time.YearMonth.from(java.time.LocalDate.now(java.time.ZoneOffset.ofHoursMinutes(5, 30)))) + 1;
+        var trend = reportsService.gstTrend((int) Math.min(monthsBack, 36));
+
+        var april = trend.months().stream().filter(m -> m.month().equals("2026-04")).findFirst().orElseThrow();
+        var march = trend.months().stream().filter(m -> m.month().equals("2026-03")).findFirst().orElseThrow();
+        assertThat(april.totalGst()).as("02:30 IST 1 April belongs to April").isGreaterThan(BigDecimal.ZERO);
+        assertThat(march.totalGst()).as("and not to March").isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    @Test
+    @DisplayName("the GST trend never reaches across pharmacies")
+    void gstTrendIsTenantScoped() {
+        cashSale(2);
+        Pharmacy other = pharmacyRepository.save(Pharmacy.create("Other Pharmacy", "ph-" + unique()));
+        User otherUser = userRepository.save(User.create(other.getId(), "Other Owner",
+                "other-" + unique() + "@test.local", "9000000021", "hash", Role.OWNER));
+        flushAndClear();
+        authenticateAs(otherUser.getId(), other.getId(), Role.OWNER);
+
+        var trend = reportsService.gstTrend(3);
+        assertThat(trend.months()).allSatisfy(m -> assertThat(m.totalGst()).isEqualByComparingTo(BigDecimal.ZERO));
+    }
+
+    // ── Customer trend ───────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("the customer trend splits new from returning on whole history, per IST month")
+    void customerTrendSplitsNewFromReturning() {
+        String regular = createCustomer("Trend Regular", "9700000001");
+        String firstTimer = createCustomer("Trend Newbie", "9700000002");
+
+        // The regular's first bill is months in the past; a second bill lands this month.
+        setCreatedAt(saleTo(regular, 1), Instant.now().minus(70, ChronoUnit.DAYS));
+        saleTo(regular, 1);
+        // The first-timer's only bill is this month.
+        saleTo(firstTimer, 1);
+
+        var trend = reportsService.customerTrend(6);
+        assertThat(trend.months()).hasSize(6);
+
+        var thisMonth = trend.months().get(5);
+        assertThat(thisMonth.billed()).as("both customers billed this month").isEqualTo(2);
+        assertThat(thisMonth.newCount()).as("only the first-timer is new").isEqualTo(1);
+        assertThat(thisMonth.returning()).isEqualTo(1);
+        assertThat(thisMonth.billed()).isEqualTo(thisMonth.newCount() + thisMonth.returning());
+    }
+
+    @Test
+    @DisplayName("the customer trend zero-fills quiet months and never crosses pharmacies")
+    void customerTrendZeroFillsAndIsScoped() {
+        createAndSellTo("Only Ours", "9700000003", 1);
+
+        var mine = reportsService.customerTrend(4);
+        assertThat(mine.months()).hasSize(4);
+        assertThat(mine.months().get(0).billed()).as("a quiet month is still a row at zero").isZero();
+
+        Pharmacy other = pharmacyRepository.save(Pharmacy.create("Other Pharmacy", "ph-" + unique()));
+        User otherUser = userRepository.save(User.create(other.getId(), "Other Owner",
+                "other-" + unique() + "@test.local", "9000000022", "hash", Role.OWNER));
+        flushAndClear();
+        authenticateAs(otherUser.getId(), other.getId(), Role.OWNER);
+        var theirs = reportsService.customerTrend(4);
+        assertThat(theirs.months()).allSatisfy(m -> assertThat(m.billed()).isZero());
+    }
+
+    // ── Dead stock bounding ──────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("dead stock caps the list at the limit but the headline total covers every batch")
+    void deadStockBoundsTheListNotTheTotal() {
+        // The seeded BATCH-1 (100 packs @ Rs.50 = Rs.5,000) plus two more dead batches.
+        inventoryRepository.save(Inventory.create(pharmacyId, medicineId, "DEAD-2",
+                Instant.now().plus(200, ChronoUnit.DAYS), 10, new BigDecimal("30.00"),
+                new BigDecimal("60.00"), 10, 5));
+        inventoryRepository.save(Inventory.create(pharmacyId, medicineId, "DEAD-3",
+                Instant.now().plus(200, ChronoUnit.DAYS), 5, new BigDecimal("20.00"),
+                new BigDecimal("40.00"), 10, 5));
+        flushAndClear();
+
+        var report = reportsService.deadStock(90, 1);
+
+        assertThat(report.items()).as("list capped at 1").hasSize(1);
+        assertThat(report.items().get(0).batchNumber()).as("and it is the biggest exposure").isEqualTo("BATCH-1");
+        assertThat(report.totalCostAtRisk())
+                .as("headline is 5,000 + 300 + 100 across all three, not just the one shown")
+                .isEqualByComparingTo(new BigDecimal("5400.00"));
     }
 
     @Test

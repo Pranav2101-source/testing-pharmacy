@@ -79,7 +79,7 @@ class ReportsAuthorizationIT extends AbstractPostgresIT {
                 .isInstanceOf(AccessDeniedException.class);
         assertThatThrownBy(() -> reportsController.costAnalysis(null, null, null))
                 .isInstanceOf(AccessDeniedException.class);
-        assertThatThrownBy(() -> reportsController.deadStock(90))
+        assertThatThrownBy(() -> reportsController.deadStock(90, null))
                 .isInstanceOf(AccessDeniedException.class);
         assertThatThrownBy(() -> reportsController.dailySalesSeries(null, null, null))
                 .isInstanceOf(AccessDeniedException.class);
