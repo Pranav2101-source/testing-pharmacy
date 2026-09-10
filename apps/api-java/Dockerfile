@@ -35,6 +35,7 @@ RUN apk add --no-cache nodejs openssl libstdc++
 COPY --from=migrate-deps /app/db /app/db
 
 COPY --from=build /app/target/pharmacy-api-0.0.1.jar app.jar
+COPY apps/api-java/derive-jdbc-url.mjs /app/derive-jdbc-url.mjs
 COPY apps/api-java/docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
