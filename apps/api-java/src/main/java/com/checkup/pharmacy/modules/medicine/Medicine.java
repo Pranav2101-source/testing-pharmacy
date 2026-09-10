@@ -205,6 +205,33 @@ public class Medicine extends BaseEntity {
         this.packSizeVerifiedAt = evidence.isVerified() ? now : null;
     }
 
+    /**
+     * Drops the pack size into quarantine on the strength of what pharmacists actually
+     * dispensed — see {@link PackSizeReviewService}.
+     *
+     * <p>Separate from {@link #applyPackSizeEvidence} because the evidence is of a different
+     * kind. That method reasons about the medicine's own record; this one is the counter
+     * answering back, and it is the only path that can reach {@code DISPUTED} after Phase 2
+     * made the service write path reject it outright.
+     *
+     * <p>Notably it does NOT touch {@link #unitsPerPack}. The number stays exactly as it was,
+     * wrong or not: billing must keep working while a human is found, and a quorum of lower
+     * bounds is not something to overwrite a catalogue with. The confidence is the whole
+     * change — the value is now labelled untrustworthy, and every screen that renders the
+     * badge says so.
+     *
+     * <p>{@code packSizeSource} is left alone as well: where the bad number came from is
+     * precisely what a reviewer needs, and overwriting it with the fact that it is disputed
+     * would destroy the trail at the moment somebody starts following it.
+     */
+    public void quarantinePackSize() {
+        if (unitsPerPack == null) {
+            return; // nothing classified — an absence is not a contradiction
+        }
+        this.packSizeConfidence = PackSizeConfidence.DISPUTED;
+        this.packSizeVerifiedAt = null;
+    }
+
     /** True when this medicine can be broken into individual pieces (a real pack multiple exists). */
     public boolean isLooseCapable() {
         return unitsPerPack != null && unitsPerPack > 1;

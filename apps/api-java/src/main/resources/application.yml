@@ -311,6 +311,11 @@ app:
     # in which a distributor will still accept a saleable return.
     expiry-window-days: ${EXPIRY_WINDOW_DAYS:60}
     reservation-cleanup-cron: ${RESERVATION_CLEANUP_CRON:0 */5 * * * *}
+    # 03:20 IST — a quorum needs signals from several pharmacies and accumulates over
+    # days, so running this often would spend a cross-tenant scan to learn nothing has
+    # changed since breakfast. Nothing here is urgent: the wrong pack size is already in
+    # use and the outcome is a review task, not a fix.
+    pack-size-review-cron: ${PACK_SIZE_REVIEW_CRON:0 20 3 * * *}
 
   # ── Caching ────────────────────────────────────────────────────────────────
   cache:

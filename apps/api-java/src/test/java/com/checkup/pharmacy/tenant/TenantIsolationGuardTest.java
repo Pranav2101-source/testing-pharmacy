@@ -185,6 +185,18 @@ class TenantIsolationGuardTest {
             // The cancellation backlog is the same sweeper, the same job, and the same
             // reasoning — it reports a withdrawal rather than a dispensing.
             "PrescriptionRepository#findCancelCallbackBacklog",
+            // Reachable only from PackSizeReviewService#reviewQuorums, run by
+            // PackSizeReviewJob on a nightly cron. Crossing tenants is not incidental here,
+            // it is the entire mechanism: the question being asked is whether pharmacists in
+            // DIFFERENT shops independently corrected the same medicine's pack count the same
+            // way, and a per-tenant query could never answer it — each shop would see only
+            // its own votes and no quorum would ever form. The rows are reduced immediately
+            // to (pharmacyId, impliedPackSize) pairs and used only to count distinct shops;
+            // nothing tenant-owned is returned to a caller, and the only write is to the
+            // platform-owned medicines table. The service carries the @CrossTenant
+            // justification that grants the RLS bypass this needs at runtime.
+            "PackSizeSignalRepository#findByMedicineIdInAndResolvedAtIsNull",
+            "PackSizeSignalRepository#findMedicineIdsWithPotentialQuorum",
 
             // ── 4. Load-then-authorize ───────────────────────────────────────────
             // The query is unscoped but the service checks ownership on the loaded row

@@ -44,6 +44,7 @@ import com.checkup.pharmacy.modules.inventory.StockReservation;
 import com.checkup.pharmacy.modules.inventory.StockReservationRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
+import com.checkup.pharmacy.modules.medicine.PackSizeSignal;
 import com.checkup.pharmacy.modules.medicine.PharmacyMedicine;
 import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride;
 import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository;
@@ -98,6 +99,8 @@ public class BillingService {
     private static final Set<String> CONTROLLED_SCHEDULES = Set.of("H", "H1", "X");
     private static final int MAX_PAGE_LIMIT = 100;
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(BillingService.class);
+
     private final InvoiceRepository invoiceRepository;
     private final InvoiceItemRepository invoiceItemRepository;
     private final InvoicePaymentRepository invoicePaymentRepository;
@@ -119,6 +122,8 @@ public class BillingService {
     private final com.checkup.pharmacy.modules.audit.AuditService auditService;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final com.checkup.pharmacy.modules.dispensing.DispensingService dispensingService;
+    /** Records a pharmacist overruling the engine's pack count — see {@link #capturePackSizeSignal}. */
+    private final com.checkup.pharmacy.modules.medicine.PackSizeSignalRepository packSizeSignalRepository;
 
     public BillingService(InvoiceRepository invoiceRepository, InvoiceItemRepository invoiceItemRepository,
                           InvoicePaymentRepository invoicePaymentRepository, SalesReturnRepository salesReturnRepository,
@@ -133,6 +138,7 @@ public class BillingService {
                           com.checkup.pharmacy.modules.audit.AuditService auditService,
                           com.fasterxml.jackson.databind.ObjectMapper objectMapper,
                           com.checkup.pharmacy.modules.dispensing.DispensingService dispensingService,
+                          com.checkup.pharmacy.modules.medicine.PackSizeSignalRepository packSizeSignalRepository,
                           ApplicationEventPublisher eventPublisher) {
         this.invoiceRepository = invoiceRepository;
         this.invoiceItemRepository = invoiceItemRepository;
@@ -155,6 +161,7 @@ public class BillingService {
         this.auditService = auditService;
         this.objectMapper = objectMapper;
         this.dispensingService = dispensingService;
+        this.packSizeSignalRepository = packSizeSignalRepository;
     }
 
     // ── Dashboard stats + invoice settings ───────────────────────────────────
@@ -942,20 +949,26 @@ public class BillingService {
             // already in pieces. See ResolvedLine.dispensedBaseUnits().
             Map<String, Integer> dispensedByMedicineId = new HashMap<>();
             Map<String, Attribution> attributedByItemId = new HashMap<>();
+            // Sealed packs, kept in parallel with the base-unit totals above. See Attribution:
+            // this is what the pack-size feedback loop compares against the engine's own count,
+            // and it must not be recovered by dividing by the pack size under suspicion.
+            Map<String, Integer> packsByMedicineId = new HashMap<>();
             for (ResolvedLine line : lines) {
                 String linkedItemId = line.req().prescriptionItemId();
                 int dispensedBaseUnits = line.dispensedBaseUnits();
+                int dispensedPacks = line.loose() ? 0 : line.req().quantity();
                 if (linkedItemId != null && !linkedItemId.isBlank()) {
                     attributedByItemId.merge(linkedItemId,
-                            new Attribution(dispensedBaseUnits, line.batch().getMedicineId(),
+                            new Attribution(dispensedBaseUnits, dispensedPacks, line.batch().getMedicineId(),
                                     line.batch().productName()),
                             Attribution::plus);
                 } else {
                     dispensedByMedicineId.merge(line.batch().getMedicineId(), dispensedBaseUnits, Integer::sum);
+                    packsByMedicineId.merge(line.batch().getMedicineId(), dispensedPacks, Integer::sum);
                 }
             }
-            List<PrescriptionItem> settled =
-                    recordDispensing(prescription, dispensedByMedicineId, attributedByItemId);
+            List<PrescriptionItem> settled = recordDispensing(
+                    prescription, dispensedByMedicineId, attributedByItemId, packsByMedicineId, invoice.getId());
 
             // Only a prescription that came from a clinic has anywhere to report back to.
             // Published rather than delivered: the listener runs AFTER_COMMIT on its own pool,
@@ -1611,9 +1624,17 @@ public class BillingService {
      * <p>Carries the sold medicine as well as the count, because a substitution is only
      * knowable here: the line says what was ordered, this says what was handed over.
      */
-    private record Attribution(int units, String medicineId, String medicineName) {
+    /**
+     * @param units base-unit count handed over (what the prescription line accrues)
+     * @param packs SEALED PACKS handed over — carried alongside {@code units} rather than
+     *              re-derived from it, because deriving it means dividing by the very pack size
+     *              the pack-size signal exists to question. A loose line contributes 0: pieces
+     *              cut from a strip say nothing about how many sealed packs a course needed.
+     */
+    private record Attribution(int units, int packs, String medicineId, String medicineName) {
         Attribution plus(Attribution other) {
-            return new Attribution(units + other.units, other.medicineId, other.medicineName);
+            return new Attribution(units + other.units, packs + other.packs,
+                    other.medicineId, other.medicineName);
         }
     }
 
@@ -1639,13 +1660,16 @@ public class BillingService {
      */
     private List<PrescriptionItem> recordDispensing(Prescription prescription,
                                                     Map<String, Integer> dispensedByMedicineId,
-                                                    Map<String, Attribution> attributedByItemId) {
+                                                    Map<String, Attribution> attributedByItemId,
+                                                    Map<String, Integer> packsByMedicineId,
+                                                    String invoiceId) {
         List<PrescriptionItem> items = prescriptionItemRepository.findByPrescriptionId(prescription.getId());
 
         for (PrescriptionItem item : items) {
             Attribution attributed = attributedByItemId.get(item.getId());
             if (attributed != null) {
                 item.recordDispensed(attributed.units());
+                capturePackSizeSignal(prescription, item, attributed.medicineId(), attributed.packs(), invoiceId);
                 // Only when it genuinely differs. Recording a "substitution" for the product
                 // that was prescribed would put a spurious swap in front of a clinician.
                 if (!attributed.medicineId().equals(item.getMedicineId())) {
@@ -1659,6 +1683,8 @@ public class BillingService {
             Integer units = dispensedByMedicineId.get(item.getMedicineId());
             if (units != null) {
                 item.recordDispensed(units);
+                capturePackSizeSignal(prescription, item, item.getMedicineId(),
+                        packsByMedicineId.getOrDefault(item.getMedicineId(), 0), invoiceId);
             }
         }
 
@@ -1670,6 +1696,66 @@ public class BillingService {
             prescription.markPartiallyDispensed();
         }
         return items;
+    }
+
+    /**
+     * Records the fact that a pharmacist overruled the dispensing engine about how many sealed
+     * packs a measured course needed.
+     *
+     * <p>This is the only place in the system where an inference about a pack meets somebody
+     * holding one. The engine's pack count comes from dividing a clinical volume by a catalogue
+     * number nobody may ever have checked; the pharmacist's comes from the shelf. When the two
+     * differ, the difference is the most informative thing available about what the pack really
+     * holds — and until now it was discarded the instant the bill saved.
+     *
+     * <p><b>It asserts nothing.</b> One override is far more likely to be routine — patient
+     * wanted less, shelf was short, course was split — than a catalogue error. A signal is a
+     * vote, and only {@link com.checkup.pharmacy.common.util.PackSizeQuorum} treats a pile of
+     * them from several pharmacies as evidence. See {@link PackSizeSignal}.
+     *
+     * <p>The engine's divisor is recovered as {@code quantity / roundedPackCount} rather than
+     * read from today's catalogue, deliberately and for the same reason {@code
+     * PrescriptionItem.isStaleAgainst} does it: those two numbers were written together at
+     * ingest and are the only pair guaranteed to describe the conversion this line actually
+     * received. Today's catalogue may have moved since.
+     *
+     * <p>Never throws. A telemetry row that cannot be derived, or a database that refuses it,
+     * must not be the reason a sale fails — the bill is the real work and this is a note in the
+     * margin of it.
+     */
+    private void capturePackSizeSignal(Prescription prescription, PrescriptionItem item,
+                                       String dispensedMedicineId, int actualPackCount, String invoiceId) {
+        try {
+            Integer enginePackCount = item.getRoundedPackCount();
+            java.math.BigDecimal clinicalVolume = item.getPrescribedVolumeClinical();
+            // Only a MEASURED line resolved at ingest carries both, which is exactly the scope
+            // that matters: a wrong strip count is off by a few tablets and a pharmacist
+            // counting them notices, while a wrong bottle volume is off by a factor.
+            if (enginePackCount == null || enginePackCount <= 0 || clinicalVolume == null) {
+                return;
+            }
+            // A substituted line was filled with a DIFFERENT product, so the packs handed over
+            // describe that product's pack, not this one's. Attributing them here would teach
+            // the loop about the wrong medicine.
+            if (dispensedMedicineId == null || !dispensedMedicineId.equals(item.getMedicineId())) {
+                return;
+            }
+            int declaredPackSize = item.getQuantity() / enginePackCount;
+
+            PackSizeSignal signal = PackSizeSignal.capture(
+                    prescription.getPharmacyId(), item.getMedicineId(), invoiceId, item.getId(),
+                    enginePackCount, actualPackCount, clinicalVolume, declaredPackSize);
+            if (signal != null) {
+                packSizeSignalRepository.save(signal);
+                log.info("Pack-size signal: medicine {} engine={} packs, dispensed={} packs, "
+                                + "declared={} per pack, implied>={}",
+                        item.getMedicineId(), enginePackCount, actualPackCount, declaredPackSize,
+                        signal.getImpliedPackSize());
+            }
+        } catch (RuntimeException e) {
+            log.warn("Could not record a pack-size signal for prescription item {} — the sale is unaffected",
+                    item.getId(), e);
+        }
     }
 
     private Invoice loadInvoice(String id) {

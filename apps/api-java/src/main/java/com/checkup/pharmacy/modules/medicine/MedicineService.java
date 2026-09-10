@@ -4,6 +4,7 @@ import com.checkup.pharmacy.common.exception.AppException;
 import com.checkup.pharmacy.common.exception.BadRequestException;
 import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
+import com.checkup.pharmacy.common.enums.PackSizeConfidence;
 import com.checkup.pharmacy.common.enums.PackSizeSource;
 import com.checkup.pharmacy.common.util.PackSizeEvidence;
 import com.checkup.pharmacy.common.util.StableSort;
@@ -212,9 +213,34 @@ public class MedicineService {
         medicine.rename(name);
         medicine.applyFields(req.genericName(), req.manufacturer(), req.composition(), req.category(),
                 req.schedule(), req.hsnCode(), gstRate, req.form(), req.strength(), req.unit(), req.packSize());
+
+        // Captured BEFORE setPackaging, because whether this edit may lift a quarantine
+        // depends on what the row said when it arrived.
+        Integer packSizeBefore = medicine.getUnitsPerPack();
+        PackSizeConfidence confidenceBefore = medicine.getPackSizeConfidence();
+
         medicine.setPackaging(req.unitsPerPack(), normalizeBaseUnit(req.baseUnit()));
         rejectContradictoryPackSize(medicine);
         recordPackSizeEvidence(medicine, req.packSizeConfirmed(), PackSizeSource.CATALOGUE_ADMIN);
+
+        // A quarantine survives an edit that did not address it.
+        //
+        // recordPackSizeEvidence re-derives confidence from scratch on every write, which is
+        // right for the two states it can produce and wrong for the one it cannot: DISPUTED is
+        // reached only by PackSizeReviewService, on the strength of pharmacists in several
+        // shops dispensing something other than what the engine asked for. Left alone, renaming
+        // a quarantined medicine — or correcting its manufacturer — would silently re-derive
+        // UNVERIFIED and drop the review flag, retiring a review nobody performed.
+        //
+        // Two edits DO settle it, and both are the point of the flag: changing the pack size
+        // (the thing under dispute) or ticking the physical-pack confirmation (someone went and
+        // looked). Anything else leaves the badge up.
+        boolean packSizeUnchanged = java.util.Objects.equals(packSizeBefore, medicine.getUnitsPerPack());
+        if (confidenceBefore == PackSizeConfidence.DISPUTED
+                && packSizeUnchanged
+                && !Boolean.TRUE.equals(req.packSizeConfirmed())) {
+            medicine.quarantinePackSize();
+        }
         return toResponse(medicine);
     }
 
