@@ -15,11 +15,30 @@ import type { CartItem } from "@/components/billing/useBillingStore";
 import type { AlternativeResult } from "@pharmacy/types";
 import { useMedicineCatalogSearch, type MedicineHit } from "@/lib/useMedicineCatalogSearch";
 import { formatMeasuredAmount } from "@/lib/measuredUnits";
+import { saleUnitModel, pluraliseUnit } from "@pharmacy/utils";
 
-export type StockInfo = { availableQty: number; stockStatus: "in_stock" | "low_stock" | "out_of_stock" };
+export type StockInfo = {
+  availableQty: number;
+  stockStatus: "in_stock" | "low_stock" | "out_of_stock";
+  /** Resolved base unit ("TABLET" | "CAPSULE" | "ML" | "GM" | "EACH") — names `availableQty`. */
+  baseUnit?: string | null;
+  /** The catalogue's packaging word ("Strip", "Bottle") — see `CartItem.unit`. */
+  unit?: string | null;
+};
 
 /** For a measured (mL/g) line: how to render its piece-count stock as sealed packs. */
 export type MeasuredStock = { clinicalUom: string; packSize: number | null };
+
+/**
+ * The plural noun for a countable line's piece count — "tablets", "capsules", "units".
+ * Resolved through the shared {@link saleUnitModel} so the triage screen names a medicine
+ * exactly as the billing cart does; a line whose catalogue record says nothing lands on
+ * "units", which is honest, rather than on the tablet-era "strips".
+ */
+export function pieceNoun(stock: Pick<StockInfo, "baseUnit" | "unit">, count: number): string {
+  const model = saleUnitModel({ unit: stock.unit, baseUnit: stock.baseUnit });
+  return pluraliseUnit(model.looseUnitLabel, count);
+}
 
 /** Same three-colour vocabulary as the billing alternatives drawer, so a pharmacist reads one stock language app-wide. */
 function StockDot({ status }: { status: StockInfo["stockStatus"] }) {
@@ -34,10 +53,12 @@ function StockDot({ status }: { status: StockInfo["stockStatus"] }) {
 function stockLabel(stock: StockInfo, measured?: MeasuredStock): string {
   if (stock.stockStatus === "out_of_stock") return "Out of stock";
   // `availableQty` is a piece count — individual mL/g for a measured line. Render it as whole
-  // sealed packs so this reads the same way the cart's "5 in stock" does, not "500".
+  // sealed packs so this reads the same way the cart's "5 in stock" does, not "500". A
+  // countable line gets its own noun ("1050 tablets"): a bare number here left a pharmacist
+  // guessing whether it meant strips or tablets, and the two differ by the pack multiple.
   const qty = measured
     ? formatMeasuredAmount(stock.availableQty, measured.clinicalUom, measured.packSize)
-    : `${stock.availableQty}`;
+    : `${stock.availableQty} ${pieceNoun(stock, stock.availableQty)}`;
   if (stock.stockStatus === "low_stock") return `Low stock · ${qty} left`;
   return `In stock · ${qty}`;
 }

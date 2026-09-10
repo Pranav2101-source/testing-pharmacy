@@ -28,6 +28,8 @@ type FrequentBatch = {
     isActive:    boolean;
     schedule:    string | null;
     packSize:    string | null;
+    /** The catalogue's packaging word ("Strip", "Bottle") — see `CartItem.unit`. */
+    unit?:           string | null;
     unitsPerPack?:   number | null;
     baseUnit?:       string | null;
     allowLooseSale?: boolean;
@@ -119,6 +121,7 @@ export function RecentItemsCard() {
       saleUnit:       (batch.medicine.allowLooseSale && batch.medicine.looseByDefault) ? "LOOSE" : "PACK",
       unitsPerPack:   batch.medicine.unitsPerPack ?? undefined,
       baseUnit:       batch.medicine.baseUnit ?? undefined,
+      unit:           batch.medicine.unit ?? undefined,
       allowLooseSale: batch.medicine.allowLooseSale ?? false,
       looseUnits:     batch.looseUnits ?? 0,
     });

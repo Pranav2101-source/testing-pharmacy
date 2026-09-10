@@ -8,6 +8,7 @@ import com.checkup.pharmacy.common.exception.UnprocessableEntityException;
 import com.checkup.pharmacy.common.sequence.DocumentNumberFormat;
 import com.checkup.pharmacy.common.validation.ValidationPatterns;
 import com.checkup.pharmacy.common.sequence.DocumentSequenceService;
+import com.checkup.pharmacy.common.util.BaseUnits;
 import com.checkup.pharmacy.common.util.DateRange;
 import com.checkup.pharmacy.modules.doctor.Doctor;
 import com.checkup.pharmacy.modules.doctor.DoctorRepository;
@@ -160,23 +161,40 @@ public class PrescriptionService {
                 ? Map.of()
                 : inventoryRepository.findActiveNonExpiredByMedicineIdIn(rx.getPharmacyId(), medicineIds, Instant.now())
                         .stream().collect(Collectors.groupingBy(Inventory::getMedicineId));
-        Map<String, Integer> unitsPerPackByMedicineId = medicineIds.isEmpty()
+        // The pack multiple is per-pharmacy first, catalogue second — the shared catalogue is
+        // platform-admin-owned, so an override row is the only way this pharmacy can have
+        // classified its own pack size. Reading Medicine.unitsPerPack directly here reported
+        // an overridden medicine's stock in PACKS while the billing cart reported the same
+        // shelf in PIECES (1050 vs 10500 for a 10-per-pack strip).
+        Map<String, PharmacyMedicineOverride> overridesByMedicineId = medicineIds.isEmpty()
+                ? Map.of()
+                : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(rx.getPharmacyId(), medicineIds).stream()
+                        .collect(Collectors.toMap(PharmacyMedicineOverride::getMedicineId, o -> o));
+        Map<String, Medicine> medicinesById = medicineIds.isEmpty()
                 ? Map.of()
                 : medicineRepository.findAllById(medicineIds).stream()
-                        .collect(Collectors.toMap(Medicine::getId,
-                                m -> m.getUnitsPerPack() != null && m.getUnitsPerPack() > 0 ? m.getUnitsPerPack() : 1));
+                        .collect(Collectors.toMap(Medicine::getId, m -> m));
 
         List<PrescriptionStockResponse.Item> result = items.stream()
                 .filter(i -> i.getMedicineId() != null)
                 .map(i -> {
-                    int unitsPerPack = unitsPerPackByMedicineId.getOrDefault(i.getMedicineId(), 1);
+                    Medicine medicine = medicinesById.get(i.getMedicineId());
+                    int unitsPerPack = PharmacyMedicineOverride.effectivePackMultiple(
+                            overridesByMedicineId.get(i.getMedicineId()), medicine);
                     int available = batchesByMedicine.getOrDefault(i.getMedicineId(), List.of()).stream()
                             .mapToInt(b -> Math.max(0, b.getQuantity() - b.getReservedQuantity()) * unitsPerPack
                                     + b.getLooseUnits())
                             .sum();
                     String status = available == 0 ? "out_of_stock"
                             : available <= LOW_STOCK_QTY ? "low_stock" : "in_stock";
-                    return new PrescriptionStockResponse.Item(i.getId(), i.getMedicineId(), available, status);
+                    // Resolved server-side through the same BaseUnits the dispensing engine uses,
+                    // so the triage screen and the billing cart never infer a different unit for
+                    // the same medicine.
+                    String baseUnit = medicine == null ? null
+                            : BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm());
+                    String unit = medicine == null ? null : medicine.getUnit();
+                    return new PrescriptionStockResponse.Item(i.getId(), i.getMedicineId(), available, status,
+                            baseUnit, unit);
                 })
                 .toList();
         return new PrescriptionStockResponse(result);
@@ -503,10 +521,9 @@ public class PrescriptionService {
         item.linkMedicine(medicine.getId());
         item.calculateQuantityIfMissing(medicine);
         if (!item.needsQuantityConfirmation()) {
-            Integer effectivePackSize = overrideRepository
-                    .findByIdPharmacyIdAndIdMedicineId(pharmacyId, medicine.getId())
-                    .map(PharmacyMedicineOverride::getUnitsPerPack)
-                    .orElse(medicine.getUnitsPerPack());
+            Integer effectivePackSize = PharmacyMedicineOverride.effectiveUnitsPerPack(
+                    overrideRepository.findByIdPharmacyIdAndIdMedicineId(pharmacyId, medicine.getId()).orElse(null),
+                    medicine);
             item.resolveMeasuredEmrQuantity(medicine, effectivePackSize);
         }
         itemRepository.save(item);

@@ -60,6 +60,43 @@ public class PharmacyMedicineOverride {
         // Required by JPA.
     }
 
+    /**
+     * The pack multiple that actually applies at one pharmacy: this override's own
+     * {@code unitsPerPack} when it has set one, else the shared catalogue's. Null when
+     * neither has classified the medicine — which is NOT the same as 1, because a
+     * medicine with no pack multiple can never be sold loose (see
+     * {@code DispensingService.catalogueContext}).
+     *
+     * <p>The COALESCE documented on {@code schema.prisma}'s {@code
+     * PharmacyMedicineOverride.unitsPerPack} ("Billing uses COALESCE(this,
+     * medicine.unitsPerPack)"), in one place. Every read of a pack multiple for a
+     * catalogue medicine must go through here or {@link #effectivePackMultiple}:
+     * {@code stockCheck} and the EMR medicine-match preview each used the raw
+     * {@code Medicine.unitsPerPack} instead, so a pharmacy that had classified a pack
+     * size through its own override (the ONLY way to classify one, since the catalogue
+     * is platform-admin-owned) saw the same shelf reported as e.g. 1050 on the
+     * prescription triage panel and 10500 in the billing cart.
+     *
+     * @param override this pharmacy's override row, or null when it has none
+     * @param medicine the shared catalogue record; null yields the override's own value
+     */
+    public static Integer effectiveUnitsPerPack(PharmacyMedicineOverride override, Medicine medicine) {
+        if (override != null && override.getUnitsPerPack() != null) {
+            return override.getUnitsPerPack();
+        }
+        return medicine == null ? null : medicine.getUnitsPerPack();
+    }
+
+    /**
+     * {@link #effectiveUnitsPerPack} floored at 1, for piece-count arithmetic
+     * ({@code packs * multiple + looseUnits}). An unclassified medicine counts one
+     * piece per pack, which is what every stock total did before pack multiples existed.
+     */
+    public static int effectivePackMultiple(PharmacyMedicineOverride override, Medicine medicine) {
+        Integer upp = effectiveUnitsPerPack(override, medicine);
+        return upp != null && upp > 0 ? upp : 1;
+    }
+
     public static PharmacyMedicineOverride create(String pharmacyId, String medicineId) {
         PharmacyMedicineOverride o = new PharmacyMedicineOverride();
         o.id = new PharmacyMedicineOverrideId(pharmacyId, medicineId);

@@ -318,6 +318,7 @@ export function AlternativesDrawer({
       saleUnit:       (alt.allowLooseSale && alt.looseByDefault) ? "LOOSE" : "PACK",
       unitsPerPack:   alt.unitsPerPack ?? undefined,
       baseUnit:       alt.baseUnit ?? undefined,
+      unit:           alt.unit ?? undefined,
       allowLooseSale: alt.allowLooseSale ?? false,
       looseUnits:     batch.looseUnits ?? 0,
     });

@@ -43,7 +43,7 @@ export function lineIssue(item: CartItem): LineIssue | null {
   // "Sell as Strip" for a tablet, "Sell as Bottle" for a syrup, "Sell as Tube" for
   // a cream — the fix label and every message read the medicine's own sale-unit word.
   const unit = saleUnitModel({
-    baseUnit: item.baseUnit, unitsPerPack: item.unitsPerPack,
+    unit: item.unit, baseUnit: item.baseUnit, unitsPerPack: item.unitsPerPack,
     allowLooseSale: item.allowLooseSale, schedule: item.schedule,
   });
   const P = titleCaseUnit(unit.packUnitLabel);
@@ -140,6 +140,13 @@ export type CartItem = {
   /** Effective pack size for this medicine (from the batch's medicine.unitsPerPack). */
   unitsPerPack?:  number;
   baseUnit?:      string;
+  /**
+   * The catalogue's packaging word for one whole sealed unit — "Strip", "Bottle", "Tube".
+   * Optional: a line built before this existed, or from a source with no catalogue record,
+   * simply has none and {@link saleUnitModel} infers from {@link baseUnit} as it always did.
+   * Never read raw for display — pass it to `saleUnitModel`, which normalises it.
+   */
+  unit?:          string;
   /** This pharmacy has enabled cut-strip selling for the medicine — shows the Strip/Tab toggle. */
   allowLooseSale?: boolean;
   /** Loose pieces already open on the batch — part of what a LOOSE line can draw on. */

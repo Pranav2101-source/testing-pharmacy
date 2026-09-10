@@ -339,8 +339,7 @@ public class DispensingService {
     /** Builds the dispensing context for a catalogue medicine from already-fetched data. */
     private static MedicineContext catalogueContext(Medicine m, PharmacyMedicineOverride override,
                                                     String schedule, List<Inventory> sellableBatches) {
-        Integer upp = override != null && override.getUnitsPerPack() != null
-                ? override.getUnitsPerPack() : m.getUnitsPerPack();
+        Integer upp = PharmacyMedicineOverride.effectiveUnitsPerPack(override, m);
         boolean allowLoose = override != null && override.isAllowLooseSale() && upp != null && upp > 1;
         return new MedicineContext(m.getId(), null, m.getName(),
                 firstNonBlank(schedule, m.getSchedule()), m.getGstRate(), m.getHsnCode(),
@@ -496,7 +495,8 @@ public class DispensingService {
         int availableStock = Math.max(0, b.getQuantity() - b.getReservedQuantity());
         return new DispensingPlan.Allocation(
                 b.getId(), b.getBatchNumber(), b.getExpiryDate(), chunk.saleUnit(), chunk.quantity(),
-                ctx.unitsPerPack(), ctx.baseUnit(), ctx.packSize(), packMrp, unitMrp, GstCalculator.round2(unitMrp),
+                ctx.unitsPerPack(), ctx.baseUnit(), ctx.unit(), ctx.packSize(),
+                packMrp, unitMrp, GstCalculator.round2(unitMrp),
                 gstRate, ctx.hsnCode(), ctx.allowLooseSale(), Math.max(0, b.getLooseUnits()), availableStock,
                 gst.taxableAmount(), gst.cgst(), gst.sgst(), gst.igst(), gst.amount());
     }

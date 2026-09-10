@@ -37,6 +37,7 @@ import com.checkup.pharmacy.modules.location.Shelf;
 import com.checkup.pharmacy.modules.location.ShelfRepository;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import com.checkup.pharmacy.modules.medicine.MedicineRepository;
+import com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverride;
 import com.checkup.pharmacy.modules.user.User;
 import com.checkup.pharmacy.modules.user.UserRepository;
 import com.checkup.pharmacy.tenant.TenantContext;
@@ -913,7 +914,7 @@ public class InventoryService {
                 continue;
             }
             var fov = freqOverrides.get(medicine.getId());
-            Integer effUpp = fov != null && fov.getUnitsPerPack() != null ? fov.getUnitsPerPack() : medicine.getUnitsPerPack();
+            Integer effUpp = PharmacyMedicineOverride.effectiveUnitsPerPack(fov, medicine);
             boolean allowLoose = fov != null && fov.isAllowLooseSale() && effUpp != null && effUpp > 1;
             boolean looseDefault = allowLoose && fov.isLooseByDefault();
             InventoryResponse.ShelfRef shelfRef = null;
@@ -928,7 +929,7 @@ public class InventoryService {
                     batch.getLocation(), shelfRef, row.getTransactionCount(),
                     new FrequentItemResponse.MedicineRef(medicine.getName(), medicine.getGenericName(),
                             medicine.getHsnCode(), medicine.getGstRate(), medicine.isActive(),
-                            medicine.getSchedule(), medicine.getPackSize(),
+                            medicine.getSchedule(), medicine.getPackSize(), medicine.getUnit(),
                             effUpp, com.checkup.pharmacy.common.util.BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm()),
                             allowLoose, looseDefault)));
         }
@@ -1215,9 +1216,7 @@ public class InventoryService {
             // target has since vanished from the catalogue) — see EffectiveMedicine.
             Medicine m = EffectiveMedicine.resolve(direct, inv.getLocalMedicineId(), localMedicinesById, medicinesById);
             var ov = m == null ? null : overridesById.get(m.getId());
-            Integer effectiveUpp = ov != null && ov.getUnitsPerPack() != null
-                    ? ov.getUnitsPerPack()
-                    : (m != null ? m.getUnitsPerPack() : null);
+            Integer effectiveUpp = PharmacyMedicineOverride.effectiveUnitsPerPack(ov, m);
             boolean allowLoose = ov != null && ov.isAllowLooseSale()
                     && effectiveUpp != null && effectiveUpp > 1;
             boolean looseDefault = allowLoose && ov.isLooseByDefault();

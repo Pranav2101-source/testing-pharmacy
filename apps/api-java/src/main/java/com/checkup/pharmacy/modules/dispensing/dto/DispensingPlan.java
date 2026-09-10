@@ -61,6 +61,17 @@ public record DispensingPlan(
             Integer unitsPerPack,
             String baseUnit,
             /**
+             * {@code Medicine.unit} — the packaging word the catalogue records for one whole
+             * sealed sale unit ("Strip", "Bottle", "Tube", "Vial"), or null when it has none.
+             * Display-only, and the ONLY way the cart can know a lotion comes in a bottle: with
+             * just {@code baseUnit} to go on, an unclassified medicine resolves to EACH and
+             * every label falls back to tablet-era "strip" — a Melgain bottle read "10/strip"
+             * in billing while the inventory screen, which reads this same field, correctly
+             * said "40 bottles". Resolved for display through {@code PackUnits.packUnitLabel}
+             * (Java) / {@code saleUnitModel} (web), which agree on the mapping.
+             */
+            String unit,
+            /**
              * The medicine's free-text catalogue pack size ("100ml", "1x15", "strip of 10"),
              * or null when the catalogue has none. Display-only — carried so the billing cart's
              * Pack column can show the real label instead of a computed fallback. Never used in

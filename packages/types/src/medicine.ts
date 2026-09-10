@@ -100,6 +100,8 @@ export type AlternativeResult = {
   // Loose dispensing: effective pack size + this pharmacy's opt-in.
   unitsPerPack?: number | null;
   baseUnit?: string | null;
+  /** The catalogue's packaging word ("Strip", "Bottle", "Tube") — see `DispensingAllocation.unit`. */
+  unit?: string | null;
   allowLooseSale?: boolean;
   looseByDefault?: boolean;
   batches: AlternativeBatch[];

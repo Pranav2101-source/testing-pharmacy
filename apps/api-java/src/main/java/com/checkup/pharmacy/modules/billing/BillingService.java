@@ -1058,7 +1058,7 @@ public class BillingService {
 
             if (original.isLooseSale()) {
                 PharmacyMedicineOverride ov = repeatOverrides.get(medicineId);
-                Integer effUpp = ov != null && ov.getUnitsPerPack() != null ? ov.getUnitsPerPack() : medicine.getUnitsPerPack();
+                Integer effUpp = PharmacyMedicineOverride.effectiveUnitsPerPack(ov, medicine);
                 boolean stillLoose = ov != null && ov.isAllowLooseSale() && effUpp != null && effUpp > 1;
                 if (!stillLoose) {
                     unavailable.add(new RepeatCartResponse.Unavailable(original.getMedicineName(),
@@ -1092,8 +1092,7 @@ public class BillingService {
             // sells the medicine loose — so a customer who wants a few loose this time is
             // one click away, not a remove-and-re-add.
             PharmacyMedicineOverride packOv = repeatOverrides.get(medicineId);
-            Integer packEffUpp = packOv != null && packOv.getUnitsPerPack() != null
-                    ? packOv.getUnitsPerPack() : medicine.getUnitsPerPack();
+            Integer packEffUpp = PharmacyMedicineOverride.effectiveUnitsPerPack(packOv, medicine);
             boolean packAllowsLoose = packOv != null && packOv.isAllowLooseSale()
                     && packEffUpp != null && packEffUpp > 1
                     && !"X".equalsIgnoreCase(medicine.getSchedule() == null ? "" : medicine.getSchedule().trim());

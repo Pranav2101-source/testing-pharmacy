@@ -19,7 +19,7 @@ import {
 } from "@/lib/prescriptionToCart";
 import ReviewIngestedItemsPanel from "@/components/integration/ReviewIngestedItemsPanel";
 import ConfirmQuantityPanel from "@/components/integration/ConfirmQuantityPanel";
-import StockActionPanel, { type StockInfo } from "@/components/integration/StockActionPanel";
+import StockActionPanel, { pieceNoun, type StockInfo } from "@/components/integration/StockActionPanel";
 import { usePackRoundingDecision } from "@/hooks/usePackRoundingDecision";
 import { measuredWords, measuredPackSize, isResolvedMeasured } from "@/lib/measuredUnits";
 
@@ -127,7 +127,10 @@ export type TriagePrescription = Omit<BillablePrescription, "items"> & {
   items: TriageItem[];
 };
 
-type StockResponseItem = { itemId: string; medicineId: string; availableQty: number; stockStatus: StockInfo["stockStatus"] };
+type StockResponseItem = {
+  itemId: string; medicineId: string; availableQty: number; stockStatus: StockInfo["stockStatus"];
+  baseUnit?: string | null; unit?: string | null;
+};
 
 /**
  * The moment a pharmacist opens a prescription a clinic just sent.
@@ -234,7 +237,12 @@ export default function ClinicPrescriptionTriage({
   });
   const stockByItemId = useMemo(() => {
     const map: Record<string, StockInfo> = {};
-    (stockQuery.data ?? []).forEach((s) => { map[s.itemId] = { availableQty: s.availableQty, stockStatus: s.stockStatus }; });
+    (stockQuery.data ?? []).forEach((s) => {
+      map[s.itemId] = {
+        availableQty: s.availableQty, stockStatus: s.stockStatus,
+        baseUnit: s.baseUnit, unit: s.unit,
+      };
+    });
     return map;
   }, [stockQuery.data]);
 
@@ -436,12 +444,21 @@ export default function ClinicPrescriptionTriage({
                 const detailLine = [item.dosage, item.duration].filter(Boolean).join(" · ") || "No dosage noted";
                 const measured = measuredDispenseSummary(item);
                 // The big number on the right: sealed-pack count for a measured line, piece
-                // count otherwise.
+                // count otherwise. A countable line names its own pieces ("16 tablets") using
+                // the units the stock check resolved for this medicine — a bare "16" against a
+                // bare "In stock · 1050" gave a pharmacist two numbers and no way to tell
+                // whether either meant strips or tablets. The noun waits on the stock query
+                // rather than guessing: until it lands, the "qty" caption below still says what
+                // the number is.
+                const stockUnits = stockByItemId[item.id];
+                const countableQty = done ? item.quantity : remaining;
                 const qtyDisplay = unconfirmedQty
                   ? "—"
                   : measured
                     ? `${item.roundedPackCount} ${measuredWords(item.clinicalUom).pack}${item.roundedPackCount === 1 ? "" : "s"}`
-                    : String(done ? item.quantity : remaining);
+                    : stockUnits
+                      ? `${countableQty} ${pieceNoun(stockUnits, countableQty)}`
+                      : String(countableQty);
                 return (
                   <div
                     key={item.id}
@@ -504,7 +521,10 @@ export default function ClinicPrescriptionTriage({
                       </div>
                       <div className="text-right flex-shrink-0">
                         <p className={cn(
-                          measured ? "text-[12.5px]" : "text-[15px]",
+                          // A qty carrying its own noun ("16 tablets") needs the same
+                          // narrower type a measured "2 bottles" already uses; only a bare
+                          // number still gets the big display size.
+                          measured || stockUnits ? "text-[12.5px]" : "text-[15px]",
                           "font-bold tabular-nums",
                           unconfirmedQty ? "text-amber-600" : "text-slate-800",
                         )}>

@@ -368,21 +368,23 @@ export const CartRow = memo(function CartRow({
   const isLoose   = item.saleUnit === "LOOSE";
   const upp       = item.unitsPerPack ?? 1;
   const canLoose  = !!item.allowLooseSale && upp > 1;
-  const packLabel = packDisplayLabel(item.packSize, item.unitsPerPack, item.baseUnit);
+  const packLabel = packDisplayLabel(item.packSize, item.unitsPerPack, item.baseUnit, item.unit);
   const issue     = lineIssue(item);
   const looseOpensStrips = looseStripsOpened(item);
   // Raw prescribed-vs-dispensed volumes for the "Internal Note" column microtext.
   const rxOvershoot = measuredRxOvershoot(item);
   // The sale-unit vocabulary for THIS line — "bottle"/"mL" for a syrup, "tube"/"g"
   // for a cream, "strip"/"tab" for a tablet — so nothing below says "strip" for a
-  // bottle. Derived from the base unit (no medicine `unit`/`form` on a cart line;
-  // strip/bottle/tube covers every form this pharmacy actually stocks loose).
+  // bottle. `unit` is the catalogue's own packaging word and wins over anything
+  // inferred from the base unit: an unclassified medicine has no base unit at all,
+  // and inferring from that alone is what made a Melgain bottle read as a strip.
   const sum        = saleUnitModel({
-    baseUnit: item.baseUnit, unitsPerPack: item.unitsPerPack,
+    unit: item.unit, baseUnit: item.baseUnit, unitsPerPack: item.unitsPerPack,
     allowLooseSale: item.allowLooseSale, schedule: item.schedule,
   });
   const packWord   = sum.packUnitLabel;                       // "strip" | "bottle" | "tube" | "unit"
   const looseWord  = sum.looseUnitShort;                      // "tab" | "cap" | "mL" | "g" | "u"
+  const looseNoun  = sum.looseUnitLabel;                      // "tablet" | "capsule" | "mL" | "g" | "unit"
   // Everything on a loose line — quantity, the cap, the stock hint — is in pieces.
   const effAvailable = item.availableStock == null
     ? undefined
@@ -399,7 +401,10 @@ export const CartRow = memo(function CartRow({
       return { text: formatMeasuredAmount(packs * upp, item.baseUnit, upp), tone };
     }
     const pieces = upp > 1 ? packs * upp : packs;
-    const noun = upp > 1 ? pluraliseUnit(looseWord, pieces) : pluraliseUnit(packWord, pieces);
+    // The FULL loose noun, not the terse cell abbreviation: pluralising "u" gave the
+    // nonsense "400 us" where this line means 400 units. `looseWord` stays the label
+    // for the narrow Rate/Qty cells, where the abbreviation is the point.
+    const noun = upp > 1 ? pluraliseUnit(looseNoun, pieces) : pluraliseUnit(packWord, pieces);
     const tone = pieces === 0 ? "text-red-600" : pieces <= 10 ? "text-amber-600" : "text-emerald-600";
     return { text: `${pieces} ${noun}`, tone };
   })();
@@ -1039,6 +1044,7 @@ export function CartTableRows({
       saleUnit:       next.saleUnit,
       unitsPerPack:   nextUpp,
       baseUnit:       batch.medicine.baseUnit ?? swapTarget.baseUnit ?? undefined,
+      unit:           batch.medicine.unit ?? swapTarget.unit ?? undefined,
       allowLooseSale: nextAllow,
       looseUnits:     batch.looseUnits ?? 0,
       // The pharmacist deliberately chose this batch over the engine's order.
@@ -1046,6 +1052,7 @@ export function CartTableRows({
     });
     if (next.forcedToPack) {
       const packWord = saleUnitModel({
+        unit: batch.medicine.unit ?? swapTarget.unit,
         baseUnit: batch.medicine.baseUnit ?? swapTarget.baseUnit,
         unitsPerPack: nextUpp, allowLooseSale: nextAllow, schedule: swapTarget.schedule,
       }).packUnitLabel;

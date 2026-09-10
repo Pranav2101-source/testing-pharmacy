@@ -18,9 +18,11 @@ public record FrequentItemResponse(
         long freq,
         MedicineRef medicine
 ) {
-    /** {@code unitsPerPack} is the effective pack size, {@code allowLooseSale} this pharmacy's opt-in. */
+    /** {@code unitsPerPack} is the effective pack size, {@code allowLooseSale} this pharmacy's opt-in.
+     *  {@code unit} is the catalogue's packaging word ("Strip", "Bottle") — the cart needs it to
+     *  label a Quick Add row the same way a prescription-sourced row is labelled. */
     public record MedicineRef(String name, String genericName, String hsnCode, BigDecimal gstRate,
-                              boolean isActive, String schedule, String packSize,
+                              boolean isActive, String schedule, String packSize, String unit,
                               Integer unitsPerPack, String baseUnit, boolean allowLooseSale, boolean looseByDefault) {
     }
 }

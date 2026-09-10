@@ -40,15 +40,15 @@ describe("packDisplayLabel", () => {
   });
 
   it("falls back to a computed label when packSize is a bare number and unitsPerPack is available", () => {
-    expect(packDisplayLabel("1", 12)).toBe("12/strip");
-    expect(packDisplayLabel("10", 10)).toBe("10/strip");
+    expect(packDisplayLabel("1", 12, "TABLET")).toBe("12/strip");
+    expect(packDisplayLabel("10", 10, "TABLET")).toBe("10/strip");
   });
 
   it("falls back to a computed label when packSize is empty and unitsPerPack is available", () => {
-    expect(packDisplayLabel(null, 10)).toBe("10/strip");
-    expect(packDisplayLabel(undefined, 10)).toBe("10/strip");
-    expect(packDisplayLabel("", 10)).toBe("10/strip");
-    expect(packDisplayLabel("   ", 10)).toBe("10/strip");
+    expect(packDisplayLabel(null, 10, "TABLET")).toBe("10/strip");
+    expect(packDisplayLabel(undefined, 10, "TABLET")).toBe("10/strip");
+    expect(packDisplayLabel("", 10, "TABLET")).toBe("10/strip");
+    expect(packDisplayLabel("   ", 10, "TABLET")).toBe("10/strip");
   });
 
   it("shows the bare number as-is when there is no unitsPerPack to fall back to", () => {
@@ -77,10 +77,32 @@ describe("packDisplayLabel", () => {
     expect(packDisplayLabel(null, 30, "gm")).toBe("30g");
   });
 
-  it("a countable medicine still gets the '/strip' fallback (base unit given or not)", () => {
+  it("a tablet or capsule gets the '/strip' fallback", () => {
     expect(packDisplayLabel(null, 15, "TABLET")).toBe("15/strip");
     expect(packDisplayLabel(null, 8, "CAPSULE")).toBe("8/strip");
-    expect(packDisplayLabel(null, 15, "EACH")).toBe("15/strip");
-    expect(packDisplayLabel(null, 15)).toBe("15/strip"); // unchanged when base unit omitted
+  });
+
+  it("names the medicine's OWN packaging word when the catalogue records one", () => {
+    // The Melgain case: a bottle whose base unit nobody classified. Reading the packaging
+    // word means the cart says "bottle" here exactly as the inventory screen already does,
+    // instead of asserting a strip that does not exist.
+    expect(packDisplayLabel(null, 10, null, "Bottle")).toBe("10/bottle");
+    expect(packDisplayLabel(null, 10, "EACH", "Bottle")).toBe("10/bottle");
+    expect(packDisplayLabel(null, 24, null, "Sachet")).toBe("24/sachet");
+    // …and it still wins for a countable base unit whose packaging is unusual.
+    expect(packDisplayLabel(null, 20, "TABLET", "Box")).toBe("20/box");
+  });
+
+  it("falls back to the neutral 'unit', never 'strip', when nothing classifies the medicine", () => {
+    // "15/strip" here was a fabrication: an unclassified medicine has no recorded packaging
+    // at all, and claiming a strip is what let a bottle read as one.
+    expect(packDisplayLabel(null, 15, "EACH")).toBe("15/unit");
+    expect(packDisplayLabel(null, 15)).toBe("15/unit");
+    expect(packDisplayLabel(null, 15, null, null)).toBe("15/unit");
+  });
+
+  it("a measured medicine keeps its volume label even when a packaging word is present", () => {
+    expect(packDisplayLabel(null, 100, "ML", "Bottle")).toBe("100ml");
+    expect(packDisplayLabel(null, 30, "GM", "Tube")).toBe("30g");
   });
 });

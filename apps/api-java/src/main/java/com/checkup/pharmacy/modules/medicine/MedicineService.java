@@ -435,8 +435,7 @@ public class MedicineService {
                 throw new NotFoundException("Medicine not found: " + row.medicineId());
             }
             PharmacyMedicineOverride ov = overridesById.get(row.medicineId());
-            Integer structuredUpp = ov != null && ov.getUnitsPerPack() != null
-                    ? ov.getUnitsPerPack() : m.getUnitsPerPack();
+            Integer structuredUpp = PharmacyMedicineOverride.effectiveUnitsPerPack(ov, m);
             if (structuredUpp == null || structuredUpp < 2) {
                 throw new BadRequestException("\"" + m.getName() + "\" has no pack size on record. "
                         + "Enable loose selling for it individually so you can enter and confirm the pack size.");
@@ -675,7 +674,7 @@ public class MedicineService {
                     .toList();
 
             PharmacyMedicineOverride ov = overridesById.get(med.getId());
-            Integer effUpp = ov != null && ov.getUnitsPerPack() != null ? ov.getUnitsPerPack() : med.getUnitsPerPack();
+            Integer effUpp = PharmacyMedicineOverride.effectiveUnitsPerPack(ov, med);
             boolean allowLoose = ov != null && ov.isAllowLooseSale() && effUpp != null && effUpp > 1;
             boolean looseDefault = allowLoose && ov.isLooseByDefault();
 
@@ -684,7 +683,7 @@ public class MedicineService {
                     overrideGst.getOrDefault(med.getId(), med.getGstRate()), med.getSchedule(),
                     null, totalStock, mrp, margin, stockStatus, effUpp,
                     com.checkup.pharmacy.common.util.BaseUnits.resolve(med.getBaseUnit(), med.getForm()),
-                    allowLoose, looseDefault, batchDtos));
+                    med.getUnit(), allowLoose, looseDefault, batchDtos));
         }
         return result;
     }
@@ -724,8 +723,7 @@ public class MedicineService {
     private MedicineResponse toResponse(Medicine m, PharmacyMedicineOverride override, StockSummary stock) {
         boolean allowLoose = override != null && override.isAllowLooseSale();
         boolean looseDefault = allowLoose && override.isLooseByDefault();
-        Integer effectiveUpp = override != null && override.getUnitsPerPack() != null
-                ? override.getUnitsPerPack() : m.getUnitsPerPack();
+        Integer effectiveUpp = PharmacyMedicineOverride.effectiveUnitsPerPack(override, m);
         return new MedicineResponse(
                 m.getId(), m.getName(), m.getGenericName(), m.getManufacturer(), m.getComposition(),
                 m.getCategory(), m.getSchedule(), m.getHsnCode(), m.getGstRate(), m.getForm(),

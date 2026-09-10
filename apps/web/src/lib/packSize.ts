@@ -1,3 +1,5 @@
+import { saleUnitModel } from "@pharmacy/utils";
+
 /**
  * Best-effort "units per pack" from free text — a PREFILL only, the pharmacist still
  * checks it against a real strip. Conservative on purpose: a wrong guess mis-prices
@@ -50,14 +52,21 @@ export function parseMeasuredPackSize(text: string | null | undefined): number |
  *
  * The base unit matters for the fallback: a measured medicine (syrup, cream — ML/GM) is
  * a bottle/tube of that volume, NOT "N/strip", so its computed label is "{n}ml" / "{n}g".
- * A tablet or capsule keeps the "{n}/strip" form. `baseUnit` is optional — omitted, the
- * label falls back to the tablet-era "{n}/strip", which is what every non-measured line
- * has always shown.
+ *
+ * For a countable medicine the fallback names the medicine's OWN packaging word —
+ * "10/strip" for a strip, "10/bottle" for a bottle of 10 lozenges — resolved through
+ * {@link saleUnitModel}, the same resolver the Qty toggle and every cart message use.
+ * This used to hardcode "/strip", which is how a Melgain bottle read "10/strip" in the
+ * billing cart while the inventory screen, reading the same catalogue field, said
+ * "40 bottles". `unit` and `baseUnit` are both optional: with neither, the resolver's
+ * own last resort is "unit", never "strip" — an unclassified medicine now says
+ * "10/unit" rather than asserting packaging nobody recorded.
  */
 export function packDisplayLabel(
   packSize: string | null | undefined,
   unitsPerPack: number | null | undefined,
   baseUnit?: string | null,
+  unit?: string | null,
 ): string {
   const trimmed = (packSize ?? "").trim();
   const isBareNumber = /^\d+$/.test(trimmed);
@@ -66,7 +75,7 @@ export function packDisplayLabel(
     const bu = baseUnit?.trim().toUpperCase();
     if (bu === "ML") return `${unitsPerPack}ml`;
     if (bu === "GM") return `${unitsPerPack}g`;
-    return `${unitsPerPack}/strip`;
+    return `${unitsPerPack}/${saleUnitModel({ unit, baseUnit }).packUnitLabel}`;
   }
   return trimmed || "—";
 }

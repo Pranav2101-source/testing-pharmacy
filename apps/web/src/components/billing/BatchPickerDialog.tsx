@@ -24,6 +24,8 @@ export type InventoryBatch = {
     /** Effective pack size (this pharmacy's override, else the catalogue's). */
     unitsPerPack?:   number | null;
     baseUnit?:       string | null;
+    /** The catalogue's packaging word ("Strip", "Bottle", "Tube") — see `CartItem.unit`. */
+    unit?:           string | null;
     /** This pharmacy has enabled cut-strip selling for this medicine. */
     allowLooseSale?: boolean;
     looseByDefault?: boolean;

@@ -222,6 +222,7 @@ export function MedicineSearchCombobox({
       saleUnit:       allowLooseSale && looseByDefault ? "LOOSE" : "PACK",
       unitsPerPack:   batch.medicine.unitsPerPack ?? med.unitsPerPack ?? undefined,
       baseUnit:       batch.medicine.baseUnit ?? med.baseUnit ?? undefined,
+      unit:           batch.medicine.unit ?? med.unit ?? undefined,
       allowLooseSale,
       looseUnits:     batch.looseUnits ?? 0,
       // The engine's ordered list; false only when the pharmacist picked a row

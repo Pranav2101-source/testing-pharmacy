@@ -71,4 +71,35 @@ describe("CartRow — PACK column", () => {
     expect(screen.getByText("LOOSE OK")).toBeInTheDocument();
     expect(screen.queryByText(/\/strip/i)).not.toBeInTheDocument();
   });
+
+  // ── The catalogue's own packaging word ────────────────────────────────────────
+  // The Melgain regression: an UNCLASSIFIED medicine (no baseUnit) that the catalogue
+  // nonetheless records as a bottle. Inventory read `medicine.unit` and said "40 bottles";
+  // billing had no such field on the cart line and fell through to "10/strip".
+
+  it("a bottle with no base unit reads '/bottle', not '/strip'", () => {
+    renderRow({ ...base, medicineName: "Melgain",
+      packSize: undefined, unitsPerPack: 10, baseUnit: undefined, unit: "Bottle" });
+    expect(document.querySelector("[data-pack-label]")).toHaveTextContent("10/bottle");
+    expect(screen.queryByText(/\/strip/i)).not.toBeInTheDocument();
+  });
+
+  it("the catalogue's packaging word wins over anything inferred from the base unit", () => {
+    renderRow({ ...base, medicineName: "Lozenges",
+      packSize: undefined, unitsPerPack: 20, baseUnit: "TABLET", unit: "Box" });
+    expect(document.querySelector("[data-pack-label]")).toHaveTextContent("20/box");
+  });
+
+  it("with neither a base unit nor a packaging word, it says 'unit' rather than inventing a strip", () => {
+    renderRow({ ...base, medicineName: "Unclassified thing",
+      packSize: undefined, unitsPerPack: 10, baseUnit: undefined, unit: undefined });
+    expect(document.querySelector("[data-pack-label]")).toHaveTextContent("10/unit");
+    expect(screen.queryByText(/\/strip/i)).not.toBeInTheDocument();
+  });
+
+  it("a measured medicine keeps its volume label even when the catalogue says 'Bottle'", () => {
+    renderRow({ ...base, medicineName: "Cough Syrup",
+      packSize: undefined, unitsPerPack: 100, baseUnit: "ML", unit: "Bottle" });
+    expect(document.querySelector("[data-pack-label]")).toHaveTextContent("100ml");
+  });
 });

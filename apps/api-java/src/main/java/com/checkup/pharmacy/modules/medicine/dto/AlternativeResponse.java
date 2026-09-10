@@ -29,6 +29,13 @@ public record AlternativeResponse(
         // added to the cart as a loose line straight from the drawer.
         Integer unitsPerPack,
         String baseUnit,
+        /**
+         * {@code Medicine.unit} — the catalogue's packaging word ("Strip", "Bottle", "Tube").
+         * Carried so a substitute added straight from the drawer labels its cart row the same
+         * way a prescription-sourced row does (see {@code DispensingPlan.Allocation#unit});
+         * without it the cart falls back to {@code baseUnit} alone and calls a bottle a strip.
+         */
+        String unit,
         boolean allowLooseSale,
         boolean looseByDefault,
         List<Batch> batches

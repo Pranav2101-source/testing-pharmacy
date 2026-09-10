@@ -22,6 +22,14 @@ export type DispensingAllocation = {
   unitsPerPack: number | null;
   baseUnit: string | null;
   /**
+   * `Medicine.unit` — the catalogue's packaging word for one whole sealed sale unit
+   * ("Strip", "Bottle", "Tube", "Vial"), or null when it has none. Display-only, and the
+   * only way the cart can tell a bottle from a strip: with just `baseUnit`, an
+   * unclassified medicine resolves to EACH and every label falls back to "strip".
+   * Feed it to `saleUnitModel({ unit, baseUnit, ... })` rather than reading it raw.
+   */
+  unit: string | null;
+  /**
    * The medicine's free-text catalogue pack size ("100ml", "1x15"), or null when it has
    * none. Display-only — lets the billing cart's Pack column show the real catalogue label
    * instead of a computed fallback. Never used in any allocation, pricing or stock decision.

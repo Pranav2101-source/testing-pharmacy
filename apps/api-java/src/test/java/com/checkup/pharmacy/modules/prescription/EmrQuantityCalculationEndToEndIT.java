@@ -208,6 +208,68 @@ class EmrQuantityCalculationEndToEndIT extends AbstractPostgresIT {
     }
 
     @Test
+    @DisplayName("stockCheck converts packs to pieces with the PHARMACY's pack size, not just the "
+            + "catalogue's — and reports the same shelf the dispensing engine sees")
+    void stockCheckHonoursThePharmacyPackSizeOverride() {
+        // The Melgain/Pantoprazole shape: the shared catalogue never classified this medicine
+        // (unitsPerPack NULL — only a platform admin can set it), so the pharmacy classified it
+        // for itself through an override. stockCheck used to read Medicine.unitsPerPack straight
+        // and so treated every sealed pack as ONE piece, reporting 40 for a shelf the billing
+        // cart reported as 400. Both numbers were shown to the same pharmacist, on two screens,
+        // for the same medicine.
+        Medicine lotion = Medicine.create("Melgain Solution", new BigDecimal("12"));
+        lotion.setPackaging(null, null);                    // catalogue: unclassified
+        lotion.setClassification(null, "Bottle");           // ...but it does record the packaging word
+        medicineRepository.save(lotion);
+
+        PharmacyMedicineOverride ov = PharmacyMedicineOverride.create(pharmacyId, lotion.getId());
+        ov.applyLoosePos(true, 10);                    // the pharmacy's own pack size
+        overrideRepository.save(ov);
+
+        Inventory batch = Inventory.create(pharmacyId, lotion.getId(), "MEL-" + unique(), future(),
+                40, new BigDecimal("250.00"), new BigDecimal("594.00"), 5, 5);
+        batch.setLooseUnits(4);
+        inventoryRepository.save(batch);
+        entityManager.flush();
+        entityManager.clear();
+
+        var item = new EmrPrescriptionIngestRequest.Item("item-mel", "Melgain Solution", null, null, null,
+                40, "1-0-1", "4 days", null);
+        EmrPrescriptionSnapshot snapshot = emrIntegrationService.ingest(new EmrPrescriptionIngestRequest(
+                "tenant-1", "rx-" + unique(), null, "Dr. Rao", "MCI-1", null,
+                "Rajath", 35, null, null, null, null, null, List.of(item)));
+
+        PrescriptionStockResponse stock = prescriptionService.stockCheck(snapshot.pharmacyPrescriptionId());
+        assertThat(stock.items()).singleElement().satisfies(s -> {
+            assertThat(s.availableQty())
+                    .as("40 sealed packs x the pharmacy's 10 per pack, plus 4 already-open pieces")
+                    .isEqualTo(404);
+            assertThat(s.stockStatus()).isEqualTo("in_stock");
+            // Carried so the triage screen can NAME the number instead of printing it bare.
+            assertThat(s.unit()).isEqualTo("Bottle");
+            // BaseUnits.resolve returns null — not "EACH" — for a medicine with neither a
+            // stored base unit nor a form. Null IS the unclassified signal on the wire; the
+            // web's saleUnitModel maps it to EACH at the point of display, so the screen still
+            // reads "units" rather than inventing tablet vocabulary.
+            assertThat(s.baseUnit()).as("unclassified stays unclassified on the wire").isNull();
+        });
+
+        // The engine — which always resolved the override — must agree with what the triage
+        // screen now shows. Disagreement between these two was the whole defect.
+        DispensingPlan plan = dispensingService.plan(List.of(
+                new com.checkup.pharmacy.modules.dispensing.dto.DispensingPlanRequest.Line(
+                        lotion.getId(), null, 40, null)));
+        assertThat(plan.lines()).singleElement().satisfies(line -> {
+            assertThat(line.allocations()).isNotEmpty();
+            assertThat(line.allocations().get(0).unitsPerPack())
+                    .as("the same override the stock check now uses").isEqualTo(10);
+            assertThat(line.allocations().get(0).unit())
+                    .as("the packaging word the cart needs so a bottle is not labelled a strip")
+                    .isEqualTo("Bottle");
+        });
+    }
+
+    @Test
     @DisplayName("a liquid medicine's calculated-quantity refusal does not block ingest, matching, or the "
             + "rest of a prescription — it only leaves that one line for a pharmacist")
     void liquidMedicineFallsBackToManualConfirmationWithoutBlockingIngest() {

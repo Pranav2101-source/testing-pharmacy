@@ -96,6 +96,8 @@ export type FefoBatch = {
     /** Effective pack size (this pharmacy's override, else the catalogue's). */
     unitsPerPack?: number | null;
     baseUnit?: string | null;
+    /** The catalogue's packaging word ("Strip", "Bottle", "Tube") — see `CartItem.unit`. */
+    unit?: string | null;
     /** This pharmacy's opt-in for cut-strip selling of this medicine. */
     allowLooseSale?: boolean;
   };
@@ -339,6 +341,7 @@ function cartItemFromAllocation(
     saleUnit: alloc.saleUnit,
     unitsPerPack: alloc.unitsPerPack ?? undefined,
     baseUnit: alloc.baseUnit ?? undefined,
+    unit: alloc.unit ?? undefined,
     packSize: alloc.packSize ?? undefined,
     allowLooseSale: alloc.allowLooseSale,
     looseUnits: alloc.looseUnits,
@@ -499,6 +502,7 @@ export function buildCartItem(batch: FefoBatch, schedule: string | null, request
     saleUnit: resolved.saleUnit,
     unitsPerPack: upp,
     baseUnit: batch.medicine.baseUnit ?? undefined,
+    unit: batch.medicine.unit ?? undefined,
     allowLooseSale: batch.medicine.allowLooseSale,
     looseUnits: batch.looseUnits,
     rate: Math.round(unitMrp * 100) / 100,
@@ -561,6 +565,7 @@ export function buildAlternativeCartItem(
     saleUnit: resolved.saleUnit,
     unitsPerPack: upp,
     baseUnit: alt.baseUnit ?? undefined,
+    unit: alt.unit ?? undefined,
     allowLooseSale: alt.allowLooseSale,
     looseUnits: batch.looseUnits,
     rate: Math.round(unitMrp * 100) / 100,

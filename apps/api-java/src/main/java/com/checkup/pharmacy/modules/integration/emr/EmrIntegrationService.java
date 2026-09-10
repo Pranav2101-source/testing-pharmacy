@@ -340,15 +340,13 @@ public class EmrIntegrationService {
         Set<String> medicineIds = statedForFreshMedicine.stream()
                 .map(PrescriptionItem::getMedicineId)
                 .collect(Collectors.toSet());
-        Map<String, Integer> overridePackSize = overrideRepository
+        Map<String, PharmacyMedicineOverride> overridesByMedicineId = overrideRepository
                 .findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, medicineIds).stream()
-                .filter(o -> o.getUnitsPerPack() != null)
-                .collect(Collectors.toMap(PharmacyMedicineOverride::getMedicineId,
-                        PharmacyMedicineOverride::getUnitsPerPack));
+                .collect(Collectors.toMap(PharmacyMedicineOverride::getMedicineId, o -> o));
         for (PrescriptionItem item : statedForFreshMedicine) {
             Medicine medicine = resolvedByMedicineId.get(item.getMedicineId());
-            Integer effectivePackSize = overridePackSize.getOrDefault(item.getMedicineId(),
-                    medicine.getUnitsPerPack());
+            Integer effectivePackSize = PharmacyMedicineOverride.effectiveUnitsPerPack(
+                    overridesByMedicineId.get(item.getMedicineId()), medicine);
             item.resolveMeasuredEmrQuantity(medicine, effectivePackSize);
         }
     }
@@ -436,6 +434,12 @@ public class EmrIntegrationService {
         Map<String, List<Inventory>> stock = matchedIds.isEmpty() ? Map.of()
                 : inventoryRepository.findActiveNonExpiredByMedicineIdIn(pharmacyId, matchedIds, Instant.now()).stream()
                         .collect(Collectors.groupingBy(Inventory::getMedicineId));
+        // One batched read for the whole match, not one per item — same discipline as the
+        // stock query above. Needed because the pack multiple that converts packs→pieces is
+        // per-pharmacy first (see PharmacyMedicineOverride.effectivePackMultiple).
+        Map<String, PharmacyMedicineOverride> overridesByMedicineId = matchedIds.isEmpty() ? Map.of()
+                : overrideRepository.findByIdPharmacyIdAndIdMedicineIdIn(pharmacyId, matchedIds).stream()
+                        .collect(Collectors.toMap(PharmacyMedicineOverride::getMedicineId, o -> o));
 
         List<EmrMedicineMatchResponse.Item> response = request.items().stream().map(item -> {
             MedicineMatcher.Match match = matches.get(item.externalItemId());
@@ -450,9 +454,11 @@ public class EmrIntegrationService {
             // measured in), so unreserved packs are converted via unitsPerPack and the batch's
             // own loose remainder is added, same as MedicineService.StockSummary does for the
             // billing combobox. Without this, a fully-stocked medicine with e.g. unitsPerPack=10
-            // would report "5" instead of 50, understating it by an order of magnitude.
-            int unitsPerPack = medicine.getUnitsPerPack() != null && medicine.getUnitsPerPack() > 0
-                    ? medicine.getUnitsPerPack() : 1;
+            // would report "5" instead of 50, understating it by an order of magnitude — which
+            // is exactly what happened for a pack size the PHARMACY had classified rather than
+            // the catalogue, until this resolved the override first.
+            int unitsPerPack = PharmacyMedicineOverride.effectivePackMultiple(
+                    overridesByMedicineId.get(medicine.getId()), medicine);
             int available = batches.stream()
                     .mapToInt(b -> Math.max(0, b.getQuantity() - b.getReservedQuantity()) * unitsPerPack + b.getLooseUnits())
                     .sum();

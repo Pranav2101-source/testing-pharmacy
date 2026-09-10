@@ -66,7 +66,19 @@ describe("CartRow — Internal Note column", () => {
     });
     expect(screen.queryByText("Rounded up")).not.toBeInTheDocument();
     expect(screen.queryByText(/excess/)).not.toBeInTheDocument();
-    expect(internalNote()).toHaveTextContent("In stock: 120 tabs");
+    // The FULL noun, not the terse cell abbreviation — pluralising the short form is what
+    // produced "10500 us" for a medicine whose base unit resolved to EACH.
+    expect(internalNote()).toHaveTextContent("In stock: 120 tablets");
+  });
+
+  it("names an unclassified medicine's stock 'units', never the abbreviation", () => {
+    renderRow({
+      ...base, medicineName: "Melgain", baseUnit: undefined, unit: undefined, unitsPerPack: 10,
+      availableStock: 40, packSize: undefined, clinicalNote: undefined,
+      prescribedVolumeClinical: undefined, clinicalUom: undefined, roundedPackCount: undefined,
+    });
+    expect(internalNote()).toHaveTextContent("In stock: 400 units");
+    expect(internalNote()).not.toHaveTextContent("400 us");
   });
 
   it("tones the stock emerald when it is healthy", () => {

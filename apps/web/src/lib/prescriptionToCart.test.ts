@@ -32,7 +32,7 @@ function rx(quantity: number): BillablePrescription {
 function alloc(over: Partial<DispensingAllocation> = {}): DispensingAllocation {
   return {
     inventoryId: "batch-1", batchNumber: "B-1", expiryDate: "2027-01-01T00:00:00Z",
-    saleUnit: "PACK", quantity: 1, unitsPerPack: 10, baseUnit: "TABLET", packSize: null,
+    saleUnit: "PACK", quantity: 1, unitsPerPack: 10, baseUnit: "TABLET", unit: "Strip", packSize: null,
     mrp: 20, unitMrp: 20, rate: 20, gstRate: 12, hsnCode: "3004",
     allowLooseSale: false, looseUnits: 0, availableStock: 5,
     taxableAmount: 17.86, cgst: 1.07, sgst: 1.07, igst: 0, amount: 20,
