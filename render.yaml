@@ -113,10 +113,12 @@ services:
         sync: false
       - key: EMAIL_FROM_NAME
         sync: false
-      # Optional — `openssl rand -hex 32`. Blank = EMR machine routes fail-closed,
-      # rest of the app is unaffected:
+      # AES-256-GCM key (64 hex) that encrypts each pharmacy's EMR HMAC secret at
+      # rest. Blank = the whole EMR machine surface is 503'd. This is a
+      # TEST-ONLY key protecting disposable data — prod uses its own, unrelated
+      # key. Rotate with `openssl rand -hex 32` if you ever need to.
       - key: EMR_CONNECTION_ENCRYPTION_KEY
-        sync: false
+        value: d8127f124ea51d1687df7ddc941657f647da0b11c7a95892760b99c4b2aa9f89
 
   # ── React / Vite SPA (static site) ─────────────────────────────────────────
   - type: web
