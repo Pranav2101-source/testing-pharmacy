@@ -70,6 +70,19 @@ public class PrescriptionController {
         return ApiResponse.ok(prescriptionService.stockCheck(id));
     }
 
+    /**
+     * Brings measured lines back in step with the catalogue, for the lines where that is safe —
+     * ACTIVE prescription, nothing dispensed, EMR-sourced, and the classification actually
+     * changed. Idempotent, so the triage screen can call it on every open.
+     *
+     * <p>A PATCH rather than part of {@code /stock}: this writes, and the stock endpoint is
+     * polled every 20 seconds by an open triage screen.
+     */
+    @PatchMapping("/{id}/re-resolve")
+    public ApiResponse<PrescriptionResponse> reResolve(@PathVariable String id) {
+        return ApiResponse.ok(prescriptionService.reResolveStaleMeasuredLines(id));
+    }
+
     /** Fired when a pharmacist opens a row — clears it from the nav badge's count. */
     @PatchMapping("/{id}/viewed")
     public ResponseEntity<Void> markViewed(@PathVariable String id) {

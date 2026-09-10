@@ -182,7 +182,30 @@ export default function ClinicPrescriptionTriage({
   // state, deliberately not persisted: the acknowledgement is about THIS bill, and the catalogue
   // value that triggered it should be corrected rather than permanently waved through.
   const [acknowledged, setAcknowledged] = useState<Set<string>>(new Set());
-  useEffect(() => { setResolutions({}); }, [rx.id]);
+  useEffect(() => { setResolutions({}); setAcknowledged(new Set()); }, [rx.id]);
+
+  /**
+   * Bring this prescription's measured lines back in step with the catalogue before the
+   * pharmacist reads them.
+   *
+   * A line is resolved to a pack target once, at ingest, and the catalogue can be reclassified
+   * afterwards — so an open prescription can be carrying a number whose meaning has changed
+   * since it was written (see PrescriptionService.reResolveStaleMeasuredLines). The server
+   * enforces every invariant: ACTIVE only, nothing dispensed, EMR-sourced, and only when the
+   * classification actually changed. It is idempotent, so calling it on every open is safe.
+   *
+   * Failure is deliberately silent: this is a correction, not the pharmacist's task. If it
+   * cannot run, triage still renders the live conversion and the plausibility warning from the
+   * stock check, which is what actually protects the bill.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    api.patch(`/prescriptions/${rx.id}/re-resolve`)
+      .then(() => { if (!cancelled) onChanged(); })
+      .catch(() => { /* triage still shows the live conversion — see above */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rx.id]);
   function resolveItem(itemId: string, r: ItemResolution) {
     setResolutions((prev) => ({ ...prev, [itemId]: r }));
   }

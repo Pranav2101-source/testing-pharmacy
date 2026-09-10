@@ -192,6 +192,179 @@ class PrescriptionItemTest {
                 .contains("30 ml").containsIgnoringCase("no pack size");
     }
 
+    /** A topical, so DispensePlausibility can judge the course — a bare ML form carries no ceiling. */
+    private static Medicine topicalSolution(Integer unitsPerPack) {
+        Medicine medicine = Medicine.create("Melgain", new BigDecimal("12"));
+        medicine.applyFields(null, null, null, null, null, null, new BigDecimal("12"),
+                "solution", null, "Bottle", null);
+        medicine.setPackaging(unitsPerPack, "ML");
+        return medicine;
+    }
+
+    @Test
+    @DisplayName("an implausible pack count is held for a pharmacist rather than billed: 40 ml of a "
+            + "topical against a bad 5 ml pack size would be 8 bottles")
+    void resolveMeasuredEmrQuantityHoldsAnImplausiblePackCount() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+
+        item.resolveMeasuredEmrQuantity(topicalSolution(5), 5);
+
+        // Held, not rejected — the same state a line with NO pack size reaches, so
+        // ConfirmQuantityPanel asks for a bottle count instead of billing eight of them.
+        assertThat(item.getQuantity()).isZero();
+        assertThat(item.needsQuantityConfirmation()).isTrue();
+        assertThat(item.getRoundedPackCount()).isNull();
+        // The clinic's own figure survives, so the pharmacist still sees what was prescribed.
+        assertThat(item.getPrescribedVolumeClinical()).isEqualByComparingTo("40");
+        assertThat(item.getClinicalUom()).isEqualTo("ML");
+        assertThat(item.getQuantityCalculationNote())
+                .contains("40 ml").contains("8 sealed bottles").contains("5 ml pack size");
+    }
+
+    @Test
+    @DisplayName("the same course against the REAL 60 ml bottle resolves normally to one bottle")
+    void resolveMeasuredEmrQuantityAcceptsAPlausiblePackCount() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+
+        item.resolveMeasuredEmrQuantity(topicalSolution(60), 60);
+
+        assertThat(item.getRoundedPackCount()).isEqualTo(1);
+        assertThat(item.getQuantity()).isEqualTo(60);
+        assertThat(item.needsQuantityConfirmation()).isFalse();
+        assertThat(item.getQuantityCalculationNote()).contains("1 sealed bottle").contains("20 ml over");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // reResolveMeasuredEmrQuantity() — the catalogue can be reclassified after a
+    // line was resolved, and nothing else reconciles the two. Narrow invariants:
+    // EMR-sourced, nothing dispensed, and something actually changed.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    @DisplayName("the reported case: a line ingested while the medicine was unclassified is "
+            + "re-resolved once the catalogue gains a base unit and a real bottle volume")
+    void reResolvesALineIngestedBeforeTheMedicineWasClassified() {
+        // Ingested when Melgain had no baseUnit: resolveMeasuredEmrQuantity returned early, so
+        // the line stored a bare 40 and NO measured metadata at all.
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+        assertThat(item.getClinicalUom()).isNull();
+        assertThat(item.getRoundedPackCount()).isNull();
+
+        // The catalogue is corrected to a 60 ml topical solution.
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(60), 60)).isTrue();
+
+        assertThat(item.getRoundedPackCount()).isEqualTo(1);
+        assertThat(item.getQuantity()).isEqualTo(60);
+        assertThat(item.getPrescribedVolumeClinical()).isEqualByComparingTo("40");
+        assertThat(item.getClinicalUom()).isEqualTo("ML");
+    }
+
+    @Test
+    @DisplayName("re-resolution is idempotent — a second call against the same catalogue changes nothing")
+    void reResolutionIsIdempotent() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(60), 60)).isTrue();
+
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(60), 60)).isFalse();
+        assertThat(item.getQuantity()).isEqualTo(60);
+        assertThat(item.getRoundedPackCount()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("re-resolving from a corrected pack size uses the CLINIC's volume, not the "
+            + "previously rounded-up target — otherwise every edit inflates the course")
+    void reResolutionUsesTheClinicalVolumeNotTheRoundedTarget() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+        // First resolved against a wrong 25 ml pack size: ceil(40/25) = 2 bottles, target 50 ml.
+        // (Two bottles is within the topical ceiling, so this resolves rather than holding —
+        // the point of this test is the arithmetic, not the guard.)
+        item.resolveMeasuredEmrQuantity(topicalSolution(25), 25);
+        assertThat(item.getQuantity()).isEqualTo(50);
+        assertThat(item.getRoundedPackCount()).isEqualTo(2);
+
+        // Corrected to 45 ml. From the clinic's 40 that is ONE bottle; from the rounded-up 50 it
+        // would be two. The numbers are chosen so the two sources genuinely disagree.
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(45), 45)).isTrue();
+        assertThat(item.getPrescribedVolumeClinical()).isEqualByComparingTo("40");
+        assertThat(item.getRoundedPackCount()).isEqualTo(1);
+        assertThat(item.getQuantity()).isEqualTo(45);
+    }
+
+    @Test
+    @DisplayName("a line with anything already dispensed is never rewritten")
+    void reResolutionRefusesAPartlyDispensedLine() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+        item.recordDispensed(10);
+
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(60), 60)).isFalse();
+        assertThat(item.getQuantity()).isEqualTo(40);
+    }
+
+    @Test
+    @DisplayName("a counter-written line is never rewritten — its quantity is in whatever unit that form showed")
+    void reResolutionRefusesANonEmrLine() {
+        PrescriptionItem item = PrescriptionItem.create("ph_1", "rx_1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(60), 60)).isFalse();
+        assertThat(item.getQuantity()).isEqualTo(40);
+    }
+
+    @Test
+    @DisplayName("an unchanged classification is left strictly alone")
+    void reResolutionRefusesWhenNothingChanged() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 120, "1-0-1", "4 days", null);
+        item.resolveMeasuredEmrQuantity(topicalSolution(60), 60);
+        assertThat(item.getRoundedPackCount()).isEqualTo(2);
+
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(60), 60)).isFalse();
+        assertThat(item.getQuantity()).isEqualTo(120);
+
+        // A countable line whose medicine is still countable is likewise untouched.
+        PrescriptionItem tablets = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-2",
+                "Pantoprazole", "med_2", null, 16, "1-0-1", "8 days", null);
+        Medicine tablet = Medicine.create("Pantoprazole 40mg", new BigDecimal("12"));
+        tablet.setPackaging(10, "TABLET");
+        assertThat(tablets.reResolveMeasuredEmrQuantity(tablet, 10)).isFalse();
+        assertThat(tablets.getQuantity()).isEqualTo(16);
+    }
+
+    @Test
+    @DisplayName("re-resolution re-applies the plausibility ceiling: a still-wrong pack size holds the line")
+    void reResolutionStillHoldsAnImplausibleResult() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+
+        // Corrected from unclassified to an equally wrong 5 ml.
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(5), 5)).isTrue();
+
+        assertThat(item.needsQuantityConfirmation()).isTrue();
+        assertThat(item.getQuantity()).isZero();
+        assertThat(item.getQuantityCalculationNote()).contains("8 sealed bottles");
+    }
+
+    @Test
+    @DisplayName("a line held by the ceiling is released once the catalogue is corrected")
+    void reResolutionReleasesAHeldLine() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+        item.resolveMeasuredEmrQuantity(topicalSolution(5), 5);
+        assertThat(item.needsQuantityConfirmation()).isTrue();
+
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(60), 60)).isTrue();
+
+        assertThat(item.needsQuantityConfirmation()).isFalse();
+        assertThat(item.getQuantity()).isEqualTo(60);
+        assertThat(item.getRoundedPackCount()).isEqualTo(1);
+    }
+
     @Test
     @DisplayName("a classified measured medicine: 105 ml against a 100 ml bottle rounds up to 2 sealed bottles")
     void resolveMeasuredEmrQuantityRoundsUpAClassifiedMeasuredLine() {

@@ -37,6 +37,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -373,6 +374,78 @@ public class PrescriptionService {
                     Instant.now()));
         }
         return toResponse(rx, rx.getDoctor(), itemRepository.findByPrescriptionId(id));
+    }
+
+    /**
+     * Brings this prescription's measured lines back in step with the catalogue, for the lines
+     * where that is safe. Idempotent: a second call changes nothing.
+     *
+     * <p>A line is resolved to a pack target once, at ingest, and never again — see
+     * {@code PrescriptionItem.resolveMeasuredEmrQuantity}, which refuses to second-guess a
+     * settled quantity. The catalogue underneath it is not fixed, though: a medicine that was
+     * unclassified when a prescription arrived can be given a base unit and a real pack volume
+     * the next day, and every open line for it then carries a number whose MEANING has changed
+     * without the number itself moving. The dispensing engine reads today's catalogue; the line
+     * remembers a classification that no longer exists. Nothing reconciles the two.
+     *
+     * <p>Called when the triage screen opens, so a pharmacist sees the corrected conversion
+     * rather than the stale one — and never as a side effect of a list render or a poll: this
+     * writes, and {@code stockCheck} deliberately does not.
+     *
+     * <h2>Invariants</h2>
+     * Rewriting somebody's prescription is only safe when nobody can have acted on it yet:
+     * <ul>
+     *   <li>the prescription is still <b>ACTIVE</b> — a PARTIAL one has a handover behind it,
+     *       and DISPENSED / CANCELLED are finished records, not working documents;</li>
+     *   <li>the line has <b>dispensedQty == 0</b>;</li>
+     *   <li>the line is from the <b>EMR</b>, and its classification has <b>actually changed</b>
+     *       — both enforced by {@code PrescriptionItem.reResolveMeasuredEmrQuantity}.</li>
+     * </ul>
+     *
+     * @return the prescription as it now stands, re-resolved lines included
+     */
+    @Transactional
+    public PrescriptionResponse reResolveStaleMeasuredLines(String id) {
+        Prescription rx = load(id);
+        List<PrescriptionItem> items = itemRepository.findByPrescriptionId(id);
+        if (rx.getStatus() != PrescriptionStatus.ACTIVE) {
+            return toResponse(rx, rx.getDoctor(), items);
+        }
+
+        List<String> medicineIds = items.stream()
+                .map(PrescriptionItem::getMedicineId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (medicineIds.isEmpty()) {
+            return toResponse(rx, rx.getDoctor(), items);
+        }
+        // Batched, like every other multi-line read on this service — one query for the
+        // medicines and one for the overrides, never one per line.
+        Map<String, Medicine> medicinesById = medicineRepository.findAllById(medicineIds).stream()
+                .collect(Collectors.toMap(Medicine::getId, m -> m));
+        Map<String, PharmacyMedicineOverride> overridesByMedicineId = overrideRepository
+                .findByIdPharmacyIdAndIdMedicineIdIn(rx.getPharmacyId(), medicineIds).stream()
+                .collect(Collectors.toMap(PharmacyMedicineOverride::getMedicineId, o -> o));
+
+        List<PrescriptionItem> changed = new ArrayList<>();
+        for (PrescriptionItem item : items) {
+            Medicine medicine = item.getMedicineId() == null ? null : medicinesById.get(item.getMedicineId());
+            if (medicine == null) {
+                continue;
+            }
+            // The NULLABLE pack multiple: null means nobody has classified this pack, which is
+            // not the same as 1 and must not be resolved against.
+            Integer effectivePackSize = PharmacyMedicineOverride.effectiveUnitsPerPack(
+                    overridesByMedicineId.get(item.getMedicineId()), medicine);
+            if (item.reResolveMeasuredEmrQuantity(medicine, effectivePackSize)) {
+                changed.add(item);
+            }
+        }
+        if (!changed.isEmpty()) {
+            itemRepository.saveAll(changed);
+        }
+        return toResponse(rx, rx.getDoctor(), items);
     }
 
     private Prescription load(String id) {

@@ -266,3 +266,30 @@ describe("ClinicPrescriptionTriage: measured-line arithmetic", () => {
     expect(screen.queryByText(/÷/)).not.toBeInTheDocument();
   });
 });
+
+describe("ClinicPrescriptionTriage: catalogue re-resolution on open", () => {
+  it("asks the server to re-resolve stale measured lines before the pharmacist reads them", async () => {
+    renderTriage(baseRx({
+      items: [{
+        id: "i1", medicineName: "Melgain", medicineId: "med_1", schedule: null,
+        quantity: 40, dispensedQty: 0, dosage: "1-0-1", duration: "4 days",
+      }],
+    }));
+
+    await vi.waitFor(() => {
+      expect(mockApi.patch).toHaveBeenCalledWith("/prescriptions/rx_1/re-resolve");
+    });
+  });
+
+  it("still renders when re-resolution fails — it is a correction, not the pharmacist's task", async () => {
+    mockApi.patch.mockRejectedValueOnce(new Error("network"));
+    renderTriage(baseRx({
+      items: [{
+        id: "i1", medicineName: "Melgain", medicineId: "med_1", schedule: null,
+        quantity: 40, dispensedQty: 0, dosage: "1-0-1", duration: "4 days",
+      }],
+    }));
+
+    expect(await screen.findByText(/Melgain/)).toBeInTheDocument();
+  });
+});

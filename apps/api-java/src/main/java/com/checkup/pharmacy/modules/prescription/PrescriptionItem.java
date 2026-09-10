@@ -420,6 +420,105 @@ public class PrescriptionItem extends CreatedAtEntity {
         this.quantity = 0;
     }
 
+    /**
+     * Re-runs {@link #resolveMeasuredEmrQuantity} for a line whose stored resolution no longer
+     * matches the catalogue it was resolved against. Returns true when this line was rewritten.
+     *
+     * <h2>Why this has to exist</h2>
+     * A line is resolved to a pack target ONCE, at ingest, and {@link #resolveMeasuredEmrQuantity}
+     * is deliberately a no-op afterwards so a settled quantity is never second-guessed. But the
+     * catalogue is mutable: a medicine sitting unclassified when a prescription arrives can be
+     * given a base unit and a pack volume the next day. Nothing re-resolves the open lines, so
+     * the stored number silently changes meaning — a line ingested as "40" while the medicine was
+     * countable is read by the dispensing engine, against today's catalogue, as 40&nbsp;ml to be
+     * divided into bottles. Every screen then agrees on a number nobody ever computed.
+     *
+     * <h2>Invariants</h2>
+     * Narrow on purpose. Rewriting a prescription is only safe when nobody can have acted on it
+     * yet, and re-resolving a line that is fine would be churn a pharmacist has to re-read:
+     * <ul>
+     *   <li><b>EMR lines only.</b> A counter-typed quantity is in whatever unit that form showed
+     *       — only the EMR wire is documented to carry a clinical volume. Same guard
+     *       {@link #resolveMeasuredEmrQuantity} already applies.</li>
+     *   <li><b>Nothing dispensed.</b> {@code dispensedQty == 0}. A partly-filled line has a
+     *       real-world handover behind it that a recomputed target would contradict.</li>
+     *   <li><b>Something actually changed.</b> See {@link #isStaleAgainst} — an unchanged
+     *       classification is left strictly alone.</li>
+     * </ul>
+     * The caller adds the one invariant an item cannot see: the prescription is still ACTIVE.
+     *
+     * @param effectivePackSize this pharmacy's live pack size (override first, catalogue second)
+     */
+    public boolean reResolveMeasuredEmrQuantity(Medicine medicine, Integer effectivePackSize) {
+        if (externalEmrItemId == null || medicine == null || dispensedQty != 0) {
+            return false;
+        }
+        String liveBaseUnit = BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm());
+        if (!isStaleAgainst(liveBaseUnit, effectivePackSize)) {
+            return false;
+        }
+        Integer clinicalVolume = clinicalVolumeForReResolution();
+        if (clinicalVolume == null || clinicalVolume <= 0) {
+            return false;
+        }
+        // Back to the pre-resolution state, then through the SAME conversion as a fresh ingest —
+        // including its plausibility ceiling, so a re-resolution can hold a line just as an
+        // ingest can. Reusing the method rather than repeating its arithmetic is the point: two
+        // copies of this conversion is how the meanings drifted apart in the first place.
+        this.quantity = clinicalVolume;
+        this.prescribedVolumeClinical = null;
+        this.clinicalUom = null;
+        this.roundedPackCount = null;
+        this.quantityCalculationNote = null;
+        resolveMeasuredEmrQuantity(medicine, effectivePackSize);
+        return true;
+    }
+
+    /**
+     * True when this line's stored resolution disagrees with the live catalogue — either the
+     * medicine crossed the measured/countable boundary, or the pack volume it was divided by
+     * has changed.
+     *
+     * <p>The pack size a line was resolved against is not stored directly; it is recoverable as
+     * {@code quantity / roundedPackCount}, since {@link #resolveMeasuredEmrQuantity} sets
+     * {@code quantity = roundedPackCount × packSize}. A measured line with no
+     * {@code roundedPackCount} was held for a pharmacist (no pack size on record, or an
+     * implausible count), and a live pack size now on record is a real change from that.
+     */
+    boolean isStaleAgainst(String liveBaseUnit, Integer livePackSize) {
+        boolean storedWasMeasured = clinicalUom != null;
+        boolean liveIsMeasured = PackUnits.isMeasured(liveBaseUnit);
+        if (storedWasMeasured != liveIsMeasured) {
+            return true;
+        }
+        if (!liveIsMeasured) {
+            return false;
+        }
+        Integer storedPackSize = roundedPackCount != null && roundedPackCount > 0
+                ? quantity / roundedPackCount
+                : null;
+        return !java.util.Objects.equals(storedPackSize, livePackSize);
+    }
+
+    /**
+     * The clinic's own volume figure to re-resolve from, or null when it cannot be recovered
+     * honestly.
+     *
+     * <p>Two shapes. A line already resolved (or held) as measured kept the figure in
+     * {@link #prescribedVolumeClinical} — always prefer it, because {@link #quantity} on such a
+     * line is a rounded-up dispense target, not what the clinic asked for, and re-resolving from
+     * the rounded number would inflate the course a little more on every catalogue edit. A line
+     * that was never treated as measured has no such field, and its raw {@link #quantity} is
+     * still exactly what the EMR sent — which for a measured medicine is millilitres or grams,
+     * never a pack count (see {@link #resolveMeasuredEmrQuantity}).
+     */
+    private Integer clinicalVolumeForReResolution() {
+        if (prescribedVolumeClinical != null) {
+            return prescribedVolumeClinical.intValue();
+        }
+        return clinicalUom == null && roundedPackCount == null ? quantity : null;
+    }
+
     public boolean isQuantityAutoCalculated() {
         return quantityAutoCalculated;
     }
