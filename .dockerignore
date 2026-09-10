@@ -4,18 +4,34 @@ node_modules
 
 # Build outputs — rebuilt inside Docker
 dist
+**/dist
 **/.next
 **/.turbo
+.turbo
 
 # Environment files — passed as env vars at runtime
 .env
 .env.*
 !.env.example
 
-# Git
+# Git / CI / editors
 .git
 .gitignore
+.github
+.vscode
+.mcp.json
 
-# Editor / OS
+# Not needed by the API image (it builds apps/api-java + packages/database/prisma)
+apps/web
+docs
+client-data
+uploads
+scripts/data
+**/e2e
+**/e2e-audit-shots
+**/screenshots
+*.patch
+
+# OS / logs
 .DS_Store
 *.log

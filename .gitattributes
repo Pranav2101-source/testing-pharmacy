@@ -1,0 +1,6 @@
+# Keep shell scripts and Docker build files LF regardless of core.autocrlf, so
+# they run correctly inside Linux containers (a CRLF shebang breaks execution).
+*.sh            text eol=lf
+docker-entrypoint.sh text eol=lf
+Dockerfile      text eol=lf
+mvnw            text eol=lf

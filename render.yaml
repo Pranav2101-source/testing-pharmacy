@@ -1,0 +1,160 @@
+# ═════════════════════════════════════════════════════════════════════════════
+# Render Blueprint — CHECKUP PHARMACY · TESTING / PREVIEW ENVIRONMENT
+#
+# For https://github.com/Pranav2101-source/testing-pharmacy — NOT production.
+# Everything is on Render's free plans (see NOTES at the bottom for the catches).
+#
+# Services this creates (all in the Singapore region so they share a network):
+#   pharmacy-test-db     Postgres 16   — free; Render DELETES it 30 days after creation
+#   pharmacy-test-redis  Key Value     — free; 25 MB, no persistence
+#   pharmacy-test-api    Spring Boot   — Docker web service  → pharmacy-test-api.onrender.com
+#   pharmacy-test-web    Vite SPA      — static site         → pharmacy-test-web.onrender.com
+#
+# ┌───────────────────────────────────────────────────────────────────────────┐
+# │ AFTER THE FIRST BLUEPRINT SYNC: open each service and check the real       │
+# │ *.onrender.com URL Render assigned. If a name was already taken Render     │
+# │ appends "-xxxx". If either URL differs from the two names above, update:   │
+# │   • pharmacy-test-web → routes[0].destination        (points at the API)   │
+# │   • pharmacy-test-api → ALLOWED_ORIGINS / APP_URL / EMR_PHARMACY_BASE_URL   │
+# │ then click "Manual Sync" on the Blueprint.                                 │
+# └───────────────────────────────────────────────────────────────────────────┘
+# ═════════════════════════════════════════════════════════════════════════════
+
+databases:
+  - name: pharmacy-test-db
+    plan: free
+    region: singapore
+    postgresMajorVersion: "16"
+    # Disposable test data — open so you can connect a GUI / run seeds from your
+    # laptop. Tighten or set to [] if you don't need external access.
+    ipAllowList:
+      - source: 0.0.0.0/0
+        description: anywhere (disposable testing data)
+
+services:
+  # ── Redis / Key Value (rate limiting, ShedLock, chime pub/sub) ──────────────
+  - type: keyvalue
+    name: pharmacy-test-redis
+    plan: free
+    region: singapore
+    ipAllowList: []            # internal-only
+
+  # ── Spring Boot API (Docker) ───────────────────────────────────────────────
+  - type: web
+    name: pharmacy-test-api
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./apps/api-java/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/v1/health
+    # Prisma migrations run from the container entrypoint on every start
+    # (docker-entrypoint.sh) — Render's free plan has no pre-deploy hook.
+    # `prisma migrate deploy` is idempotent, so this is a ~2 s no-op once current.
+    envVars:
+      # Prisma-style URL; the app derives JDBC_DATABASE_URL from it at boot.
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pharmacy-test-db
+          property: connectionString
+      # Used by `prisma migrate deploy` in the pre-deploy step.
+      - key: DIRECT_URL
+        fromDatabase:
+          name: pharmacy-test-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: pharmacy-test-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PORT
+        value: "8080"
+      - key: ALLOWED_ORIGINS
+        value: https://pharmacy-test-web.onrender.com
+      - key: APP_URL
+        value: https://pharmacy-test-web.onrender.com
+      - key: EMR_PHARMACY_BASE_URL
+        value: https://pharmacy-test-web.onrender.com
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: COOKIE_SAME_SITE
+        value: Lax
+      # Free Postgres has a small connection cap — keep the pool well under it.
+      - key: DB_POOL_MAX
+        value: "5"
+      - key: TOMCAT_MAX_THREADS
+        value: "20"
+      - key: JOBS_ENABLED
+        value: "true"
+      - key: JAVA_TOOL_OPTIONS
+        value: "-XX:MaxRAMPercentage=70.0"
+      # ── Set these in the Render dashboard (Environment tab) ─────────────────
+      # Reuse the LIVE Supabase project's Storage bucket — paste its values:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false
+      # Optional — blank = mailer logs a warning and skips the send:
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: EMAIL_FROM_NAME
+        sync: false
+      # Optional — `openssl rand -hex 32`. Blank = EMR machine routes fail-closed,
+      # rest of the app is unaffected:
+      - key: EMR_CONNECTION_ENCRYPTION_KEY
+        sync: false
+
+  # ── React / Vite SPA (static site) ─────────────────────────────────────────
+  - type: web
+    name: pharmacy-test-web
+    runtime: static
+    buildCommand: "npm install -g pnpm@9.12.0 && pnpm install --frozen-lockfile && pnpm --filter @pharmacy/web build"
+    staticPublishPath: ./apps/web/dist
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: VITE_API_URL
+        value: /api/v1          # same-origin; the rewrite below proxies to the API
+    routes:
+      # Server-side proxy → browser sees one origin, so the refresh cookie stays
+      # first-party and SameSite=Lax works (mirrors the old vercel.json rewrite).
+      - type: rewrite
+        source: /api/*
+        destination: https://pharmacy-test-api.onrender.com/api/*
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: Permissions-Policy
+        value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# NOTES / free-tier catches
+#
+# • Free Postgres is deleted 30 days after creation. Before then, either upgrade
+#   it (~$6/mo) or recreate + let the next deploy re-run migrations, then re-seed.
+# • Free web services SLEEP after 15 min idle. First request after that takes
+#   ~50 s while the API cold-starts (Docker + JVM). Normal for a test box.
+# • Free Redis has no persistence — rate-limit counters / chime state reset on
+#   any restart. Fine for testing.
+# • First deploy: the API image is a multi-stage Docker build (Maven + JVM +
+#   Prisma) — expect ~5–8 min. Later deploys reuse cached layers.
+# • Background jobs run on the single instance. Set JOBS_ENABLED=false to mute
+#   stock-alert / EMR-retry / reservation-cleanup schedulers.
+# ═════════════════════════════════════════════════════════════════════════════
