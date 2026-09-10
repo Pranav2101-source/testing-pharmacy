@@ -81,6 +81,14 @@ services:
         value: "true"
       - key: COOKIE_SAME_SITE
         value: Lax
+      # Migration 20260719000001 installs FORCE ROW LEVEL SECURITY policies that
+      # fail closed unless the app stamps app.pharmacy_id / app.bypass_rls per
+      # transaction — which only happens with this flag on. It is a matched pair
+      # with that migration (prod runs it on). Without it every insert/select is
+      # denied by RLS, because the app connects as a non-superuser role here
+      # (unlike a local superuser, which bypasses RLS).
+      - key: RLS_ENABLED
+        value: "true"
       # Free Postgres has a small connection cap — keep the pool well under it.
       - key: DB_POOL_MAX
         value: "5"
