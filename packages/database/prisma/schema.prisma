@@ -357,6 +357,56 @@ enum Role {
 
 // ─── Medicine (Global — shared across all pharmacies) ────────────────────────
 
+// How much a medicine's `unitsPerPack` may be trusted.
+//
+// The pack multiple is a DIVISOR: every mL→bottle conversion, every per-piece
+// price and every loose sale runs through it, and when it is wrong the
+// arithmetic downstream stays perfectly correct while the answer is absurd (a
+// 40 ml course billed as eight bottles against a 5 ml "pack size" that was
+// really the 5% concentration). Nothing in the chain held a second fact that
+// could contradict the first — this column is that second fact, carried on the
+// row itself so every screen can see how the number got there.
+//
+// NULL whenever `unitsPerPack` is NULL: nothing is classified, so there is
+// nothing to trust or distrust. That is deliberately NOT the same as UNVERIFIED.
+enum PackSizeConfidence {
+  // Two independent facts agree, or a human confirmed it against a physical pack.
+  VERIFIED
+  // A pack size is on record and nothing corroborates it. Still used — billing
+  // must not stop because a datum is merely unaudited — but flagged in the UI.
+  UNVERIFIED
+  // The pack size contradicts another fact on the same SKU (it equals a strength
+  // or concentration figure, or a measured medicine claims a 1 ml/1 g pack).
+  // Rejected outright on the service write path; this state exists for the rows
+  // that predate the guard and for anything that reaches the table another way.
+  DISPUTED
+}
+
+// Where the pack size currently on the row came from. Kept beside the confidence
+// because "who said so" and "how sure are we" answer different questions: a
+// pharmacist's tick and a bulk CSV can both land on VERIFIED, and only this
+// column says which one to go back to when it turns out to be wrong.
+enum PackSizeSource {
+  // A platform admin typed it into the shared catalogue form.
+  CATALOGUE_ADMIN
+  // A pharmacist confirmed it against a pack in their hand.
+  PHARMACIST
+  // Corroborated by the medicine's own free-text `packSize` ("100 ml bottle").
+  PACK_SIZE_TEXT
+  // A row in a bulk catalogue upload.
+  BULK_IMPORT
+  // Resolved while ingesting a clinic prescription.
+  EMR_INGEST
+  // One of packages/database/scripts — a repair run, not a workflow.
+  DATA_SCRIPT
+  // Written straight to the table, bypassing the service layer entirely (psql,
+  // Prisma Studio, a future service that does not know about this column).
+  // Stamped by the `medicines_stamp_unverified_pack_size` trigger, never by app code.
+  RAW_WRITE
+  // Classified before this column existed — see migration 20260910000001.
+  BACKFILL
+}
+
 model Medicine {
   id           String  @id @default(cuid())
   name         String
@@ -381,6 +431,17 @@ model Medicine {
   unitsPerPack Int?
   // TABLET | CAPSULE | ML | GM | EACH — the smallest dispensable unit. Label only for now.
   baseUnit     String?
+  // ── How far to trust `unitsPerPack` above ──────────────────────────────────
+  // Written by the service layer (see PackSizeEvidence) on every write that sets
+  // or changes the packaging. A write that reaches this table WITHOUT going
+  // through that path is forced to UNVERIFIED / RAW_WRITE by a BEFORE trigger, so
+  // "nobody has checked this" is the default a bad datum lands on rather than a
+  // state something has to remember to set. NULL only while unitsPerPack is NULL.
+  packSizeConfidence PackSizeConfidence?
+  // When a human last confirmed the pack size against a physical pack. Set only
+  // alongside VERIFIED, cleared whenever confidence drops back below it.
+  packSizeVerifiedAt DateTime?
+  packSizeSource     PackSizeSource?
   isActive     Boolean @default(true)
 
   createdAt DateTime @default(now())

@@ -136,6 +136,127 @@ class MedicineIT extends AbstractPostgresIT {
         assertThat(created.baseUnit()).isEqualTo("ML");
     }
 
+    // ── Pack-size confidence (Phase 2) ───────────────────────────────────────────────────
+    //
+    // These go through the real service and a real Postgres on purpose. The trust state is
+    // written by the service AND defended by a database trigger, and the two only agree if the
+    // service's transaction-local GUC actually reaches the connection the write goes out on —
+    // which no unit test with a stubbed repository can tell you.
+
+    @Test
+    @DisplayName("a pack size nothing corroborates is stored, and stored as UNVERIFIED")
+    void uncorroboratedPackSizeIsUnverified() {
+        var req = new CreateMedicineRequest("Melgain Lotion " + unique(), "Minoxidil", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Lotion", "5%", "Bottle",
+                null, 60, "ML", null);
+        var created = medicineService.create(req);
+
+        assertThat(created.unitsPerPack()).isEqualTo(60);
+        assertThat(created.packSizeConfidence()).isEqualTo("UNVERIFIED");
+        assertThat(created.packSizeSource()).isEqualTo("CATALOGUE_ADMIN");
+        assertThat(created.packSizeVerifiedAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("the pack-size text agreeing with units-per-pack is corroboration enough for VERIFIED")
+    void packSizeTextCorroboratesToVerified() {
+        var req = new CreateMedicineRequest("Corroborated Syrup " + unique(), "Dextromethorphan", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Syrup", "5mg/5ml", "Bottle",
+                "100ml", 100, "ML", null);
+        var created = medicineService.create(req);
+
+        assertThat(created.packSizeConfidence()).isEqualTo("VERIFIED");
+        assertThat(created.packSizeSource()).isEqualTo("PACK_SIZE_TEXT");
+        assertThat(created.packSizeVerifiedAt()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("an explicit physical-pack check is VERIFIED and attributed to the person who ticked it")
+    void confirmedPackSizeIsVerified() {
+        var req = new CreateMedicineRequest("Confirmed Lotion " + unique(), "Minoxidil", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Lotion", "5%", "Bottle",
+                null, 60, "ML", true);
+        var created = medicineService.create(req);
+
+        assertThat(created.packSizeConfidence()).isEqualTo("VERIFIED");
+        assertThat(created.packSizeVerifiedAt()).isNotNull();
+    }
+
+    /** The incident itself: Melgain's 5% concentration entered as a 5 ml pack size. */
+    @Test
+    @DisplayName("a pack size equal to the medicine's own strength is refused outright")
+    void strengthMasqueradingAsPackSizeRejected() {
+        var req = new CreateMedicineRequest("Melgain 5% " + unique(), "Minoxidil", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Lotion", "5%", "Bottle",
+                null, 5, "ML", null);
+        assertThatThrownBy(() -> medicineService.create(req))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("strength");
+    }
+
+    @Test
+    @DisplayName("ticking the confirmation box does not launder a contradiction past the guard")
+    void confirmationCannotLaunderAContradiction() {
+        var req = new CreateMedicineRequest("Melgain Ticked " + unique(), "Minoxidil", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Lotion", "5%", "Bottle",
+                null, 5, "ML", true);
+        assertThatThrownBy(() -> medicineService.create(req))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("strength");
+    }
+
+    @Test
+    @DisplayName("a measured medicine claiming a 1 ml sealed pack is refused before the CHECK constraint sees it")
+    void measuredPackOfOneRejectedWithAReadableMessage() {
+        var req = new CreateMedicineRequest("One Ml Syrup " + unique(), "Something", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Syrup", null, "Bottle",
+                null, 1, "ML", null);
+        assertThatThrownBy(() -> medicineService.create(req))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("millilitre");
+    }
+
+    @Test
+    @DisplayName("editing a verified pack size without re-confirming it drops it back to UNVERIFIED")
+    void changingAVerifiedPackSizeLosesTheVerification() {
+        String name = "Re-edited Syrup " + unique();
+        var created = medicineService.create(new CreateMedicineRequest(name, "Dextro", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Syrup", null, "Bottle",
+                "100ml", 100, "ML", null));
+        assertThat(created.packSizeConfidence()).isEqualTo("VERIFIED");
+        flushAndClear();
+
+        // The pack-size text no longer names the new number, and nobody ticked anything — so the
+        // earlier confirmation says nothing about the value now on the row.
+        var updated = medicineService.update(created.id(), new UpdateMedicineRequest(name, "Dextro", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Syrup", null, "Bottle",
+                null, 200, "ML", null));
+
+        assertThat(updated.unitsPerPack()).isEqualTo(200);
+        assertThat(updated.packSizeConfidence()).isEqualTo("UNVERIFIED");
+        assertThat(updated.packSizeVerifiedAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("clearing the pack size clears the whole assessment — nothing is left claiming to be checked")
+    void clearingThePackSizeClearsTheConfidence() {
+        String name = "Cleared Syrup " + unique();
+        var created = medicineService.create(new CreateMedicineRequest(name, "Dextro", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Syrup", null, "Bottle",
+                "100ml", 100, "ML", null));
+        assertThat(created.packSizeConfidence()).isEqualTo("VERIFIED");
+        flushAndClear();
+
+        var updated = medicineService.update(created.id(), new UpdateMedicineRequest(name, "Dextro", "Mfr",
+                null, null, null, null, new BigDecimal("12"), "Syrup", null, "Bottle",
+                null, null, "ML", null));
+
+        assertThat(updated.unitsPerPack()).isNull();
+        assertThat(updated.packSizeConfidence()).isNull();
+        assertThat(updated.packSizeSource()).isNull();
+        assertThat(updated.packSizeVerifiedAt()).isNull();
+    }
+
     @Test
     @DisplayName("an unrecognised base unit is rejected")
     void badBaseUnitRejected() {

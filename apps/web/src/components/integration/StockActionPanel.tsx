@@ -15,6 +15,7 @@ import type { CartItem } from "@/components/billing/useBillingStore";
 import type { AlternativeResult } from "@pharmacy/types";
 import { useMedicineCatalogSearch, type MedicineHit } from "@/lib/useMedicineCatalogSearch";
 import { formatMeasuredAmount } from "@/lib/measuredUnits";
+import type { PackSizeConfidence } from "@/lib/packSizeConfidence";
 import { saleUnitModel, pluraliseUnit } from "@pharmacy/utils";
 
 export type StockInfo = {
@@ -37,6 +38,15 @@ export type StockInfo = {
   projectedPackCount?: number | null;
   /** Set when `projectedPackCount` is an implausible course for this dosage form. */
   packCountWarning?: string | null;
+  /**
+   * How far the CATALOGUE's pack size may be trusted — "VERIFIED" | "UNVERIFIED" | "DISPUTED",
+   * or null/absent when the medicine is countable or unclassified.
+   *
+   * Distinct from `packCountWarning` above and not a substitute for it: that fires when the
+   * arithmetic looks wrong, this says whether anyone ever checked the number the arithmetic
+   * divides by. A halved bottle volume produces a perfectly plausible answer and no warning.
+   */
+  packSizeConfidence?: PackSizeConfidence | null;
 };
 
 /** For a measured (mL/g) line: how to render its piece-count stock as sealed packs. */

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Loader2, Scissors, Sparkles, X, AlertTriangle } from "lucide-react";
+import { Loader2, Scissors, ShieldCheck, Sparkles, X, AlertTriangle } from "lucide-react";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -41,7 +41,27 @@ export type LooseCandidate = {
   /** Parsed from free-text pack size — a guess the pharmacist must eyeball, never auto-trusted. */
   guessedUpp: number | undefined;
   baseUnitLabel: string;
+  /**
+   * Whether loose selling is ALREADY on for this medicine at this pharmacy.
+   *
+   * Only read in {@link LooseSetupIntent} "verify" mode, where it is sent back unchanged. The
+   * endpoint requires an explicit boolean (`@NotNull` on LoosePosSettingsRequest), and
+   * confirming that a bottle holds 60 ml must not be the thing that decides whether the shop
+   * sells it by the millilitre.
+   */
+  allowLooseSale?: boolean;
 };
+
+/**
+ * What the pharmacist came here to do — the two are the same form and a different write.
+ *
+ * "enable-loose" is the original job: turn cut-strip selling ON, which REQUIRES a pack size, so
+ * the size is collected on the way. "verify" is the job Phase 2 needs: record that somebody has
+ * checked the pack size, changing nothing else. Collapsing them would mean a pharmacist
+ * answering "yes, the bottle holds 60 ml" had also, silently, agreed to sell that syrup by the
+ * millilitre — a sealed-bottle medicine becoming divisible as a side effect of being confirmed.
+ */
+export type LooseSetupIntent = "enable-loose" | "verify";
 
 type Row = LooseCandidate & { checked: boolean; value: string };
 
@@ -51,6 +71,7 @@ type MedicineLike = {
   unitsPerPack?: number | null;
   packSize?:     string | null;
   baseUnit?:     string | null;
+  allowLooseSale?: boolean;
 };
 
 /** The candidate shape, with no eligibility opinion — the caller has already
@@ -66,6 +87,7 @@ export function candidateFromMedicine(medicine: MedicineLike): LooseCandidate {
     catalogueUpp,
     guessedUpp,
     baseUnitLabel: (medicine.baseUnit ?? "").toLowerCase() || "piece",
+    allowLooseSale: medicine.allowLooseSale ?? false,
   };
 }
 
@@ -78,13 +100,20 @@ export function candidateFrom(medicine: InventoryItem["medicine"]): LooseCandida
   return candidateFromMedicine(medicine);
 }
 
-export function LooseSetupModal({ only, onClose, onDone }: {
+export function LooseSetupModal({ only, intent = "enable-loose", onClose, onDone }: {
   /** Row-level trigger (the ✂ button on one Inventory row) — skips the fetch entirely. */
   only?: LooseCandidate;
+  /**
+   * Defaults to the original behaviour, so every existing call site is untouched. "verify" is
+   * only ever used with `only` — confirming pack sizes is a per-medicine act with a pack in
+   * hand, and a bulk "I have checked all forty of these" tick would be a lie with a checkbox.
+   */
+  intent?: LooseSetupIntent;
   onClose: () => void;
   /** Count actually enabled, so the caller can refresh its list and toast. */
   onDone: (count: number) => void;
 }) {
+  const verifying = intent === "verify";
   const [loading,   setLoading]   = useState(!only);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [skipped,   setSkipped]   = useState(0);
@@ -196,9 +225,13 @@ export function LooseSetupModal({ only, onClose, onDone }: {
         const sendUpp = num !== row.catalogueUpp ? num : null;
         try {
           await api.patch(`/medicines/${row.medicineId}/loose-settings`, {
-            allowLooseSale: true,
+            // Verifying leaves loose selling exactly as it was. The endpoint demands an explicit
+            // boolean, so "unchanged" has to be spelled out rather than omitted.
+            allowLooseSale: verifying ? (row.allowLooseSale ?? false) : true,
             unitsPerPack:   sendUpp,
-            looseByDefault: false,
+            // Same reasoning: never turn a medicine's lines loose-by-default as a side effect of
+            // confirming its pack size. Only the enable flow has any business setting this.
+            looseByDefault: verifying ? undefined : false,
             confirmed:      true,
           });
           done++;
@@ -210,9 +243,10 @@ export function LooseSetupModal({ only, onClose, onDone }: {
     await Promise.all(Array.from({ length: Math.min(5, validSelected.length) }, worker));
     setSaving(false);
     if (failed.length > 0) {
+      const verb = verifying ? "Confirmed" : "Enabled";
       setError(done > 0
-        ? `Enabled ${done}, but ${failed.length} failed — ${failed.slice(0, 2).join("; ")}${failed.length > 2 ? "…" : ""}`
-        : `Nothing was enabled — ${failed.slice(0, 2).join("; ")}${failed.length > 2 ? "…" : ""}`);
+        ? `${verb} ${done}, but ${failed.length} failed — ${failed.slice(0, 2).join("; ")}${failed.length > 2 ? "…" : ""}`
+        : `Nothing was ${verifying ? "confirmed" : "enabled"} — ${failed.slice(0, 2).join("; ")}${failed.length > 2 ? "…" : ""}`);
       if (done > 0) onDone(done);
       return;
     }
@@ -228,12 +262,17 @@ export function LooseSetupModal({ only, onClose, onDone }: {
       >
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 flex-shrink-0">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center">
-              <Scissors className="w-4 h-4 text-amber-600" />
+            <div className={cn(
+              "w-8 h-8 rounded-lg flex items-center justify-center",
+              verifying ? "bg-violet-50" : "bg-amber-50",
+            )}>
+              {verifying
+                ? <ShieldCheck className="w-4 h-4 text-violet-600" />
+                : <Scissors className="w-4 h-4 text-amber-600" />}
             </div>
             <div>
               <h2 className="text-[15px] font-bold text-slate-900 leading-tight">
-                {only ? "Enable loose selling" : "Set up loose selling"}
+                {verifying ? "Confirm pack size" : only ? "Enable loose selling" : "Set up loose selling"}
               </h2>
               <p className="text-[12px] text-slate-500 leading-tight">
                 {only ? only.name : "Medicines you currently stock"}
@@ -343,8 +382,12 @@ export function LooseSetupModal({ only, onClose, onDone }: {
                 <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)}
                   className="mt-0.5 w-4 h-4 rounded border-slate-300 text-amber-600 focus:ring-amber-400" />
                 <span className="text-[12px] text-slate-600 leading-snug">
-                  I've checked {validSelected.length === 1 ? "this pack size" : "these pack sizes"} against a real strip.
-                  <span className="block text-[11px] text-slate-400">A wrong number over- or under-charges every loose sale of that medicine.</span>
+                  I've checked {validSelected.length === 1 ? "this pack size" : "these pack sizes"} against a real pack.
+                  <span className="block text-[11px] text-slate-400">
+                    {verifying
+                      ? "Every millilitre-to-bottle conversion divides by this number, so a wrong one multiplies through the whole bill."
+                      : "A wrong number over- or under-charges every loose sale of that medicine."}
+                  </span>
                 </span>
               </label>
             )}
@@ -355,9 +398,12 @@ export function LooseSetupModal({ only, onClose, onDone }: {
               </button>
               <button onClick={submit} disabled={!canSave}
                 title={!ack && validSelected.length > 0 ? "Tick the confirmation above first" : undefined}
-                className="flex items-center gap-2 px-5 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-[13px] font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                className={cn(
+                  "flex items-center gap-2 px-5 py-2 rounded-lg text-white text-[13px] font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors",
+                  verifying ? "bg-violet-600 hover:bg-violet-700" : "bg-amber-500 hover:bg-amber-600",
+                )}>
                 {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                Enable for {validSelected.length}
+                {verifying ? "Confirm pack size" : `Enable for ${validSelected.length}`}
               </button>
             </div>
           </div>

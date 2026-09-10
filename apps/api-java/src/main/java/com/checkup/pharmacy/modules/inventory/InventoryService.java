@@ -1226,7 +1226,8 @@ public class InventoryService {
                         m.getId(), m.getName(), m.getGenericName(), m.getForm(), m.getStrength(), m.getUnit(),
                         m.isActive(), m.getGstRate(), m.getHsnCode(),
                         effectiveUpp, com.checkup.pharmacy.common.util.BaseUnits.resolve(m.getBaseUnit(), m.getForm()),
-                        allowLoose, looseDefault, m.getSchedule(), m.getPackSize());
+                        allowLoose, looseDefault, m.getSchedule(), m.getPackSize(),
+                        m.getPackSizeConfidence() == null ? null : m.getPackSizeConfidence().name());
             } else {
                 var lm = localMedicinesById.get(inv.getLocalMedicineId());
                 // Not in the global catalogue (yet), or a local identity that is not (or no
@@ -1234,7 +1235,9 @@ public class InventoryService {
                 // is always true: a local medicine has no deactivate flow.
                 medRef = lm == null ? null : new InventoryResponse.MedicineRef(
                         lm.getId(), lm.getName(), lm.getGenericName(), lm.getForm(), lm.getStrength(), lm.getUnit(),
-                        true, lm.getGstRate(), lm.getHsnCode(), null, null, false, false, lm.getSchedule(), null);
+                        true, lm.getGstRate(), lm.getHsnCode(), null, null, false, false, lm.getSchedule(),
+                        // No unitsPerPack column on a local medicine, so nothing to be confident about.
+                        null, null);
             }
 
             InventoryResponse.ShelfRef shelfRef = null;

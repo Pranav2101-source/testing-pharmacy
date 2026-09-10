@@ -4,6 +4,8 @@ import com.checkup.pharmacy.common.exception.AppException;
 import com.checkup.pharmacy.common.exception.BadRequestException;
 import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
+import com.checkup.pharmacy.common.enums.PackSizeSource;
+import com.checkup.pharmacy.common.util.PackSizeEvidence;
 import com.checkup.pharmacy.common.util.StableSort;
 import com.checkup.pharmacy.modules.medicine.dto.AlternativeResponse;
 import com.checkup.pharmacy.modules.medicine.dto.BulkImportRequest;
@@ -17,6 +19,8 @@ import com.checkup.pharmacy.modules.medicine.dto.ReindexResponse;
 import com.checkup.pharmacy.modules.medicine.dto.UpdateMedicineRequest;
 import com.checkup.pharmacy.modules.medicine.dto.UpsertOverrideRequest;
 import com.checkup.pharmacy.tenant.TenantContext;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -67,6 +71,15 @@ public class MedicineService {
     private final com.checkup.pharmacy.modules.inventory.InventoryRepository inventoryRepository;
     private final PharmacyMedicineRepository pharmacyMedicineRepository;
 
+    /**
+     * Field-injected rather than taken through the constructor so the existing unit tests, which
+     * build this service with four repository stubs and never touch a database, keep compiling
+     * and keep passing. Used only by {@link #announcePackSizeEvidence}; when it is null (exactly
+     * those tests) the announcement is skipped, which is correct — there is no trigger to talk to.
+     */
+    @PersistenceContext
+    private EntityManager entityManager;
+
     public MedicineService(MedicineRepository medicineRepository,
                            PharmacyMedicineOverrideRepository overrideRepository,
                            com.checkup.pharmacy.modules.inventory.InventoryRepository inventoryRepository,
@@ -93,6 +106,8 @@ public class MedicineService {
 
     @Transactional
     public MedicineResponse create(CreateMedicineRequest req) {
+        // Before anything is made dirty — see announcePackSizeEvidence.
+        announcePackSizeEvidence();
         String name = req.name().trim();
         BigDecimal gstRate = validateGstRate(req.gstRate());
 
@@ -105,8 +120,55 @@ public class MedicineService {
                 req.schedule(), req.hsnCode(), gstRate, req.form(), req.strength(), req.unit(), req.packSize());
         medicine.setPackaging(req.unitsPerPack(), normalizeBaseUnit(req.baseUnit()));
         rejectContradictoryPackSize(medicine);
+        recordPackSizeEvidence(medicine, req.packSizeConfirmed(), PackSizeSource.CATALOGUE_ADMIN);
         medicineRepository.save(medicine);
         return toResponse(medicine);
+    }
+
+    /**
+     * Tells the database that this transaction's writes to {@code medicines} carry a pack-size
+     * confidence somebody actually worked out.
+     *
+     * <p>A {@code BEFORE} trigger stamps {@code UNVERIFIED / RAW_WRITE} onto any write that does
+     * not (see migration {@code 20260910000001_pack_size_confidence}). That default is the whole
+     * point — the bad Melgain pack size arrived from a repair script, not from this API, and a
+     * guard living only in this class would have watched it go past. The service opts out by
+     * setting a transaction-local GUC, exactly as tenant scope is set for row-level security.
+     *
+     * <p><b>Must run before any entity in this transaction is made dirty.</b> A native query
+     * triggers Hibernate's auto-flush, and a flush here would push the medicine UPDATE out
+     * AHEAD of the {@code set_config} — the trigger would then see an unannounced write and
+     * overwrite the very verdict this method exists to preserve. Calling it as the first
+     * statement of the method makes that impossible rather than merely unlikely.
+     */
+    private void announcePackSizeEvidence() {
+        if (entityManager == null) {
+            return; // unit-test construction — no persistence context, no trigger to announce to
+        }
+        entityManager.createNativeQuery("SELECT set_config('app.pack_size_evidence', 'on', true)")
+                .getSingleResult();
+    }
+
+    /**
+     * Works out how far this pack size may be trusted and records it on the row.
+     *
+     * <p>A contradiction is a 400 rather than a stored {@code DISPUTED}: whoever is looking at
+     * the catalogue form has the medicine's own strength on screen next to the number they just
+     * typed, and is the one person in the chain who can resolve it in a second. Persisting it
+     * would push that resolution onto a pharmacist mid-sale, weeks later, with less to go on.
+     * {@code DISPUTED} is therefore a state rows arrive in, never one this path creates — the
+     * migration backfills it onto the pre-existing offenders it cannot fix.
+     */
+    private static void recordPackSizeEvidence(Medicine medicine, Boolean confirmed, PackSizeSource source) {
+        PackSizeEvidence evidence = PackSizeEvidence.assess(
+                medicine.getName(),
+                com.checkup.pharmacy.common.util.BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm()),
+                medicine.getStrength(), medicine.getPackSize(), medicine.getUnitsPerPack(),
+                Boolean.TRUE.equals(confirmed), source);
+        if (evidence.isDisputed()) {
+            throw new BadRequestException(evidence.reason());
+        }
+        medicine.applyPackSizeEvidence(evidence, java.time.Instant.now());
     }
 
     /**
@@ -139,6 +201,8 @@ public class MedicineService {
 
     @Transactional
     public MedicineResponse update(String id, UpdateMedicineRequest req) {
+        // Before load(), and therefore before anything is dirty — see announcePackSizeEvidence.
+        announcePackSizeEvidence();
         Medicine medicine = load(id);
         BigDecimal gstRate = validateGstRate(req.gstRate());
         String name = req.name().trim();
@@ -150,6 +214,7 @@ public class MedicineService {
                 req.schedule(), req.hsnCode(), gstRate, req.form(), req.strength(), req.unit(), req.packSize());
         medicine.setPackaging(req.unitsPerPack(), normalizeBaseUnit(req.baseUnit()));
         rejectContradictoryPackSize(medicine);
+        recordPackSizeEvidence(medicine, req.packSizeConfirmed(), PackSizeSource.CATALOGUE_ADMIN);
         return toResponse(medicine);
     }
 
@@ -733,7 +798,17 @@ public class MedicineService {
                 stock != null && stock.hasStock(), stock != null ? stock.availableQuantity() : 0,
                 stock != null ? stock.looseUnitsOnHand() : 0,
                 stock != null ? stock.sellableUnits(allowLoose, effectiveUpp) : null,
-                stock != null ? stock.price() : null);
+                stock != null ? stock.price() : null,
+                // Deliberately the CATALOGUE row's trust state, even though effectiveUpp above may
+                // have come from this pharmacy's override. The two describe different numbers, and
+                // conflating them would let a pharmacy's own confirmed override silently vouch for
+                // a shared catalogue value nobody has checked — or, worse, the reverse.
+                name(m.getPackSizeConfidence()), m.getPackSizeVerifiedAt(), name(m.getPackSizeSource()));
+    }
+
+    /** Enum constant name, or null — the wire form of both pack-size trust columns. */
+    private static String name(Enum<?> value) {
+        return value == null ? null : value.name();
     }
 
     /**
@@ -751,7 +826,10 @@ public class MedicineService {
                 null, null, false, false, true,
                 stock != null && stock.hasStock(), stock != null ? stock.availableQuantity() : 0,
                 stock != null ? stock.looseUnitsOnHand() : 0, null,
-                stock != null ? stock.price() : null);
+                stock != null ? stock.price() : null,
+                // A local medicine has no unitsPerPack column to be confident about (see
+                // PharmacyMedicine) — null, the "nothing on record" state, not UNVERIFIED.
+                null, null, null);
     }
 
     /**

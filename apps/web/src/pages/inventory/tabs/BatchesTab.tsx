@@ -8,7 +8,11 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 import { BarcodeLabelModal } from "@/components/BarcodeLabelModal";
 import { LooseTag } from "@/components/LooseTag";
-import { LooseSetupModal, candidateFrom, type LooseCandidate } from "@/components/inventory/LooseSetupModal";
+import {
+  LooseSetupModal, candidateFrom, candidateFromMedicine,
+  type LooseCandidate, type LooseSetupIntent,
+} from "@/components/inventory/LooseSetupModal";
+import { PackSizeConfidenceChip } from "@/components/PackSizeConfidenceChip";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/useToast";
@@ -61,7 +65,11 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   // the whole "inventory" prefix rather than just this tab's own list query.
   const invalidateInventory = () => queryClient.invalidateQueries({ queryKey: ["inventory"] });
   const [page,       setPage]       = useState(1);
-  const [search,     setSearch]     = useState("");
+  // Seeded from ?search= so a deep link (triage's "Unverified pack size" chip) lands with the
+  // medicine already filtered for. Read once, in the initialiser, rather than in an effect —
+  // going through state would make the first list request fetch page 1 of everything and then
+  // immediately throw it away.
+  const [search,     setSearch]     = useState(() => new URLSearchParams(window.location.search).get("search") ?? "");
   const [status,     setStatus]     = useState<BatchStatus | "">("");
   const [inStock,    setInStock]    = useState(false);
   const [lowStock,   setLowStock]   = useState(false);
@@ -76,6 +84,22 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   const [classifyTarget,   setClassifyTarget]   = useState<ClassifyTarget | null>(null);
   // undefined = closed; null = open scoped to everything you stock; a candidate = open for just that row.
   const [looseSetup, setLooseSetup] = useState<LooseCandidate | null | undefined>(undefined);
+  // Which job that modal is doing — turning loose selling on, or recording that somebody has
+  // checked the pack size. Same form, different write; see LooseSetupIntent.
+  const [looseIntent, setLooseIntent] = useState<LooseSetupIntent>("enable-loose");
+
+  /**
+   * Open the confirm-pack-size dialog for one medicine.
+   *
+   * Uses `candidateFromMedicine` rather than `candidateFrom`, deliberately: the latter refuses a
+   * medicine that already sells loose, which is the right eligibility rule for "enable loose
+   * selling" and exactly the wrong one here. An already-loose medicine's pack size is the one
+   * doing the most damage if nobody has checked it — it is dividing every per-piece price.
+   */
+  function openPackSizeVerify(medicine: InventoryItem["medicine"]) {
+    setLooseIntent("verify");
+    setLooseSetup(candidateFromMedicine(medicine));
+  }
 
   const isOwnerOrManager = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
 
@@ -123,6 +147,30 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   }, [data?.alertCounts, onCountsLoaded]);
 
   const items      = data?.items      ?? [];
+
+  /**
+   * `?verifyPackSize=<medicineId>` — the triage screen's chip, arriving.
+   *
+   * Waits for the list rather than firing on mount, because the confirm dialog is built from a
+   * batch row (that is where the pack size, base unit and this pharmacy's loose setting all
+   * live) and on mount there are no rows yet. `?search=` above is what makes the medicine
+   * actually appear; without it a pharmacy with two thousand batches would deep-link to page one
+   * of everything and this would never find its target.
+   *
+   * The param is stripped as soon as it is consumed, so a refresh — or a back-navigation after
+   * the pharmacist has moved on to something else — does not reopen the dialog on top of it.
+   */
+  const verifyPackSizeId = searchParams.get("verifyPackSize");
+  useEffect(() => {
+    if (!verifyPackSizeId || !isOwnerOrManager || items.length === 0) return;
+    const match = items.find((i) => i.medicine.id === verifyPackSizeId);
+    const next = new URLSearchParams(searchParams);
+    next.delete("verifyPackSize");
+    setSearchParams(next, { replace: true });
+    if (match) openPackSizeVerify(match.medicine);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [verifyPackSizeId, items]);
+
   const total      = data?.total      ?? 0;
   const totalPages = Math.ceil(total / 20) || 1;
   const error      = queryError ? getErrorMessage(queryError, "Couldn't load inventory. Check your connection and try again.") : null;
@@ -184,7 +232,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
         )}
         {isOwnerOrManager && (
           <button
-            onClick={() => setLooseSetup(null)}
+            onClick={() => { setLooseIntent("enable-loose"); setLooseSetup(null); }}
             title="Enable cut-strip (loose) selling for the medicines you stock"
             className="flex items-center gap-1.5 h-[30px] px-3 rounded-md text-[12px] font-semibold border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors shadow-sm whitespace-nowrap"
           >
@@ -202,11 +250,15 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
       {looseSetup !== undefined && (
         <LooseSetupModal
           only={looseSetup ?? undefined}
+          intent={looseIntent}
           onClose={() => setLooseSetup(undefined)}
           onDone={(count) => {
             setLooseSetup(undefined);
             invalidateInventory();
-            if (count > 0) toast.success(`Loose selling enabled for ${count} medicine${count === 1 ? "" : "s"}`);
+            if (count === 0) return;
+            toast.success(looseIntent === "verify"
+              ? `Pack size confirmed for ${looseSetup?.name ?? "this medicine"}`
+              : `Loose selling enabled for ${count} medicine${count === 1 ? "" : "s"}`);
           }}
         />
       )}
@@ -285,6 +337,17 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                     </div>
                     {item.medicine.genericName && <p className="text-[11px] text-slate-400 truncate">{item.medicine.genericName}</p>}
                     {item.medicine.brand && <p className="text-[10px] text-blue-400">{item.medicine.brand.name}</p>}
+                    {/* This is the screen where the chip can be an ACTION rather than a link —
+                        the whole medicine record is already in hand, so the confirm dialog opens
+                        in place. Owners/managers only: the endpoint behind it is theirs, and a
+                        cashier being shown a button they cannot use is worse than not showing it. */}
+                    {isOwnerOrManager && (
+                      <PackSizeConfidenceChip
+                        confidence={item.medicine.packSizeConfidence}
+                        className="mt-1"
+                        onVerify={() => openPackSizeVerify(item.medicine)}
+                      />
+                    )}
                   </td>
                   <td className="px-4 py-3 text-[12px] font-mono text-slate-700">{item.batchNumber}</td>
                   <td className="px-4 py-3">
@@ -331,7 +394,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                       </button>
                       {isOwnerOrManager && !item.medicine.allowLooseSale
                         && (item.medicine.schedule ?? "").trim().toUpperCase() !== "X" && (
-                        <button onClick={() => { const c = candidateFrom(item.medicine); if (c) setLooseSetup(c); }}
+                        <button onClick={() => { const c = candidateFrom(item.medicine); if (c) { setLooseIntent("enable-loose"); setLooseSetup(c); } }}
                           title="Enable loose (cut-strip) selling"
                           aria-label={`Enable loose (cut-strip) selling for ${item.medicine.name}`}
                           className="p-1 rounded-md hover:bg-amber-100 text-slate-400 hover:text-amber-600 transition-colors">
@@ -450,7 +513,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                       </button>
                       {isOwnerOrManager && !item.medicine.allowLooseSale
                         && (item.medicine.schedule ?? "").trim().toUpperCase() !== "X" && (
-                        <button onClick={() => { const c = candidateFrom(item.medicine); if (c) setLooseSetup(c); }}
+                        <button onClick={() => { const c = candidateFrom(item.medicine); if (c) { setLooseIntent("enable-loose"); setLooseSetup(c); } }}
                           title="Enable loose (cut-strip) selling"
                           aria-label={`Enable loose (cut-strip) selling for ${item.medicine.name}`}
                           className="p-2 rounded-md border border-slate-200 text-slate-400 active:bg-amber-100">

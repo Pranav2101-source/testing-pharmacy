@@ -215,8 +215,19 @@ public class PrescriptionService {
                                 medicine.getName(), medicine.getForm(), baseUnit, unit,
                                 projectedPackCount, remaining, effectivePackSize);
                     }
+                    // Reported only for a MEASURED line. Every countable medicine in the catalogue
+                    // is UNVERIFIED too, and it matters far less there: a wrong strip count is off
+                    // by a few tablets and a pharmacist counting them notices, while a wrong bottle
+                    // volume is off by a factor and nothing between here and the till disagrees.
+                    // Sending it for tablets as well would put a chip on nearly every triage line
+                    // and teach people to stop seeing it.
+                    String packSizeConfidence = medicine != null && PackUnits.isMeasured(baseUnit)
+                            && medicine.getPackSizeConfidence() != null
+                            ? medicine.getPackSizeConfidence().name()
+                            : null;
                     return new PrescriptionStockResponse.Item(i.getId(), i.getMedicineId(), available, status,
-                            baseUnit, unit, effectivePackSize, projectedPackCount, packCountWarning);
+                            baseUnit, unit, effectivePackSize, projectedPackCount, packCountWarning,
+                            packSizeConfidence);
                 })
                 .toList();
         return new PrescriptionStockResponse(result);

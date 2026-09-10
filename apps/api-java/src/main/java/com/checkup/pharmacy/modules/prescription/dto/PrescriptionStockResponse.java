@@ -58,9 +58,23 @@ public record PrescriptionStockResponse(List<Item> items) {
      *                     live data is what lets triage show the pharmacist the arithmetic
      *                     billing is actually about to perform, not the arithmetic that applied
      *                     the day the prescription arrived.
+     * @param packSizeConfidence how far the pack size that conversion divides by may be trusted —
+     *                     {@code "VERIFIED"}, {@code "UNVERIFIED"}, {@code "DISPUTED"}, or null
+     *                     when nothing has classified the medicine at all.
+     *
+     *                     <p>The plausibility warning above only fires when the ARITHMETIC comes
+     *                     out strange, and a wrong pack size does not always produce a strange
+     *                     answer: halve a bottle size and a two-bottle course quietly becomes
+     *                     four, under every ceiling, on every screen. This says something
+     *                     different and says it always — not "that number looks odd" but "nobody
+     *                     has ever checked the number this was divided by". The triage screen
+     *                     renders it as a quiet chip rather than a warning for exactly that
+     *                     reason: it is true of a great deal of an ordinary catalogue, and a
+     *                     warning that fires on half the lines is one nobody reads.
      */
     public record Item(String itemId, String medicineId, int availableQty, String stockStatus,
                        String baseUnit, String unit, Integer effectivePackSize,
-                       Integer projectedPackCount, String packCountWarning) {
+                       Integer projectedPackCount, String packCountWarning,
+                       String packSizeConfidence) {
     }
 }

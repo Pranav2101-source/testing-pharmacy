@@ -35,6 +35,33 @@ public final class PackSizeGuard {
             "(?:^|[x×*]\\s*)(\\d{1,6})\\s*(ml|millilitres?|milliliters?|g|gm|grams?)(?![a-z])",
             Pattern.CASE_INSENSITIVE);
 
+    /**
+     * Units that mark a number as a STRENGTH or a CONCENTRATION — never a pack volume.
+     *
+     * <p>A pack size answers "how much is in the sealed container". Every unit listed here
+     * answers a different question: how much active ingredient is in a given amount of it.
+     * The two are written side by side on the same carton, in the same font, and the field
+     * that holds one has nothing in it to stop the other being typed in — which is exactly
+     * what happened to Melgain, whose <b>5%</b> was entered as a 5&nbsp;ml pack and turned a
+     * 40&nbsp;ml course into eight bottles.
+     *
+     * <p>{@link #MEASURED_SIZE} already declines to read these as volumes (its {@code
+     * (?![a-z])} tail is what stops "5&nbsp;mg" matching on the {@code g}), so nothing here
+     * loosens that. What this adds is the cross-field check {@link
+     * #strengthMasqueradingAsPackSize} needs: recognising the number as one that a strength
+     * field is ALREADY claiming, so a {@code unitsPerPack} equal to it can be disqualified as
+     * a volume candidate rather than silently trusted.
+     *
+     * <p>Percent is the reason this is worth having at all. "5%" carries no length, no
+     * separator and no unit a volume parser would ever look at, so it is the one form that
+     * reaches a pack-size field looking like a perfectly ordinary small integer.
+     */
+    private static final Pattern DISQUALIFIED_FIGURE = Pattern.compile(
+            "(\\d{1,6}(?:\\.\\d{1,3})?)\\s*"
+            // Longest-first, so "5 mg/ml" is reported as mg/ml rather than as a bare mg.
+            + "(mg/ml|mcg/ml|percent|mmol|mcg|meq|w/v|v/v|w/w|mg|µg|ug|iu|%)(?![a-z])",
+            Pattern.CASE_INSENSITIVE);
+
     /** The mL/g named in a free-text pack size ("100 ml bottle" → 100), or null when it names no measured volume. */
     public static Integer parseMeasuredSize(String packSizeText) {
         if (packSizeText == null || packSizeText.isBlank()) {
@@ -67,6 +94,58 @@ public final class PackSizeGuard {
         return "Pack size says " + fromText + " " + u + " but units per pack is " + unitsPerPack
                 + " — these must match. If this medicine comes in more than one size, add each size as its own "
                 + "entry (its own MRP, barcode and stock).";
+    }
+
+    /**
+     * A message when {@code unitsPerPack} is the same number the SKU's own strength or pack-size
+     * text is already using as a STRENGTH — null when nothing on the row makes that claim.
+     *
+     * <p>This is the check that would have caught Melgain. Its strength read "5%", its
+     * {@code unitsPerPack} read 5, and separately each was an unremarkable value; only the
+     * coincidence between them said anything, and no code was looking at both fields at once.
+     * A pack volume that happens to equal a concentration printed on the same carton is not a
+     * coincidence often enough to be worth trusting.
+     *
+     * <p>Deliberately narrow: it fires only on an exact numeric match. A 60&nbsp;ml bottle of a
+     * 5% lotion is not flagged, because 60 appears nowhere as a strength. That keeps this from
+     * becoming the kind of warning people learn to click through.
+     *
+     * <p>It can still be wrong — a genuine 5&nbsp;ml ampoule of a 5&nbsp;mg/ml solution trips it
+     * — so a caller must be able to record a decision. The service write path treats a non-null
+     * result as a 400 (the value is almost certainly the concentration, and whoever is typing it
+     * into the catalogue form is in a position to check); everything else routes it to
+     * {@code PackSizeConfidence.DISPUTED} and shows it, rather than dropping the write.
+     *
+     * @param strengthText the catalogue's {@code Medicine.strength}, may be null
+     * @param packSizeText the catalogue's free-text {@code Medicine.packSize}, may be null
+     */
+    public static String strengthMasqueradingAsPackSize(String medicineName, String strengthText,
+                                                        String packSizeText, Integer unitsPerPack) {
+        if (unitsPerPack == null) {
+            return null;
+        }
+        BigDecimal target = BigDecimal.valueOf(unitsPerPack);
+        for (String text : new String[] { strengthText, packSizeText }) {
+            if (text == null || text.isBlank()) {
+                continue;
+            }
+            Matcher m = DISQUALIFIED_FIGURE.matcher(text);
+            while (m.find()) {
+                // compareTo, not equals: "5.0" and "5" are the same figure and BigDecimal.equals
+                // would call them different because their scales differ.
+                if (new BigDecimal(m.group(1)).compareTo(target) != 0) {
+                    continue;
+                }
+                String figure = m.group(1) + ("%".equals(m.group(2)) ? "%" : " " + m.group(2).toLowerCase());
+                return "\"" + medicineName + "\" has a pack size of " + unitsPerPack
+                        + ", the same number as its strength (" + figure + "). A strength is how much "
+                        + "active ingredient the medicine contains; a pack size is how much is in one "
+                        + "sealed container — they are different numbers and this looks like the "
+                        + "strength entered in the wrong field. Check a physical pack and enter what "
+                        + "one sealed pack actually holds.";
+            }
+        }
+        return null;
     }
 
     /**

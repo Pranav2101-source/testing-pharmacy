@@ -1,12 +1,18 @@
 package com.checkup.pharmacy.modules.medicine;
 
 import com.checkup.pharmacy.common.domain.BaseEntity;
+import com.checkup.pharmacy.common.enums.PackSizeConfidence;
+import com.checkup.pharmacy.common.enums.PackSizeSource;
 import com.checkup.pharmacy.common.util.Cuid;
+import com.checkup.pharmacy.common.util.PackSizeEvidence;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 
 /**
  * The shared medicine catalog (table "medicines") — platform-wide, NOT scoped to
@@ -73,6 +79,27 @@ public class Medicine extends BaseEntity {
     /** TABLET | CAPSULE | ML | GM | EACH — the smallest dispensable unit. Label only for now. */
     @Column(name = "baseUnit")
     private String baseUnit;
+
+    /**
+     * How far {@link #unitsPerPack} may be trusted — see {@link PackSizeEvidence}.
+     *
+     * <p>NULL exactly when {@code unitsPerPack} is NULL; a database trigger enforces that
+     * invariant for every writer, including this one. A write that reaches the table without
+     * going through {@link MedicineService} is forced to {@code UNVERIFIED} / {@code RAW_WRITE}
+     * by the same trigger, so an unaudited pack size is what a bad datum lands on by default
+     * rather than a state something has to remember to set.
+     */
+    @Column(name = "packSizeConfidence")
+    @JdbcTypeCode(SqlTypes.NAMED_ENUM)
+    private PackSizeConfidence packSizeConfidence;
+
+    /** When a human last confirmed the pack size against a physical pack. Set only alongside VERIFIED. */
+    @Column(name = "packSizeVerifiedAt")
+    private Instant packSizeVerifiedAt;
+
+    @Column(name = "packSizeSource")
+    @JdbcTypeCode(SqlTypes.NAMED_ENUM)
+    private PackSizeSource packSizeSource;
 
     @Column(name = "isActive")
     private boolean isActive = true;
@@ -149,6 +176,35 @@ public class Medicine extends BaseEntity {
         this.baseUnit = baseUnit;
     }
 
+    /**
+     * Records what is known about the pack size this row is now carrying.
+     *
+     * <p>Kept on the entity rather than left to the service to set three fields by hand,
+     * because the three only make sense together: {@code packSizeVerifiedAt} is meaningless
+     * without {@code VERIFIED}, and a stale timestamp under a downgraded confidence would read
+     * as "checked" forever. Every call rewrites all three, so a pack size that stops being
+     * corroborated stops looking corroborated.
+     *
+     * <p>Call it AFTER {@link #setPackaging}: with no pack multiple on the row there is nothing
+     * to be confident about, and the whole assessment is cleared rather than stored against a
+     * number that is not there.
+     *
+     * @param now the confirmation instant, used only when the verdict is VERIFIED
+     */
+    public void applyPackSizeEvidence(PackSizeEvidence evidence, Instant now) {
+        if (unitsPerPack == null || evidence.confidence() == null) {
+            this.packSizeConfidence = null;
+            this.packSizeVerifiedAt = null;
+            this.packSizeSource = null;
+            return;
+        }
+        this.packSizeConfidence = evidence.confidence();
+        this.packSizeSource = evidence.source();
+        // Re-stamped on every VERIFIED write, not preserved: "confirmed in March" tells a
+        // pharmacist something a sticky first-ever-confirmation date does not.
+        this.packSizeVerifiedAt = evidence.isVerified() ? now : null;
+    }
+
     /** True when this medicine can be broken into individual pieces (a real pack multiple exists). */
     public boolean isLooseCapable() {
         return unitsPerPack != null && unitsPerPack > 1;
@@ -181,6 +237,12 @@ public class Medicine extends BaseEntity {
     public Integer getUnitsPerPack() { return unitsPerPack; }
 
     public String getBaseUnit() { return baseUnit; }
+
+    public PackSizeConfidence getPackSizeConfidence() { return packSizeConfidence; }
+
+    public Instant getPackSizeVerifiedAt() { return packSizeVerifiedAt; }
+
+    public PackSizeSource getPackSizeSource() { return packSizeSource; }
 
     public boolean isActive() { return isActive; }
 

@@ -42,11 +42,18 @@ public record InventoryResponse(
      * required to keep blocking Schedule X the same way the Medicines page does,
      * and {@code packSize} (free text like "10s") is what a units-per-pack guess is
      * parsed from when the catalogue has no structured {@code unitsPerPack}.
+     *
+     * <p>{@code packSizeConfidence} — "VERIFIED" | "UNVERIFIED" | "DISPUTED", or null when
+     * nothing has classified the medicine — describes the CATALOGUE's pack size, not the
+     * effective one above. That distinction is deliberate: this pharmacy's own override
+     * carries its own confirmation (see {@code PharmacyMedicineOverride.looseConfirmedAt}), and
+     * letting one vouch for the other would mean a pharmacy that checked its own strip had, by
+     * implication, checked a shared catalogue number it has never seen.
      */
     public record MedicineRef(String id, String name, String genericName, String form, String strength, String unit,
                               boolean isActive, java.math.BigDecimal gstRate, String hsnCode,
                               Integer unitsPerPack, String baseUnit, boolean allowLooseSale, boolean looseByDefault,
-                              String schedule, String packSize) {
+                              String schedule, String packSize, String packSizeConfidence) {
     }
 
     public record ShelfRef(String id, String code, RackRef rack) {

@@ -1,6 +1,7 @@
 import {
   Check, ShieldAlert, Clock, Skull,
 } from "lucide-react";
+import type { PackSizeConfidence } from "@/lib/packSizeConfidence";
 
 // ─── Core types ───────────────────────────────────────────────────────────────
 
@@ -40,6 +41,12 @@ export type InventoryItem = {
     /** Catalogue values (not pharmacy-specific) — drive the Inventory "enable loose selling" flow. */
     schedule?:       string | null;
     packSize?:       string | null;
+    /**
+     * How far the CATALOGUE's pack size may be trusted. Describes the shared catalogue number,
+     * NOT the effective `unitsPerPack` above (which may be this pharmacy's own override — that
+     * carries its own confirmation, see `looseConfirmedAt`).
+     */
+    packSizeConfidence?: PackSizeConfidence | null;
   };
   shelf: { id: string; code: string; rack: { id: string; code: string; name: string } } | null;
 };

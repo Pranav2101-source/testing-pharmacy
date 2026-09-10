@@ -267,6 +267,81 @@ describe("ClinicPrescriptionTriage: measured-line arithmetic", () => {
   });
 });
 
+/**
+ * The plausibility ceiling only fires when the ARITHMETIC comes out strange, and a wrong pack
+ * size does not reliably do that: halve a bottle volume and a two-bottle course becomes four,
+ * under every ceiling, looking ordinary on every screen. The confidence chip is the part that
+ * says the quiet version out loud — not "that looks odd" but "nobody has checked the number
+ * this was divided by".
+ */
+describe("ClinicPrescriptionTriage: pack-size confidence chip", () => {
+  const melgainLine = {
+    id: "i1", medicineName: "Melgain", medicineId: "med_1", schedule: null,
+    quantity: 40, dispensedQty: 0, dosage: "1-0-1", duration: "4 days",
+  };
+
+  function stockWith(extra: Record<string, unknown>) {
+    mockApi.get.mockResolvedValue({
+      data: { data: { items: [{
+        itemId: "i1", medicineId: "med_1", availableQty: 204, stockStatus: "in_stock",
+        baseUnit: "ML", unit: "Bottle", effectivePackSize: 60, projectedPackCount: 1,
+        packCountWarning: null, ...extra,
+      }] } },
+    });
+  }
+
+  it("flags an unverified pack size beside a conversion that is otherwise unremarkable", async () => {
+    stockWith({ packSizeConfidence: "UNVERIFIED" });
+    renderTriage(baseRx({ items: [melgainLine] }));
+
+    // The conversion itself raises no alarm — one bottle for a 40 ml course is entirely normal.
+    expect(await screen.findByText("40 ml ÷ 60 ml/bottle → 1 bottle")).toBeInTheDocument();
+    expect(screen.getByText(/Unverified pack size/i)).toBeInTheDocument();
+    // Informational only: nothing is blocked and nothing has to be acknowledged.
+    expect(screen.getByRole("button", { name: /Continue to Billing/i })).toBeEnabled();
+  });
+
+  it("links the pharmacist to the screen where the pack size can actually be confirmed", async () => {
+    stockWith({ packSizeConfidence: "UNVERIFIED" });
+    renderTriage(baseRx({ items: [melgainLine] }));
+
+    const link = await screen.findByRole("link", { name: /Unverified pack size/i });
+    const href = link.getAttribute("href") ?? "";
+    expect(href).toContain("/dashboard/inventory");
+    expect(href).toContain("verifyPackSize=med_1");
+    expect(href).toContain("search=Melgain");
+  });
+
+  it("says nothing when the pack size has been verified", async () => {
+    stockWith({ packSizeConfidence: "VERIFIED" });
+    renderTriage(baseRx({ items: [melgainLine] }));
+
+    expect(await screen.findByText("40 ml ÷ 60 ml/bottle → 1 bottle")).toBeInTheDocument();
+    expect(screen.queryByText(/pack size/i)).not.toBeInTheDocument();
+  });
+
+  it("says nothing for a countable line, where a wrong strip count is a far smaller error", async () => {
+    mockApi.get.mockResolvedValue({
+      data: { data: { items: [{
+        itemId: "i1", medicineId: "med_1", availableQty: 1050, stockStatus: "in_stock",
+        baseUnit: "TABLET", unit: "Strip", effectivePackSize: null, projectedPackCount: null,
+        packCountWarning: null, packSizeConfidence: null,
+      }] } },
+    });
+    renderTriage(baseRx({ items: [{ ...melgainLine, medicineName: "Pantoprazole 40mg", quantity: 16 }] }));
+
+    expect(await screen.findByText(/Pantoprazole/)).toBeInTheDocument();
+    expect(screen.queryByText(/Unverified pack size/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the loud version for a pack size that contradicts the record", async () => {
+    stockWith({ packSizeConfidence: "DISPUTED" });
+    renderTriage(baseRx({ items: [melgainLine] }));
+
+    expect(await screen.findByText(/Pack size disputed/i)).toBeInTheDocument();
+  });
+});
+
 describe("ClinicPrescriptionTriage: catalogue re-resolution on open", () => {
   it("asks the server to re-resolve stale measured lines before the pharmacist reads them", async () => {
     renderTriage(baseRx({

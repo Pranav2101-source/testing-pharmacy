@@ -45,6 +45,19 @@ public record MedicineResponse(
         // — only set when this medicine is actually loose-sellable; null otherwise so the
         // frontend shows a plain pack count instead of a meaningless unit total.
         Integer sellableUnits,
-        BigDecimal price
+        BigDecimal price,
+        // ── Pack-size trust ────────────────────────────────────────────────
+        // "VERIFIED" | "UNVERIFIED" | "DISPUTED", or null when this medicine has no pack
+        // size on record at all — which is a different situation from an unaudited one and
+        // must stay distinguishable on the wire. Catalogue-global, like unitsPerPack
+        // itself: it describes the shared row, not this pharmacy's override of it.
+        //
+        // Sent as a string rather than kept as an enum so the frontend contract is one
+        // widened union and adding a fourth state later does not break a typed client.
+        String packSizeConfidence,
+        java.time.Instant packSizeVerifiedAt,
+        // "CATALOGUE_ADMIN" | "PHARMACIST" | "PACK_SIZE_TEXT" | "BULK_IMPORT" | "EMR_INGEST"
+        // | "DATA_SCRIPT" | "RAW_WRITE" | "BACKFILL". See PackSizeSource.
+        String packSizeSource
 ) {
 }

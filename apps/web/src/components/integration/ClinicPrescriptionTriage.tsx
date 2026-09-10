@@ -22,6 +22,8 @@ import ConfirmQuantityPanel from "@/components/integration/ConfirmQuantityPanel"
 import StockActionPanel, { pieceNoun, type StockInfo } from "@/components/integration/StockActionPanel";
 import { usePackRoundingDecision } from "@/hooks/usePackRoundingDecision";
 import { measuredWords, measuredPackSize, isResolvedMeasured, formatConversion } from "@/lib/measuredUnits";
+import { PackSizeConfidenceChip } from "@/components/PackSizeConfidenceChip";
+import type { PackSizeConfidence } from "@/lib/packSizeConfidence";
 import { saleUnitModel } from "@pharmacy/utils";
 
 const SCHEDULE_TOOLTIP: Record<string, string> = {
@@ -136,6 +138,8 @@ type StockResponseItem = {
   projectedPackCount?: number | null;
   /** Set when that pack count is an implausible course for the dosage form — see DispensePlausibility. */
   packCountWarning?: string | null;
+  /** How far the catalogue's pack size may be trusted; measured lines only. */
+  packSizeConfidence?: PackSizeConfidence | null;
 };
 
 /**
@@ -277,6 +281,7 @@ export default function ClinicPrescriptionTriage({
         effectivePackSize: s.effectivePackSize,
         projectedPackCount: s.projectedPackCount,
         packCountWarning: s.packCountWarning,
+        packSizeConfidence: s.packSizeConfidence,
       };
     });
     return map;
@@ -528,6 +533,12 @@ export default function ClinicPrescriptionTriage({
                     )
                   : null;
                 const packWarning = done ? null : stockUnits?.packCountWarning ?? null;
+                // Shown beside the conversion, not instead of it. The conversion says WHAT the
+                // divisor is; this says whether anyone has ever checked it — and the second
+                // question is the one the plausibility ceiling above cannot answer, because a
+                // merely halved bottle volume produces an answer no ceiling objects to.
+                const packConfidence: PackSizeConfidence | null | undefined =
+                  done || !conversion ? null : stockUnits?.packSizeConfidence;
                 const countableQty = done ? item.quantity : remaining;
                 const qtyDisplay = unconfirmedQty
                   ? "—"
@@ -578,12 +589,25 @@ export default function ClinicPrescriptionTriage({
                             the divisor on screen next to the answer it produced, where a
                             pharmacist who has held the bottle can catch it at a glance. */}
                         {conversion && (
-                          <p className={cn(
-                            "mt-1 text-[11px] font-medium tabular-nums",
-                            packWarning ? "text-amber-700" : "text-slate-500",
-                          )}>
-                            {conversion}
-                          </p>
+                          <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                            <span className={cn(
+                              "text-[11px] font-medium tabular-nums",
+                              packWarning ? "text-amber-700" : "text-slate-500",
+                            )}>
+                              {conversion}
+                            </span>
+                            {/* A link out of a modal, rather than a dialog on top of one: the
+                                pharmacist is mid-triage and confirming a pack size means walking
+                                to a shelf. Sending them to Inventory with the row already found
+                                is the honest version of "you can fix this" — a confirm dialog
+                                here would only invite a guess, which is what put the wrong
+                                number in the catalogue to begin with. */}
+                            <PackSizeConfidenceChip
+                              confidence={packConfidence}
+                              medicineId={item.medicineId ?? undefined}
+                              medicineName={item.medicineName}
+                            />
+                          </div>
                         )}
                         {measured && !done && (
                           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
