@@ -20,7 +20,8 @@
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seeds/index.ts",
-    "import:medicines": "tsx prisma/seeds/import-medicines.ts"
+    "import:medicines": "tsx prisma/seeds/import-medicines.ts",
+    "fix:melgain-units": "tsx scripts/fix-melgain-measured-unit.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.19.0"
