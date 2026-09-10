@@ -3,6 +3,7 @@ package com.checkup.pharmacy.modules.prescription;
 import com.checkup.pharmacy.common.domain.CreatedAtEntity;
 import com.checkup.pharmacy.common.util.BaseUnits;
 import com.checkup.pharmacy.common.util.Cuid;
+import com.checkup.pharmacy.common.util.DispensePlausibility;
 import com.checkup.pharmacy.common.util.PackUnits;
 import com.checkup.pharmacy.modules.medicine.Medicine;
 import jakarta.persistence.Column;
@@ -381,6 +382,21 @@ public class PrescriptionItem extends CreatedAtEntity {
 
         if (effectivePackSize != null && effectivePackSize > 0) {
             int packs = (int) Math.ceil((double) clinicalVolume / effectivePackSize);
+            // A division is only as trustworthy as its divisor. Before committing this line to a
+            // pack target, check the answer against what a course of this form can physically be
+            // — a wrong catalogue pack size produces arithmetic that is correct at every step and
+            // absurd at the end (40 ml of a topical ÷ a bad 5 ml pack size = eight bottles).
+            // Held, never rejected: a real 5 ml ampoule course must still be dispensable, so this
+            // routes to the same pharmacist confirmation a line with NO pack size already gets.
+            String implausible = DispensePlausibility.implausiblePackCount(
+                    medicine.getName(), medicine.getForm(), baseUnit, medicine.getUnit(),
+                    packs, clinicalVolume, effectivePackSize);
+            if (implausible != null) {
+                this.roundedPackCount = null;
+                this.quantityCalculationNote = implausible;
+                this.quantity = 0;
+                return;
+            }
             int target = packs * effectivePackSize;
             this.roundedPackCount = packs;
             this.quantity = target;

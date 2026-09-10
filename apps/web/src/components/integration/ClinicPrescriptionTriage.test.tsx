@@ -200,3 +200,69 @@ describe("ClinicPrescriptionTriage: a calculated quantity is labelled, not indis
     expect(screen.queryByText("calculated")).not.toBeInTheDocument();
   });
 });
+
+/**
+ * The mL→pack conversion has to be ON SCREEN for every measured line, and an implausible pack
+ * count has to stop the bill rather than quietly load eight bottles into the cart. Both read
+ * the LIVE stock response, not the line's stored roundedPackCount — a line resolved before its
+ * medicine was classified has no stored measured metadata at all, which is exactly the case
+ * that produced the reported bug.
+ */
+describe("ClinicPrescriptionTriage: measured-line arithmetic", () => {
+  const melgainLine = {
+    id: "i1", medicineName: "Melgain", medicineId: "med_1", schedule: null,
+    quantity: 40, dispensedQty: 0, dosage: "1-0-1", duration: "4 days",
+  };
+
+  function stockWith(extra: Record<string, unknown>) {
+    mockApi.get.mockResolvedValue({
+      data: { data: { items: [{
+        itemId: "i1", medicineId: "med_1", availableQty: 204, stockStatus: "in_stock",
+        baseUnit: "ML", unit: "Bottle", ...extra,
+      }] } },
+    });
+  }
+
+  it("spells out the conversion even when the line stored no measured metadata", async () => {
+    stockWith({ effectivePackSize: 5, projectedPackCount: 8, packCountWarning: null });
+    renderTriage(baseRx({ items: [melgainLine] }));
+
+    expect(await screen.findByText("40 ml ÷ 5 ml/bottle → 8 bottles")).toBeInTheDocument();
+  });
+
+  it("blocks both footer actions while an implausible pack count is unacknowledged", async () => {
+    stockWith({
+      effectivePackSize: 5, projectedPackCount: 8,
+      packCountWarning: "Melgain: 40 ml would need 8 sealed bottles at the 5 ml pack size on record.",
+    });
+    renderTriage(baseRx({ items: [melgainLine] }));
+
+    expect(await screen.findByText(/would need 8 sealed bottles/)).toBeInTheDocument();
+    // A draft resolves through the same cart resolver, so it is gated too — parking the line
+    // would only bake the wrong pack count in for whoever bills it later.
+    expect(screen.getByRole("button", { name: /Continue to Billing/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Save as Draft/i })).toBeDisabled();
+  });
+
+  it("a plausible pack count neither warns nor blocks", async () => {
+    stockWith({ effectivePackSize: 60, projectedPackCount: 1, packCountWarning: null });
+    renderTriage(baseRx({ items: [melgainLine] }));
+
+    expect(await screen.findByText("40 ml ÷ 60 ml/bottle → 1 bottle")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Continue to Billing/i })).toBeEnabled();
+  });
+
+  it("renders no conversion for a countable line", async () => {
+    mockApi.get.mockResolvedValue({
+      data: { data: { items: [{
+        itemId: "i1", medicineId: "med_1", availableQty: 1050, stockStatus: "in_stock",
+        baseUnit: "TABLET", unit: "Strip", effectivePackSize: null, projectedPackCount: null,
+        packCountWarning: null,
+      }] } },
+    });
+    renderTriage(baseRx({ items: [{ ...melgainLine, medicineName: "Pantoprazole 40mg", quantity: 16 }] }));
+
+    expect(await screen.findByText(/Pantoprazole/)).toBeInTheDocument();
+    expect(screen.queryByText(/÷/)).not.toBeInTheDocument();
+  });
+});

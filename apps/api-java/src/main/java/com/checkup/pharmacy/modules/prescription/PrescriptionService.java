@@ -10,6 +10,8 @@ import com.checkup.pharmacy.common.validation.ValidationPatterns;
 import com.checkup.pharmacy.common.sequence.DocumentSequenceService;
 import com.checkup.pharmacy.common.util.BaseUnits;
 import com.checkup.pharmacy.common.util.DateRange;
+import com.checkup.pharmacy.common.util.DispensePlausibility;
+import com.checkup.pharmacy.common.util.PackUnits;
 import com.checkup.pharmacy.modules.doctor.Doctor;
 import com.checkup.pharmacy.modules.doctor.DoctorRepository;
 import com.checkup.pharmacy.modules.integration.emr.PrescriptionCancelledEvent;
@@ -193,8 +195,27 @@ public class PrescriptionService {
                     String baseUnit = medicine == null ? null
                             : BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm());
                     String unit = medicine == null ? null : medicine.getUnit();
+
+                    // Project the mL→pack conversion the dispensing engine is ABOUT to perform,
+                    // from today's catalogue rather than from what this line stored at ingest.
+                    // The nullable form of the pack multiple, deliberately: NULL means nobody has
+                    // classified this pack, which is not the same as 1 and must not be projected
+                    // against. See PrescriptionStockResponse.Item for why this is computed live.
+                    Integer effectivePackSize = medicine == null ? null
+                            : PharmacyMedicineOverride.effectiveUnitsPerPack(
+                                    overridesByMedicineId.get(i.getMedicineId()), medicine);
+                    Integer projectedPackCount = null;
+                    String packCountWarning = null;
+                    int remaining = i.getQuantity() - i.getDispensedQty();
+                    if (medicine != null && PackUnits.isMeasured(baseUnit)
+                            && effectivePackSize != null && effectivePackSize > 0 && remaining > 0) {
+                        projectedPackCount = (int) Math.ceil((double) remaining / effectivePackSize);
+                        packCountWarning = DispensePlausibility.implausiblePackCount(
+                                medicine.getName(), medicine.getForm(), baseUnit, unit,
+                                projectedPackCount, remaining, effectivePackSize);
+                    }
                     return new PrescriptionStockResponse.Item(i.getId(), i.getMedicineId(), available, status,
-                            baseUnit, unit);
+                            baseUnit, unit, effectivePackSize, projectedPackCount, packCountWarning);
                 })
                 .toList();
         return new PrescriptionStockResponse(result);

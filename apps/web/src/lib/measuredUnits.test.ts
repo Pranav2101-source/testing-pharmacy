@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatMeasuredAmount, measuredRxOvershoot } from "./measuredUnits";
+import { formatMeasuredAmount, measuredRxOvershoot, formatConversion } from "./measuredUnits";
 
 describe("formatMeasuredAmount", () => {
   it("renders sealed-pack count with the clinical volume in brackets", () => {
@@ -36,5 +36,25 @@ describe("measuredRxOvershoot — internal-note microtext numbers", () => {
     expect(measuredRxOvershoot({ prescribedVolumeClinical: 105, clinicalUom: null, quantity: 2, unitsPerPack: 100 })).toBeNull();
     expect(measuredRxOvershoot({ clinicalUom: "ML", quantity: 2, unitsPerPack: 100 })).toBeNull();
     expect(measuredRxOvershoot({ prescribedVolumeClinical: 105, clinicalUom: "ML", quantity: 0, unitsPerPack: 0 })).toBeNull();
+  });
+});
+
+describe("formatConversion — the arithmetic, spelled out on every measured line", () => {
+  it("names the divisor next to the answer it produced", () => {
+    // The reported bug: a 40 ml course against a wrong 5 ml pack size. Rendering this is
+    // what puts the bad number where a pharmacist who has held the bottle can catch it.
+    expect(formatConversion(40, 5, "ML", "bottle")).toBe("40 ml ÷ 5 ml/bottle → 8 bottles");
+    // The same course against the real bottle.
+    expect(formatConversion(40, 60, "ML", "bottle")).toBe("40 ml ÷ 60 ml/bottle → 1 bottle");
+  });
+
+  it("rounds up to whole sealed packs — a bottle can't be split", () => {
+    expect(formatConversion(105, 100, "ML", "bottle")).toBe("105 ml ÷ 100 ml/bottle → 2 bottles");
+    expect(formatConversion(45, 20, "GM", "tube")).toBe("45 g ÷ 20 g/tube → 3 tubes");
+  });
+
+  it("renders nothing when there is no honest divisor", () => {
+    expect(formatConversion(40, 0, "ML", "bottle")).toBeNull();
+    expect(formatConversion(0, 5, "ML", "bottle")).toBeNull();
   });
 });

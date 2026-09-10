@@ -35,8 +35,32 @@ public record PrescriptionStockResponse(List<Item> items) {
      *                     — "1050 tablets", not a bare "1050". The screen resolves them through
      *                     the shared {@code saleUnitModel}, exactly as the billing cart does,
      *                     rather than either side inventing its own noun.
+     * @param effectivePackSize for a MEASURED line, the mL/g in one sealed pack as resolved
+     *                     RIGHT NOW ({@code PharmacyMedicineOverride#effectiveUnitsPerPack} —
+     *                     this pharmacy's override first, catalogue second). Null when the line
+     *                     is countable or nothing has classified the pack size.
+     * @param projectedPackCount sealed packs the dispensing engine will allocate for the
+     *                     quantity still owed on this line, at {@code effectivePackSize} —
+     *                     {@code ceil(remaining / packSize)}. Null when it cannot be projected.
+     * @param packCountWarning a pharmacist-readable sentence when {@code projectedPackCount} is
+     *                     an implausible course for this dosage form, else null. See
+     *                     {@code DispensePlausibility}.
+     *
+     *                     <p>These last three are computed LIVE rather than read from the line's
+     *                     own stored {@code roundedPackCount}, and that distinction is the whole
+     *                     point of putting them here. A line is resolved to a pack target once,
+     *                     at ingest; the catalogue can be reclassified afterwards, and nothing
+     *                     re-resolves it. A prescription taken in while a medicine was still
+     *                     unclassified therefore carries NO measured metadata at all — the
+     *                     triage screen has nothing to render — while the dispensing engine,
+     *                     reading today's catalogue, silently divides the same stored number by
+     *                     a pack size that did not exist when it was written. Projecting from
+     *                     live data is what lets triage show the pharmacist the arithmetic
+     *                     billing is actually about to perform, not the arithmetic that applied
+     *                     the day the prescription arrived.
      */
     public record Item(String itemId, String medicineId, int availableQty, String stockStatus,
-                       String baseUnit, String unit) {
+                       String baseUnit, String unit, Integer effectivePackSize,
+                       Integer projectedPackCount, String packCountWarning) {
     }
 }

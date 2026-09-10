@@ -24,6 +24,19 @@ export type StockInfo = {
   baseUnit?: string | null;
   /** The catalogue's packaging word ("Strip", "Bottle") — see `CartItem.unit`. */
   unit?: string | null;
+  /**
+   * For a MEASURED line: the mL/g in one sealed pack, resolved LIVE from the catalogue
+   * (this pharmacy's override first). Null when countable or unclassified.
+   *
+   * Live, not from the line's stored `roundedPackCount`: a line resolved before its medicine
+   * was classified carries no measured metadata, while billing reads today's catalogue — so
+   * only the live value describes the conversion that is actually about to happen.
+   */
+  effectivePackSize?: number | null;
+  /** Sealed packs the dispensing engine will allocate for the quantity still owed. */
+  projectedPackCount?: number | null;
+  /** Set when `projectedPackCount` is an implausible course for this dosage form. */
+  packCountWarning?: string | null;
 };
 
 /** For a measured (mL/g) line: how to render its piece-count stock as sealed packs. */

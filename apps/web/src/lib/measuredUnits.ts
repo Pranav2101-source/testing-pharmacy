@@ -39,6 +39,32 @@ export function formatMeasuredAmount(
   return `${wholePacks} ${noun} (${round1(baseUnits)} ${unit})`;
 }
 
+/**
+ * The conversion itself, spelled out — "40 ml ÷ 5 ml/bottle → 8 bottles".
+ *
+ * Shown on EVERY measured triage line, not only anomalous ones. A wrong catalogue pack size
+ * produces arithmetic that is correct at every step and absurd at the end, and the only reader
+ * who can catch that is a pharmacist who has held the bottle — so the divisor has to be on
+ * screen next to the answer it produced. A line that reads "40 QTY" hides the one number that
+ * was wrong; this one puts it in the middle of the sentence.
+ *
+ * `packSize` is the mL/g in one sealed pack as resolved live from the catalogue (the stock
+ * endpoint's `effectivePackSize`), NOT `quantity / roundedPackCount` — a line resolved before
+ * its medicine was classified has no `roundedPackCount` at all, and that is exactly the case
+ * this needs to render.
+ */
+export function formatConversion(
+  volume: number,
+  packSize: number,
+  clinicalUom: string | null | undefined,
+  packWord: string,
+): string | null {
+  if (!packSize || packSize <= 0 || volume <= 0) return null;
+  const { unit } = measuredWords(clinicalUom);
+  const packs = Math.ceil(volume / packSize);
+  return `${round1(volume)} ${unit} ÷ ${packSize} ${unit}/${packWord} → ${packs} ${packs === 1 ? packWord : `${packWord}s`}`;
+}
+
 /** The pack size (mL/g per sealed pack) for a resolved measured line, or null. */
 export function measuredPackSize(line: {
   quantity: number;

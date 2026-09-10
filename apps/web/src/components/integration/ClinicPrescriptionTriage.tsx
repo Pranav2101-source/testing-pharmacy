@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   X, Stethoscope, Phone, Pill, Loader2, Receipt, BookmarkPlus, Ban,
-  ShieldAlert, Hospital, CircleCheck, CircleAlert,
+  ShieldAlert, Hospital, CircleCheck, CircleAlert, AlertTriangle,
 } from "lucide-react";
 import { format } from "date-fns";
 import { api, getErrorMessage } from "@/lib/api-client";
@@ -21,7 +21,8 @@ import ReviewIngestedItemsPanel from "@/components/integration/ReviewIngestedIte
 import ConfirmQuantityPanel from "@/components/integration/ConfirmQuantityPanel";
 import StockActionPanel, { pieceNoun, type StockInfo } from "@/components/integration/StockActionPanel";
 import { usePackRoundingDecision } from "@/hooks/usePackRoundingDecision";
-import { measuredWords, measuredPackSize, isResolvedMeasured } from "@/lib/measuredUnits";
+import { measuredWords, measuredPackSize, isResolvedMeasured, formatConversion } from "@/lib/measuredUnits";
+import { saleUnitModel } from "@pharmacy/utils";
 
 const SCHEDULE_TOOLTIP: Record<string, string> = {
   H:   "Schedule H — Prescription required",
@@ -130,6 +131,11 @@ export type TriagePrescription = Omit<BillablePrescription, "items"> & {
 type StockResponseItem = {
   itemId: string; medicineId: string; availableQty: number; stockStatus: StockInfo["stockStatus"];
   baseUnit?: string | null; unit?: string | null;
+  /** Live mL/g per sealed pack, and the pack count billing will allocate from it. */
+  effectivePackSize?: number | null;
+  projectedPackCount?: number | null;
+  /** Set when that pack count is an implausible course for the dosage form — see DispensePlausibility. */
+  packCountWarning?: string | null;
 };
 
 /**
@@ -172,6 +178,10 @@ export default function ClinicPrescriptionTriage({
   // prescription until a bill is actually saved, so closing without acting leaves the
   // prescription exactly as the clinic sent it.
   const [resolutions, setResolutions] = useState<Record<string, ItemResolution>>({});
+  // Lines whose implausible-pack-count warning a pharmacist has explicitly accepted. Component
+  // state, deliberately not persisted: the acknowledgement is about THIS bill, and the catalogue
+  // value that triggered it should be corrected rather than permanently waved through.
+  const [acknowledged, setAcknowledged] = useState<Set<string>>(new Set());
   useEffect(() => { setResolutions({}); }, [rx.id]);
   function resolveItem(itemId: string, r: ItemResolution) {
     setResolutions((prev) => ({ ...prev, [itemId]: r }));
@@ -241,10 +251,39 @@ export default function ClinicPrescriptionTriage({
       map[s.itemId] = {
         availableQty: s.availableQty, stockStatus: s.stockStatus,
         baseUnit: s.baseUnit, unit: s.unit,
+        effectivePackSize: s.effectivePackSize,
+        projectedPackCount: s.projectedPackCount,
+        packCountWarning: s.packCountWarning,
       };
     });
     return map;
   }, [stockQuery.data]);
+
+  /**
+   * Lines whose pack count is implausible and which nobody has acknowledged or set aside yet.
+   *
+   * Gates BOTH footer actions, not just Bill Now: a draft is resolved through the very same
+   * {@link resolvePrescriptionToCart}, so parking a suspect line as a draft would simply bake
+   * the wrong pack count in for someone else to bill later — see that module's note on the two
+   * save paths having to resolve identically.
+   *
+   * A line the pharmacist has already decided to Hold, Remove or Replace is not pending: they
+   * have dealt with it, which is the whole point of the warning.
+   */
+  const pendingPackWarnings = useMemo(
+    () => rx.items.filter((item) => {
+      if (item.quantity <= 0 || item.quantity - item.dispensedQty <= 0) return false;
+      if (acknowledged.has(item.id) || resolutions[item.id]) return false;
+      return !!stockByItemId[item.id]?.packCountWarning;
+    }).length,
+    [rx.items, stockByItemId, acknowledged, resolutions],
+  );
+
+  /** Footer sentence when pack-count warnings are holding the actions, else null. */
+  const packWarningBlock = pendingPackWarnings > 0
+    ? `${pendingPackWarnings} line${pendingPackWarnings === 1 ? "" : "s"} would dispense an unusual number of `
+      + `packs — check the pack size, or acknowledge to bill as calculated`
+    : null;
 
   // ── Bottom summary — "N medicines prescribed · N ready · N need attention" ──
   const summary = useMemo(() => {
@@ -451,6 +490,21 @@ export default function ClinicPrescriptionTriage({
                 // rather than guessing: until it lands, the "qty" caption below still says what
                 // the number is.
                 const stockUnits = stockByItemId[item.id];
+                // The mL→pack arithmetic billing is ABOUT to do, from live catalogue data.
+                // Deliberately not `measured` above: that reads the line's stored
+                // roundedPackCount, which is null for any line resolved before its medicine was
+                // classified — the exact case where the conversion is most likely to be wrong
+                // and least likely to be visible. This renders whenever the stock check says
+                // the medicine is measured and has a pack size, whatever the line remembers.
+                const conversion = !done && !unconfirmedQty && stockUnits?.effectivePackSize
+                  ? formatConversion(
+                      remaining,
+                      stockUnits.effectivePackSize,
+                      item.clinicalUom ?? stockUnits.baseUnit,
+                      saleUnitModel({ unit: stockUnits.unit, baseUnit: stockUnits.baseUnit }).packUnitLabel,
+                    )
+                  : null;
+                const packWarning = done ? null : stockUnits?.packCountWarning ?? null;
                 const countableQty = done ? item.quantity : remaining;
                 const qtyDisplay = unconfirmedQty
                   ? "—"
@@ -496,6 +550,18 @@ export default function ClinicPrescriptionTriage({
                           {measured ? measured.prescribed : detailLine}
                           {item.notes && <span className="text-slate-400"> · {item.notes}</span>}
                         </p>
+                        {/* The conversion, spelled out — shown for EVERY measured line, not just
+                            anomalous ones. "40 QTY" hid the one number that was wrong; this puts
+                            the divisor on screen next to the answer it produced, where a
+                            pharmacist who has held the bottle can catch it at a glance. */}
+                        {conversion && (
+                          <p className={cn(
+                            "mt-1 text-[11px] font-medium tabular-nums",
+                            packWarning ? "text-amber-700" : "text-slate-500",
+                          )}>
+                            {conversion}
+                          </p>
+                        )}
                         {measured && !done && (
                           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
                             <span className="text-[11.5px] font-semibold text-violet-700">
@@ -543,6 +609,34 @@ export default function ClinicPrescriptionTriage({
                         )}
                       </div>
                     </div>
+
+                    {/* Implausible pack count — a wrong catalogue pack size, almost always.
+                        Blocks Continue to Billing until acknowledged or the line is set aside,
+                        but never blocks the OTHER lines and never rejects outright: a real
+                        small-vial course has to stay dispensable, and the pharmacist is the one
+                        who can see the shelf. */}
+                    {packWarning && !needsPharmacistLink && (
+                      <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 flex items-start gap-2">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[11.5px] text-amber-900 leading-snug">{packWarning}</p>
+                          {!acknowledged.has(item.id) && (
+                            <button
+                              type="button"
+                              onClick={() => setAcknowledged((prev) => new Set(prev).add(item.id))}
+                              className="mt-1.5 text-[11px] font-semibold text-amber-800 underline underline-offset-2 hover:text-amber-900"
+                            >
+                              I&rsquo;ve checked the pack — bill it as calculated
+                            </button>
+                          )}
+                          {acknowledged.has(item.id) && (
+                            <p className="mt-1 text-[10.5px] font-semibold text-amber-700 uppercase tracking-wide">
+                              Acknowledged
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Stock check + Replace/Hold/Remove — only meaningful once the line has a
                         catalogue medicine, a confirmed quantity, and is still owed. */}
@@ -607,6 +701,15 @@ export default function ClinicPrescriptionTriage({
             </div>
           )}
 
+          {/* Shown alongside blockedReason rather than instead of it: they are different tasks
+              (match a medicine vs. verify a pack size) and a pharmacist needs to see both. */}
+          {packWarningBlock && (
+            <div className="flex items-start gap-2 text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+              <span>{packWarningBlock}</span>
+            </div>
+          )}
+
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -620,8 +723,8 @@ export default function ClinicPrescriptionTriage({
             <button
               type="button"
               onClick={handleSaveDraft}
-              disabled={busy !== null || !canAct}
-              title={blockedReason ?? undefined}
+              disabled={busy !== null || !canAct || pendingPackWarnings > 0}
+              title={blockedReason ?? packWarningBlock ?? undefined}
               className="flex-1 flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl border border-slate-200 bg-white text-[13px] font-bold text-slate-700 hover:border-violet-300 hover:bg-violet-50 hover:text-violet-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-slate-200 disabled:hover:bg-white disabled:hover:text-slate-700"
             >
               {busy === "draft" ? <Loader2 className="w-4 h-4 animate-spin" /> : <BookmarkPlus className="w-4 h-4" />}
@@ -630,8 +733,8 @@ export default function ClinicPrescriptionTriage({
             <button
               type="button"
               onClick={handleBillNow}
-              disabled={busy !== null || !canAct}
-              title={blockedReason ?? undefined}
+              disabled={busy !== null || !canAct || pendingPackWarnings > 0}
+              title={blockedReason ?? packWarningBlock ?? undefined}
               className="flex-[1.3] flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl bg-violet-600 text-white text-[13px] font-bold shadow-sm hover:bg-violet-700 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-violet-600 disabled:active:scale-100"
             >
               {busy === "bill" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Receipt className="w-4 h-4" />}
