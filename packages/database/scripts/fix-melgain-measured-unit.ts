@@ -116,7 +116,7 @@ async function main() {
     where: id ? { id } : { name: { contains: name, mode: "insensitive" } },
     select: {
       id: true, name: true, form: true, unit: true, packSize: true,
-      baseUnit: true, unitsPerPack: true,
+      baseUnit: true, unitsPerPack: true, packSizeConfidence: true, packSizeSource: true,
     },
   });
 
@@ -133,7 +133,8 @@ async function main() {
   for (const med of medicines) {
     console.log(`── ${med.name} (${med.id})`);
     console.log(`   before: baseUnit=${med.baseUnit ?? "NULL"} form=${med.form ?? "NULL"} `
-      + `unit=${med.unit ?? "NULL"} packSize=${med.packSize ?? "NULL"} unitsPerPack=${med.unitsPerPack ?? "NULL"}`);
+      + `unit=${med.unit ?? "NULL"} packSize=${med.packSize ?? "NULL"} unitsPerPack=${med.unitsPerPack ?? "NULL"} `
+      + `confidence=${med.packSizeConfidence ?? "NULL"}/${med.packSizeSource ?? "NULL"}`);
 
     // Only ever FILL blanks for form/unit — a catalogue that already says "Lotion" or
     // "Vial" knows something this script does not, and overwriting it would be a guess
@@ -144,7 +145,21 @@ async function main() {
     if (!med.unit?.trim()) medicineData.unit = "Bottle";
     // The corrected volume goes on the CATALOGUE, so every pharmacy gets it, and the
     // per-pharmacy override that was standing in for it is cleared below.
-    if (ml !== null) medicineData.unitsPerPack = ml;
+    //
+    // --ml is documented as a number read off a physical pack and is REFUSED rather than
+    // defaulted (see the header), which is precisely the evidence PackSizeConfidence.VERIFIED
+    // is meant to record. So this script asserts it — and asserts DATA_SCRIPT alongside, so a
+    // volume that later turns out to be wrong leads back to this run rather than to whichever
+    // pharmacist happened to be looking at the medicine afterwards.
+    //
+    // Writing these three columns is only HALF of the claim; the transaction below has to
+    // announce itself as well, or the trigger overwrites all of it. See there.
+    if (ml !== null) {
+      medicineData.unitsPerPack = ml;
+      medicineData.packSizeConfidence = "VERIFIED";
+      medicineData.packSizeSource = "DATA_SCRIPT";
+      medicineData.packSizeVerifiedAt = new Date();
+    }
 
     const overrides = await prisma.pharmacyMedicineOverride.findMany({
       where: { medicineId: med.id },
@@ -156,8 +171,13 @@ async function main() {
         + `allowLooseSale=${o.allowLooseSale} looseByDefault=${o.looseByDefault}`);
     }
 
+    // A row carrying the right volume but still marked UNVERIFIED is NOT already right — an
+    // earlier run of this script (before it announced itself) left exactly that state, and
+    // re-running is how it gets upgraded. Cheap to check, and the alternative is a correct
+    // volume wearing an "unverified pack size" badge in triage forever.
     const medicineAlreadyRight = med.baseUnit === "ML"
       && (ml === null || med.unitsPerPack === ml)
+      && (ml === null || med.packSizeConfidence === "VERIFIED")
       && !!med.form?.trim() && !!med.unit?.trim();
     if (medicineAlreadyRight && bogus.length === 0) {
       console.log("   → already correct, skipping.\n");
@@ -174,6 +194,21 @@ async function main() {
     }
 
     await prisma.$transaction(async (tx) => {
+      // Opt out of the raw-write guard (migration 20260910000001).
+      //
+      // A BEFORE trigger on `medicines` stamps packSizeConfidence = UNVERIFIED and
+      // packSizeSource = RAW_WRITE onto any write that does not set this GUC, and it
+      // OVERWRITES rather than defaults — a raw write asserting VERIFIED is exactly the claim
+      // it exists to disbelieve. That default is correct and this script is the reason it
+      // exists: the original bad Melgain pack size arrived from a repair run just like this
+      // one. Opting out is therefore a deliberate assertion, not a workaround, and it is only
+      // defensible because --apply refuses to run without a volume somebody read off a pack.
+      //
+      // is_local => true scopes it to this transaction, so it cannot leak onto the next
+      // borrower of a pooled connection. It must run INSIDE prisma.$transaction (which pins
+      // one connection) and BEFORE the update — a session-level SET or a call outside the
+      // transaction would either leak or land on a different connection entirely.
+      await tx.$executeRaw`SELECT set_config('app.pack_size_evidence', 'on', true)`;
       await tx.medicine.update({ where: { id: med.id }, data: medicineData });
       if (bogus.length > 0) {
         await tx.pharmacyMedicineOverride.updateMany({
@@ -186,7 +221,8 @@ async function main() {
         });
       }
     });
-    console.log(`   → updated catalogue${bogus.length > 0 ? ` + cleared ${bogus.length} override(s)` : ""}.\n`);
+    console.log(`   → updated catalogue${ml !== null ? ` (${ml} ml, recorded VERIFIED / DATA_SCRIPT)` : ""}`
+      + `${bogus.length > 0 ? ` + cleared ${bogus.length} override(s)` : ""}.\n`);
   }
 
   if (!apply) {
