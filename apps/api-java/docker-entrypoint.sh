@@ -21,6 +21,11 @@ if [ -n "${DATABASE_URL:-}" ] && [ -d /app/db/prisma/migrations ]; then
   node_modules/.bin/prisma db execute --schema prisma/schema.prisma --file prisma/bootstrap-roles.sql
   echo "[entrypoint] prisma migrate deploy…"
   node_modules/.bin/prisma migrate deploy --schema prisma/schema.prisma
+  # Test env: the app connects as the table owner, so drop FORCE RLS (see
+  # prisma/disable-rls-force.sql) — otherwise the owner is bound by its own
+  # fail-closed policies and every write / pre-auth lookup is denied.
+  echo "[entrypoint] relaxing FORCE row-level security (test env)…"
+  node_modules/.bin/prisma db execute --schema prisma/schema.prisma --file prisma/disable-rls-force.sql
   cd /app
 else
   echo "[entrypoint] no DATABASE_URL / migrations dir — skipping DB setup"
