@@ -60,7 +60,12 @@ public record PrescriptionStockResponse(List<Item> items) {
      *                     the day the prescription arrived.
      * @param packSizeConfidence how far the pack size that conversion divides by may be trusted —
      *                     {@code "VERIFIED"}, {@code "UNVERIFIED"}, {@code "DISPUTED"}, or null
-     *                     when nothing has classified the medicine at all.
+     *                     when nothing has classified the medicine at all. The trust state of
+     *                     {@code effectivePackSize} itself, so this pharmacy's own confirmation
+     *                     of that number counts (see {@code
+     *                     PharmacyMedicineOverride#effectivePackSizeConfidence}) — the catalogue
+     *                     row's verdict alone would keep a chip up after a pharmacist here had
+     *                     checked the bottle.
      *
      *                     <p>The plausibility warning above only fires when the ARITHMETIC comes
      *                     out strange, and a wrong pack size does not always produce a strange

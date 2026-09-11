@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { AnimatePresence } from "framer-motion";
@@ -96,7 +96,7 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
    * selling" and exactly the wrong one here. An already-loose medicine's pack size is the one
    * doing the most damage if nobody has checked it — it is dividing every per-piece price.
    */
-  function openPackSizeVerify(medicine: InventoryItem["medicine"]) {
+  function openPackSizeVerify(medicine: Parameters<typeof candidateFromMedicine>[0]) {
     setLooseIntent("verify");
     setLooseSetup(candidateFromMedicine(medicine));
   }
@@ -116,8 +116,10 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Debounce search input before it becomes part of the query key
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  // Debounce search input before it becomes part of the query key. Seeded with the same
+  // initial value as `search`, not "": starting empty made a deep link's first request fetch
+  // page one of every batch and discard it when the debounce caught up a moment later.
+  const [debouncedSearch, setDebouncedSearch] = useState(() => search.trim());
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), search ? 350 : 0);
     return () => clearTimeout(t);
@@ -151,25 +153,36 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
   /**
    * `?verifyPackSize=<medicineId>` — the triage screen's chip, arriving.
    *
-   * Waits for the list rather than firing on mount, because the confirm dialog is built from a
-   * batch row (that is where the pack size, base unit and this pharmacy's loose setting all
-   * live) and on mount there are no rows yet. `?search=` above is what makes the medicine
-   * actually appear; without it a pharmacy with two thousand batches would deep-link to page one
-   * of everything and this would never find its target.
+   * The dialog is built from the medicine itself, fetched by id, and NOT from a row of the list
+   * below. An earlier version waited for the list and looked the medicine up in it, which left
+   * two silent dead ends: a medicine with no batch on the shelf (common for a line triage has
+   * just marked out of stock) never appeared, and neither did one the name search did not
+   * surface on page one. Either way the pharmacist landed on Inventory with no dialog and no
+   * word about why. `?search=` still filters the list behind the dialog, for context.
    *
-   * The param is stripped as soon as it is consumed, so a refresh — or a back-navigation after
-   * the pharmacist has moved on to something else — does not reopen the dialog on top of it.
+   * The param is stripped as soon as it is read, so a refresh — or a back-navigation after the
+   * pharmacist has moved on — does not reopen the dialog. The ref guards the fetch itself:
+   * stripping the param re-runs this effect, and a cleanup that cancelled on that re-run would
+   * throw away the very response it was waiting for.
    */
   const verifyPackSizeId = searchParams.get("verifyPackSize");
+  const consumedVerifyId = useRef<string | null>(null);
   useEffect(() => {
-    if (!verifyPackSizeId || !isOwnerOrManager || items.length === 0) return;
-    const match = items.find((i) => i.medicine.id === verifyPackSizeId);
+    if (!verifyPackSizeId || consumedVerifyId.current === verifyPackSizeId) return;
+    consumedVerifyId.current = verifyPackSizeId;
     const next = new URLSearchParams(searchParams);
     next.delete("verifyPackSize");
     setSearchParams(next, { replace: true });
-    if (match) openPackSizeVerify(match.medicine);
+    if (!isOwnerOrManager) {
+      // The chip only links for owners and managers, so this is a pasted or shared URL.
+      toast.error("Only an owner or manager can confirm a pack size.");
+      return;
+    }
+    api.get(`/medicines/${encodeURIComponent(verifyPackSizeId)}`)
+      .then((res) => openPackSizeVerify(res.data.data))
+      .catch((err) => toast.error(getErrorMessage(err, "Couldn't open that medicine's pack size to confirm it.")));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [verifyPackSizeId, items]);
+  }, [verifyPackSizeId]);
 
   const total      = data?.total      ?? 0;
   const totalPages = Math.ceil(total / 20) || 1;
@@ -255,6 +268,10 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
           onDone={(count) => {
             setLooseSetup(undefined);
             invalidateInventory();
+            // A confirmed pack size changes the trust chip triage shows too. Its stock query is
+            // cached for 15s; without this a pharmacist returning from here straight to the
+            // prescription could still see the chip they had just cleared.
+            if (looseIntent === "verify") queryClient.invalidateQueries({ queryKey: ["prescription-stock"] });
             if (count === 0) return;
             toast.success(looseIntent === "verify"
               ? `Pack size confirmed for ${looseSetup?.name ?? "this medicine"}`
@@ -339,15 +356,14 @@ export function BatchesTab({ onCountsLoaded }: { onCountsLoaded: (c: AlertCounts
                     {item.medicine.brand && <p className="text-[10px] text-blue-400">{item.medicine.brand.name}</p>}
                     {/* This is the screen where the chip can be an ACTION rather than a link —
                         the whole medicine record is already in hand, so the confirm dialog opens
-                        in place. Owners/managers only: the endpoint behind it is theirs, and a
-                        cashier being shown a button they cannot use is worse than not showing it. */}
-                    {isOwnerOrManager && (
-                      <PackSizeConfidenceChip
-                        confidence={item.medicine.packSizeConfidence}
-                        className="mt-1"
-                        onVerify={() => openPackSizeVerify(item.medicine)}
-                      />
-                    )}
+                        in place. Shown to everyone, actionable only for owners/managers: the chip
+                        itself renders a plain badge for anyone the confirm endpoint would refuse,
+                        so a cashier still sees the state without being offered a dead button. */}
+                    <PackSizeConfidenceChip
+                      confidence={item.medicine.packSizeConfidence}
+                      className="mt-1"
+                      onVerify={() => openPackSizeVerify(item.medicine)}
+                    />
                   </td>
                   <td className="px-4 py-3 text-[12px] font-mono text-slate-700">{item.batchNumber}</td>
                   <td className="px-4 py-3">

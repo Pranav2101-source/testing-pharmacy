@@ -1222,12 +1222,19 @@ public class InventoryService {
             boolean looseDefault = allowLoose && ov.isLooseByDefault();
             InventoryResponse.MedicineRef medRef;
             if (m != null) {
+                String baseUnit = com.checkup.pharmacy.common.util.BaseUnits.resolve(m.getBaseUnit(), m.getForm());
+                // Same rule as the triage stock check: the trust state of the number this pharmacy
+                // bills by, and only for a measured medicine — a chip on every tablet row would be
+                // true of nearly the whole catalogue and read by nobody.
+                var confidence = com.checkup.pharmacy.common.util.PackUnits.isMeasured(baseUnit)
+                        ? PharmacyMedicineOverride.effectivePackSizeConfidence(ov, m)
+                        : null;
                 medRef = new InventoryResponse.MedicineRef(
                         m.getId(), m.getName(), m.getGenericName(), m.getForm(), m.getStrength(), m.getUnit(),
                         m.isActive(), m.getGstRate(), m.getHsnCode(),
-                        effectiveUpp, com.checkup.pharmacy.common.util.BaseUnits.resolve(m.getBaseUnit(), m.getForm()),
+                        effectiveUpp, baseUnit,
                         allowLoose, looseDefault, m.getSchedule(), m.getPackSize(),
-                        m.getPackSizeConfidence() == null ? null : m.getPackSizeConfidence().name());
+                        confidence == null ? null : confidence.name());
             } else {
                 var lm = localMedicinesById.get(inv.getLocalMedicineId());
                 // Not in the global catalogue (yet), or a local identity that is not (or no

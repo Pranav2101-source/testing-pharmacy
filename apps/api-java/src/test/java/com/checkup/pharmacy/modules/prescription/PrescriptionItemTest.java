@@ -366,6 +366,72 @@ class PrescriptionItemTest {
     }
 
     @Test
+    @DisplayName("a held line re-held against the same catalogue is NOT a change — no write, no refetch")
+    void reResolvingAHeldLineAgainstTheSameCatalogueReportsNoChange() {
+        // A held line stores no pack target, so it cannot store the divisor that held it and
+        // always reads as stale. Re-holding it with identical figures must not count as a change,
+        // or every triage open writes the row and refetches the prescription for nothing.
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+        item.resolveMeasuredEmrQuantity(topicalSolution(5), 5);
+        String heldNote = item.getQuantityCalculationNote();
+
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(5), 5)).isFalse();
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(5), 5)).isFalse();
+        assertThat(item.getQuantity()).isZero();
+        assertThat(item.getQuantityCalculationNote()).isEqualTo(heldNote);
+    }
+
+    @Test
+    @DisplayName("a pharmacist's confirmed bottle count on a held line survives every later triage open")
+    void reResolutionNeverOverwritesAPharmacistConfirmedCount() {
+        // The regression: confirmQuantity stores the count as quantity AND roundedPackCount, so
+        // quantity / roundedPackCount = 1 — which never equals a real pack size, so the line read
+        // as stale and was reset to the clinic's raw volume on the very next open.
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+        item.resolveMeasuredEmrQuantity(topicalSolution(5), 5);
+        item.confirmQuantity(1);
+
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(5), 5)).isFalse();
+        assertThat(item.getQuantity()).isEqualTo(1);
+        assertThat(item.getRoundedPackCount()).isEqualTo(1);
+        assertThat(item.needsQuantityConfirmation()).isFalse();
+    }
+
+    @Test
+    @DisplayName("nor does a later catalogue classification override a count a pharmacist already entered")
+    void aConfirmedCountOutlivesALaterClassification() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",
+                "med_1", null, 40, "1-0-1", "4 days", null);
+        item.resolveMeasuredEmrQuantity(topicalSolution(null), null);   // held: no pack size
+        item.confirmQuantity(2);                                        // "two bottles"
+
+        // The catalogue gains a real 60 ml volume the next day. The pharmacist has already acted
+        // on this line, which is exactly what the re-resolution invariants exist to protect.
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(60), 60)).isFalse();
+        assertThat(item.getQuantity()).isEqualTo(2);
+        assertThat(item.getRoundedPackCount()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("an auto-calculated quantity is a count, not a clinical volume, and is never re-resolved from")
+    void reResolutionLeavesAnAutoCalculatedQuantityAlone() {
+        PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Tablet-then-syrup",
+                "med_1", null, 0, "1-0-1", "6 days", null);
+        item.calculateQuantityIfMissing(tablet(10));
+        assertThat(item.isQuantityAutoCalculated()).isTrue();
+        int calculated = item.getQuantity();
+        String note = item.getQuantityCalculationNote();
+
+        // The medicine is later reclassified as a measured liquid. "12" was 12 tablets, never
+        // 12 ml, so there is nothing honest to convert.
+        assertThat(item.reResolveMeasuredEmrQuantity(topicalSolution(60), 60)).isFalse();
+        assertThat(item.getQuantity()).isEqualTo(calculated);
+        assertThat(item.getQuantityCalculationNote()).isEqualTo(note);
+    }
+
+    @Test
     @DisplayName("a classified measured medicine: 105 ml against a 100 ml bottle rounds up to 2 sealed bottles")
     void resolveMeasuredEmrQuantityRoundsUpAClassifiedMeasuredLine() {
         PrescriptionItem item = PrescriptionItem.createFromEmr("ph_1", "rx_1", "item-1", "Melgain",

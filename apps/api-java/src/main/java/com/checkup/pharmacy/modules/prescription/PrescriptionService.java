@@ -1,5 +1,6 @@
 package com.checkup.pharmacy.modules.prescription;
 
+import com.checkup.pharmacy.common.enums.PackSizeConfidence;
 import com.checkup.pharmacy.common.enums.PrescriptionStatus;
 import com.checkup.pharmacy.common.exception.BadRequestException;
 import com.checkup.pharmacy.common.exception.ConflictException;
@@ -202,9 +203,9 @@ public class PrescriptionService {
                     // The nullable form of the pack multiple, deliberately: NULL means nobody has
                     // classified this pack, which is not the same as 1 and must not be projected
                     // against. See PrescriptionStockResponse.Item for why this is computed live.
+                    PharmacyMedicineOverride override = overridesByMedicineId.get(i.getMedicineId());
                     Integer effectivePackSize = medicine == null ? null
-                            : PharmacyMedicineOverride.effectiveUnitsPerPack(
-                                    overridesByMedicineId.get(i.getMedicineId()), medicine);
+                            : PharmacyMedicineOverride.effectiveUnitsPerPack(override, medicine);
                     Integer projectedPackCount = null;
                     String packCountWarning = null;
                     int remaining = i.getQuantity() - i.getDispensedQty();
@@ -221,10 +222,15 @@ public class PrescriptionService {
                     // volume is off by a factor and nothing between here and the till disagrees.
                     // Sending it for tablets as well would put a chip on nearly every triage line
                     // and teach people to stop seeing it.
-                    String packSizeConfidence = medicine != null && PackUnits.isMeasured(baseUnit)
-                            && medicine.getPackSizeConfidence() != null
-                            ? medicine.getPackSizeConfidence().name()
+                    //
+                    // The trust state of the number effectivePackSize above divides by — this
+                    // pharmacy's own confirmation first — not the catalogue row's. Reporting the
+                    // catalogue's meant a pharmacist who followed the chip and confirmed the bottle
+                    // came back to the same chip, because their check lives on the override.
+                    PackSizeConfidence confidence = medicine != null && PackUnits.isMeasured(baseUnit)
+                            ? PharmacyMedicineOverride.effectivePackSizeConfidence(override, medicine)
                             : null;
+                    String packSizeConfidence = confidence == null ? null : confidence.name();
                     return new PrescriptionStockResponse.Item(i.getId(), i.getMedicineId(), available, status,
                             baseUnit, unit, effectivePackSize, projectedPackCount, packCountWarning,
                             packSizeConfidence);

@@ -405,6 +405,80 @@ class PrescriptionIT extends AbstractPostgresIT {
         assertThat(line.getDispensedMedicineName()).isNull();
     }
 
+    // ── Pack-size feedback loop: a split fill is not a disagreement ──────────
+
+    /**
+     * A clinic course of 105 ml for a correct 60 ml syrup — the engine resolves it to 2 bottles.
+     * Returns the prescription line's id; {@code batchIdOut[0]} receives the syrup's batch.
+     */
+    private String measuredEmrLine(String[] batchIdOut) {
+        Medicine syrup = Medicine.create("Cough Syrup " + unique(), new BigDecimal("12"));
+        syrup.setPackaging(60, "ML");
+        String syrupId = medicineRepository.save(syrup).getId();
+        batchIdOut[0] = inventoryRepository.save(batchOf(syrupId, "SYR-1")).getId();
+
+        var rx = prescriptionRepository.save(Prescription.createFromEmr(pharmacyId, "RX-EMR-" + unique(),
+                "tenant-9", "ext-" + unique(), "EMR-1", null, "Dr Who", null, null,
+                "A Patient", 40, null, null, null, null, null));
+        PrescriptionItem line = PrescriptionItem.createFromEmr(pharmacyId, rx.getId(),
+                "ext-item-1", syrup.getName(), syrupId, null, 105, null, null, null);
+        line.resolveMeasuredEmrQuantity(syrup, 60);
+        assertThat(line.getRoundedPackCount()).isEqualTo(2);
+        String lineId = prescriptionItemRepository.save(line).getId();
+        flushAndClear();
+        return lineId;
+    }
+
+    private CreateInvoiceRequest bottlesAgainst(String itemId, String batchId, int bottles) {
+        String rxId = prescriptionItemRepository.findById(itemId).orElseThrow().getPrescriptionId();
+        return new CreateInvoiceRequest(null, null, null, null, null, rxId, null, null, null,
+                null, null, null, null, null, null, null,
+                List.of(new InvoiceItemRequest(batchId, bottles, null, BigDecimal.ZERO, itemId)));
+    }
+
+    @Autowired private com.checkup.pharmacy.modules.medicine.PackSizeSignalRepository packSizeSignalRepository;
+
+    private List<com.checkup.pharmacy.modules.medicine.PackSizeSignal> signalsFor(String itemId) {
+        return packSizeSignalRepository.findAll().stream()
+                .filter(s -> itemId.equals(s.getPrescriptionItemId()))
+                .toList();
+    }
+
+    @Test
+    @DisplayName("one bottle of a two-bottle course, with nothing after it, is recorded as a pack-size signal")
+    void aShortCountIsRecordedAsASignal() {
+        String[] batch = new String[1];
+        String itemId = measuredEmrLine(batch);
+
+        billingService.createInvoice(bottlesAgainst(itemId, batch[0], 1));
+        flushAndClear();
+
+        // Ambiguous on its own — a wrong pack size looks exactly like this — so it is a vote.
+        assertThat(signalsFor(itemId)).hasSize(1)
+                .allMatch(s -> s.getResolvedAt() == null && s.getEnginePackCount() == 2 && s.getActualPackCount() == 1);
+    }
+
+    @Test
+    @DisplayName("the patient returning for the second bottle withdraws that signal — it was a split fill")
+    void aSplitFillWithdrawsTheSignal() {
+        String[] batch = new String[1];
+        String itemId = measuredEmrLine(batch);
+
+        billingService.createInvoice(bottlesAgainst(itemId, batch[0], 1));
+        flushAndClear();
+        billingService.createInvoice(bottlesAgainst(itemId, batch[0], 1));
+        flushAndClear();
+
+        // Without this, the first sale voted for a pack of at least 105 ml against a correct
+        // 60 ml bottle, the second voted again, and two shops splitting ordinary courses could
+        // quarantine a correct catalogue row. The continuing sale casts no vote of its own.
+        var signals = signalsFor(itemId);
+        assertThat(signals).hasSize(1);
+        assertThat(signals.get(0).getResolvedAt()).isNotNull();
+        assertThat(signals.get(0).getResolutionNote()).contains("split fill");
+        assertThat(prescriptionItemRepository.findById(itemId).orElseThrow().isFullyDispensed()).isTrue();
+    }
+
     @Test
     @DisplayName("a sale against a clinic prescription queues a callback; a counter one does not")
     void callbackIsQueuedOnlyForClinicPrescriptions() {

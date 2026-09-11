@@ -453,6 +453,15 @@ public class PrescriptionItem extends CreatedAtEntity {
         if (externalEmrItemId == null || medicine == null || dispensedQty != 0) {
             return false;
         }
+        // A person's number is never recomputed over. Without this, a line held for a pharmacist
+        // and then confirmed ("1 bottle") read as stale on the very next triage open — its stored
+        // quantity / roundedPackCount is 1 ÷ 1, which never equals a real pack size — and was
+        // reset to the clinic's raw volume, discarding the confirmation every time the
+        // prescription was opened. Same for a quantity worked out from dosage × duration: that
+        // number is a count, not a clinical volume, so there is nothing honest to re-resolve from.
+        if (isPharmacistSettledMeasured() || quantityAutoCalculated) {
+            return false;
+        }
         String liveBaseUnit = BaseUnits.resolve(medicine.getBaseUnit(), medicine.getForm());
         if (!isStaleAgainst(liveBaseUnit, effectivePackSize)) {
             return false;
@@ -461,6 +470,12 @@ public class PrescriptionItem extends CreatedAtEntity {
         if (clinicalVolume == null || clinicalVolume <= 0) {
             return false;
         }
+        int quantityBefore = this.quantity;
+        BigDecimal volumeBefore = this.prescribedVolumeClinical;
+        String uomBefore = this.clinicalUom;
+        Integer packsBefore = this.roundedPackCount;
+        String noteBefore = this.quantityCalculationNote;
+
         // Back to the pre-resolution state, then through the SAME conversion as a fresh ingest —
         // including its plausibility ceiling, so a re-resolution can hold a line just as an
         // ingest can. Reusing the method rather than repeating its arithmetic is the point: two
@@ -471,7 +486,28 @@ public class PrescriptionItem extends CreatedAtEntity {
         this.roundedPackCount = null;
         this.quantityCalculationNote = null;
         resolveMeasuredEmrQuantity(medicine, effectivePackSize);
-        return true;
+
+        // "Stale" is judged from what the line stores, and a HELD line (no pack target) cannot
+        // store the divisor that held it — so it reads as stale on every call, and re-holding it
+        // with the same figures is not a change. Reporting it as one made every triage open write
+        // the row and refetch the prescription for nothing.
+        return quantity != quantityBefore
+                || !java.util.Objects.equals(roundedPackCount, packsBefore)
+                || !java.util.Objects.equals(clinicalUom, uomBefore)
+                || !java.util.Objects.equals(quantityCalculationNote, noteBefore)
+                || (prescribedVolumeClinical == null ? volumeBefore != null
+                        : volumeBefore == null || prescribedVolumeClinical.compareTo(volumeBefore) != 0);
+    }
+
+    /**
+     * True for a measured line whose pack count a pharmacist entered — {@link #confirmQuantity}
+     * records that count as both {@link #quantity} and {@link #roundedPackCount}. An engine
+     * resolution sets {@code quantity = packs × packSize} instead, and a measured pack of one
+     * millilitre is refused by the catalogue (see migration 20260910000001), so the two shapes
+     * cannot be confused in the direction that matters.
+     */
+    private boolean isPharmacistSettledMeasured() {
+        return clinicalUom != null && roundedPackCount != null && roundedPackCount == quantity;
     }
 
     /**

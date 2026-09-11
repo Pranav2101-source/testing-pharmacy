@@ -1,5 +1,6 @@
 package com.checkup.pharmacy.modules.medicine;
 
+import com.checkup.pharmacy.common.enums.PackSizeConfidence;
 import jakarta.persistence.Column;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
@@ -46,6 +47,18 @@ public class PharmacyMedicineOverride {
     /** Per-pharmacy pack size — wins over {@code Medicine.unitsPerPack} when set. */
     @Column(name = "unitsPerPack")
     private Integer unitsPerPack;
+
+    /**
+     * The exact pack size this pharmacy last checked against a physical pack. Unlike
+     * {@link #looseConfirmedAt} it is re-stamped on every confirmation, so it always names the
+     * number that was checked — see {@link #effectivePackSizeConfidence}.
+     */
+    @Column(name = "confirmedUnitsPerPack")
+    private Integer confirmedUnitsPerPack;
+
+    /** When {@link #confirmedUnitsPerPack} was last confirmed. */
+    @Column(name = "packSizeConfirmedAt")
+    private Instant packSizeConfirmedAt;
 
     @Column(name = "notes")
     private String notes;
@@ -97,6 +110,48 @@ public class PharmacyMedicineOverride {
         return upp != null && upp > 0 ? upp : 1;
     }
 
+    /**
+     * How far the pack size THIS pharmacy bills by may be trusted — the trust state of the
+     * number {@link #effectiveUnitsPerPack} returns, which is not always the catalogue's.
+     *
+     * <p>The catalogue's {@code packSizeConfidence} describes the catalogue's own number. When
+     * this pharmacy's override supplies the divisor instead, that verdict is about a number
+     * billing is not using; and when a pharmacist here has checked the number billing IS using,
+     * the catalogue cannot know it. Reporting the catalogue's state regardless meant a pharmacist
+     * could follow the badge, check the bottle, confirm it — and come back to the same badge.
+     *
+     * <ul>
+     *   <li><b>VERIFIED</b> when this pharmacy confirmed exactly the number in use. A comparison,
+     *       not a flag: once the catalogue or the override moves, the confirmation stops matching
+     *       and trust falls back below without anyone having to remember to clear it.</li>
+     *   <li>Otherwise, when the number in use IS the catalogue's, the catalogue's own state —
+     *       including a quorum's DISPUTED.</li>
+     *   <li>Otherwise the number is this pharmacy's own and nobody has checked it: UNVERIFIED.</li>
+     * </ul>
+     *
+     * <p>Never writes anything back to the catalogue: one shop holding a bottle vouches for its
+     * own billing, not for a shared value every other pharmacy divides by.
+     *
+     * @return null when nothing has classified the pack size — which is not the same as UNVERIFIED
+     */
+    public static PackSizeConfidence effectivePackSizeConfidence(PharmacyMedicineOverride override,
+                                                                 Medicine medicine) {
+        Integer inUse = effectiveUnitsPerPack(override, medicine);
+        if (inUse == null) {
+            return null;
+        }
+        if (override != null && inUse.equals(override.confirmedUnitsPerPack)) {
+            return PackSizeConfidence.VERIFIED;
+        }
+        if (medicine != null && inUse.equals(medicine.getUnitsPerPack())) {
+            // The trigger guarantees a classified catalogue row carries a confidence; a row that
+            // somehow does not is, by definition, one nobody vouched for.
+            return medicine.getPackSizeConfidence() != null
+                    ? medicine.getPackSizeConfidence() : PackSizeConfidence.UNVERIFIED;
+        }
+        return PackSizeConfidence.UNVERIFIED;
+    }
+
     public static PharmacyMedicineOverride create(String pharmacyId, String medicineId) {
         PharmacyMedicineOverride o = new PharmacyMedicineOverride();
         o.id = new PharmacyMedicineOverrideId(pharmacyId, medicineId);
@@ -140,6 +195,17 @@ public class PharmacyMedicineOverride {
         this.updatedAt = Instant.now();
     }
 
+    /**
+     * Records that a pharmacist here has just checked {@code unitsPerPack} against a physical
+     * pack. Re-stamped every time, never sticky: the point is to remember WHICH number was
+     * checked, so a later change to either the override or the catalogue is visibly unchecked.
+     */
+    public void confirmPackSize(int unitsPerPack, Instant when) {
+        this.confirmedUnitsPerPack = unitsPerPack;
+        this.packSizeConfirmedAt = when;
+        this.updatedAt = when;
+    }
+
     public String getPharmacyId() { return id.getPharmacyId(); }
 
     public String getMedicineId() { return id.getMedicineId(); }
@@ -155,6 +221,10 @@ public class PharmacyMedicineOverride {
     public Instant getLooseConfirmedAt() { return looseConfirmedAt; }
 
     public Integer getUnitsPerPack() { return unitsPerPack; }
+
+    public Integer getConfirmedUnitsPerPack() { return confirmedUnitsPerPack; }
+
+    public Instant getPackSizeConfirmedAt() { return packSizeConfirmedAt; }
 
     public String getNotes() { return notes; }
 }

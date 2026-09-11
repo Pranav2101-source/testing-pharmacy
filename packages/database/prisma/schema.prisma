@@ -569,6 +569,12 @@ model PharmacyMedicineOverride {
   // Per-pharmacy pack size, for a medicine the shared catalogue hasn't classified
   // (or got wrong). Billing uses COALESCE(this, medicine.unitsPerPack).
   unitsPerPack       Int?
+  // The exact pack size this pharmacy last checked against a physical pack, and when —
+  // re-stamped on every confirmation, unlike looseConfirmedAt. The pack size billing divides
+  // by counts as VERIFIED here only while it still equals this number. Never written to the
+  // shared catalogue: one shop's check vouches for its own billing, not everyone's.
+  confirmedUnitsPerPack Int?
+  packSizeConfirmedAt   DateTime?
   notes              String?
 
   createdAt DateTime @default(now())

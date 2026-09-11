@@ -130,11 +130,24 @@ public class PackSizeReviewService {
                 continue;
             }
 
-            // The divisor the pharmacists were disagreeing with, as recorded on the signals
-            // themselves rather than read off today's catalogue. If somebody corrected the pack
-            // size in the meantime, these votes were about the OLD number and prove nothing
-            // about the new one — mostSharedDeclaredPackSize returns 0 and the quorum declines.
-            int declared = agreedDeclaredPackSize(signals, medicine);
+            // Only votes cast against the catalogue's CURRENT number count. A vote recorded
+            // against any other divisor — a value somebody has since corrected, or a pharmacy's
+            // own override, which the catalogue never used — says nothing about this one.
+            //
+            // Those are closed out rather than left to veto the rest. An earlier version required
+            // EVERY open signal to match, so a single stale vote (or one shop with its own
+            // override) held the whole medicine below quorum for good: it was never counted, so
+            // it was never resolved, so it was there again the next night.
+            int declared = currentPackSize(medicine);
+            if (declared <= 0) {
+                continue;
+            }
+            List<PackSizeSignal> offTarget = signals.stream()
+                    .filter(s -> s.getDeclaredPackSize() != declared)
+                    .toList();
+            resolveAll(offTarget, "Cast against a pack size other than the catalogue's current "
+                    + declared + " — not evidence about it", now);
+            signals = signals.stream().filter(s -> s.getDeclaredPackSize() == declared).toList();
 
             List<PackSizeQuorum.Observation> observations = signals.stream()
                     .map(s -> new PackSizeQuorum.Observation(s.getPharmacyId(), s.getImpliedPackSize()))
@@ -160,20 +173,16 @@ public class PackSizeReviewService {
     }
 
     /**
-     * The pack size the signals were actually disagreeing with, or 0 when they no longer share
-     * one with the catalogue.
+     * The catalogue's pack size today, or 0 when it has none.
      *
-     * <p>Reading today's {@code unitsPerPack} instead would let a corrected medicine be
-     * quarantined on votes cast against the value it used to have — the loop punishing somebody
-     * for having already fixed the thing.
+     * <p>Each signal carries the divisor it was cast against, and only those matching this
+     * number are counted — otherwise a corrected medicine could be quarantined on votes cast
+     * against the value it used to have, the loop punishing somebody for having already fixed
+     * the thing.
      */
-    private static int agreedDeclaredPackSize(List<PackSizeSignal> signals, Medicine medicine) {
+    private static int currentPackSize(Medicine medicine) {
         Integer current = medicine.getUnitsPerPack();
-        if (current == null || current <= 0) {
-            return 0;
-        }
-        boolean allAgainstCurrent = signals.stream().allMatch(s -> s.getDeclaredPackSize() == current);
-        return allAgainstCurrent ? current : 0;
+        return current == null || current <= 0 ? 0 : current;
     }
 
     private static void resolveAll(List<PackSizeSignal> signals, String note, Instant when) {

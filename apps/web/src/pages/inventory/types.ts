@@ -42,9 +42,10 @@ export type InventoryItem = {
     schedule?:       string | null;
     packSize?:       string | null;
     /**
-     * How far the CATALOGUE's pack size may be trusted. Describes the shared catalogue number,
-     * NOT the effective `unitsPerPack` above (which may be this pharmacy's own override — that
-     * carries its own confirmation, see `looseConfirmedAt`).
+     * How far the pack size this pharmacy bills by (`unitsPerPack` above) may be trusted —
+     * VERIFIED once a pharmacist here has confirmed exactly that number, else the catalogue's
+     * own state when the number is the catalogue's. Measured medicines only; null otherwise.
+     * See `PharmacyMedicineOverride.effectivePackSizeConfidence`.
      */
     packSizeConfidence?: PackSizeConfidence | null;
   };

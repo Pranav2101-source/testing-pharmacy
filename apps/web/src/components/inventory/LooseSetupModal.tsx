@@ -65,6 +65,18 @@ export type LooseSetupIntent = "enable-loose" | "verify";
 
 type Row = LooseCandidate & { checked: boolean; value: string };
 
+/**
+ * The word after the units-per-pack box. `baseUnitLabel` is the raw base unit lower-cased, and
+ * blindly adding an "s" produced "60 mls", "gms" and "eachs" — on the very dialog that asks a
+ * pharmacist to read a bottle's volume carefully.
+ */
+function unitWord(label: string, n: number): string {
+  if (label === "ml") return "ml";
+  if (label === "gm") return "g";
+  if (label === "each") return n === 1 ? "piece" : "pieces";
+  return n === 1 ? label : `${label}s`;
+}
+
 type MedicineLike = {
   id:           string;
   name:         string;
@@ -319,7 +331,9 @@ export function LooseSetupModal({ only, intent = "enable-loose", onClose, onDone
                     <tr>
                       <th className="px-3 py-2 w-8" />
                       <th className="px-3 py-2 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wide">Medicine</th>
-                      <th className="px-3 py-2 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wide w-32">Units / pack</th>
+                      <th className="px-3 py-2 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wide w-32">
+                        {verifying ? "In one pack" : "Units / pack"}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -336,7 +350,9 @@ export function LooseSetupModal({ only, intent = "enable-loose", onClose, onDone
                             <input type="checkbox" checked={r.checked}
                               onChange={(e) => setRow(r.medicineId, { checked: e.target.checked })}
                               disabled={!!only}
-                              aria-label={`Include ${r.name} in loose selling setup`}
+                              aria-label={verifying
+                                ? `Confirm the pack size of ${r.name}`
+                                : `Include ${r.name} in loose selling setup`}
                               className="rounded border-slate-300" />
                           </td>
                           <td className="px-3 py-2 font-semibold text-slate-800">{r.name}</td>
@@ -350,7 +366,7 @@ export function LooseSetupModal({ only, intent = "enable-loose", onClose, onDone
                                   "w-16 border rounded px-2 py-1 text-[12px] text-center focus:outline-none focus:border-blue-400",
                                   invalid ? "border-red-300 bg-red-50" : isGuess ? "border-amber-300 bg-amber-50" : "border-slate-200",
                                 )} />
-                              <span className="text-slate-400">{r.baseUnitLabel}{Number(r.value) === 1 ? "" : "s"}</span>
+                              <span className="text-slate-400">{unitWord(r.baseUnitLabel, Number(r.value))}</span>
                             </div>
                           </td>
                         </tr>

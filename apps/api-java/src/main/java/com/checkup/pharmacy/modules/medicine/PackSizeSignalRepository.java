@@ -34,6 +34,14 @@ public interface PackSizeSignalRepository extends JpaRepository<PackSizeSignal, 
     /** Every uncounted signal for the given medicines. Cross-tenant, same as above. */
     List<PackSizeSignal> findByMedicineIdInAndResolvedAtIsNull(Collection<String> medicineIds);
 
+    /**
+     * This pharmacy's still-open signals against the given prescription lines. Read when a later
+     * sale continues a line, which proves the earlier short count was a split fill rather than a
+     * disagreement about the pack — see {@code BillingService#withdrawSplitFillSignals}.
+     */
+    List<PackSizeSignal> findByPharmacyIdAndPrescriptionItemIdInAndResolvedAtIsNull(
+            String pharmacyId, Collection<String> prescriptionItemIds);
+
     /** This pharmacy's own signals for one medicine — the tenant-scoped read, for a per-shop view. */
     List<PackSizeSignal> findByPharmacyIdAndMedicineIdOrderByCreatedAtDesc(String pharmacyId, String medicineId);
 }

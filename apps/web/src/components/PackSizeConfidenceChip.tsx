@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { ShieldQuestion, ShieldAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { getStoredUser } from "@/lib/auth";
 import { packSizeChip, verifyPackSizeHref, type PackSizeConfidence } from "@/lib/packSizeConfidence";
 
 /**
@@ -18,9 +19,9 @@ import { packSizeChip, verifyPackSizeHref, type PackSizeConfidence } from "@/lib
  * hence slate rather than amber, no blocking, no acknowledgement to click. A badge that fires on
  * half the lines and demands a dismissal is a badge people learn to dismiss without reading.
  *
- * <p>Rendered with an action wherever a pharmacist can actually do something (Inventory), and as
- * plain text where they cannot (a modal with no route out) — a chip that looks clickable and
- * isn't is worse than one that never offered.
+ * <p>Rendered with an action wherever the viewer can actually do something (Inventory), and as
+ * plain text where they cannot — a modal with no route out, or a viewer whose role the confirm
+ * endpoint refuses. A chip that looks clickable and isn't is worse than one that never offered.
  */
 export function PackSizeConfidenceChip({
   confidence,
@@ -55,6 +56,23 @@ export function PackSizeConfidenceChip({
     chip.className,
     className,
   );
+
+  // Confirming a pack size writes through PATCH /medicines/:id/loose-settings, which is
+  // OWNER/MANAGER only. Anyone else still needs to SEE the state — a cashier is the one about to
+  // hand the bottles over — but offering them a button or a link ends in a refusal, so theirs is
+  // the plain badge with the route spelled out instead.
+  const offersAction = !!onVerify || !!(medicineId && medicineName);
+  const canConfirm = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
+  if (offersAction && !canConfirm) {
+    return (
+      <span
+        title={`${chip.title}\n\nOnly an owner or manager can confirm a pack size — ask one to check it against a pack.`}
+        className={base}
+      >
+        {body}
+      </span>
+    );
+  }
 
   if (onVerify) {
     return (

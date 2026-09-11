@@ -1664,12 +1664,21 @@ public class BillingService {
                                                     Map<String, Integer> packsByMedicineId,
                                                     String invoiceId) {
         List<PrescriptionItem> items = prescriptionItemRepository.findByPrescriptionId(prescription.getId());
+        // Lines this sale CONTINUES rather than starts — see withdrawSplitFillSignals.
+        List<String> continuedItemIds = new ArrayList<>();
 
         for (PrescriptionItem item : items) {
+            // Read before recordDispensed moves it: what matters is whether an EARLIER sale
+            // had already handed something over against this line.
+            boolean continuesEarlierSale = item.getDispensedQty() > 0;
             Attribution attributed = attributedByItemId.get(item.getId());
             if (attributed != null) {
                 item.recordDispensed(attributed.units());
-                capturePackSizeSignal(prescription, item, attributed.medicineId(), attributed.packs(), invoiceId);
+                if (continuesEarlierSale) {
+                    continuedItemIds.add(item.getId());
+                } else {
+                    capturePackSizeSignal(prescription, item, attributed.medicineId(), attributed.packs(), invoiceId);
+                }
                 // Only when it genuinely differs. Recording a "substitution" for the product
                 // that was prescribed would put a spurious swap in front of a clinician.
                 if (!attributed.medicineId().equals(item.getMedicineId())) {
@@ -1683,10 +1692,15 @@ public class BillingService {
             Integer units = dispensedByMedicineId.get(item.getMedicineId());
             if (units != null) {
                 item.recordDispensed(units);
-                capturePackSizeSignal(prescription, item, item.getMedicineId(),
-                        packsByMedicineId.getOrDefault(item.getMedicineId(), 0), invoiceId);
+                if (continuesEarlierSale) {
+                    continuedItemIds.add(item.getId());
+                } else {
+                    capturePackSizeSignal(prescription, item, item.getMedicineId(),
+                            packsByMedicineId.getOrDefault(item.getMedicineId(), 0), invoiceId);
+                }
             }
         }
+        withdrawSplitFillSignals(prescription.getPharmacyId(), continuedItemIds);
 
         boolean everythingCollected = !items.isEmpty()
                 && items.stream().allMatch(PrescriptionItem::isFullyDispensed);
@@ -1755,6 +1769,38 @@ public class BillingService {
         } catch (RuntimeException e) {
             log.warn("Could not record a pack-size signal for prescription item {} — the sale is unaffected",
                     item.getId(), e);
+        }
+    }
+
+    /**
+     * Withdraws the signals an earlier sale left against lines this sale has just continued.
+     *
+     * <p>A short count at the till is ambiguous when it happens: "one bottle, not the two the
+     * engine asked for" is what a wrong pack size looks like, and it is equally what a patient
+     * collecting half a course today looks like. A second sale against the same line settles it —
+     * the course was split, and the first sale's count says nothing about the pack. Left in
+     * place, a split fill counted as a vote for a pack at least the whole course's volume (105 ml
+     * against a correct 60 ml bottle), and two shops splitting ordinary courses could quarantine
+     * a correct catalogue row. The continuing sale captures no signal of its own for the same
+     * reason — its count is a remainder, not a course.
+     *
+     * <p>One batched read for every continued line on the bill. Never throws, like
+     * {@link #capturePackSizeSignal}: the sale is the real work.
+     */
+    private void withdrawSplitFillSignals(String pharmacyId, List<String> continuedItemIds) {
+        if (continuedItemIds.isEmpty()) {
+            return;
+        }
+        try {
+            Instant now = Instant.now();
+            for (PackSizeSignal s : packSizeSignalRepository
+                    .findByPharmacyIdAndPrescriptionItemIdInAndResolvedAtIsNull(pharmacyId, continuedItemIds)) {
+                s.resolve("Course completed across more than one sale — a split fill, "
+                        + "not a disagreement about the pack", now);
+            }
+        } catch (RuntimeException e) {
+            log.warn("Could not withdraw split-fill pack-size signals for items {} — the sale is unaffected",
+                    continuedItemIds, e);
         }
     }
 

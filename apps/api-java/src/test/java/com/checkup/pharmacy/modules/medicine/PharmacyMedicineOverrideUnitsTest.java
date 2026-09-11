@@ -1,9 +1,11 @@
 package com.checkup.pharmacy.modules.medicine;
 
+import com.checkup.pharmacy.common.enums.PackSizeConfidence;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -91,5 +93,85 @@ class PharmacyMedicineOverrideUnitsTest {
     void nonPositiveTreatedAsOne() {
         assertThat(PharmacyMedicineOverride.effectivePackMultiple(null, medicine(0))).isEqualTo(1);
         assertThat(PharmacyMedicineOverride.effectivePackMultiple(null, medicine(-5))).isEqualTo(1);
+    }
+
+    // ── effectivePackSizeConfidence — the trust state of the number billing divides by ──────
+
+    private static Medicine medicine(Integer unitsPerPack, PackSizeConfidence confidence) {
+        Medicine m = medicine(unitsPerPack);
+        set(m, "packSizeConfidence", confidence);
+        return m;
+    }
+
+    private static PharmacyMedicineOverride confirmed(Integer overrideUpp, int confirmedUpp) {
+        PharmacyMedicineOverride o = override(overrideUpp);
+        o.confirmPackSize(confirmedUpp, Instant.now());
+        return o;
+    }
+
+    @Test
+    @DisplayName("the reported gap: confirming the CATALOGUE's number here clears the badge for this pharmacy")
+    void confirmingTheCatalogueNumberVerifiesItHere() {
+        // The verify dialog sends no pack size when the pharmacist confirms the catalogue's own
+        // value (so later catalogue corrections still reach them) — the confirmation alone must
+        // be enough, or the chip comes straight back after they have checked the bottle.
+        Medicine m = medicine(60, PackSizeConfidence.UNVERIFIED);
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(confirmed(null, 60), m))
+                .isEqualTo(PackSizeConfidence.VERIFIED);
+    }
+
+    @Test
+    @DisplayName("confirming this pharmacy's own override number verifies it here")
+    void confirmingTheOverrideNumberVerifiesIt() {
+        Medicine m = medicine(5, PackSizeConfidence.DISPUTED);
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(confirmed(60, 60), m))
+                .isEqualTo(PackSizeConfidence.VERIFIED);
+    }
+
+    @Test
+    @DisplayName("an old confirmation of a DIFFERENT number vouches for nothing — the looseConfirmedAt trap")
+    void aConfirmationOfAnotherNumberDoesNotCarryOver() {
+        // Confirmed 10 once, the override has since moved to 60 without a confirmation.
+        PharmacyMedicineOverride o = confirmed(10, 10);
+        o.applyLoosePos(false, 60);
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(o, medicine(null, null)))
+                .isEqualTo(PackSizeConfidence.UNVERIFIED);
+    }
+
+    @Test
+    @DisplayName("a catalogue correction after the confirmation brings the catalogue's state back")
+    void aCatalogueChangeOutdatesTheConfirmation() {
+        Medicine corrected = medicine(100, PackSizeConfidence.UNVERIFIED);
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(confirmed(null, 60), corrected))
+                .isEqualTo(PackSizeConfidence.UNVERIFIED);
+    }
+
+    @Test
+    @DisplayName("an unconfirmed override number is UNVERIFIED — the catalogue's verdict is about a different number")
+    void anUnconfirmedOverrideIgnoresTheCatalogueVerdict() {
+        // Neither VERIFIED nor DISPUTED on the catalogue says anything about 30.
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(override(30),
+                medicine(60, PackSizeConfidence.VERIFIED))).isEqualTo(PackSizeConfidence.UNVERIFIED);
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(override(30),
+                medicine(5, PackSizeConfidence.DISPUTED))).isEqualTo(PackSizeConfidence.UNVERIFIED);
+    }
+
+    @Test
+    @DisplayName("with no confirmation here, the catalogue's number carries the catalogue's state — quorum dispute included")
+    void catalogueStateWhenTheNumberIsTheCatalogues() {
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(null,
+                medicine(5, PackSizeConfidence.DISPUTED))).isEqualTo(PackSizeConfidence.DISPUTED);
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(override(null),
+                medicine(60, PackSizeConfidence.VERIFIED))).isEqualTo(PackSizeConfidence.VERIFIED);
+        // An override that happens to equal the catalogue shares its verdict — same number.
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(override(60),
+                medicine(60, PackSizeConfidence.VERIFIED))).isEqualTo(PackSizeConfidence.VERIFIED);
+    }
+
+    @Test
+    @DisplayName("null when nothing has classified the pack size — distinct from UNVERIFIED")
+    void unclassifiedHasNoConfidence() {
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(null, medicine(null, null))).isNull();
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(override(null), null)).isNull();
     }
 }

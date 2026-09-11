@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ClinicPrescriptionTriage, { type TriagePrescription } from "./ClinicPrescriptionTriage";
 import { ToastProvider } from "@/hooks/useToast";
 import { api } from "@/lib/api-client";
+import { storeUser } from "@/lib/auth";
 
 /**
  * A prescribed line can be blocked from billing for two independent reasons — an unmatched
@@ -41,20 +42,28 @@ function baseRx(overrides: Partial<TriagePrescription> = {}): TriagePrescription
   };
 }
 
-function renderTriage(rx: TriagePrescription) {
+function renderTriage(rx: TriagePrescription, onChanged: () => void = vi.fn()) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <ToastProvider>
-          <ClinicPrescriptionTriage rx={rx} onClose={vi.fn()} onChanged={vi.fn()} onOpenFullDetail={vi.fn()} />
+          <ClinicPrescriptionTriage rx={rx} onClose={vi.fn()} onChanged={onChanged} onOpenFullDetail={vi.fn()} />
         </ToastProvider>
       </QueryClientProvider>
     </MemoryRouter>,
   );
 }
 
+/** The chip's link and the warning's fix-it link are role-gated — see PackSizeConfidenceChip. */
+function signInAs(role: string) {
+  storeUser({ id: "u1", name: "Test", email: "t@test.local", role, pharmacyId: "ph-1", pharmacyName: "Test" });
+}
+
 beforeEach(() => {
+  localStorage.clear();
+  // Call history would otherwise leak between tests ("was NOT called" assertions included).
+  vi.clearAllMocks();
   mockApi.get.mockResolvedValue({ data: { data: { items: [] } } });
   mockApi.patch.mockResolvedValue({ data: { data: {} } });
 });
@@ -301,7 +310,8 @@ describe("ClinicPrescriptionTriage: pack-size confidence chip", () => {
     expect(screen.getByRole("button", { name: /Continue to Billing/i })).toBeEnabled();
   });
 
-  it("links the pharmacist to the screen where the pack size can actually be confirmed", async () => {
+  it("links an owner or manager to the screen where the pack size can actually be confirmed", async () => {
+    signInAs("MANAGER");
     stockWith({ packSizeConfidence: "UNVERIFIED" });
     renderTriage(baseRx({ items: [melgainLine] }));
 
@@ -310,6 +320,18 @@ describe("ClinicPrescriptionTriage: pack-size confidence chip", () => {
     expect(href).toContain("/dashboard/inventory");
     expect(href).toContain("verifyPackSize=med_1");
     expect(href).toContain("search=Melgain");
+  });
+
+  it("shows anyone else the same chip, read-only, naming who can confirm it — never a link to a refusal", async () => {
+    // The confirm endpoint is OWNER/MANAGER only. A pharmacist still needs to see the state,
+    // but a link would land them on a screen that refuses the save.
+    signInAs("PHARMACIST");
+    stockWith({ packSizeConfidence: "UNVERIFIED" });
+    renderTriage(baseRx({ items: [melgainLine] }));
+
+    const chip = await screen.findByText(/Unverified pack size/i);
+    expect(screen.queryByRole("link", { name: /Unverified pack size/i })).not.toBeInTheDocument();
+    expect(chip.closest("span[title]")?.getAttribute("title")).toMatch(/owner or manager/i);
   });
 
   it("says nothing when the pack size has been verified", async () => {
@@ -354,6 +376,43 @@ describe("ClinicPrescriptionTriage: catalogue re-resolution on open", () => {
     await vi.waitFor(() => {
       expect(mockApi.patch).toHaveBeenCalledWith("/prescriptions/rx_1/re-resolve");
     });
+  });
+
+  it("refetches the prescription only when a line actually came back different", async () => {
+    const line = {
+      id: "i1", medicineName: "Melgain", medicineId: "med_1", schedule: null,
+      quantity: 40, dispensedQty: 0, dosage: "1-0-1", duration: "4 days",
+    };
+    // Nothing changed server-side: calling onChanged here refetched on every single open.
+    mockApi.patch.mockResolvedValueOnce({ data: { data: { items: [{ ...line }] } } });
+    const unchanged = vi.fn();
+    renderTriage(baseRx({ items: [line] }), unchanged);
+    await vi.waitFor(() => expect(mockApi.patch).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(unchanged).not.toHaveBeenCalled();
+
+    // A line re-resolved to one 60 ml bottle IS news, and the parent must hear it.
+    mockApi.patch.mockResolvedValueOnce({ data: { data: { items: [
+      { ...line, quantity: 60, roundedPackCount: 1, clinicalUom: "ML" },
+    ] } } });
+    const changed = vi.fn();
+    renderTriage(baseRx({ id: "rx_2", items: [line] }), changed);
+    await vi.waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
+  });
+
+  it("does not ask at all when no line could qualify", async () => {
+    // Everything is either unmatched or already has stock handed over against it — the server
+    // would refuse every line, so the write request is pure overhead.
+    renderTriage(baseRx({
+      items: [
+        { id: "i1", medicineName: "Unknown", medicineId: null, schedule: null,
+          quantity: 5, dispensedQty: 0, dosage: null, duration: null },
+        { id: "i2", medicineName: "Melgain", medicineId: "med_1", schedule: null,
+          quantity: 60, dispensedQty: 60, dosage: null, duration: null },
+      ],
+    }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockApi.patch).not.toHaveBeenCalledWith("/prescriptions/rx_1/re-resolve");
   });
 
   it("still renders when re-resolution fails — it is a correction, not the pharmacist's task", async () => {

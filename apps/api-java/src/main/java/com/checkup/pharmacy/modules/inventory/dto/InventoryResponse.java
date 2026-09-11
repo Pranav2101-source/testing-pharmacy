@@ -43,12 +43,13 @@ public record InventoryResponse(
      * and {@code packSize} (free text like "10s") is what a units-per-pack guess is
      * parsed from when the catalogue has no structured {@code unitsPerPack}.
      *
-     * <p>{@code packSizeConfidence} — "VERIFIED" | "UNVERIFIED" | "DISPUTED", or null when
-     * nothing has classified the medicine — describes the CATALOGUE's pack size, not the
-     * effective one above. That distinction is deliberate: this pharmacy's own override
-     * carries its own confirmation (see {@code PharmacyMedicineOverride.looseConfirmedAt}), and
-     * letting one vouch for the other would mean a pharmacy that checked its own strip had, by
-     * implication, checked a shared catalogue number it has never seen.
+     * <p>{@code packSizeConfidence} — "VERIFIED" | "UNVERIFIED" | "DISPUTED", or null — is the
+     * trust state of the EFFECTIVE {@code unitsPerPack} above, the number this pharmacy bills
+     * by (see {@code PharmacyMedicineOverride.effectivePackSizeConfidence}): VERIFIED when a
+     * pharmacist here confirmed exactly that number, else the catalogue's own state when the
+     * number is the catalogue's. Nothing here writes back to the catalogue, so one pharmacy's
+     * check never vouches for a shared value. Null for a countable medicine and for one with no
+     * pack size on record.
      */
     public record MedicineRef(String id, String name, String genericName, String form, String strength, String unit,
                               boolean isActive, java.math.BigDecimal gstRate, String hsnCode,

@@ -63,10 +63,17 @@ export function packSizeChip(confidence: PackSizeConfidence | null | undefined):
     case "DISPUTED":
       return {
         label: "Pack size disputed",
+        // Two different routes lead here and the pharmacist needs both named: the migration flags
+        // a pack size that contradicts the medicine's own record, and — far more often since the
+        // feedback loop — a quorum of pharmacies has been dispensing a different number of packs
+        // than this size implies. Naming only the first sends someone hunting for a strength typo
+        // that is not there.
         title:
-          "This pack size contradicts something else on the medicine's own record — usually its "
-          + "strength or concentration entered into the pack-size field. Treat the quantity on "
-          + "this line as unreliable until it has been checked against a physical pack.",
+          "This pack size has been flagged as likely wrong — either it contradicts the medicine's "
+          + "own record (often a strength or concentration typed into the pack-size field), or "
+          + "pharmacists at several shops have been dispensing a different number of packs than it "
+          + "implies. Treat the quantity on this line as unreliable until it has been checked "
+          + "against a physical pack.",
         className: "border-red-200 bg-red-50 text-red-700",
         urgent: true,
       };
@@ -84,10 +91,11 @@ export function needsPackSizeCheck(confidence: PackSizeConfidence | null | undef
  * Deep link to the one screen where a pharmacist can actually record a checked pack size —
  * Inventory → Batches, with the row's own "confirm the pack size" dialog already open.
  *
- * The medicine name rides along as the search term because that dialog is built from a row in
- * the batch list, and a pharmacy with two thousand batches will not have the right one on the
- * first page. Both params are consumed and stripped by BatchesTab so a refresh does not reopen
- * the dialog over whatever the pharmacist moved on to.
+ * The dialog is built from the medicine itself (fetched by id), so it opens whether or not a
+ * batch of it is on the shelf. The name rides along as the search term so the list behind the
+ * dialog shows that medicine's batches rather than page one of everything. `verifyPackSize` is
+ * consumed and stripped by BatchesTab so a refresh does not reopen the dialog over whatever the
+ * pharmacist moved on to.
  */
 export function verifyPackSizeHref(medicineId: string, medicineName: string): string {
   const params = new URLSearchParams({

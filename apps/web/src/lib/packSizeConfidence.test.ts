@@ -33,6 +33,14 @@ describe("packSizeChip", () => {
     expect(chip?.urgent).toBe(true);
     expect(chip?.className).toContain("red");
   });
+
+  it("names BOTH routes to a disputed pack size, not just a strength typo", () => {
+    // Since the feedback loop, a quorum of pharmacies is the usual reason — a tooltip that only
+    // mentioned a strength typed into the pack-size field sent people looking for one.
+    const title = packSizeChip("DISPUTED")?.title ?? "";
+    expect(title).toMatch(/strength or concentration/i);
+    expect(title).toMatch(/several shops/i);
+  });
 });
 
 describe("needsPackSizeCheck", () => {
@@ -57,8 +65,8 @@ describe("verifyPackSizeHref", () => {
     const params = new URLSearchParams(href.split("?")[1]);
     expect(params.get("tab")).toBe("batches");
     expect(params.get("verifyPackSize")).toBe("med_1");
-    // Without the search term the deep link would open page one of every batch the
-    // pharmacy holds, and the row it is meant to act on would not be among them.
+    // Without the search term the list behind the dialog would show page one of every batch
+    // the pharmacy holds, rather than the medicine being confirmed.
     expect(params.get("search")).toBe("Melgain 5% Solution");
   });
 

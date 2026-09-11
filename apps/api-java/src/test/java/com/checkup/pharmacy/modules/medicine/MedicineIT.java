@@ -182,6 +182,58 @@ class MedicineIT extends AbstractPostgresIT {
         assertThat(created.packSizeVerifiedAt()).isNotNull();
     }
 
+    /**
+     * The chip gap: a pharmacist following the "Unverified pack size" chip confirms the bottle,
+     * and that confirmation lives on THIS pharmacy's override — so it has to be what this
+     * pharmacy's badge reads, or the chip comes straight back after they have checked.
+     */
+    @Test
+    @DisplayName("confirming a pack size at the counter verifies it for this pharmacy only — the catalogue row is untouched")
+    void counterConfirmationVerifiesForThisPharmacyOnly() {
+        var created = medicineService.create(new CreateMedicineRequest("Scalp Lotion " + unique(), "Minoxidil",
+                "Mfr", null, null, null, null, new BigDecimal("12"), "Lotion", "5%", "Bottle", null, 60, "ML", null));
+        assertThat(created.packSizeConfidence()).isEqualTo("UNVERIFIED");
+        flushAndClear();
+
+        // Exactly what LooseSetupModal's verify intent sends when the bottle matches the
+        // catalogue: no pack size (so later catalogue corrections still reach this pharmacy),
+        // loose selling explicitly left off, and the tick.
+        medicineService.setLoosePosSettings(created.id(),
+                new com.checkup.pharmacy.modules.medicine.dto.LoosePosSettingsRequest(false, null, null, true));
+        flushAndClear();
+
+        PharmacyMedicineOverride override = overrideRepository
+                .findByIdPharmacyIdAndIdMedicineId(pharmacyId, created.id()).orElseThrow();
+        assertThat(override.getConfirmedUnitsPerPack()).isEqualTo(60);
+        assertThat(override.getPackSizeConfirmedAt()).isNotNull();
+        assertThat(override.getUnitsPerPack()).isNull();
+        // Confirming a bottle's volume must not be what turns on selling it by the millilitre.
+        assertThat(override.isAllowLooseSale()).isFalse();
+
+        Medicine catalogue = medicineRepository.findById(created.id()).orElseThrow();
+        assertThat(PharmacyMedicineOverride.effectivePackSizeConfidence(override, catalogue))
+                .isEqualTo(com.checkup.pharmacy.common.enums.PackSizeConfidence.VERIFIED);
+        // One shop's check vouches for its own billing, never for the shared row.
+        assertThat(catalogue.getPackSizeConfidence())
+                .isEqualTo(com.checkup.pharmacy.common.enums.PackSizeConfidence.UNVERIFIED);
+    }
+
+    @Test
+    @DisplayName("GET one medicine resolves this pharmacy's own pack size and loose setting")
+    void getResolvesThisPharmacysView() {
+        var created = medicineService.create(new CreateMedicineRequest("Override Syrup " + unique(), "Dextro",
+                "Mfr", null, null, null, null, new BigDecimal("12"), "Syrup", null, "Bottle", null, 100, "ML", null));
+        flushAndClear();
+        medicineService.setLoosePosSettings(created.id(),
+                new com.checkup.pharmacy.modules.medicine.dto.LoosePosSettingsRequest(false, 60, null, true));
+        flushAndClear();
+
+        var view = medicineService.get(created.id());
+        assertThat(view.unitsPerPack()).isEqualTo(60);
+        assertThat(view.allowLooseSale()).isFalse();
+        assertThat(view.baseUnit()).isEqualTo("ML");
+    }
+
     /** The incident itself: Melgain's 5% concentration entered as a 5 ml pack size. */
     @Test
     @DisplayName("a pack size equal to the medicine's own strength is refused outright")

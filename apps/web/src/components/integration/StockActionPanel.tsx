@@ -39,8 +39,10 @@ export type StockInfo = {
   /** Set when `projectedPackCount` is an implausible course for this dosage form. */
   packCountWarning?: string | null;
   /**
-   * How far the CATALOGUE's pack size may be trusted — "VERIFIED" | "UNVERIFIED" | "DISPUTED",
-   * or null/absent when the medicine is countable or unclassified.
+   * How far `effectivePackSize` — the number this pharmacy bills by — may be trusted:
+   * "VERIFIED" | "UNVERIFIED" | "DISPUTED", or null/absent when the medicine is countable or
+   * unclassified. A pharmacist here confirming that exact number makes it VERIFIED for this
+   * pharmacy without touching the shared catalogue.
    *
    * Distinct from `packCountWarning` above and not a substitute for it: that fires when the
    * arithmetic looks wrong, this says whether anyone ever checked the number the arithmetic

@@ -88,6 +88,16 @@ public class MedicineController {
         return ApiResponse.ok(medicineService.quickSearch(q, limit, includeLocal));
     }
 
+    /**
+     * One medicine with this pharmacy's pack size and loose setting resolved. Declared after
+     * the literal GET paths above for readability only — Spring ranks literal segments over
+     * a template, so {@code /search} and {@code /overrides} are never captured as an id.
+     */
+    @GetMapping("/{id}")
+    public ApiResponse<MedicineResponse> get(@PathVariable String id) {
+        return ApiResponse.ok(medicineService.get(id));
+    }
+
     @GetMapping("/barcode/{code}")
     public ApiResponse<MedicineResponse> findByBarcode(@PathVariable String code) {
         return ApiResponse.ok(medicineService.findByBarcode(code));

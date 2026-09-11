@@ -462,6 +462,12 @@ public class MedicineService {
                     req.notes() != null ? req.notes() : override.getNotes());
         }
         override.applyLoosePos(allowLoose, overrideUpp, looseByDefault, persistToLooseConfirmedAt);
+        // Separately from looseConfirmedAt, which is sticky and cannot say which number it
+        // covered: record the exact pack size just checked, so the trust badge can tell whether
+        // the number billing divides by is still that one. See effectivePackSizeConfidence.
+        if (confirmedNow && effectiveUpp != null && effectiveUpp > 0) {
+            override.confirmPackSize(effectiveUpp, java.time.Instant.now());
+        }
         overrideRepository.save(override);
         return toOverrideResponse(override, medicine.getUnitsPerPack());
     }
@@ -645,6 +651,18 @@ public class MedicineService {
             results.sort(Comparator.comparing(r -> !r.inStock()));
         }
         return results;
+    }
+
+    /**
+     * One medicine as this pharmacy sees it — its own pack size, loose setting and trust state
+     * resolved, the same shape the POS search returns. Backs the confirm-pack-size deep link,
+     * which must work for a medicine with no batch on the shelf: building it from the
+     * Inventory list instead left that case with no dialog and no explanation.
+     */
+    @Transactional(readOnly = true)
+    public MedicineResponse get(String id) {
+        Medicine m = load(id);
+        return toResponse(m, overridesByMedicineId(List.of(m.getId())).get(m.getId()));
     }
 
     /** Exact barcode lookup — returns any status (active or not) so the caller can surface a

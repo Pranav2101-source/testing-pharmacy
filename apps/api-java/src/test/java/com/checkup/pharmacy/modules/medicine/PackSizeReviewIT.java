@@ -178,6 +178,34 @@ class PackSizeReviewIT extends AbstractPostgresIT {
 
         assertThat(reviewService.reviewQuorums()).isZero();
         assertThat(reload(id).getPackSizeConfidence()).isNotEqualTo(PackSizeConfidence.DISPUTED);
+        // Closed out, not left open: they can never count against 60, and an open vote that can
+        // never count is one the sweep re-reads every night for nothing.
+        assertThat(signalRepository.findAll().stream().filter(s -> s.getMedicineId().equals(id)))
+                .allMatch(s -> s.getResolvedAt() != null);
+    }
+
+    @Test
+    @DisplayName("one stale or off-catalogue vote does not veto a quorum formed against the current pack size")
+    void anOffTargetVoteDoesNotBlockTheQuorum() {
+        String id = melgain();
+        // A vote cast against a different divisor — an older catalogue value, or a pharmacy
+        // whose own override supplied the pack size. An earlier version required EVERY open vote
+        // to match the catalogue, so this one alone held the medicine below quorum for good.
+        signal(pharmacyA, id, 1, 30);
+        // Three real disagreements with today's 5 ml, from two shops.
+        signal(pharmacyA, id, 1, 5);
+        signal(pharmacyB, id, 1, 5);
+        signal(pharmacyB, id, 1, 5);
+        flushAndClear();
+
+        assertThat(reviewService.reviewQuorums()).isEqualTo(1);
+        assertThat(reload(id).getPackSizeConfidence()).isEqualTo(PackSizeConfidence.DISPUTED);
+        // Every vote is closed out — the three that counted, and the off-target one.
+        assertThat(signalRepository.findAll().stream().filter(s -> s.getMedicineId().equals(id)))
+                .allMatch(s -> s.getResolvedAt() != null);
+        assertThat(signalRepository.findAll().stream()
+                .filter(s -> s.getMedicineId().equals(id) && s.getDeclaredPackSize() == 30))
+                .allMatch(s -> s.getResolutionNote().contains("not evidence"));
     }
 
     @Test

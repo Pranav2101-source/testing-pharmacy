@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   X, Stethoscope, Phone, Pill, Loader2, Receipt, BookmarkPlus, Ban,
@@ -23,7 +23,8 @@ import StockActionPanel, { pieceNoun, type StockInfo } from "@/components/integr
 import { usePackRoundingDecision } from "@/hooks/usePackRoundingDecision";
 import { measuredWords, measuredPackSize, isResolvedMeasured, formatConversion } from "@/lib/measuredUnits";
 import { PackSizeConfidenceChip } from "@/components/PackSizeConfidenceChip";
-import type { PackSizeConfidence } from "@/lib/packSizeConfidence";
+import { verifyPackSizeHref, type PackSizeConfidence } from "@/lib/packSizeConfidence";
+import { getStoredUser } from "@/lib/auth";
 import { saleUnitModel } from "@pharmacy/utils";
 
 const SCHEDULE_TOOLTIP: Record<string, string> = {
@@ -138,7 +139,7 @@ type StockResponseItem = {
   projectedPackCount?: number | null;
   /** Set when that pack count is an implausible course for the dosage form — see DispensePlausibility. */
   packCountWarning?: string | null;
-  /** How far the catalogue's pack size may be trusted; measured lines only. */
+  /** How far the pack size this pharmacy bills by may be trusted; measured lines only. */
   packSizeConfidence?: PackSizeConfidence | null;
 };
 
@@ -176,6 +177,9 @@ export default function ClinicPrescriptionTriage({
   const qc = useQueryClient();
   const loadDraft = useBillingStore((s) => s.loadDraft);
   const [busy, setBusy] = useState<"bill" | "draft" | "cancel" | null>(null);
+  // Correcting a pack size is OWNER/MANAGER only (PATCH /medicines/:id/loose-settings); anyone
+  // else is pointed at the person who can, rather than at a screen that will refuse them.
+  const canConfirmPackSize = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
 
   // A pharmacist's Replace/Hold/Remove decisions for out-of-stock lines, made right on this
   // screen. Local to this triage session on purpose — nothing here is written to the
@@ -201,11 +205,28 @@ export default function ClinicPrescriptionTriage({
    * Failure is deliberately silent: this is a correction, not the pharmacist's task. If it
    * cannot run, triage still renders the live conversion and the plausibility warning from the
    * stock check, which is what actually protects the bill.
+   *
+   * Two things keep it cheap. It is not sent at all when no line could qualify (every line is
+   * unmatched or already has something handed over against it). And the parent is told only
+   * when a line actually came back different: calling onChanged after every successful call
+   * refetched the prescription on every single open, almost always to learn nothing.
    */
   useEffect(() => {
+    if (!rx.items.some((i) => i.medicineId !== null && i.dispensedQty === 0)) return;
+    const before = new Map(rx.items.map((i) => [i.id, i]));
     let cancelled = false;
-    api.patch(`/prescriptions/${rx.id}/re-resolve`)
-      .then(() => { if (!cancelled) onChanged(); })
+    api.patch<{ data?: { items?: TriageItem[] } }>(`/prescriptions/${rx.id}/re-resolve`)
+      .then(({ data }) => {
+        if (cancelled) return;
+        const changed = (data?.data?.items ?? []).some((after) => {
+          const was = before.get(after.id);
+          return !was
+            || was.quantity !== after.quantity
+            || (was.roundedPackCount ?? null) !== (after.roundedPackCount ?? null)
+            || (was.clinicalUom ?? null) !== (after.clinicalUom ?? null);
+        });
+        if (changed) onChanged();
+      })
       .catch(() => { /* triage still shows the live conversion — see above */ });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -667,6 +688,25 @@ export default function ClinicPrescriptionTriage({
                         <AlertTriangle className="w-3.5 h-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
                         <div className="min-w-0 flex-1">
                           <p className="text-[11.5px] text-amber-900 leading-snug">{packWarning}</p>
+                          {/* Every way out, named — a warning that only says "check the pack size"
+                              leaves a pharmacist asking where. Fixing the number is an owner/manager
+                              job (the endpoint behind it is theirs), so anyone else is told who. */}
+                          {!acknowledged.has(item.id) && item.medicineId && (
+                            <p className="mt-1 text-[10.5px] text-amber-800 leading-snug">
+                              If the pack size is wrong,{" "}
+                              {canConfirmPackSize ? (
+                                <Link
+                                  to={verifyPackSizeHref(item.medicineId, item.medicineName)}
+                                  className="font-semibold underline underline-offset-2 hover:text-amber-900"
+                                >
+                                  correct it in Inventory
+                                </Link>
+                              ) : (
+                                <>ask an owner or manager to correct it</>
+                              )}
+                              . If the course really needs this many, acknowledge below — or Hold or Remove the line.
+                            </p>
+                          )}
                           {!acknowledged.has(item.id) && (
                             <button
                               type="button"
