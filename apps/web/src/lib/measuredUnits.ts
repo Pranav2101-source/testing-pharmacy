@@ -65,12 +65,22 @@ export function formatConversion(
   return `${round1(volume)} ${unit} ÷ ${packSize} ${unit}/${packWord} → ${packs} ${packs === 1 ? packWord : `${packWord}s`}`;
 }
 
-/** The pack size (mL/g per sealed pack) for a resolved measured line, or null. */
+/**
+ * The pack size (mL/g per sealed pack) for a resolved measured line, or null.
+ *
+ * Null also for a line a PHARMACIST settled by hand rather than the engine resolving — the
+ * tell is `quantity === roundedPackCount`, since confirming a held line stores the confirmed
+ * pack count as both (see `PrescriptionItem.confirmQuantity`). For that shape `quantity` is
+ * already a pack count, not a base-unit volume, so dividing it by itself would always answer
+ * "1" — the caller's fallback (report the raw amount, no pack size) is the honest answer here,
+ * same as for a line whose pack count was never resolved at all.
+ */
 export function measuredPackSize(line: {
   quantity: number;
   roundedPackCount?: number | null;
 }): number | null {
   if (!line.roundedPackCount || line.roundedPackCount <= 0) return null;
+  if (line.quantity === line.roundedPackCount) return null;
   return line.quantity / line.roundedPackCount;
 }
 

@@ -1,5 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { formatMeasuredAmount, measuredRxOvershoot, formatConversion } from "./measuredUnits";
+import { formatMeasuredAmount, measuredRxOvershoot, formatConversion, measuredPackSize } from "./measuredUnits";
+
+describe("measuredPackSize", () => {
+  it("divides the dispense target by the pack count for an engine-resolved line", () => {
+    expect(measuredPackSize({ quantity: 200, roundedPackCount: 2 })).toBe(100);
+  });
+
+  it("is null for a line no pack count has ever been resolved for", () => {
+    expect(measuredPackSize({ quantity: 40, roundedPackCount: null })).toBeNull();
+    expect(measuredPackSize({ quantity: 40, roundedPackCount: 0 })).toBeNull();
+  });
+
+  it("is null for a line a PHARMACIST settled by hand, not the engine", () => {
+    // confirmQuantity stores the pharmacist's confirmed pack count as BOTH quantity and
+    // roundedPackCount (see PrescriptionItem) — quantity === roundedPackCount is that shape's
+    // only tell, and it is not a real mL-per-pack figure to divide out. Dividing it anyway gave
+    // "1 ml" for a confirmed "3 bottles" — the reported bug.
+    expect(measuredPackSize({ quantity: 3, roundedPackCount: 3 })).toBeNull();
+  });
+});
 
 describe("formatMeasuredAmount", () => {
   it("renders sealed-pack count with the clinical volume in brackets", () => {

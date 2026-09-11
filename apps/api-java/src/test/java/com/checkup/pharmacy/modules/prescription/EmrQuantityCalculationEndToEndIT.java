@@ -493,4 +493,89 @@ class EmrQuantityCalculationEndToEndIT extends AbstractPostgresIT {
         assertThat(prescription.getDispenseNotifyStatus())
                 .as("callback queued so the clinic chart flips to DISPENSED").isEqualTo("PENDING");
     }
+
+    @Test
+    @DisplayName("stockCheck's live pack-count projection divides the CLINIC's prescribed volume, not the "
+            + "already-rounded dispense target — the two only ever looked the same because quantity is "
+            + "an exact multiple of the pack size IT was rounded against, not necessarily today's")
+    void stockCheckProjectsAgainstTheClinicalVolumeNotTheRoundedTarget() {
+        Medicine syrup = medicineRepository.save(Medicine.create("Ascoril Syrup 100ml", new BigDecimal("12")));
+        syrup.setPackaging(100, "ML");
+        medicineRepository.save(syrup);
+        entityManager.flush();
+        entityManager.clear();
+
+        // Clinic asks for 150 ml; at a 100 ml pack that rounds up to 2 sealed bottles (a 200 ml
+        // dispense target) — the reported case: triage showed "200 ml ÷ 100 ml/bottle" next
+        // to "Prescribed: 150 ml" one line up.
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "Ascoril Syrup 100ml", null, null, null,
+                150, "5ml-0-5ml", "15 days", null);
+        var request = new EmrPrescriptionIngestRequest("tenant-1", "rx-" + unique(), null, "Dr. Rao", "MCI-1",
+                null, "Asha Verma", 30, null, null, null, null, null, List.of(item));
+        String prescriptionId = emrIntegrationService.ingest(request).pharmacyPrescriptionId();
+
+        PrescriptionItem ingested = prescriptionItemRepository.findByPrescriptionId(prescriptionId).get(0);
+        assertThat(ingested.getQuantity()).as("2 sealed 100 ml bottles").isEqualTo(200);
+        assertThat(ingested.getPrescribedVolumeClinical()).isEqualByComparingTo("150");
+
+        // The catalogue is corrected to a 60 ml bottle after ingest — before anything is
+        // dispensed and before anyone has called re-resolve. Dividing the stale 200 ml target
+        // by 60 (=4) would disagree with dividing the clinic's actual 150 ml ask by 60 (=3).
+        syrup = medicineRepository.findById(syrup.getId()).orElseThrow();
+        syrup.setPackaging(60, "ML");
+        medicineRepository.save(syrup);
+        entityManager.flush();
+        entityManager.clear();
+
+        PrescriptionStockResponse stock = prescriptionService.stockCheck(prescriptionId);
+        assertThat(stock.items()).singleElement().satisfies(s -> {
+            assertThat(s.effectivePackSize()).isEqualTo(60);
+            assertThat(s.projectedPackCount())
+                    .as("ceil(150 / 60), the clinic's own ask — NOT ceil(200 / 60)").isEqualTo(3);
+        });
+    }
+
+    @Test
+    @DisplayName("stockCheck reports no live pack-count projection for a line a pharmacist already settled "
+            + "by hand — its quantity IS a confirmed pack count, not a volume to divide")
+    void stockCheckSuppressesTheProjectionForAPharmacistSettledLine() {
+        // Unclassified: resolveMeasuredEmrQuantity holds this line for the pharmacist instead
+        // of resolving it, which is what lets confirmQuantity store a pack count as `quantity`.
+        Medicine tonic = medicineRepository.save(Medicine.create("QA Held Tonic", new BigDecimal("12")));
+        tonic.setPackaging(null, "ML");
+        medicineRepository.save(tonic);
+        entityManager.flush();
+        entityManager.clear();
+
+        var item = new EmrPrescriptionIngestRequest.Item("item-1", "QA Held Tonic", null, null, null,
+                300, "10ml-0-10ml", "15 days", null);
+        var request = new EmrPrescriptionIngestRequest("tenant-1", "rx-" + unique(), null, "Dr. Rao", "MCI-1",
+                null, "Asha Verma", 40, null, null, null, null, null, List.of(item));
+        String prescriptionId = emrIntegrationService.ingest(request).pharmacyPrescriptionId();
+        String itemId = prescriptionItemRepository.findByPrescriptionId(prescriptionId).get(0).getId();
+
+        prescriptionService.confirmItemQuantity(prescriptionId, itemId, 3);
+        entityManager.flush();
+        entityManager.clear();
+
+        // The catalogue gains a pack size afterwards — exactly the sequence that reproduced the
+        // reported bug: "3 ml ÷ 50 ml/bottle → 1 bottle" beside a correctly confirmed
+        // "3 bottles", because 3 (the confirmed PACK COUNT) got divided as though it were mL.
+        PharmacyMedicineOverride override = PharmacyMedicineOverride.create(pharmacyId, tonic.getId());
+        override.applyLoosePos(false, 50);
+        overrideRepository.save(override);
+        entityManager.flush();
+        entityManager.clear();
+
+        PrescriptionStockResponse stock = prescriptionService.stockCheck(prescriptionId);
+        assertThat(stock.items()).singleElement().satisfies(s -> {
+            assertThat(s.effectivePackSize()).as("nothing to project — quantity is a confirmed pack count").isNull();
+            assertThat(s.projectedPackCount()).isNull();
+            assertThat(s.packCountWarning()).isNull();
+        });
+
+        PrescriptionItem settled = prescriptionItemRepository.findByPrescriptionId(prescriptionId).get(0);
+        assertThat(settled.getQuantity()).as("the pharmacist's 3 stands").isEqualTo(3);
+        assertThat(settled.getRoundedPackCount()).isEqualTo(3);
+    }
 }

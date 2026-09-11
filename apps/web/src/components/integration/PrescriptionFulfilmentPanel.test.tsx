@@ -75,6 +75,24 @@ describe("PrescriptionFulfilmentPanel: visibility", () => {
     expect(await screen.findByText("Dolo 650")).toBeInTheDocument();
     expect(screen.getByText(/6 left/)).toBeInTheDocument();
   });
+
+  it("names a pharmacist-settled measured line's remainder in bottles, not a fabricated 'ml'", async () => {
+    // confirmQuantity stores the confirmed pack count as BOTH quantity and roundedPackCount —
+    // "remaining" here is bottles, not mL, and formatMeasuredAmount's mL-shaped fallback would
+    // otherwise call it "3 ml left" beside a bill that reads "3 bottles".
+    mockApi.get.mockResolvedValue({ data: { data: {
+      id: "rx_1", externalTenantId: "clinic_1",
+      items: [{
+        id: "i1", medicineName: "QA Held Tonic", medicineId: "med_3", quantity: 3, dispensedQty: 0,
+        clinicalUom: "ML", roundedPackCount: 3,
+      }],
+    } } });
+    renderPanel();
+
+    expect(await screen.findByText("QA Held Tonic")).toBeInTheDocument();
+    expect(screen.getByText(/3 bottles left/)).toBeInTheDocument();
+    expect(screen.queryByText(/ml left/)).not.toBeInTheDocument();
+  });
 });
 
 describe("PrescriptionFulfilmentPanel: an unconfirmed-quantity line", () => {

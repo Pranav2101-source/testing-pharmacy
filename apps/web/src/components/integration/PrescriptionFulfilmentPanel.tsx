@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowRight } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { useBillingStore, type CartItem } from "@/components/billing/useBillingStore";
-import { formatMeasuredAmount, isResolvedMeasured, measuredPackSize } from "@/lib/measuredUnits";
+import { formatMeasuredAmount, isResolvedMeasured, measuredPackSize, measuredWords } from "@/lib/measuredUnits";
 
 type RxItem = {
   id: string;
@@ -19,6 +19,16 @@ type RxItem = {
 function remainingLabel(line: RxItem): string {
   const remaining = line.quantity - line.dispensedQty;
   if (isResolvedMeasured(line)) {
+    // A line a pharmacist settled by hand (confirmQuantity, on a line held for no pack size on
+    // record) stores the confirmed PACK COUNT as `quantity` — the tell is `quantity ===
+    // roundedPackCount`. "remaining" here is therefore already bottles, not ml, and
+    // formatMeasuredAmount's ml-shaped fallback (fed a null pack size by measuredPackSize for
+    // exactly this shape) would call it "3 ml left" beside a bill that reads "3 bottles". Name
+    // it as what it is instead of guessing a unit.
+    if (line.quantity === line.roundedPackCount) {
+      const { pack } = measuredWords(line.clinicalUom);
+      return `${remaining} ${remaining === 1 ? pack : `${pack}s`} left`;
+    }
     return `${formatMeasuredAmount(remaining, line.clinicalUom, measuredPackSize(line))} left`;
   }
   return `${remaining} left`;

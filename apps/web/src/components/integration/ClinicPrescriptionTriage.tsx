@@ -77,12 +77,25 @@ function measuredDispenseSummary(item: {
   const packs = item.roundedPackCount;
   if (volume == null || !item.clinicalUom || packs == null || packs <= 0) return null;
   const { unit, pack } = measuredWords(item.clinicalUom);
+  const packNoun = `${packs} ${pack}${packs === 1 ? "" : "s"}`;
+  const dosePart = [item.dosage, item.duration].filter(Boolean).join(" · ");
+  const prescribed = `Prescribed: ${volume} ${unit}${dosePart ? ` (${dosePart})` : ""}`;
+  // A pharmacist SETTLED this line by hand at the counter (confirmQuantity, on a line that had
+  // been held for no pack size on record) rather than the engine resolving it — the tell is
+  // `quantity === roundedPackCount`, since confirmQuantity stores the confirmed pack count as
+  // both. `item.quantity` here is therefore already a PACK COUNT, not a base-unit volume, and
+  // dividing it by `packs` (itself the same number) to guess a per-pack size produced "1 ml" —
+  // the reported "Dispense: 3 bottles of 1 ml" beside a correctly confirmed "3 bottles". There
+  // is no real per-pack size to report and no honest overage either, since nobody has told this
+  // line what one pack actually holds; say only what is true.
+  if (item.quantity === packs) {
+    return { prescribed, dispense: `Dispense: ${packNoun} (confirmed)`, excess: null, roundedUp: false };
+  }
   const packSize = Math.round(item.quantity / packs);
   const excess = item.quantity - volume;
-  const dosePart = [item.dosage, item.duration].filter(Boolean).join(" · ");
   return {
-    prescribed: `Prescribed: ${volume} ${unit}${dosePart ? ` (${dosePart})` : ""}`,
-    dispense: `Dispense: ${packs} ${pack}${packs === 1 ? "" : "s"} of ${packSize} ${unit}`,
+    prescribed,
+    dispense: `Dispense: ${packNoun} of ${packSize} ${unit}`,
     excess: excess > 0 ? `${excess} ${unit} over` : null,
     roundedUp: excess > 0,
   };
@@ -545,9 +558,23 @@ export default function ClinicPrescriptionTriage({
                 // classified — the exact case where the conversion is most likely to be wrong
                 // and least likely to be visible. This renders whenever the stock check says
                 // the medicine is measured and has a pack size, whatever the line remembers.
+                //
+                // The numerator is the clinic's own clinical ask, not `remaining`, whenever
+                // nothing has been dispensed yet and that figure is on record — `remaining` is
+                // `quantity - dispensedQty`, and for an already-resolved line `quantity` is the
+                // ROUNDED-UP target (e.g. 200 ml for a 150 ml prescription rounded to two 100 ml
+                // bottles), so showing it here read as though the clinic had asked for 200 ml,
+                // right below a "Prescribed: 150 ml" line one row up. The server applies the
+                // identical rule for its own packCountWarning text — see PrescriptionService.
+                // (This also excludes a pharmacist-settled line automatically: the server sends
+                // no effectivePackSize for one, since its `quantity` is a confirmed pack count,
+                // not a volume, and there is nothing left to project against it.)
+                const conversionVolume = item.dispensedQty === 0 && item.prescribedVolumeClinical != null
+                  ? item.prescribedVolumeClinical
+                  : remaining;
                 const conversion = !done && !unconfirmedQty && stockUnits?.effectivePackSize
                   ? formatConversion(
-                      remaining,
+                      conversionVolume,
                       stockUnits.effectivePackSize,
                       item.clinicalUom ?? stockUnits.baseUnit,
                       saleUnitModel({ unit: stockUnits.unit, baseUnit: stockUnits.baseUnit }).packUnitLabel,

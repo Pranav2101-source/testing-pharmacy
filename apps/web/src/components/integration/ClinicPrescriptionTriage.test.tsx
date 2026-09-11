@@ -364,6 +364,76 @@ describe("ClinicPrescriptionTriage: pack-size confidence chip", () => {
   });
 });
 
+/**
+ * The reported bug: an already-resolved line's `quantity` is the ROUNDED-UP dispense target
+ * (e.g. 200 ml for a 150 ml prescription rounded to two 100 ml bottles), and the conversion
+ * line was built from it directly — "200 ml ÷ 100 ml/bottle" right beside a "Prescribed: 150
+ * ml" line one row up. Worse for a line a pharmacist settled by hand at the counter: THAT
+ * quantity is a confirmed pack count, not a volume at all, and dividing it produced a
+ * completely nonsensical "3 ml ÷ 50 ml/bottle → 1 bottle" beside a correct "3 bottles".
+ */
+describe("ClinicPrescriptionTriage: the conversion divides the clinic's ask, not the rounded target", () => {
+  it("shows the clinic's original mL figure, not the already-rounded dispense target", async () => {
+    mockApi.get.mockResolvedValue({
+      data: { data: { items: [{
+        itemId: "i1", medicineId: "med_1", availableQty: 1700, stockStatus: "in_stock",
+        baseUnit: "ML", unit: "Bottle", effectivePackSize: 100, projectedPackCount: 2,
+        packCountWarning: null, packSizeConfidence: "UNVERIFIED",
+      }] } },
+    });
+    renderTriage(baseRx({ items: [{
+      id: "i1", medicineName: "Ascoril", medicineId: "med_1", schedule: null,
+      quantity: 200, dispensedQty: 0, dosage: "5ml-0-5ml", duration: "15 days",
+      prescribedVolumeClinical: 150, clinicalUom: "ML", roundedPackCount: 2,
+    }] }));
+
+    expect(await screen.findByText("150 ml ÷ 100 ml/bottle → 2 bottles")).toBeInTheDocument();
+    expect(screen.queryByText(/^200 ml ÷/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to the base-unit remaining once anything on the line has been dispensed", async () => {
+    // Nothing dispensed is the ONLY case the clinical ask is used for — once part of a line has
+    // gone out the door, "remaining" (quantity - dispensedQty) is a genuine base-unit figure and
+    // the clinical ask no longer describes what is left to divide.
+    mockApi.get.mockResolvedValue({
+      data: { data: { items: [{
+        itemId: "i1", medicineId: "med_1", availableQty: 1700, stockStatus: "in_stock",
+        baseUnit: "ML", unit: "Bottle", effectivePackSize: 100, projectedPackCount: 1,
+        packCountWarning: null, packSizeConfidence: "UNVERIFIED",
+      }] } },
+    });
+    renderTriage(baseRx({ items: [{
+      id: "i1", medicineName: "Ascoril", medicineId: "med_1", schedule: null,
+      quantity: 200, dispensedQty: 100, dosage: "5ml-0-5ml", duration: "15 days",
+      prescribedVolumeClinical: 150, clinicalUom: "ML", roundedPackCount: 2,
+    }] }));
+
+    expect(await screen.findByText("100 ml ÷ 100 ml/bottle → 1 bottle")).toBeInTheDocument();
+  });
+
+  it("never shows a conversion or a pack-size chip for a line a pharmacist already settled by hand", async () => {
+    // The server sends no effectivePackSize for this shape (see PrescriptionService.stockCheck)
+    // — quantity is a confirmed pack count, not a volume, and there is nothing left to project.
+    mockApi.get.mockResolvedValue({
+      data: { data: { items: [{
+        itemId: "i1", medicineId: "med_1", availableQty: 0, stockStatus: "out_of_stock",
+        baseUnit: "ML", unit: "Bottle", effectivePackSize: null, projectedPackCount: null,
+        packCountWarning: null, packSizeConfidence: null,
+      }] } },
+    });
+    renderTriage(baseRx({ items: [{
+      id: "i1", medicineName: "QA Held Tonic", medicineId: "med_1", schedule: null,
+      quantity: 3, dispensedQty: 0, dosage: "10ml-0-10ml", duration: "15 days",
+      prescribedVolumeClinical: 300, clinicalUom: "ML", roundedPackCount: 3,
+    }] }));
+
+    expect(await screen.findByText(/Dispense: 3 bottles \(confirmed\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/ml\/bottle/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/of 1 ml/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unverified pack size/i)).not.toBeInTheDocument();
+  });
+});
+
 describe("ClinicPrescriptionTriage: catalogue re-resolution on open", () => {
   it("asks the server to re-resolve stale measured lines before the pharmacist reads them", async () => {
     renderTriage(baseRx({

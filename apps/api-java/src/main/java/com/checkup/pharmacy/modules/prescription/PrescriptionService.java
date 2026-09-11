@@ -37,6 +37,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -203,18 +204,45 @@ public class PrescriptionService {
                     // The nullable form of the pack multiple, deliberately: NULL means nobody has
                     // classified this pack, which is not the same as 1 and must not be projected
                     // against. See PrescriptionStockResponse.Item for why this is computed live.
+                    //
+                    // A line a PHARMACIST has already settled by hand (confirmQuantity, on a line
+                    // that had been held for no pack size on record) is excluded outright: it
+                    // stores its confirmed PACK COUNT as quantity, not a base-unit volume, which
+                    // is the one shape where quantity == roundedPackCount. Projecting against it
+                    // anyway divides a bottle count by a bottle size and calls the answer ml — the
+                    // reported case was "3 ml ÷ 50 ml/bottle → 1 bottle" beside a correct, already
+                    // pharmacist-confirmed "3 bottles". Nothing to project: the pharmacist already
+                    // gave the real answer, and no live catalogue read second-guesses it.
                     PharmacyMedicineOverride override = overridesByMedicineId.get(i.getMedicineId());
-                    Integer effectivePackSize = medicine == null ? null
+                    boolean pharmacistSettled = i.getClinicalUom() != null && i.getRoundedPackCount() != null
+                            && i.getRoundedPackCount() == i.getQuantity();
+                    Integer effectivePackSize = medicine == null || pharmacistSettled ? null
                             : PharmacyMedicineOverride.effectiveUnitsPerPack(override, medicine);
                     Integer projectedPackCount = null;
                     String packCountWarning = null;
                     int remaining = i.getQuantity() - i.getDispensedQty();
-                    if (medicine != null && PackUnits.isMeasured(baseUnit)
-                            && effectivePackSize != null && effectivePackSize > 0 && remaining > 0) {
-                        projectedPackCount = (int) Math.ceil((double) remaining / effectivePackSize);
+                    // The clinic's own clinical ask, not the rounded-up target this line was
+                    // settled to — but only while nothing has been dispensed yet, which is
+                    // exactly when "remaining" and "the whole clinical ask" are the same claim.
+                    // Without this, an already-resolved line (quantity = roundedPackCount ×
+                    // packSize, e.g. 200 ml for a 150 ml prescription rounded to two 100 ml
+                    // bottles) showed the ROUNDED total as though the clinic had asked for it —
+                    // "200 ml ÷ 100 ml/bottle" beside a "Prescribed: 150 ml" line one row up. The
+                    // pack COUNT this produces is unchanged either way (quantity is an exact
+                    // multiple of the pack size by construction), only the number shown here.
+                    // Once dispensing has started, or with no clinical figure recorded (a line
+                    // resolved before ever seeing this medicine classified, where quantity already
+                    // IS the raw clinical figure), fall back to the base-unit remaining as before.
+                    BigDecimal prescribedClinical = i.getPrescribedVolumeClinical();
+                    int displayVolume = i.getDispensedQty() == 0 && prescribedClinical != null
+                            ? prescribedClinical.intValue()
+                            : remaining;
+                    if (medicine != null && !pharmacistSettled && PackUnits.isMeasured(baseUnit)
+                            && effectivePackSize != null && effectivePackSize > 0 && displayVolume > 0) {
+                        projectedPackCount = (int) Math.ceil((double) displayVolume / effectivePackSize);
                         packCountWarning = DispensePlausibility.implausiblePackCount(
                                 medicine.getName(), medicine.getForm(), baseUnit, unit,
-                                projectedPackCount, remaining, effectivePackSize);
+                                projectedPackCount, displayVolume, effectivePackSize);
                     }
                     // Reported only for a MEASURED line. Every countable medicine in the catalogue
                     // is UNVERIFIED too, and it matters far less there: a wrong strip count is off
