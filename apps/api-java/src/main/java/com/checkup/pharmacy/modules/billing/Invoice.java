@@ -114,6 +114,19 @@ public class Invoice extends BaseEntity {
     @Column(name = "returnedAmount")
     private BigDecimal returnedAmount = BigDecimal.ZERO;
 
+    /**
+     * Cached {@code SUM(InvoicePayment.amount)} for this bill, so a list view can
+     * show a balance due without an aggregate per row:
+     * {@code balance = totalAmount - returnedAmount - amountPaid}.
+     *
+     * <p>Moved in the same transaction as every InvoicePayment insert. It also gives
+     * return and cancel reversals the one number they were missing — both used to
+     * subtract a document's full value from the customer's dues while ignoring what
+     * had already been paid against it.
+     */
+    @Column(name = "amountPaid")
+    private BigDecimal amountPaid = BigDecimal.ZERO;
+
     @Column(name = "isInterstate")
     private boolean isInterstate;
 
@@ -270,6 +283,22 @@ public class Invoice extends BaseEntity {
     public BigDecimal getTotalAmount() { return totalAmount; }
 
     public BigDecimal getReturnedAmount() { return returnedAmount; }
+
+    public BigDecimal getAmountPaid() { return amountPaid; }
+
+    /** delta &gt; 0 records money received; delta &lt; 0 reverses a payment. */
+    public void adjustAmountPaid(BigDecimal delta) {
+        this.amountPaid = this.amountPaid.add(delta);
+    }
+
+    /**
+     * What is still owed on this bill: total, less goods sent back, less money
+     * received. Never negative — an overpayment is held as a customer advance, not
+     * as a negative balance on the bill.
+     */
+    public BigDecimal balanceDue() {
+        return this.totalAmount.subtract(this.returnedAmount).subtract(this.amountPaid).max(BigDecimal.ZERO);
+    }
 
     public boolean isInterstate() { return isInterstate; }
 

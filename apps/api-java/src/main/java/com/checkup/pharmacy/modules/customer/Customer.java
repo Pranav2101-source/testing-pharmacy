@@ -64,6 +64,15 @@ public class Customer extends BaseEntity {
     @Column(name = "creditUsed")
     private BigDecimal creditUsed = BigDecimal.ZERO;
 
+    /**
+     * Money we hold for this customer against future bills. Cache of
+     * {@code SUM(CustomerLedgerEntry.advanceDelta)}, exactly as creditUsed caches
+     * the dues side — moved only by
+     * {@link com.checkup.pharmacy.modules.customerledger.CustomerLedgerService}.
+     */
+    @Column(name = "advanceBalance")
+    private BigDecimal advanceBalance = BigDecimal.ZERO;
+
     @Column(name = "notes")
     private String notes;
 
@@ -83,6 +92,7 @@ public class Customer extends BaseEntity {
         c.defaultDiscount = BigDecimal.ZERO;
         c.creditLimit = BigDecimal.ZERO;
         c.creditUsed = BigDecimal.ZERO;
+        c.advanceBalance = BigDecimal.ZERO;
         return c;
     }
 
@@ -112,6 +122,17 @@ public class Customer extends BaseEntity {
     /** delta > 0 records a new credit sale; delta < 0 reverses one (payment, cancel, return). */
     public void adjustCreditUsed(BigDecimal delta) {
         this.creditUsed = this.creditUsed.add(delta);
+    }
+
+    /**
+     * delta &gt; 0 takes a deposit; delta &lt; 0 consumes or refunds one.
+     *
+     * <p>Callers must go through {@code CustomerLedgerService}, which holds the row
+     * lock and writes the matching ledger entry. Moving this directly re-creates the
+     * exact problem the ledger was built to end: a balance with no history behind it.
+     */
+    public void adjustAdvanceBalance(BigDecimal delta) {
+        this.advanceBalance = this.advanceBalance.add(delta);
     }
 
     public boolean isDeleted() {
@@ -145,6 +166,8 @@ public class Customer extends BaseEntity {
     public BigDecimal getCreditLimit() { return creditLimit; }
 
     public BigDecimal getCreditUsed() { return creditUsed; }
+
+    public BigDecimal getAdvanceBalance() { return advanceBalance; }
 
     public String getNotes() { return notes; }
 }

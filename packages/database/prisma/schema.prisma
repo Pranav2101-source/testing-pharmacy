@@ -120,6 +120,7 @@ model Pharmacy {
   grns                  GoodsReceiptNote[]
   supplierReturns       SupplierReturn[]
   supplierLedgerEntries SupplierLedgerEntry[]
+  customerLedgerEntries CustomerLedgerEntry[]
   quotations            Quotation[]
   racks                 Rack[]
   shelves               Shelf[]
@@ -323,6 +324,7 @@ model User {
   salesReturns          SalesReturn[]
   inventoryMovements    InventoryMovement[]
   supplierLedgerEntries SupplierLedgerEntry[]
+  customerLedgerEntries CustomerLedgerEntry[]
   quotations            Quotation[]
   calendarEvents        CalendarEvent[]       @relation("CalendarEventCreator")
   ticketsRaised         SupportTicket[]       @relation("TicketRaisedBy")
@@ -781,7 +783,14 @@ model Customer {
   customerType    CustomerType @default(WALK_IN)
   defaultDiscount Decimal      @default(0) @db.Decimal(12, 2) // auto-applied discount % shown at billing
   creditLimit     Decimal      @default(0) @db.Decimal(12, 2)
+  // Cached dues balance — what this customer owes us. The authoritative value is
+  // SUM(CustomerLedgerEntry.duesDelta); this column exists so the hot path
+  // (billing, receivables) needs no aggregate. Only ever moved under the row lock
+  // in CustomerRepository#lockByIdAndPharmacyId.
   creditUsed      Decimal      @default(0) @db.Decimal(12, 2)
+  // Cached advance balance — money we hold for this customer against future bills.
+  // Mirror of creditUsed: SUM(CustomerLedgerEntry.advanceDelta).
+  advanceBalance  Decimal      @default(0) @db.Decimal(12, 2)
   notes           String?
   deletedAt       DateTime? // soft delete — null = active
   createdById     String? // ID of staff who created (stored as plain ID; preserved on user delete)
@@ -789,9 +798,10 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  pharmacy Pharmacy      @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
-  invoices Invoice[]
-  returns  SalesReturn[]
+  pharmacy      Pharmacy              @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  invoices      Invoice[]
+  returns       SalesReturn[]
+  ledgerEntries CustomerLedgerEntry[]
 
   @@unique([pharmacyId, cardNumber])
   @@index([pharmacyId, phone])
@@ -969,6 +979,11 @@ model Invoice {
   adjustmentAmount Decimal     @default(0) @db.Decimal(12, 2)
   roundOff         Decimal     @default(0) @db.Decimal(12, 2)
   returnedAmount Decimal       @default(0) @db.Decimal(12, 2)
+  // Cached SUM(InvoicePayment.amount) for this bill, so a list view can show
+  // balance-due without an aggregate per row. Balance = totalAmount -
+  // returnedAmount - amountPaid. Moved in the same transaction as every
+  // InvoicePayment insert.
+  amountPaid     Decimal       @default(0) @db.Decimal(12, 2)
   isInterstate   Boolean       @default(false)
   notes          String?
   isCancelled    Boolean       @default(false)
@@ -993,6 +1008,7 @@ model Invoice {
   packSizeSignals PackSizeSignal[]
   payments     InvoicePayment[]
   returns      SalesReturn[]
+  ledgerEntries CustomerLedgerEntry[]
 
   @@unique([pharmacyId, invoiceNumber])
   @@unique([pharmacyId, idempotencyKey])
@@ -1253,8 +1269,9 @@ model SalesReturn {
   pharmacy Pharmacy          @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
   invoice  Invoice           @relation(fields: [invoiceId], references: [id])
   user     User              @relation(fields: [userId], references: [id])
-  customer Customer?         @relation(fields: [customerId], references: [id])
-  items    SalesReturnItem[]
+  customer      Customer?             @relation(fields: [customerId], references: [id])
+  items         SalesReturnItem[]
+  ledgerEntries CustomerLedgerEntry[]
 
   @@unique([pharmacyId, returnNumber])
   @@unique([pharmacyId, idempotencyKey])
@@ -1691,6 +1708,94 @@ enum ApprovalStatus {
 enum SupplierLedgerEntryType {
   PAYMENT
   CREDIT_NOTE
+}
+
+// ─── Customer Ledger (khata) ─────────────────────────────────────────────────
+// The customer-side mirror of SupplierLedgerEntry: one append-only row per event
+// that moves what a customer owes us (dues) or what we hold for them (advance).
+//
+// Single-entry signed ledger, not double-entry — the same shape the supplier side
+// already uses. Customer.creditUsed / Customer.advanceBalance remain the cached
+// scalars the app reads on the hot path; this table is what makes them
+// RECOMPUTABLE. Before it, creditUsed had four mutation points and no way to
+// detect or repair drift.
+//
+// Nothing here is ever updated or deleted. A correction is a new, opposing row.
+
+enum CustomerLedgerEntryType {
+  OPENING // backfill / migration baseline
+  SALE // credit (unpaid) portion of a bill — dues up
+  PAYMENT // money collected against dues — dues down
+  ADVANCE // deposit taken, no bill yet — advance up
+  ADVANCE_APPLIED // advance consumed by a bill — advance down, dues down
+  RETURN_CREDIT // sales return against an unpaid bill — dues down
+  REFUND // advance handed back in cash — advance down
+  WRITE_OFF // OWNER writes off bad debt — dues down
+}
+
+model CustomerLedgerEntry {
+  id         String                  @id @default(cuid())
+  pharmacyId String
+  customerId String
+  type       CustomerLedgerEntryType
+  // Set only where the entry IS a numbered document the customer can be handed:
+  // ADVANCE (deposit voucher), PAYMENT (receipt), REFUND, WRITE_OFF. NULL for
+  // entries auto-posted as a side effect of a bill (SALE, ADVANCE_APPLIED,
+  // RETURN_CREDIT, OPENING) — those are traceable through invoiceId and must not
+  // burn a DocumentSequence. Postgres treats NULLs as distinct, so the unique
+  // constraint below tolerates any number of them.
+  entryNumber String?
+  // Positive magnitude — the money that actually moved, as printed on the voucher.
+  // Which balance it moves, and in which direction, is NOT carried as a sign here:
+  // an ADVANCE reduces nothing the customer owes, so a negative `amount` would make
+  // any report summing this column read it as a dues reduction. The deltas below
+  // carry direction instead.
+  amount Decimal @db.Decimal(12, 2)
+  // Signed effect of this one entry, one column per balance. Exactly the values
+  // added to Customer.creditUsed / Customer.advanceBalance in the same transaction,
+  // so reconciling is SUM(duesDelta) = creditUsed — no per-type sign rules needed
+  // anywhere in the code.
+  duesDelta    Decimal @db.Decimal(12, 2)
+  advanceDelta Decimal @default(0) @db.Decimal(12, 2)
+  // Running balances AFTER this entry: lets a khata statement print each line's
+  // closing balance without re-summing history, and makes drift detectable per row
+  // rather than only in the aggregate.
+  duesBalanceAfter    Decimal      @db.Decimal(12, 2)
+  advanceBalanceAfter Decimal      @default(0) @db.Decimal(12, 2)
+  invoiceId           String? // SALE, PAYMENT against a specific bill, ADVANCE_APPLIED
+  salesReturnId       String? // RETURN_CREDIT
+  paymentMode         PaymentMode? // NULL for SALE / ADVANCE_APPLIED / WRITE_OFF / OPENING
+  reference           String?
+  notes               String?
+  // Business date of the entry — backdatable by the pharmacist (a deposit taken
+  // yesterday, an opening balance). NOT a reliable sort key: Postgres
+  // CURRENT_TIMESTAMP is transaction-START time, so a bill posting SALE +
+  // ADVANCE_APPLIED together gives both rows an IDENTICAL entryAt.
+  entryAt DateTime @default(now())
+  // Total order for statement printing, because entryAt cannot do that job.
+  // Verified: with identical timestamps the statement fell back to ordering by
+  // cuid — alphabetical, not chronological — which printed the SALE after the
+  // payment that settled it and made every closing balance nonsense. This is the
+  // only sequence in the schema; see the migration for the grant it needs.
+  seq       BigInt   @default(autoincrement())
+  createdBy String
+  createdAt DateTime @default(now())
+
+  pharmacy    Pharmacy     @relation(fields: [pharmacyId], references: [id], onDelete: Cascade)
+  customer    Customer     @relation(fields: [customerId], references: [id])
+  invoice     Invoice?     @relation(fields: [invoiceId], references: [id])
+  salesReturn SalesReturn? @relation(fields: [salesReturnId], references: [id])
+  user        User         @relation(fields: [createdBy], references: [id])
+
+  @@unique([pharmacyId, type, entryNumber])
+  // Statement query: one customer's history in posting order. Keyed on `seq`, not
+  // entryAt — see the seq field for why.
+  @@index([pharmacyId, customerId, seq])
+  @@index([pharmacyId, customerId, type])
+  @@index([pharmacyId, type, entryAt])
+  @@index([invoiceId])
+  @@index([salesReturnId])
+  @@map("customer_ledger_entries")
 }
 
 model SupplierLedgerEntry {

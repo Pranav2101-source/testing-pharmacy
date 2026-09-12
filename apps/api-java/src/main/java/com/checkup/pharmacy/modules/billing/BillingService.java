@@ -124,6 +124,8 @@ public class BillingService {
     private final com.checkup.pharmacy.modules.dispensing.DispensingService dispensingService;
     /** Records a pharmacist overruling the engine's pack count — see {@link #capturePackSizeSignal}. */
     private final com.checkup.pharmacy.modules.medicine.PackSizeSignalRepository packSizeSignalRepository;
+    /** The only writer of dues/advance balances — see its own javadoc. */
+    private final com.checkup.pharmacy.modules.customerledger.CustomerLedgerService customerLedgerService;
 
     public BillingService(InvoiceRepository invoiceRepository, InvoiceItemRepository invoiceItemRepository,
                           InvoicePaymentRepository invoicePaymentRepository, SalesReturnRepository salesReturnRepository,
@@ -139,6 +141,7 @@ public class BillingService {
                           com.fasterxml.jackson.databind.ObjectMapper objectMapper,
                           com.checkup.pharmacy.modules.dispensing.DispensingService dispensingService,
                           com.checkup.pharmacy.modules.medicine.PackSizeSignalRepository packSizeSignalRepository,
+                          com.checkup.pharmacy.modules.customerledger.CustomerLedgerService customerLedgerService,
                           ApplicationEventPublisher eventPublisher) {
         this.invoiceRepository = invoiceRepository;
         this.invoiceItemRepository = invoiceItemRepository;
@@ -162,6 +165,7 @@ public class BillingService {
         this.objectMapper = objectMapper;
         this.dispensingService = dispensingService;
         this.packSizeSignalRepository = packSizeSignalRepository;
+        this.customerLedgerService = customerLedgerService;
     }
 
     // ── Dashboard stats + invoice settings ───────────────────────────────────
@@ -802,7 +806,11 @@ public class BillingService {
                         "Credit limit exceeded for " + customer.getName() + ". Available: Rs." + available
                         + ", required: Rs." + finalTotal);
             }
-            customer.adjustCreditUsed(finalTotal);
+            // The actual debit happens below, once the invoice has an id to link to
+            // — see the postSale() call after invoiceRepository.save(invoice). Not
+            // here: customer.adjustCreditUsed(finalTotal) directly would move the
+            // cached balance with no ledger entry behind it, the exact drift this
+            // ledger exists to make impossible.
         }
 
         // Number format comes from the pharmacy's saved invoice settings so the
@@ -832,6 +840,15 @@ public class BillingService {
         // DispensingService. `pharmacy` was already loaded above, so this costs nothing.
         invoice.setDispensingStrategy(pharmacy.getDispensingStrategy());
         invoiceRepository.save(invoice);
+
+        // Posted after the invoice is saved, so the ledger entry can link to a real
+        // invoiceId — see CustomerLedgerInvoiceLinkageIT for why doing this before
+        // the save would be unsafe (the FK is not deferrable). customer is already
+        // locked above by the limit check, so this re-lock is a same-transaction
+        // no-op; see CustomerLedgerService's javadoc on why it locks unconditionally.
+        if (isCreditSale) {
+            customerLedgerService.postSale(pharmacyId, customer.getId(), invoice.getId(), finalTotal, userId);
+        }
 
         List<InvoiceItem> savedItems = new ArrayList<>();
         for (ResolvedLine line : lines) {
@@ -1281,12 +1298,32 @@ public class BillingService {
             }
         }
 
+        // wasCreditSale mirrors createInvoice's own onCredit/isCreditSale predicate:
+        // a PAID-at-creation CREDIT invoice never posted a SALE entry in the first
+        // place (see onCredit's definition), so there is nothing here to reverse.
         boolean wasCreditSale = invoice.getCustomerId() != null && invoice.getPaymentMode() == PaymentMode.CREDIT
                 && invoice.getPaymentStatus() != PaymentStatus.PAID && invoice.getTotalAmount().compareTo(BigDecimal.ZERO) > 0;
         if (wasCreditSale) {
-            customerRepository.lockByIdAndPharmacyId(invoice.getCustomerId(), pharmacyId)
-                    .filter(c -> c.getCustomerType() == CustomerType.CREDIT)
-                    .ifPresent(c -> c.adjustCreditUsed(invoice.getTotalAmount().negate()));
+            // balanceDue(), not getTotalAmount() directly — though the two guards
+            // above (no cancel with payments collected, no cancel of a
+            // returned/partially-returned invoice) make them equal today, since
+            // both returnedAmount and amountPaid are guaranteed zero at this point.
+            // Computing it this way keeps the reversal correct even if either guard
+            // is ever relaxed, rather than silently reintroducing the bug this
+            // ledger exists to prevent.
+            //
+            // Routed through the ledger (RETURN_CREDIT: the whole sale is voided,
+            // the same dues-down shape as a 100% return) instead of a direct
+            // customer.adjustCreditUsed() call — the old version moved the cached
+            // balance with zero audit trail, so a cancelled Rs.1000 credit bill left
+            // no record of why creditUsed dropped. No CustomerType.CREDIT filter,
+            // matching addPayment's reasoning: the debt is real regardless of the
+            // customer's current type label.
+            BigDecimal reverseBy = invoice.balanceDue();
+            if (reverseBy.signum() > 0) {
+                customerLedgerService.postReturnCredit(pharmacyId, invoice.getCustomerId(), invoice.getId(),
+                        null, reverseBy, userId);
+            }
         }
 
         return toResponse(invoice);
@@ -1440,14 +1477,42 @@ public class BillingService {
             }
         }
 
+        // balanceDue() BEFORE applying the return — the dues this specific bill
+        // still carried at the moment the goods came back.
+        BigDecimal duesBefore = invoice.balanceDue();
         invoice.applyReturn(totalAmount);
+        BigDecimal duesAfter = invoice.balanceDue();
 
         boolean wasCreditSale = invoice.getCustomerId() != null && invoice.getPaymentMode() == PaymentMode.CREDIT
                 && invoice.getPaymentStatus() != PaymentStatus.PAID && totalAmount.compareTo(BigDecimal.ZERO) > 0;
         if (wasCreditSale) {
-            customerRepository.lockByIdAndPharmacyId(invoice.getCustomerId(), pharmacyId)
-                    .filter(c -> c.getCustomerType() == CustomerType.CREDIT)
-                    .ifPresent(c -> c.adjustCreditUsed(totalAmount.negate()));
+            // duesBefore - duesAfter, NOT totalAmount — this is the actual bug fix.
+            //
+            // The old code subtracted the full return value from dues every time.
+            // Pay Rs.400 of a Rs.1000 credit bill (dues = Rs.600), then return
+            // Rs.700 of goods: the old code cut dues by the full Rs.700, landing at
+            // -Rs.100 — a customer who still genuinely owed Rs.600 was recorded as
+            // Rs.100 IN CREDIT with us, and the receivables page would have shown
+            // them as owing nothing while actually holding an unrecorded refund.
+            //
+            // balanceDue() already floors at zero and already accounts for
+            // amountPaid, so duesBefore - duesAfter is exactly the portion of the
+            // return that was still unpaid: min(totalAmount, whatever was owed).
+            // With Rs.600 owed and Rs.700 returned, that is Rs.600 — dues go to
+            // zero, which is correct. The other Rs.100 of returned value is not a
+            // dues reduction at all; the customer paid Rs.400 for goods worth
+            // Rs.300 they kept, and is owed Rs.100 back in cash or as an advance.
+            //
+            // KNOWN LIMITATION: that Rs.100 is not automatically refunded or
+            // converted to an advance here — this fix closes the dues UNDER/OVER-
+            // count, it does not decide where an overpayment created by a return
+            // should go. That is a deliberate later feature (see the ADVANCE/REFUND
+            // workflow), not a silent default buried in the return flow.
+            BigDecimal reduceBy = duesBefore.subtract(duesAfter);
+            if (reduceBy.signum() > 0) {
+                customerLedgerService.postReturnCredit(pharmacyId, invoice.getCustomerId(), invoice.getId(),
+                        salesReturn.getId(), reduceBy, userId);
+            }
         }
 
         return toResponse(salesReturn, savedItems);
@@ -1538,9 +1603,13 @@ public class BillingService {
         InvoicePayment payment = InvoicePayment.create(pharmacyId, invoiceId, req.amount(), mode, blankToNull(req.reference()),
                 req.notes(), req.paidAt(), userId);
         invoicePaymentRepository.save(payment);
+        // Cache of SUM(InvoicePayment.amount) for this bill — see Invoice.amountPaid's
+        // javadoc. Moved for every payment regardless of tender or credit status: it
+        // answers "how much has actually been collected", which is not a
+        // credit-specific question.
+        invoice.adjustAmountPaid(req.amount());
 
         BigDecimal newTotalPaid = totalPaid.add(req.amount());
-        PaymentStatus oldStatus = invoice.getPaymentStatus();
         PaymentStatus newStatus;
         if (newTotalPaid.compareTo(effectiveTotal.subtract(new BigDecimal("0.01"))) >= 0) {
             newStatus = PaymentStatus.PAID;
@@ -1551,13 +1620,24 @@ public class BillingService {
         }
         invoice.setPaymentStatus(newStatus);
 
-        boolean settlesCreditSale = newStatus == PaymentStatus.PAID && oldStatus != PaymentStatus.PAID
-                && invoice.getCustomerId() != null && invoice.getPaymentMode() == PaymentMode.CREDIT;
-        if (settlesCreditSale) {
-            BigDecimal decrementBy = effectiveTotal.max(BigDecimal.ZERO);
-            customerRepository.lockByIdAndPharmacyId(invoice.getCustomerId(), pharmacyId)
-                    .filter(c -> c.getCustomerType() == CustomerType.CREDIT)
-                    .ifPresent(c -> c.adjustCreditUsed(decrementBy.negate()));
+        // Every payment against a credit bill reduces dues by exactly what was
+        // collected, not only the one that happens to reach PAID.
+        //
+        // The previous version gated this on `newStatus == PAID && oldStatus !=
+        // PAID` and decremented the bill's FULL remaining total in one shot. Pay
+        // Rs.400 of a Rs.1000 credit bill and creditUsed did not move at all — the
+        // customer still showed Rs.1000 owed until the very last rupee arrived, and
+        // the receivables page was wrong for the entire life of every partially
+        // paid bill. Fixed by posting the payment's own amount, every time.
+        //
+        // No CustomerType.CREDIT filter here, unlike the old code: the debt is
+        // real and tracked by the ledger regardless of the customer's CURRENT
+        // type label. Silently skipping the decrement for a customer reclassified
+        // after the sale would be a worse bug than the one being fixed — it would
+        // leave a real payment permanently unrecorded against real dues.
+        if (invoice.getCustomerId() != null && invoice.getPaymentMode() == PaymentMode.CREDIT) {
+            customerLedgerService.postPayment(pharmacyId, invoice.getCustomerId(), invoiceId, req.amount(),
+                    mode, null, req.reference(), req.notes(), req.paidAt(), userId);
         }
 
         return toResponse(payment);
