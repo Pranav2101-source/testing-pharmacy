@@ -1,9 +1,17 @@
 import { useState } from "react";
 import { Loader2, CheckCircle2, FileText, AlertTriangle } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import type { Supplier } from "../types";
 import { SlidePanel } from "./AutoSuggestPanel";
+
+// A credit note moves the distributor's outstanding balance the same way a
+// payment does, so the same caches need refreshing — see QuickPaymentPanel.
+function invalidateCreditNoteEffects(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ["purchases", "summary"] });
+  queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "suppliers" });
+}
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">{children}</label>;
@@ -24,6 +32,7 @@ export function QuickCreditNotePanel({ suppliers, onClose }: { suppliers: Suppli
   const [saving,     setSaving]     = useState(false);
   const [success,    setSuccess]    = useState(false);
   const [error,      setError]      = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -33,6 +42,7 @@ export function QuickCreditNotePanel({ suppliers, onClose }: { suppliers: Suppli
       await api.post("/supplier-credit-notes", {
         supplierId, amount: +amount, notes: notes || undefined,
       });
+      invalidateCreditNoteEffects(queryClient);
       setSuccess(true);
       setTimeout(onClose, 1500);
     } catch (err: any) {

@@ -893,7 +893,10 @@ public class PurchasesService {
             if (grn.getConfirmedBy() != null) userIds.add(grn.getConfirmedBy());
         }
         if (userIds.isEmpty()) {
-            return Map.of();
+            // Not Map.of(): its get(null) throws NPE (immutable maps reject null keys
+            // outright), and every legacy GRN predating this attribution feature has
+            // both createdBy/confirmedBy null — toResponse below looks those up directly.
+            return new HashMap<>();
         }
         Map<String, GrnResponse.UserRef> actors = new HashMap<>();
         for (User u : userRepository.findByIdInAndPharmacyId(userIds, TenantContext.pharmacyId())) {

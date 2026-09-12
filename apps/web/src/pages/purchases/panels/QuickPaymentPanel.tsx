@@ -1,9 +1,20 @@
 import { useState } from "react";
 import { Loader2, CheckCircle2, Banknote, AlertTriangle } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
 import { api, getErrorMessage } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import type { Supplier } from "../types";
 import { SlidePanel } from "./AutoSuggestPanel";
+
+// A payment can clear a GRN's overdue status and always moves the distributor's
+// outstanding balance, so every cached view of either must be refreshed —
+// otherwise the Overdue Bills badge (and Distributors tab balances) keep
+// showing pre-payment numbers until an unrelated action happens to invalidate them.
+function invalidatePaymentEffects(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: ["purchases", "summary"] });
+  queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "purchases" && q.queryKey[1] === "grn" });
+  queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "suppliers" });
+}
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">{children}</label>;
@@ -34,6 +45,7 @@ export function QuickPaymentPanel({ suppliers, onClose }: { suppliers: Supplier[
   const [saving,       setSaving]       = useState(false);
   const [success,      setSuccess]      = useState(false);
   const [error,        setError]        = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -44,6 +56,7 @@ export function QuickPaymentPanel({ suppliers, onClose }: { suppliers: Supplier[
         supplierId, amount: +amount, paymentMode,
         reference: reference || undefined,
       });
+      invalidatePaymentEffects(queryClient);
       setSuccess(true);
       setTimeout(onClose, 1500);
     } catch (err: any) {

@@ -40,6 +40,14 @@ export function OverdueBillsPanel({ suppliers, onClose, onDone }: { suppliers: S
       });
       queryClient.setQueryData<{ items: any[]; total: number }>(queryKey, (old) =>
         old ? { ...old, items: old.items.filter((i) => i.id !== grn.id), total: old.total - 1 } : old);
+      // Also refreshes the main Purchase list (if mounted, still shows this GRN as
+      // overdue) and Distributors tab balances — this panel only patched its own cache.
+      queryClient.invalidateQueries({
+        predicate: (q) =>
+          q.queryKey[0] === "purchases" && q.queryKey[1] === "grn" &&
+          JSON.stringify(q.queryKey) !== JSON.stringify(queryKey),
+      });
+      queryClient.invalidateQueries({ predicate: (q) => q.queryKey[0] === "suppliers" });
       onDone();
       setPayFor(null); setAmount("");
     } catch {/* */} finally { setSaving(false); }
