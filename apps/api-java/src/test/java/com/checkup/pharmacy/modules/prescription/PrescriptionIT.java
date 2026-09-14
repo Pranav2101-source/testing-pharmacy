@@ -431,7 +431,7 @@ class PrescriptionIT extends AbstractPostgresIT {
 
     private CreateInvoiceRequest bottlesAgainst(String itemId, String batchId, int bottles) {
         String rxId = prescriptionItemRepository.findById(itemId).orElseThrow().getPrescriptionId();
-        return new CreateInvoiceRequest(null, null, null, null, null, rxId, null, null, null,
+        return new CreateInvoiceRequest(null, null, null, null, null, rxId, null, null, null, null,
                 null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, bottles, null, BigDecimal.ZERO, itemId)));
     }
