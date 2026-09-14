@@ -6,6 +6,7 @@ import { normalizeInvoiceSettings } from "@pharmacy/types";
 import type { InvoiceSettingsConfig } from "@pharmacy/types";
 import { QRCodeSVG } from "qrcode.react";
 import { buildUpiUri } from "@/lib/upiQr";
+import { formatPaymentLine } from "./InvoicePrintView";
 import type { PrintInvoiceData, PharmacyProfile } from "./InvoicePrintView";
 
 // ─── A5 Half-Sheet (landscape) invoice ────────────────────────────────────────
@@ -250,7 +251,7 @@ export const A5LandscapeInvoiceView = forwardRef<HTMLDivElement, Props>(
               </>
             ) : (
               <>
-                {tot.showPaymentMode && <div>Payment: {invoice.paymentMode} — {invoice.paymentStatus}</div>}
+                {tot.showPaymentMode && <div>Payment: {formatPaymentLine(invoice)}</div>}
                 {pat.showCashier && invoice.cashierName && <div>Cashier: {invoice.cashierName}</div>}
               </>
             )}

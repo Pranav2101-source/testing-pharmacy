@@ -94,11 +94,21 @@ public interface CustomerRepository extends JpaRepository<Customer, String> {
     java.util.List<Customer> findMatchingForImport(@Param("pharmacyId") String pharmacyId,
                                                    @Param("name") String name, @Param("phone") String phone);
 
-    /** Receivables: active customers who currently owe money (creditUsed &gt; 0), most-owing first. */
+    /**
+     * Receivables: active customers with a live account balance either way — money they
+     * owe us, or money we hold for them. Most-owing first.
+     *
+     * <p>The advance side was added with deposits. Filtering on {@code creditUsed > 0}
+     * alone left a customer who had paid Rs.2000 up front and owed nothing on no screen
+     * at all: not here, because they owe nothing, and findable on the customer list only
+     * by knowing to look. A deposit is a liability the pharmacy is carrying, so "who do
+     * we settle with" has to mean both directions.
+     */
     @Query("""
             SELECT c FROM Customer c
-            WHERE c.pharmacyId = :pharmacyId AND c.deletedAt IS NULL AND c.creditUsed > 0
-            ORDER BY c.creditUsed DESC
+            WHERE c.pharmacyId = :pharmacyId AND c.deletedAt IS NULL
+              AND (c.creditUsed > 0 OR c.advanceBalance > 0)
+            ORDER BY c.creditUsed DESC, c.advanceBalance DESC
             """)
     java.util.List<Customer> findOutstanding(@Param("pharmacyId") String pharmacyId);
 

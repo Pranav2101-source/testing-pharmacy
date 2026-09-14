@@ -25,6 +25,11 @@ export type PrintInvoiceData = {
   doctorRegNo?:     string;
   paymentMode:      string;
   paymentStatus:    string;
+  /**
+   * The legs a split bill was settled by. Absent on an ordinary bill, where
+   * `paymentMode` says everything there is to say.
+   */
+  tenders?:         Array<{ mode: string; amount: number }>;
   isInterstate?:    boolean;
   cashierName?:     string;
   items: Array<{
@@ -83,6 +88,28 @@ export type PrintInvoiceData = {
 };
 
 // Pharmacy info passed down from the session context (or omitted for mock preview)
+/**
+ * The "Payment:" line on a printed bill.
+ *
+ * <p>Shared by all three layouts so a customer cannot be handed a different account of
+ * how they paid depending on which one the pharmacy has configured. A split bill lists
+ * its legs: printing only `paymentMode` would tell someone who paid half in cash and half
+ * by UPI that the whole bill went on UPI, which is the one thing the receipt exists to
+ * get right.
+ */
+export function formatPaymentLine(invoice: Pick<PrintInvoiceData, "paymentMode" | "paymentStatus" | "tenders">): string {
+  const legs = invoice.tenders ?? [];
+  const how = legs.length > 1
+    ? legs.map((t) => `${titleCase(t.mode)} ${formatCurrency(t.amount)}`).join(" + ")
+    : invoice.paymentMode;
+  return `${how} — ${invoice.paymentStatus}`;
+}
+
+function titleCase(mode: string): string {
+  if (mode === "UPI") return "UPI";
+  return mode.charAt(0) + mode.slice(1).toLowerCase();
+}
+
 export type PharmacyProfile = {
   name:        string;
   address?:    string;
@@ -292,7 +319,7 @@ export const InvoicePrintView = forwardRef<HTMLDivElement, Props>(
                 <p><strong>Date:</strong> {format(new Date(invoice.createdAt), "dd/MM/yyyy HH:mm")}</p>
               )}
               {tot.showPaymentMode && (
-                <p><strong>Payment:</strong> {invoice.paymentMode} — {invoice.paymentStatus}</p>
+                <p><strong>Payment:</strong> {formatPaymentLine(invoice)}</p>
               )}
               {pat.showCashier && invoice.cashierName && (
                 <p><strong>Cashier:</strong> {invoice.cashierName}</p>

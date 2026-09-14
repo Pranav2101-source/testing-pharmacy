@@ -18,7 +18,9 @@ import { AlternativesDrawer } from "@/components/billing/AlternativesDrawer";
 import { useBillingStore, lineIssue, rxRequiredIssue } from "@/components/billing/useBillingStore";
 import { useLooseSaleHotkey } from "@/components/billing/useLooseSaleHotkey";
 import { useBillingKeyboardShortcuts } from "@/components/billing/useBillingKeyboardShortcuts";
+import { CustomerAccountPanel } from "@/components/customers/CustomerAccountPanel";
 import { InvoiceBreakdownModal } from "@/components/billing/InvoiceBreakdownModal";
+import { TenderModal } from "@/components/billing/TenderModal";
 import type { MedicineSearchResult } from "@pharmacy/types";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, getErrorMessage } from "@/lib/api-client";
@@ -158,6 +160,8 @@ function NewBillInner() {
   const [conflictInventoryIds, setConflictInventoryIds] = useState<Set<string>>(new Set());
   const [invoice,              setInvoice]              = useState<PrintInvoiceData | null>(null);
   const [showPrint,            setShowPrint]            = useState(false);
+  const [showTender,           setShowTender]           = useState(false);
+  const [showAccount,          setShowAccount]          = useState(false);
   const [showLabels,           setShowLabels]           = useState(false);
   const [showBreakdown,        setShowBreakdown]        = useState(false);
   // Batch-selection strategy is a persisted pharmacy setting (default LILA/FEFO),
@@ -303,6 +307,20 @@ function NewBillInner() {
 
   const roundedTotal = Math.round(netPayable);
 
+  // A split is agreed against one exact total, so anything that moves the total — another
+  // line, a discount, a changed quantity — leaves it describing a bill that no longer
+  // exists. The server refuses such a bill, and the save button is the worst possible
+  // place to discover that, with a queue waiting. Drop the stale split here and say so,
+  // while the cashier is still looking at the cart that changed.
+  useEffect(() => {
+    if (meta.tenders.length === 0) return;
+    const allocatedPaise = meta.tenders.reduce((sum, t) => sum + Math.round(t.amount * 100), 0);
+    if (allocatedPaise === Math.round(roundedTotal * 100)) return;
+    setMeta({ tenders: [] });
+    setActionToast({ msg: "Bill total changed — payment split cleared. Press F7 to split again.", type: "warn" });
+    setTimeout(() => setActionToast(null), 4000);
+  }, [roundedTotal, meta.tenders, setMeta]);
+
   // A cut-strip (loose) line needs the cut-strip label the preview modal prints, so
   // those bills keep the modal; every other Save & Print goes straight through.
   const hasLooseLine = items.some((i) => i.saleUnit === "LOOSE");
@@ -391,6 +409,16 @@ function NewBillInner() {
         prescriptionId:   meta.prescriptionId   || undefined,
         paymentMode:      meta.paymentMode,
         paymentStatus:    meta.paymentStatus,
+        // Sent only when the cashier actually split the bill. On every ordinary sale this
+        // is absent and the server reads the single mode above, exactly as before — the
+        // one-key checkout path never touches it.
+        tenders:          meta.tenders.length > 0
+          ? meta.tenders.map((t) => ({
+              paymentMode: t.mode,
+              amount:      t.amount,
+              reference:   t.reference || undefined,
+            }))
+          : undefined,
         isInterstate:     meta.isInterstate,
         notes:            meta.notes            || undefined,
         deliveryNotes:    meta.deliveryNotes    || undefined,
@@ -428,6 +456,12 @@ function NewBillInner() {
         doctorName:       meta.doctorName        || undefined,
         paymentMode:      meta.paymentMode,
         paymentStatus:    meta.paymentStatus,
+        // So the receipt states how the bill was actually settled. Printing the single
+        // mode would tell a customer who paid half cash, half UPI that all of it went
+        // on UPI.
+        tenders:          meta.tenders.length > 0
+          ? meta.tenders.map((t) => ({ mode: t.mode, amount: t.amount }))
+          : undefined,
         isInterstate:     meta.isInterstate,
         // "Place of Supply" on the tax-wholesale layout — the pharmacy's own
         // registered state (buyer-state capture is a later follow-up).
@@ -560,22 +594,55 @@ function NewBillInner() {
     focusBillingSearch();
   }, [clear]);
 
-  // F9 = Save & Print, F8 = Save & New, Ctrl+S = Draft, "/" = focus search,
-  // Alt+1..4 = payment mode. Enter (outside an editable field) = Save & Print, and
-  // Esc = dismiss the receipt if it's up, else clear the in-progress bill. `onSave`
-  // is the exact same handler the Save button dispatches to; `handleSave` fast-paths
-  // Save & Print itself (no preview modal on a standard bill).
+  // Opening the split dialog, from either F7 or the Split button on the tender bar.
+  const handleSplitPayment = useCallback(() => {
+    // Nothing to divide up yet. The dialog would open against a zero bill, where no set
+    // of positive amounts can ever balance and every button is dead.
+    if (useBillingStore.getState().items.length === 0) {
+      setActionToast({ msg: "Add items to the bill before splitting the payment", type: "warn" });
+      setTimeout(() => setActionToast(null), 3000);
+      return;
+    }
+    setShowTender(true);
+  }, []);
+
+  // The customer's account, opened over the bill (F6). A walk-in has no account to
+  // open — saying so is better than a panel of dashes, since the fix is to put a
+  // customer on the bill and that is not obvious from an empty khata.
+  const handleCustomerAccount = useCallback(() => {
+    const { customerId } = useBillingStore.getState().meta;
+    if (!customerId || customerId === "COUNTER") {
+      setActionToast({ msg: "Select a customer first — an account belongs to somebody", type: "warn" });
+      setTimeout(() => setActionToast(null), 3000);
+      return;
+    }
+    setShowAccount(true);
+  }, []);
+
+  // F9 = Save & Print, F8 = Save & New, F7 = split payment, Ctrl+S = Draft,
+  // "/" = focus search, Alt+1..4 = payment mode. Enter (outside an editable field) =
+  // Save & Print, and Esc = dismiss the receipt if it's up, else clear the in-progress
+  // bill. `onSave` is the exact same handler the Save button dispatches to;
+  // `handleSave` fast-paths Save & Print itself (no preview modal on a standard bill).
   useBillingKeyboardShortcuts({
     onSave: handleSave,
     onClosePrint: closePrint,
     onFocusSearch: focusBillingSearch,
-    onSetPaymentMode: (m) => setMeta({ paymentMode: m }),
+    onSetPaymentMode: (m) => setMeta({ paymentMode: m, tenders: [] }),
     isPrintOpen: showPrint,
     onClearBill: handleClearBill,
+    onSplitPayment: handleSplitPayment,
+    onCustomerAccount: handleCustomerAccount,
+    // Both dialogs decide something about this bill's money — neither may be saved
+    // out from under. See the hook's own note on why F8/F9 are suppressed here.
+    isSplitOpen: showTender || showAccount,
   });
 
   // Stable callbacks for BillingSubNav — prevents re-renders on every cart change
-  const handlePaymentMode  = useCallback((m: "CASH"|"UPI"|"CARD"|"CREDIT") => setMeta({ paymentMode: m }), [setMeta]);
+  // Clears any split, same as the Alt+1..4 path: picking a single mode is a statement
+  // that the whole bill goes that way, and leaving a stale split behind would save legs
+  // the tender bar is no longer showing.
+  const handlePaymentMode  = useCallback((m: "CASH"|"UPI"|"CARD"|"CREDIT") => setMeta({ paymentMode: m, tenders: [] }), [setMeta]);
   const handleInterstate   = useCallback((v: boolean) => setMeta({ isInterstate: v }), [setMeta]);
   const canChangeStrategy  = ["OWNER", "MANAGER"].includes(getStoredUser()?.role ?? "");
   const handleLifaToggle   = useCallback(() => {
@@ -605,6 +672,8 @@ function NewBillInner() {
           hasItems={items.length > 0}
           paymentMode={meta.paymentMode}
           onPaymentMode={handlePaymentMode}
+          tenders={meta.tenders}
+          onSplitPayment={handleSplitPayment}
           isInterstate={meta.isInterstate}
           onInterstate={handleInterstate}
           lifa={lifa}
@@ -961,6 +1030,50 @@ function NewBillInner() {
             }))}
           pharmacy={printPharmacy && { name: printPharmacy.name, drugLicense: printPharmacy.drugLicense, phone: printPharmacy.phone }}
           onClose={() => setShowLabels(false)}
+        />
+      )}
+
+      {showTender && (
+        <TenderModal
+          // The whole-rupee payable, which is what the server bills — the legs have to
+          // add up to the same figure it will check them against.
+          total={roundedTotal}
+          initial={meta.tenders}
+          hasCustomer={!!meta.customerId && meta.customerId !== "COUNTER"}
+          customerId={meta.customerId}
+          advanceAvailable={meta.customerAdvanceBalance}
+          onClose={() => setShowTender(false)}
+          onConfirm={(tenders) => {
+            // paymentMode is kept in step with the split so the tender bar and the
+            // printed receipt agree with it; the server derives its own from the legs
+            // either way. An empty list is "no split" and leaves the mode alone.
+            const largest = tenders.reduce<typeof tenders[number] | null>(
+              (best, t) => (best === null || t.amount > best.amount ? t : best), null);
+            const credit = tenders.find((t) => t.mode === "CREDIT")?.amount ?? 0;
+            setMeta({
+              tenders,
+              ...(largest ? { paymentMode: largest.mode } : {}),
+              // Kept in step with the legs for the same reason the mode is: the receipt
+              // prints from this. A split carrying a credit leg that still printed "PAID"
+              // would hand the customer a receipt saying they owe nothing.
+              ...(tenders.length > 0
+                ? { paymentStatus: credit === 0 ? "PAID" as const
+                    : credit >= roundedTotal ? "PENDING" as const : "PARTIAL" as const }
+                : {}),
+            });
+            setShowTender(false);
+          }}
+        />
+      )}
+
+      {showAccount && (
+        <CustomerAccountPanel
+          customer={{ id: meta.customerId, name: meta.customerName }}
+          onClose={() => setShowAccount(false)}
+          // A deposit taken while this panel was open is spendable on the bill
+          // underneath it the moment it closes — without this the tender dialog would
+          // still be offering the balance as it stood before.
+          onBalancesChanged={({ advance }) => setMeta({ customerAdvanceBalance: advance })}
         />
       )}
     </>

@@ -19,10 +19,20 @@ import java.util.List;
  */
 public record InvoicePageResponse(List<Summary> items, long total, int page, int limit, int totalPages) {
 
-    /** Lighter list-row shape — omits line items/payments, which the detail endpoint provides. */
+    /**
+     * Lighter list-row shape — omits line items/payments, which the detail endpoint provides.
+     *
+     * <p>{@code amountPaid} and {@code balanceDue} ARE here despite that, because both are
+     * scalars already on the invoice row: no join, no extra query, no N+1. Without them a
+     * screen listing someone's unpaid bills can only show what each bill was worth, not what
+     * is still owed on it — so a part-paid bill reads as wholly unpaid and any collection
+     * offered against it is one the server is bound to refuse. The payment ROWS remain a
+     * detail-endpoint concern; these two figures are not.
+     */
     public record Summary(String id, String invoiceNumber, CustomerRef customer, UserRef user,
                           String doctorName, String paymentMode, String paymentStatus, String status,
-                          BigDecimal totalAmount, boolean isCancelled, CountRef _count, Instant createdAt) {
+                          BigDecimal totalAmount, BigDecimal amountPaid, BigDecimal balanceDue,
+                          boolean isCancelled, CountRef _count, Instant createdAt) {
     }
 
     /**

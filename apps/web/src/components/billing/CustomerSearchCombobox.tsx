@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { User, Phone, UserPlus, X, Loader2, AlertCircle, RotateCcw } from "lucide-react";
+import { User, Phone, UserPlus, X, Loader2, AlertCircle, RotateCcw, PiggyBank } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useQuery } from "@tanstack/react-query";
 import { api, getErrorMessage } from "@/lib/api-client";
@@ -38,6 +38,7 @@ type SearchResult = {
   defaultDiscount: number;
   creditLimit:     number;
   creditUsed:      number;
+  advanceBalance:  number;
   abhaNumber:      string | null;
   cardNumber:      string | null;
 };
@@ -60,6 +61,7 @@ export function CustomerSearchCombobox() {
   const customerName            = useBillingStore((s) => s.meta.customerName);
   const customerPhone           = useBillingStore((s) => s.meta.customerPhone);
   const customerDefaultDiscount = useBillingStore((s) => s.meta.customerDefaultDiscount);
+  const advanceBalance          = useBillingStore((s) => s.meta.customerAdvanceBalance);
   const setMeta                 = useBillingStore((s) => s.setMeta);
   const addItem                 = useBillingStore((s) => s.addItem);
   const toast                   = useToast();
@@ -174,6 +176,7 @@ export function CustomerSearchCombobox() {
       abha:                    (c as SearchResult).abhaNumber ?? "",
       customerDefaultDiscount: c.defaultDiscount,
       billDiscountPct:         c.defaultDiscount,
+      customerAdvanceBalance:  (c as SearchResult).advanceBalance ?? 0,
     });
     const used  = (c as SearchResult).creditUsed  ?? 0;
     const limit = (c as SearchResult).creditLimit ?? 0;
@@ -242,6 +245,7 @@ export function CustomerSearchCombobox() {
       abha:                    "",
       customerDefaultDiscount: 0,
       billDiscountPct:         0,
+      customerAdvanceBalance:  0,
     });
     setCreditInfo(null);
     setQuery("");
@@ -288,6 +292,12 @@ export function CustomerSearchCombobox() {
                 {creditLimit > 0 && (
                   <span className="opacity-70"> / ₹{creditLimit.toLocaleString("en-IN")}</span>
                 )}
+              </span>
+            )}
+            {advanceBalance > 0 && (
+              <span className="flex items-center gap-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded-full leading-none bg-violet-100 text-violet-700">
+                <PiggyBank className="w-2.5 h-2.5" />
+                ₹{advanceBalance.toLocaleString("en-IN")} on deposit
               </span>
             )}
           </div>

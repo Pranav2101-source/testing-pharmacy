@@ -71,6 +71,15 @@ type Invoice = {
   extraCharges: number;
   adjustmentAmount: number;
   roundOff: number;
+  /**
+   * Money actually received against this bill, newest last — the tenders taken when it
+   * was raised, then anything collected since. A bill settled a single way still has one
+   * row here; bills predating split tender have none.
+   */
+  payments?: { id: string; amount: number; paymentMode: string; reference: string | null; paidAt: string }[];
+  /** Received against this bill, and what is still owed on it. */
+  amountPaid: number;
+  balanceDue: number;
   isCancelled: boolean;
   cancelledAt: string | null;
   cancelReason: string | null;
@@ -198,6 +207,12 @@ export default function BillDetailPage() {
     cashierName:     invoice.user.name         || undefined,
     paymentMode:     invoice.paymentMode,
     paymentStatus:   invoice.paymentStatus,
+    // A reprint has to say the same thing the original did. Only a genuine split is
+    // passed through — one leg is an ordinary bill, and listing it would turn "Cash"
+    // into "Cash ₹450.00" on every receipt.
+    tenders:         (invoice.payments?.length ?? 0) > 1
+      ? invoice.payments!.map((p) => ({ mode: p.paymentMode, amount: p.amount }))
+      : undefined,
     isInterstate:    invoice.isInterstate,
     placeOfSupply:   printPharmacy?.state || undefined,
     items: invoice.items.map(i => ({
@@ -390,9 +405,33 @@ export default function BillDetailPage() {
               <CreditCard className="w-3.5 h-3.5 text-slate-400" />
               <span className="text-[11px] text-slate-400 font-medium uppercase tracking-wide">Payment</span>
             </div>
-            <p className="text-[13px] font-semibold text-slate-800 capitalize">
-              {invoice.paymentMode.toLowerCase()} · {invoice.paymentStatus.toLowerCase()}
-            </p>
+            {/* A bill settled more than one way has no single true "mode", so the legs
+                are listed instead of a label that would name only the largest of them. */}
+            {(invoice.payments?.length ?? 0) > 1 ? (
+              <>
+                <p className="text-[13px] font-semibold text-slate-800 capitalize mb-1">
+                  Split · {invoice.paymentStatus.toLowerCase()}
+                </p>
+                <div className="space-y-0.5">
+                  {invoice.payments!.map((p) => (
+                    <p key={p.id} className="text-[12px] text-slate-600 flex items-baseline gap-1.5">
+                      <span className="capitalize font-medium">{p.paymentMode.toLowerCase()}</span>
+                      <span className="tabular-nums">₹{p.amount.toFixed(2)}</span>
+                      {p.reference && <span className="text-slate-400 truncate">{p.reference}</span>}
+                    </p>
+                  ))}
+                  {invoice.balanceDue > 0 && (
+                    <p className="text-[12px] font-semibold text-amber-700">
+                      On account ₹{invoice.balanceDue.toFixed(2)}
+                    </p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <p className="text-[13px] font-semibold text-slate-800 capitalize">
+                {invoice.paymentMode.toLowerCase()} · {invoice.paymentStatus.toLowerCase()}
+              </p>
+            )}
           </div>
 
           <div className="bg-white border border-slate-200 rounded-xl p-4">

@@ -41,7 +41,7 @@ class CreateInvoiceRequestValidationTest {
     }
 
     private static CreateInvoiceRequest withBillDiscount(BigDecimal pct) {
-        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
+        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null,
                 pct, null, null, null, null,
                 List.of(new InvoiceItemRequest("inv-1", 1, null, BigDecimal.ZERO, null)));
     }
@@ -79,7 +79,7 @@ class CreateInvoiceRequestValidationTest {
     @Test
     @DisplayName("a negative extra charge is rejected — it would bypass the discount cap")
     void rejectsNegativeExtraCharges() {
-        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
+        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null,
                 null, new BigDecimal("-500"), null, null, null,
                 List.of(new InvoiceItemRequest("inv-1", 1, null, BigDecimal.ZERO, null)));
 
@@ -94,7 +94,7 @@ class CreateInvoiceRequestValidationTest {
     @Test
     @DisplayName("a negative adjustment is accepted here — it is bounded in the service, not the DTO")
     void allowsNegativeAdjustmentAmount() {
-        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
+        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, new BigDecimal("-5"), null, null,
                 List.of(new InvoiceItemRequest("inv-1", 1, null, BigDecimal.ZERO, null)));
 
@@ -104,7 +104,7 @@ class CreateInvoiceRequestValidationTest {
     @Test
     @DisplayName("an invoice with no line items is rejected")
     void rejectsEmptyItems() {
-        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
+        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, List.of());
 
         assertThat(violates(request, "items")).isTrue();
@@ -113,7 +113,7 @@ class CreateInvoiceRequestValidationTest {
     @Test
     @DisplayName("line-item constraints are enforced through the nested @Valid")
     void enforcesNestedItemConstraints() {
-        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
+        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null,
                 // quantity 0 violates @Positive; discount 101 violates @Max(100).
                 List.of(new InvoiceItemRequest("inv-1", 0, null, new BigDecimal("101"), null)));

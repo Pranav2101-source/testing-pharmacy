@@ -124,6 +124,16 @@ public class CustomerService {
             throw new ConflictException("Cannot delete " + customer.getName() + " — they owe Rs."
                     + customer.getCreditUsed() + ". Collect or clear the balance first.");
         }
+        // The mirror of the check above, and the more serious direction of the two: an
+        // unpaid debt that stops being chased costs the pharmacy money it might have
+        // collected, but a deposit that disappears is money the pharmacy is holding for
+        // somebody else. Every read filters deletedAt, so the balance would still be on
+        // the books and simply invisible — until the customer came back for it.
+        if (customer.getAdvanceBalance().compareTo(new BigDecimal("0.01")) > 0) {
+            throw new ConflictException("Cannot delete " + customer.getName() + " — Rs."
+                    + customer.getAdvanceBalance() + " is still held on deposit for them. "
+                    + "Refund it or let them spend it first.");
+        }
         customer.softDelete();
     }
 
@@ -182,8 +192,8 @@ public class CustomerService {
     private CustomerResponse toResponse(Customer c, long invoiceCount) {
         return CustomerResponse.withInvoiceCount(
                 c.getId(), c.getName(), c.getPhone(), c.getEmail(), c.getCustomerType().name(),
-                c.getDefaultDiscount(), c.getCreditLimit(), c.getCreditUsed(), c.getAbhaNumber(),
-                c.getCardNumber(), c.getGender(), c.getDateOfBirth(), c.getAddress(), c.getState(), c.getNotes(),
-                invoiceCount);
+                c.getDefaultDiscount(), c.getCreditLimit(), c.getCreditUsed(), c.getAdvanceBalance(),
+                c.getAbhaNumber(), c.getCardNumber(), c.getGender(), c.getDateOfBirth(), c.getAddress(),
+                c.getState(), c.getNotes(), invoiceCount);
     }
 }

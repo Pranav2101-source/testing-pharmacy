@@ -158,7 +158,7 @@ class EmrQuantityCalculationEndToEndIT extends AbstractPostgresIT {
         // of the 10-tablet pack) — simulating what the web client's resolveSaleUnit would have
         // decided; this backend call is what actually moves stock and closes the prescription.
         InvoiceResponse invoice = billingService.createInvoice(new CreateInvoiceRequest(
-                null, "Asha Verma", null, null, "Dr. Rao", prescriptionId, "CASH", "PAID", null, null, null,
+                null, "Asha Verma", null, null, "Dr. Rao", prescriptionId, "CASH", "PAID", null, null, null, null,
                 null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 12, null, BigDecimal.ZERO, null, "LOOSE", null))));
         entityManager.flush();
@@ -411,7 +411,7 @@ class EmrQuantityCalculationEndToEndIT extends AbstractPostgresIT {
 
         // 4) Billing that plan deducts exactly one bottle.
         var invoice = billingService.createInvoice(new CreateInvoiceRequest(
-                null, "Asha Verma", null, null, "Dr. Rao", prescriptionId, "CASH", "PAID", null, null, null,
+                null, "Asha Verma", null, null, "Dr. Rao", prescriptionId, "CASH", "PAID", null, null, null, null,
                 null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batch.getId(), 1, null, BigDecimal.ZERO, null, "PACK", null))));
         entityManager.flush();
@@ -466,7 +466,7 @@ class EmrQuantityCalculationEndToEndIT extends AbstractPostgresIT {
 
         // 4) Bill those 2 bottles.
         InvoiceResponse invoice = billingService.createInvoice(new CreateInvoiceRequest(
-                null, "Asha Verma", null, null, "Dr. Rao", prescriptionId, "CASH", "PAID", null, null, null,
+                null, "Asha Verma", null, null, "Dr. Rao", prescriptionId, "CASH", "PAID", null, null, null, null,
                 null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batch.getId(), 2, null, BigDecimal.ZERO, null, "PACK", null))));
         entityManager.flush();

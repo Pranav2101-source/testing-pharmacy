@@ -14,6 +14,7 @@ public record CashClosureResponse(
         BigDecimal cardSales,
         BigDecimal creditSales,
         BigDecimal walletSales,
+        BigDecimal advanceSales,
         BigDecimal expectedCash,
         BigDecimal actualCash,
         BigDecimal variance,

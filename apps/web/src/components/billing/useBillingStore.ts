@@ -197,6 +197,18 @@ export type CartItem = {
   amount:         number;
 };
 
+export type PaymentModeCode = "CASH" | "UPI" | "CARD" | "CREDIT" | "ADVANCE";
+
+/**
+ * One leg of a bill settled more than one way. Two of these move no money at the till:
+ * CREDIT means "on account", ADVANCE means "from a deposit already taken".
+ */
+export type Tender = {
+  mode:       PaymentModeCode;
+  amount:     number;
+  reference?: string;
+};
+
 export type BillingMeta = {
   customerId:              string;
   customerName:            string;
@@ -204,12 +216,30 @@ export type BillingMeta = {
   customerAddress:         string;
   abha:                    string;
   customerDefaultDiscount: number;
+  /**
+   * Deposit held for the attached customer — the ceiling on an ADVANCE tender leg.
+   *
+   * Kept here rather than in the customer picker's local state because the tender
+   * dialog needs it and is rendered from the page, not the picker. Zero for a
+   * walk-in, and reset with the rest of the customer whenever one is cleared.
+   */
+  customerAdvanceBalance:  number;
   doctorId:                string;
   doctorName:              string;
   prescriptionId:          string;  // DB id — required for Schedule H medicines
   prescriptionNumber:      string;  // human-readable "RX-00001" shown on receipts
-  paymentMode:             "CASH" | "UPI" | "CARD" | "CREDIT";
+  paymentMode:             PaymentModeCode;
   paymentStatus:           "PAID" | "PENDING" | "PARTIAL";
+  /**
+   * The legs this bill is settled by, when the cashier has split it.
+   *
+   * Empty is the ordinary case and means "all of it, by `paymentMode`" — the one-key
+   * checkout path is untouched by this feature and sends no tenders at all. When it is
+   * non-empty the legs must add up to the bill total, and the server derives both
+   * `paymentMode` and `paymentStatus` from them rather than trusting the two fields
+   * above.
+   */
+  tenders:                 Tender[];
   isInterstate:            boolean;
   notes:                   string;  // internal notes
   deliveryNotes:           string;  // delivery instructions (shown on print)
@@ -263,12 +293,14 @@ export const DEFAULT_META: BillingMeta = {
   customerAddress:         "",
   abha:                    "",
   customerDefaultDiscount: 0,
+  customerAdvanceBalance:  0,
   doctorId:                "",
   doctorName:              "",
   prescriptionId:          "",
   prescriptionNumber:      "",
   paymentMode:             "CASH",
   paymentStatus:           "PAID",
+  tenders:                 [],
   isInterstate:            false,
   notes:                   "",
   deliveryNotes:           "",

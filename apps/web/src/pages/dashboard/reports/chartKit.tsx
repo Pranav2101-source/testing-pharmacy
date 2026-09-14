@@ -30,7 +30,8 @@ export const C = {
 
 /** Payment channels — cash is the colour of money, digital shifts cooler. */
 export const PAYMENT_COLORS: Record<string, string> = {
-  CASH: "#059669", UPI: "#6366f1", CARD: "#f59e0b", CREDIT: "#ef4444", OTHER: "#94a3b8",
+  CASH: "#059669", UPI: "#6366f1", CARD: "#f59e0b", CREDIT: "#ef4444",
+  WALLET: "#14b8a6", ADVANCE: "#8b5cf6", OTHER: "#94a3b8",
 };
 
 /** Categorical series (medicines, categories) — max-distinct, colour-blind safe order. */

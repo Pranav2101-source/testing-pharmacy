@@ -240,7 +240,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
         @Test
         @DisplayName("returns the scheme goods to the shelf, not just the charged units")
         void restoresFreeQuantity() {
-            var invoice = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            var invoice = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                     List.of(new InvoiceItemRequest(batchId, 10, 2, BigDecimal.ZERO, null))));
             flushAndClear();
             assertThat(batch().getQuantity()).isEqualTo(88); // 10 charged + 2 free left the shelf
@@ -255,7 +255,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
         @Test
         @DisplayName("records the restored total on the ledger, so it reconciles with the shelf")
         void ledgerMatchesTheRestore() {
-            var invoice = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            var invoice = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
                     List.of(new InvoiceItemRequest(batchId, 10, 2, BigDecimal.ZERO, null))));
             flushAndClear();
             billingService.cancelInvoice(invoice.id(), "wrong item");
@@ -277,7 +277,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
         @Test
         @DisplayName("is refused when there is no customer to bill")
         void needsACustomer() {
-            assertThatThrownBy(() -> billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
+            assertThatThrownBy(() -> billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CREDIT", "PENDING", null, null, null, null, null, null, null, null, null,
                     List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO, null)))))
                     .isInstanceOf(UnprocessableEntityException.class)
                     .hasMessageContaining("needs a customer");
@@ -290,7 +290,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
         void chargesTheCustomer() {
             Customer customer = creditCustomer(new BigDecimal("5000"));
 
-            billingService.createInvoice(new CreateInvoiceRequest(customer.getId(), null, null, null, null, null, "CREDIT", "PENDING", null, null, null,
+            billingService.createInvoice(new CreateInvoiceRequest(customer.getId(), null, null, null, null, null, "CREDIT", "PENDING", null, null, null, null,
                     null, null, null, null, null,
                     List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO, null))));
             flushAndClear();
@@ -302,7 +302,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
         @Test
         @DisplayName("a PAID counter sale marked CREDIT needs no customer — nothing is owed")
         void paidCreditSaleIsNotADebt() {
-            billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CREDIT", "PAID", null, null, null, null, null, null, null, null,
+            billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CREDIT", "PAID", null, null, null, null, null, null, null, null, null,
                     List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO, null))));
             flushAndClear();
 
@@ -314,7 +314,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
         void limitStillEnforced() {
             Customer customer = creditCustomer(new BigDecimal("50"));
 
-            assertThatThrownBy(() -> billingService.createInvoice(new CreateInvoiceRequest(customer.getId(), null, null, null, null, null, "CREDIT", "PENDING", null, null, null,
+            assertThatThrownBy(() -> billingService.createInvoice(new CreateInvoiceRequest(customer.getId(), null, null, null, null, null, "CREDIT", "PENDING", null, null, null, null,
                     null, null, null, null, null,
                     List.of(new InvoiceItemRequest(batchId, 5, null, BigDecimal.ZERO, null)))))
                     .hasMessageContaining("Credit limit exceeded");
@@ -331,7 +331,7 @@ class BillingStockAndCreditIT extends AbstractPostgresIT {
     }
 
     private CreateInvoiceRequest saleOf(int quantity, String sessionId) {
-        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
+        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, sessionId,
                 List.of(new InvoiceItemRequest(batchId, quantity, null, BigDecimal.ZERO, null)));
     }

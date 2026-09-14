@@ -133,6 +133,7 @@ public class ReportsService {
     private final SupplierReturnRepository supplierReturnRepository;
     private final com.checkup.pharmacy.modules.supplier.SupplierRepository supplierRepository;
     private final com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository;
+    private final com.checkup.pharmacy.modules.billing.PaymentMixReader paymentMix;
 
     public ReportsService(InvoiceRepository invoiceRepository, InvoiceItemRepository invoiceItemRepository,
                           SalesReturnItemRepository salesReturnItemRepository,
@@ -144,7 +145,9 @@ public class ReportsService {
                           PharmacyRepository pharmacyRepository,
                           SupplierReturnRepository supplierReturnRepository,
                           com.checkup.pharmacy.modules.supplier.SupplierRepository supplierRepository,
-                          com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository) {
+                          com.checkup.pharmacy.modules.medicine.PharmacyMedicineOverrideRepository overrideRepository,
+                          com.checkup.pharmacy.modules.billing.PaymentMixReader paymentMix) {
+        this.paymentMix = paymentMix;
         this.supplierRepository = supplierRepository;
         this.pharmacyRepository = pharmacyRepository;
         this.supplierReturnRepository = supplierReturnRepository;
@@ -264,25 +267,37 @@ public class ReportsService {
     }
 
     /**
-     * The period's takings by payment channel. Non-cancelled invoices only, valued at the
-     * billed total (what the customer paid), so the slices add up to the same headline the
-     * sales trend shows.
+     * The period's takings by payment channel — money actually received through each,
+     * plus what went on customers' accounts as CREDIT.
+     *
+     * <p>Reads the same tender-aware source as the day's cash closure, so the two cannot
+     * disagree. A bill settled Rs.600 by UPI and Rs.400 in cash contributes to both
+     * slices; it used to contribute its whole value to whichever single mode it was
+     * filed under.
+     *
+     * <p>The bill counts therefore no longer sum to the number of bills raised — a split
+     * bill is counted once in each slice it touched. Slices are ordered by value, largest
+     * first, as before.
      */
     @Transactional(readOnly = true, timeout = REPORT_QUERY_TIMEOUT_SECONDS)
     public com.checkup.pharmacy.modules.reports.dto.PaymentMixResponse paymentMix(Instant from, Instant to) {
         validateRange(from, to);
         Instant f = DateRange.from(from);
         Instant t = DateRange.to(to);
-        var rows = invoiceRepository.paymentMixInRange(TenantContext.pharmacyId(), f, t);
-        BigDecimal total = rows.stream().map(r -> nz(r.getTotal())).reduce(BigDecimal.ZERO, BigDecimal::add);
-        long bills = rows.stream().mapToLong(InvoiceRepository.PaymentMixRow::getBills).sum();
-        List<com.checkup.pharmacy.modules.reports.dto.PaymentMixResponse.Slice> slices = new ArrayList<>();
-        for (var r : rows) {
-            BigDecimal amount = round2(nz(r.getTotal()));
-            slices.add(new com.checkup.pharmacy.modules.reports.dto.PaymentMixResponse.Slice(
-                    r.getMode() != null ? r.getMode() : "OTHER", amount, r.getBills(),
-                    round2(percentOf(amount, total))));
-        }
+        var mix = paymentMix.mix(TenantContext.pharmacyId(), f, t);
+        BigDecimal total = mix.values().stream()
+                .map(com.checkup.pharmacy.modules.billing.PaymentMixReader.ModeTotal::amount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        long bills = mix.values().stream()
+                .mapToLong(com.checkup.pharmacy.modules.billing.PaymentMixReader.ModeTotal::bills).sum();
+        List<com.checkup.pharmacy.modules.reports.dto.PaymentMixResponse.Slice> slices = mix.entrySet().stream()
+                .sorted((a, b) -> b.getValue().amount().compareTo(a.getValue().amount()))
+                .map(e -> {
+                    BigDecimal amount = round2(e.getValue().amount());
+                    return new com.checkup.pharmacy.modules.reports.dto.PaymentMixResponse.Slice(
+                            e.getKey().name(), amount, e.getValue().bills(), round2(percentOf(amount, total)));
+                })
+                .toList();
         return new com.checkup.pharmacy.modules.reports.dto.PaymentMixResponse(round2(total), bills, slices);
     }
 

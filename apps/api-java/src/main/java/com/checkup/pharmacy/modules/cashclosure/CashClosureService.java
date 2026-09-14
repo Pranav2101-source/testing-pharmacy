@@ -5,7 +5,8 @@ import com.checkup.pharmacy.common.exception.ConflictException;
 import com.checkup.pharmacy.common.exception.NotFoundException;
 import com.checkup.pharmacy.common.exception.UnprocessableEntityException;
 import com.checkup.pharmacy.common.util.DateRange;
-import com.checkup.pharmacy.modules.billing.InvoiceRepository;
+import com.checkup.pharmacy.common.enums.PaymentMode;
+import com.checkup.pharmacy.modules.billing.PaymentMixReader;
 import com.checkup.pharmacy.modules.cashclosure.dto.CashClosurePageResponse;
 import com.checkup.pharmacy.modules.cashclosure.dto.CashClosureResponse;
 import com.checkup.pharmacy.modules.cashclosure.dto.CloseCashClosureRequest;
@@ -50,16 +51,13 @@ public class CashClosureService {
     private static final ZoneOffset IST = ZoneOffset.ofHoursMinutes(5, 30);
 
     private final CashClosureRepository repository;
-    private final InvoiceRepository invoiceRepository;
-    private final com.checkup.pharmacy.modules.billing.InvoicePaymentRepository paymentRepository;
+    private final PaymentMixReader paymentMix;
     private final UserRepository userRepository;
 
-    public CashClosureService(CashClosureRepository repository, InvoiceRepository invoiceRepository,
-                              com.checkup.pharmacy.modules.billing.InvoicePaymentRepository paymentRepository,
+    public CashClosureService(CashClosureRepository repository, PaymentMixReader paymentMix,
                               UserRepository userRepository) {
         this.repository = repository;
-        this.invoiceRepository = invoiceRepository;
-        this.paymentRepository = paymentRepository;
+        this.paymentMix = paymentMix;
         this.userRepository = userRepository;
     }
 
@@ -79,7 +77,8 @@ public class CashClosureService {
         BigDecimal variance = req.actualCashOrZero().subtract(expectedCash);
 
         CashClosure closure = CashClosure.create(pharmacyId, userId, closureDate, req.openingCashOrZero(), sales.cash(),
-                sales.upi(), sales.card(), sales.credit(), sales.wallet(), expectedCash, req.actualCashOrZero(), variance, req.notes());
+                sales.upi(), sales.card(), sales.credit(), sales.wallet(), sales.advance(), expectedCash,
+                req.actualCashOrZero(), variance, req.notes());
         repository.save(closure);
 
         return toResponse(closure, userRepository.findById(userId).orElse(null));
@@ -121,7 +120,7 @@ public class CashClosureService {
         // Same refresh as close(): editing a draft mid-day must not reconcile against
         // a sales figure frozen when the draft was opened.
         SalesBreakdown sales = salesFor(closure.getPharmacyId(), closure.getClosureDate());
-        closure.restateSales(sales.cash(), sales.upi(), sales.card(), sales.credit(), sales.wallet());
+        closure.restateSales(sales.cash(), sales.upi(), sales.card(), sales.credit(), sales.wallet(), sales.advance());
 
         BigDecimal expectedCash = openingCash.add(sales.cash());
         BigDecimal variance = actualCash.subtract(expectedCash);
@@ -143,7 +142,7 @@ public class CashClosureService {
         // surfaced as unexplained surplus cash — on the one number an owner uses to
         // judge whether money has gone missing.
         SalesBreakdown sales = salesFor(closure.getPharmacyId(), closure.getClosureDate());
-        closure.restateSales(sales.cash(), sales.upi(), sales.card(), sales.credit(), sales.wallet());
+        closure.restateSales(sales.cash(), sales.upi(), sales.card(), sales.credit(), sales.wallet(), sales.advance());
 
         BigDecimal expectedCash = closure.getOpeningCash().add(sales.cash());
         BigDecimal variance = req.actualCash().subtract(expectedCash);
@@ -154,7 +153,7 @@ public class CashClosureService {
 
     /** The day's takings split by how they were paid for. */
     private record SalesBreakdown(BigDecimal cash, BigDecimal upi, BigDecimal card,
-                                  BigDecimal credit, BigDecimal wallet) {
+                                  BigDecimal credit, BigDecimal wallet, BigDecimal advance) {
     }
 
     /**
@@ -172,29 +171,50 @@ public class CashClosureService {
      * under `credit`, on whatever date it was raised), so every settlement appeared as
      * unexplained surplus cash.
      *
-     * <p>The other four remain SALES BY MODE — what was sold today and how it was to
-     * be paid for — because that is what they are useful for. They are informational;
-     * only `cash` is reconciled against something physical, so only `cash` needs to
-     * track money movement rather than sales.
+     * <p>The other three settled modes are read the same way, and this is a change: they
+     * used to be SALES BY MODE — the whole of a bill's total, filed under the single mode
+     * it named. That stopped being expressible once a bill could be settled two ways at
+     * once, and the failure was not a rounding difference: a Rs.1000 bill split Rs.600 UPI
+     * and Rs.400 cash would have booked the FULL Rs.1000 under whichever mode happened to
+     * be the larger leg, so one figure was inflated by a payment it never received while
+     * the other silently lost one. All four now report money received.
+     *
+     * <p>`credit` is the one that cannot: nothing is received on a credit sale. It reports
+     * what the day's bills put on customers' accounts, which is the figure it was always
+     * standing in for.
+     *
+     * <p>DEPOSITS COUNT HERE, ON THE DAY THEY ARE TAKEN
+     * <p>A customer handing over Rs.2000 as an advance puts Rs.2000 of real cash in this
+     * drawer against no bill at all. Read from invoices alone that money is invisible, and
+     * shows up at closing as unexplained surplus — the identical failure that credit
+     * settlements used to cause. So the four received modes also carry the day's advance
+     * movements, net of refunds handed back out of the same drawer.
+     *
+     * <p>`advance` is the mirror of that and must NOT be added to the drawer: it is what
+     * the day's bills drew FROM deposits. That cash arrived on some earlier day and was
+     * counted then. Reported separately so the owner can see why a day's billing exceeds
+     * its takings without reaching for a calculator.
      */
     private SalesBreakdown salesFor(String pharmacyId, LocalDate closureDate) {
         Instant from = closureDate.atStartOfDay(IST).toInstant();
         Instant to = from.plus(1, ChronoUnit.DAYS).minusMillis(1);
 
-        Map<String, BigDecimal> breakdown = new HashMap<>();
-        for (InvoiceRepository.PaymentModeTotalRow row : invoiceRepository.sumByPaymentModeInRange(pharmacyId, from, to)) {
-            breakdown.put(row.getPaymentMode(), row.getTotal());
-        }
-
-        BigDecimal cashAtTill = invoiceRepository.sumCashTakenAtTillInRange(pharmacyId, from, to);
-        BigDecimal cashSettlements = paymentRepository.sumCashCollectedInRange(pharmacyId, from, to);
-
+        Map<PaymentMode, PaymentMixReader.ModeTotal> mix = paymentMix.mix(pharmacyId, from, to);
+        Map<PaymentMode, PaymentMixReader.ModeTotal> deposits = paymentMix.advanceMovements(pharmacyId, from, to);
         return new SalesBreakdown(
-                cashAtTill.add(cashSettlements),
-                breakdown.getOrDefault("UPI", BigDecimal.ZERO),
-                breakdown.getOrDefault("CARD", BigDecimal.ZERO),
-                breakdown.getOrDefault("CREDIT", BigDecimal.ZERO),
-                breakdown.getOrDefault("WALLET", BigDecimal.ZERO));
+                received(mix, deposits, PaymentMode.CASH),
+                received(mix, deposits, PaymentMode.UPI),
+                received(mix, deposits, PaymentMode.CARD),
+                paymentMix.amountOf(mix, PaymentMode.CREDIT),
+                received(mix, deposits, PaymentMode.WALLET),
+                paymentMix.amountOf(mix, PaymentMode.ADVANCE));
+    }
+
+    /** Money that arrived by one mode today: settled bills plus deposits, less refunds. */
+    private BigDecimal received(Map<PaymentMode, PaymentMixReader.ModeTotal> mix,
+                                Map<PaymentMode, PaymentMixReader.ModeTotal> deposits,
+                                PaymentMode mode) {
+        return paymentMix.amountOf(mix, mode).add(paymentMix.amountOf(deposits, mode));
     }
 
     @Transactional
@@ -223,7 +243,8 @@ public class CashClosureService {
     private CashClosureResponse toResponse(CashClosure c, String userName) {
         CashClosureResponse.UserRef userRef = userName == null ? null : new CashClosureResponse.UserRef(c.getUserId(), userName);
         return new CashClosureResponse(c.getId(), userRef, c.getClosureDate(), c.getOpeningCash(), c.getCashSales(),
-                c.getUpiSales(), c.getCardSales(), c.getCreditSales(), c.getWalletSales(), c.getExpectedCash(),
-                c.getActualCash(), c.getVariance(), c.getNotes(), c.getStatus().name(), c.getClosedAt(), c.getCreatedAt());
+                c.getUpiSales(), c.getCardSales(), c.getCreditSales(), c.getWalletSales(), c.getAdvanceSales(),
+                c.getExpectedCash(), c.getActualCash(), c.getVariance(), c.getNotes(), c.getStatus().name(),
+                c.getClosedAt(), c.getCreatedAt());
     }
 }

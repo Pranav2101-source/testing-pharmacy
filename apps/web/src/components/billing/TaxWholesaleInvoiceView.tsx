@@ -6,6 +6,7 @@ import { normalizeInvoiceSettings } from "@pharmacy/types";
 import type { InvoiceSettingsConfig } from "@pharmacy/types";
 import { QRCodeSVG } from "qrcode.react";
 import { buildUpiUri } from "@/lib/upiQr";
+import { formatPaymentLine } from "./InvoicePrintView";
 import type { PrintInvoiceData, PharmacyProfile } from "./InvoicePrintView";
 
 // ─── Tax / Wholesale invoice layout ───────────────────────────────────────────
@@ -224,7 +225,7 @@ export const TaxWholesaleInvoiceView = forwardRef<HTMLDivElement, Props>(
     // ── Patient / Invoice-details right box ──────────────────────────────────
     const rightBoxRows: React.ReactNode[] = [];
     if (tot.showPaymentMode) {
-      rightBoxRows.push(<div key="pay">Payment: {invoice.paymentMode} — {invoice.paymentStatus}</div>);
+      rightBoxRows.push(<div key="pay">Payment: {formatPaymentLine(invoice)}</div>);
     }
     if (pat.showInvoiceDate) {
       rightBoxRows.push(<div key="date">Date: {format(new Date(invoice.createdAt), "dd-MM-yyyy")}</div>);

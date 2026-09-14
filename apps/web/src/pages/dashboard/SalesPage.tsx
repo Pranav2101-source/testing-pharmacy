@@ -9,7 +9,7 @@ import {
   Search, Calendar, ChevronDown, SlidersHorizontal, Loader2,
   ArrowUpDown, ArrowUp, ArrowDown, FileX, AlertCircle, TrendingUp,
   BadgeIndianRupee, CreditCard, X, Banknote, Smartphone, Clock3,
-  Package, RefreshCw, Trash2, Play, Clock, IndianRupee,
+  Package, RefreshCw, Trash2, Play, Clock, IndianRupee, Wallet, PiggyBank,
 } from "lucide-react";
 import { istRangeParams } from "@pharmacy/utils";
 import { api, getErrorMessage } from "@/lib/api-client";
@@ -72,7 +72,7 @@ type DashboardStats = {
   monthSales: number; monthCount: number; pendingCredit: number;
   lowStockCount: number; nearExpiryCount: number;
 };
-type PaymentMode   = "CASH" | "UPI" | "CARD" | "CREDIT";
+type PaymentMode   = "CASH" | "UPI" | "CARD" | "CREDIT" | "WALLET" | "ADVANCE";
 type PaymentStatus = "PAID" | "PENDING" | "PARTIAL";
 type Invoice = {
   id: string; invoiceNumber: string; createdAt: string;
@@ -122,6 +122,10 @@ const MODE_CFG: Record<PaymentMode, { label: string; cls: string; Icon: ElementT
   UPI:    { label: "UPI",    cls: "bg-violet-50  text-violet-700  border-violet-200",  Icon: Smartphone },
   CARD:   { label: "Card",   cls: "bg-blue-50    text-blue-700    border-blue-200",    Icon: CreditCard },
   CREDIT: { label: "Credit", cls: "bg-orange-50  text-orange-700  border-orange-200",  Icon: Clock3     },
+  // Both settle a bill without money arriving at the till. Present here so a bill
+  // paid either way shows a named badge rather than falling through to the raw enum.
+  WALLET:  { label: "Wallet",  cls: "bg-indigo-50 text-indigo-700 border-indigo-200", Icon: Wallet    },
+  ADVANCE: { label: "Advance", cls: "bg-violet-50 text-violet-700 border-violet-200", Icon: PiggyBank },
 };
 const AMOUNT_OPTIONS: [AmountFilter, string][] = [["all","All"],["lte500","Up to ₹500"],["501-2000","₹501 – ₹2,000"],["2001-5000","₹2,001 – ₹5,000"],["gt5000","Above ₹5,000"]];
 const AMOUNT_SHORT: Record<AmountFilter, string> = { all:"All", lte500:"≤ ₹500", "501-2000":"₹501–2K", "2001-5000":"₹2K–5K", gt5000:"> ₹5K" };

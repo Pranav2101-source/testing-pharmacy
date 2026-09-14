@@ -3,14 +3,21 @@ import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   Wallet, ArrowDownCircle, ArrowUpCircle, Loader2, AlertCircle, FileX, Phone, AlertTriangle,
+  HandCoins, BookUser,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
+import { CollectDuesModal } from "@/components/customers/CollectDuesModal";
+import { CustomerAccountPanel } from "@/components/customers/CustomerAccountPanel";
 
 // ─── Dues ───────────────────────────────────────────────────────────────────
 // One screen for "who owes whom": money we owe distributors (Payables) and
-// money customers owe us on credit (Receivables). Read-only summary — the
-// aggregates come straight from the supplier ledger and customer credit balances.
+// money customers owe us on credit (Receivables). The aggregates come straight
+// from the supplier ledger and customer credit balances.
+//
+// Receivables is also where a customer's payment is recorded — the money comes
+// back over the counter rather than through the till, so this is the screen the
+// cashier is already on when it happens.
 
 type Payable = {
   id: string; name: string; phone: string | null; creditDays: number;
@@ -20,9 +27,11 @@ type PayablesResp = { suppliers: Payable[]; totalOutstanding: number; totalOverd
 
 type Receivable = {
   id: string; name: string; phone: string | null; customerType: string;
-  creditUsed: number; creditLimit: number;
+  creditUsed: number; creditLimit: number; advanceBalance?: number;
 };
-type ReceivablesResp = { customers: Receivable[]; totalOutstanding: number; count: number };
+type ReceivablesResp = {
+  customers: Receivable[]; totalOutstanding: number; totalAdvanceHeld: number; count: number;
+};
 
 const inr = (n: number) => `₹${n.toLocaleString("en-IN", { maximumFractionDigits: 2 })}`;
 
@@ -104,12 +113,13 @@ function StateWrap({ loading, error, empty, emptyText, children }: {
   return <>{children}</>;
 }
 
-function SummaryCard({ label, value, tone }: { label: string; value: string; tone: "rose" | "emerald" | "amber" | "slate" }) {
+function SummaryCard({ label, value, tone }: { label: string; value: string; tone: "rose" | "emerald" | "amber" | "slate" | "violet" }) {
   const tones = {
     rose:    "bg-rose-50 border-rose-200 text-rose-700",
     emerald: "bg-emerald-50 border-emerald-200 text-emerald-700",
     amber:   "bg-amber-50 border-amber-200 text-amber-700",
     slate:   "bg-slate-50 border-slate-200 text-slate-700",
+    violet:  "bg-violet-50 border-violet-200 text-violet-700",
   }[tone];
   return (
     <div className={cn("rounded-xl border px-4 py-3", tones)}>
@@ -168,21 +178,25 @@ function PayablesView({ q }: { q: ReturnType<typeof useQuery<PayablesResp>> }) {
 
 function ReceivablesView({ q }: { q: ReturnType<typeof useQuery<ReceivablesResp>> }) {
   const d = q.data;
+  const [collect, setCollect] = useState<Receivable | null>(null);
+  const [account, setAccount] = useState<Receivable | null>(null);
   return (
     <div className="space-y-4">
       {d && d.count > 0 && (
-        <div className="grid grid-cols-2 gap-3 max-w-md">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-w-2xl">
           <SummaryCard label="Total receivable" value={inr(d.totalOutstanding)} tone="emerald" />
+          {/* Not netted against receivables — this is money the pharmacy owes back. */}
+          <SummaryCard label="Held on deposit" value={inr(d.totalAdvanceHeld ?? 0)} tone="violet" />
           <SummaryCard label="Customers" value={String(d.count)} tone="slate" />
         </div>
       )}
       <StateWrap loading={q.isLoading} error={q.isError} empty={!!d && d.count === 0}
-        emptyText="No customer dues — no outstanding credit sales.">
+        emptyText="Nothing on any customer account — nobody owes you, and you hold no deposits.">
         <div className="border border-slate-200 rounded-xl overflow-x-auto">
           <table className="w-full">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                {["Customer", "Credit limit", "Outstanding", ""].map((h) => (
+                {["Customer", "Credit limit", "Outstanding", "On deposit", ""].map((h) => (
                   <th key={h} className="px-4 py-2.5 text-left text-[11px] font-bold text-slate-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -198,8 +212,34 @@ function ReceivablesView({ q }: { q: ReturnType<typeof useQuery<ReceivablesResp>
                     </td>
                     <td className="px-4 py-2.5 text-[13px] text-slate-500 tabular-nums">{c.creditLimit > 0 ? inr(c.creditLimit) : "—"}</td>
                     <td className="px-4 py-2.5 text-[14px] font-bold text-emerald-600 tabular-nums">{inr(c.creditUsed)}</td>
+                    <td className="px-4 py-2.5 text-[13px] tabular-nums">
+                      {(c.advanceBalance ?? 0) > 0
+                        ? <span className="text-violet-600 font-semibold">{inr(c.advanceBalance ?? 0)}</span>
+                        : <span className="text-slate-300">—</span>}
+                    </td>
                     <td className="px-4 py-2.5">
-                      {overLimit && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-700 bg-red-50 border border-red-200 rounded-full px-2 py-0.5"><AlertTriangle className="w-3 h-3" />Over limit</span>}
+                      <div className="flex items-center justify-end gap-2">
+                        {overLimit && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-700 bg-red-50 border border-red-200 rounded-full px-2 py-0.5"><AlertTriangle className="w-3 h-3" />Over limit</span>}
+                        <button
+                          onClick={() => setAccount(c)}
+                          title="Account — balances, history, deposits and refunds"
+                          className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-600 hover:text-violet-800 hover:bg-violet-50 border border-slate-200 rounded-lg px-2 py-1 transition-colors"
+                        >
+                          <BookUser className="w-3 h-3" />Account
+                        </button>
+                        {/* A customer on this list purely because we hold their deposit
+                            owes nothing — there is nothing to collect from them. */}
+                        <button
+                          onClick={() => setCollect(c)}
+                          disabled={c.creditUsed <= 0}
+                          title={c.creditUsed > 0
+                            ? "Record a payment against this customer's dues"
+                            : "Nothing outstanding to collect"}
+                          className="inline-flex items-center gap-1 text-[11px] font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg px-2.5 py-1 transition-colors disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed"
+                        >
+                          <HandCoins className="w-3 h-3" />Collect
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -208,6 +248,19 @@ function ReceivablesView({ q }: { q: ReturnType<typeof useQuery<ReceivablesResp>
           </table>
         </div>
       </StateWrap>
+
+      {collect && (
+        <CollectDuesModal
+          customer={{ id: collect.id, name: collect.name, outstanding: collect.creditUsed }}
+          onClose={() => setCollect(null)}
+        />
+      )}
+      {account && (
+        <CustomerAccountPanel
+          customer={{ id: account.id, name: account.name }}
+          onClose={() => setAccount(null)}
+        />
+      )}
     </div>
   );
 }

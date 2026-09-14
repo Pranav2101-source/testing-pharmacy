@@ -74,7 +74,7 @@ class DashboardStatsCacheIT extends AbstractPostgresIT {
     }
 
     private void sale() {
-        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID",
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID", null,
                 null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO, null))));
         entityManager.flush();

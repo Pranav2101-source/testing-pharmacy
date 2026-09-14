@@ -292,6 +292,37 @@ public class Invoice extends BaseEntity {
     }
 
     /**
+     * True when this sale put money on a customer's account, and so posted a dues entry
+     * to the ledger when it was raised.
+     *
+     * <p>Mirrors what {@code BillingService.createInvoice} decided at the time, which is
+     * what anything reversing the sale — a cancellation, a return, a later settlement —
+     * has to agree with. Get this wrong in either direction and the customer's balance
+     * drifts from the ledger: reverse dues that were never posted, or leave real debt
+     * standing after the goods came back.
+     *
+     * <p>The two arms cover the two eras, and which arm applies is decided by what was
+     * collected AT CHECKOUT rather than by {@code amountPaid}. That distinction is the
+     * whole point: {@code amountPaid} grows every time the customer pays, so a predicate
+     * resting on it would flip to true on the second payment against a bill that never
+     * created dues at all — posting a payment against a debt that does not exist, which
+     * either fails outright or clears somebody's unrelated balance.
+     *
+     * @param collectedAtCheckout the tenders stamped with this invoice's own createdAt.
+     *                            Zero for every bill raised before split tender, which is
+     *                            what sends those down the second arm.
+     */
+    public boolean wasSoldOnAccount(BigDecimal collectedAtCheckout) {
+        if (customerId == null) return false;
+        if (collectedAtCheckout.signum() > 0) {
+            // Stated its own tenders: it owes whatever they did not cover.
+            return totalAmount.subtract(collectedAtCheckout).signum() > 0;
+        }
+        // No checkout record at all — the mode it was filed under is the only evidence.
+        return paymentMode == PaymentMode.CREDIT && paymentStatus != PaymentStatus.PAID;
+    }
+
+    /**
      * What is still owed on this bill: total, less goods sent back, less money
      * received. Never negative — an overpayment is held as a customer advance, not
      * as a negative balance on the bill.

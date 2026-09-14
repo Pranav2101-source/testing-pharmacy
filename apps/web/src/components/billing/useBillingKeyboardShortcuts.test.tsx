@@ -12,6 +12,9 @@ function Harness(props: Partial<Handlers>) {
     onSetPaymentMode: vi.fn(),
     isPrintOpen: false,
     onClearBill: vi.fn(),
+    onSplitPayment: vi.fn(),
+    onCustomerAccount: vi.fn(),
+    isSplitOpen: false,
     ...props,
   };
   useBillingKeyboardShortcuts(handlers);

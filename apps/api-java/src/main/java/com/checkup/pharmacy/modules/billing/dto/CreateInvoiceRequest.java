@@ -21,6 +21,19 @@ public record CreateInvoiceRequest(
         String prescriptionId,
         String paymentMode,
         String paymentStatus,
+        /*
+         * How the bill was settled, leg by leg. Empty or absent means the single
+         * paymentMode/paymentStatus pair above is the whole story — every client that
+         * predates split tender, and every such bill keeps its previous accounting
+         * exactly (no invoice_payments rows written at checkout).
+         *
+         * When present, these two become derived rather than declared: paymentMode is
+         * the largest leg and paymentStatus follows from whether a CREDIT leg exists.
+         * That is deliberate — a caller that could name a status independently of the
+         * tenders could claim PENDING on a bill whose legs say it was paid in full,
+         * which is the older "Billing for" dropdown's bug.
+         */
+        @Valid List<TenderRequest> tenders,
         Boolean isInterstate,
         @Size(max = 1000) String notes,
         @Size(max = 1000) String deliveryNotes,
@@ -73,6 +86,15 @@ public record CreateInvoiceRequest(
     public String reservationSessionId() {
         if (sessionId != null && !sessionId.isBlank()) return sessionId;
         return idempotencyKey != null && !idempotencyKey.isBlank() ? idempotencyKey : null;
+    }
+
+    public List<TenderRequest> tendersOrEmpty() {
+        return tenders == null ? List.of() : tenders;
+    }
+
+    /** True when this bill states its own tender breakdown rather than a single mode. */
+    public boolean hasTenders() {
+        return !tendersOrEmpty().isEmpty();
     }
 
     public String paymentModeOrDefault() {

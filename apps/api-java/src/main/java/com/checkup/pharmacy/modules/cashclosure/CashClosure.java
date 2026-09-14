@@ -50,6 +50,14 @@ public class CashClosure extends BaseEntity {
     @Column(name = "walletSales")
     private BigDecimal walletSales = BigDecimal.ZERO;
 
+    /**
+     * What the day's bills drew from customers' deposits. Reported, never added to
+     * {@code expectedCash} — that cash entered the drawer on the day the deposit was
+     * taken, and counting it again here would expect it twice.
+     */
+    @Column(name = "advanceSales")
+    private BigDecimal advanceSales = BigDecimal.ZERO;
+
     @Column(name = "expectedCash")
     private BigDecimal expectedCash = BigDecimal.ZERO;
 
@@ -75,7 +83,8 @@ public class CashClosure extends BaseEntity {
 
     public static CashClosure create(String pharmacyId, String userId, LocalDate closureDate, BigDecimal openingCash,
                                      BigDecimal cashSales, BigDecimal upiSales, BigDecimal cardSales,
-                                     BigDecimal creditSales, BigDecimal walletSales, BigDecimal expectedCash,
+                                     BigDecimal creditSales, BigDecimal walletSales, BigDecimal advanceSales,
+                                     BigDecimal expectedCash,
                                      BigDecimal actualCash, BigDecimal variance, String notes) {
         CashClosure c = new CashClosure();
         c.assignId(Cuid.generate());
@@ -88,6 +97,7 @@ public class CashClosure extends BaseEntity {
         c.cardSales = cardSales;
         c.creditSales = creditSales;
         c.walletSales = walletSales;
+        c.advanceSales = advanceSales;
         c.expectedCash = expectedCash;
         c.actualCash = actualCash;
         c.variance = variance;
@@ -116,12 +126,13 @@ public class CashClosure extends BaseEntity {
      * about missing cash rather than about when someone happened to open the form.
      */
     public void restateSales(BigDecimal cashSales, BigDecimal upiSales, BigDecimal cardSales,
-                             BigDecimal creditSales, BigDecimal walletSales) {
+                             BigDecimal creditSales, BigDecimal walletSales, BigDecimal advanceSales) {
         this.cashSales = cashSales;
         this.upiSales = upiSales;
         this.cardSales = cardSales;
         this.creditSales = creditSales;
         this.walletSales = walletSales;
+        this.advanceSales = advanceSales;
     }
 
     public void close(BigDecimal actualCash, BigDecimal expectedCash, BigDecimal variance, String notes) {
@@ -156,6 +167,8 @@ public class CashClosure extends BaseEntity {
     public BigDecimal getCreditSales() { return creditSales; }
 
     public BigDecimal getWalletSales() { return walletSales; }
+
+    public BigDecimal getAdvanceSales() { return advanceSales; }
 
     public BigDecimal getExpectedCash() { return expectedCash; }
 

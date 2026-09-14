@@ -1162,6 +1162,7 @@ enum PaymentMode {
   CARD
   CREDIT
   WALLET
+  ADVANCE // settled from a deposit the customer already paid — no money moves now
 }
 
 enum PaymentStatus {
@@ -2274,6 +2275,7 @@ model CashClosure {
   cardSales    Decimal       @default(0) @db.Decimal(12, 2)
   creditSales  Decimal       @default(0) @db.Decimal(12, 2)
   walletSales  Decimal       @default(0) @db.Decimal(12, 2)
+  advanceSales Decimal       @default(0) @db.Decimal(12, 2)
   expectedCash Decimal       @default(0) @db.Decimal(12, 2)
   actualCash   Decimal       @default(0) @db.Decimal(12, 2)
   variance     Decimal       @default(0) @db.Decimal(12, 2)

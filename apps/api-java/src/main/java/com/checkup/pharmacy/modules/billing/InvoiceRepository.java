@@ -74,63 +74,94 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
                          @Param("search") String search,
                          Pageable pageable);
 
-    /** Non-cancelled sales total per payment mode within a date range — used by cash-closure's daily reconciliation. */
+    /**
+     * Money received, per mode, on bills that carry no tender rows of their own — every
+     * bill raised before split tender existed.
+     *
+     * <p>The other half of {@code InvoicePaymentRepository.sumByModeInRange}: together
+     * the two cover both eras of bill exactly once. This one reads the settlement off
+     * the invoice's own columns because that is the only record such a bill has;
+     * the newer one reads it off the tender rows, which is the only record a split bill
+     * COULD have. A bill is in precisely one of the two sets, so nothing is counted twice
+     * and nothing is missed — and no payment row has to be invented for the thousands of
+     * invoices that predate the feature.
+     *
+     * <p>This replaced a pair of queries that reported what was SOLD by mode — the whole
+     * of a bill's total, filed under the single mode it named. A bill settled two ways at
+     * once has no such single mode, and booking its full value under the larger leg
+     * inflated one figure by money it never received while the other lost the same amount.
+     *
+     * <p>CREDIT is absent by construction: an unpaid bill received no money, and what it
+     * put on the customer's account is {@link #sumCreditPutOnAccountInRange}'s question.
+     * Anything not fully PAID is skipped for the same reason.
+     */
     @Query("""
-            SELECT CAST(i.paymentMode AS string) AS paymentMode, COALESCE(SUM(i.totalAmount), 0) AS total
+            SELECT CAST(i.paymentMode AS string) AS mode, COALESCE(SUM(i.totalAmount), 0) AS total,
+                   COUNT(i) AS bills
             FROM Invoice i
             WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false
+              AND CAST(i.paymentStatus AS string) = 'PAID'
+              AND CAST(i.paymentMode AS string) <> 'CREDIT'
               AND i.createdAt >= :from AND i.createdAt <= :to
+              AND NOT EXISTS (SELECT 1 FROM InvoicePayment p
+                               WHERE p.invoiceId = i.id AND p.paidAt <= i.createdAt)
             GROUP BY i.paymentMode
             """)
-    List<PaymentModeTotalRow> sumByPaymentModeInRange(@Param("pharmacyId") String pharmacyId,
-                                                       @Param("from") Instant from, @Param("to") Instant to);
+    List<ModeMixRow> sumUntenderedReceivedByModeInRange(@Param("pharmacyId") String pharmacyId,
+                                                        @Param("from") Instant from, @Param("to") Instant to);
 
-    interface PaymentMixRow {
+    interface ModeMixRow {
         String getMode();
         BigDecimal getTotal();
         long getBills();
     }
 
-    /** Sales value and bill count per payment mode for a range — the Reports payment-mix chart. */
+    /**
+     * What the window's sales put on customers' accounts — debt created, not money taken.
+     *
+     * <p>Measured at the moment of sale and never afterwards, which is why this reads the
+     * tenders stamped at checkout rather than {@code amountPaid}. The two agree until the
+     * customer settles: a later payment raises {@code amountPaid}, and a figure derived
+     * from it would quietly restate how much was sold on credit on a day that is long
+     * past. "Sold on credit in March" must not shrink because someone paid in April.
+     *
+     * <p>A checkout tender is identifiable because it is written carrying the invoice's
+     * own {@code createdAt} (see BillingService.createInvoice); anything a customer pays
+     * later is strictly after it. The same test tells a cancellable bill from one with
+     * money collected against it — see BillingService.doCancelInvoice.
+     *
+     * <p>Bills predating split tender have no checkout tenders at all, so the mode they
+     * were filed under is the only record of the debt — the first arm, which reports the
+     * whole bill exactly as the query this replaced did. A bill is read by at most one
+     * arm, the same both-eras split as {@link #sumUntenderedReceivedByModeInRange}.
+     *
+     * <p>Both arms turn on CHECKOUT tenders specifically, never on "has any payment row".
+     * A later settlement writes a row too, and keying off that would move a bill from one
+     * era to the other the moment a customer paid — retroactively reclassifying an old
+     * cash sale as a credit sale on a date already closed and reported.
+     */
     @Query("""
-            SELECT CAST(i.paymentMode AS string) AS mode, COALESCE(SUM(i.totalAmount), 0) AS total, COUNT(i) AS bills
+            SELECT 'CREDIT' AS mode,
+                   COALESCE(SUM(i.totalAmount - COALESCE(
+                       (SELECT SUM(p.amount) FROM InvoicePayment p
+                         WHERE p.invoiceId = i.id AND p.paidAt <= i.createdAt), 0)), 0) AS total,
+                   COUNT(i) AS bills
             FROM Invoice i
             WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false
               AND i.createdAt >= :from AND i.createdAt <= :to
-            GROUP BY i.paymentMode
-            ORDER BY SUM(i.totalAmount) DESC
+              AND (
+                   (NOT EXISTS (SELECT 1 FROM InvoicePayment p2
+                                 WHERE p2.invoiceId = i.id AND p2.paidAt <= i.createdAt)
+                    AND CAST(i.paymentMode AS string) = 'CREDIT')
+                   OR (EXISTS (SELECT 1 FROM InvoicePayment p3
+                                WHERE p3.invoiceId = i.id AND p3.paidAt <= i.createdAt)
+                       AND i.totalAmount > COALESCE(
+                           (SELECT SUM(p4.amount) FROM InvoicePayment p4
+                             WHERE p4.invoiceId = i.id AND p4.paidAt <= i.createdAt), 0))
+              )
             """)
-    List<PaymentMixRow> paymentMixInRange(@Param("pharmacyId") String pharmacyId,
-                                          @Param("from") Instant from, @Param("to") Instant to);
-
-    /**
-     * Cash taken over the counter: invoices raised in the window that were settled in
-     * cash AT THE TILL.
-     *
-     * <p>Distinct from {@link #sumByPaymentModeInRange}, which reports what was SOLD
-     * by payment mode regardless of whether the money arrived. The cash figure on a
-     * closure is reconciled against a physical drawer, so it must count only cash
-     * actually received.
-     *
-     * <p>The {@code PAID} filter is what keeps this from double-counting: a CASH
-     * invoice left PENDING has no money in the drawer yet, and when it is settled
-     * later an InvoicePayment row is written — which
-     * {@code InvoicePaymentRepository.sumByModeInRange} picks up instead.
-     */
-    @Query("""
-            SELECT COALESCE(SUM(i.totalAmount), 0) FROM Invoice i
-            WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false
-              AND CAST(i.paymentMode AS string) = 'CASH'
-              AND CAST(i.paymentStatus AS string) = 'PAID'
-              AND i.createdAt >= :from AND i.createdAt <= :to
-            """)
-    BigDecimal sumCashTakenAtTillInRange(@Param("pharmacyId") String pharmacyId,
-                                         @Param("from") Instant from, @Param("to") Instant to);
-
-    interface PaymentModeTotalRow {
-        String getPaymentMode();
-        BigDecimal getTotal();
-    }
+    ModeMixRow sumCreditPutOnAccountInRange(@Param("pharmacyId") String pharmacyId,
+                                            @Param("from") Instant from, @Param("to") Instant to);
 
     @Query("SELECT i.customerId AS customerId, COUNT(i) AS total FROM Invoice i " +
             "WHERE i.pharmacyId = :pharmacyId AND i.customerId IN :customerIds GROUP BY i.customerId")
@@ -571,17 +602,4 @@ public interface InvoiceRepository extends JpaRepository<Invoice, String> {
             """)
     BigDecimal sumPendingCredit(@Param("pharmacyId") String pharmacyId);
 
-    @Query("""
-            SELECT CAST(i.paymentMode AS string) AS mode, COALESCE(SUM(i.totalAmount), 0) AS total, COUNT(i) AS cnt
-            FROM Invoice i
-            WHERE i.pharmacyId = :pharmacyId AND i.isCancelled = false AND i.createdAt >= :since
-            GROUP BY i.paymentMode
-            """)
-    List<PaymentModeBreakdownRow> paymentBreakdownSince(@Param("pharmacyId") String pharmacyId, @Param("since") Instant since);
-
-    interface PaymentModeBreakdownRow {
-        String getMode();
-        BigDecimal getTotal();
-        long getCnt();
-    }
 }

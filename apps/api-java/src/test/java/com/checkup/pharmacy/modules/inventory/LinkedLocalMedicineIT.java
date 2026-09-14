@@ -126,7 +126,7 @@ class LinkedLocalMedicineIT extends AbstractPostgresIT {
     private InvoiceResponse bill(String inventoryId, int qty, String saleUnit) {
         var item = new InvoiceItemRequest(inventoryId, qty, null, BigDecimal.ZERO, null, saleUnit);
         return billingService.createInvoice(new CreateInvoiceRequest(walkInCustomerId(), null, null, null, null, null,
-                null, null, null, null, null, null, null, null, null, null, List.of(item)));
+                null, null, null, null, null, null, null, null, null, null, null, List.of(item)));
     }
 
     // ── 1. Linked local medicine + loose selling enabled ────────────────────

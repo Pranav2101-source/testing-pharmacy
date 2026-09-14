@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 interface CashClosure {
   id: string; closureDate: string; status: "DRAFT" | "CLOSED" | "DISPUTED";
   openingCash: number; cashSales: number; upiSales: number; cardSales: number;
-  creditSales: number; walletSales: number; expectedCash: number;
+  creditSales: number; walletSales: number; advanceSales: number; expectedCash: number;
   actualCash: number; variance: number; notes: string | null;
   closedAt: string | null;
   user: { id: string; name: string };
@@ -139,12 +139,18 @@ function CloseModal({ closure, onClose }: { closure: CashClosure; onClose: () =>
           {/* Sales breakdown */}
           <div className="bg-slate-50 rounded-xl p-4 space-y-2 text-[13px]">
             {[
-              ["Opening Cash",  fmt(closure.openingCash)],
-              ["Cash Sales",    fmt(closure.cashSales)],
-              ["UPI Sales",     fmt(closure.upiSales)],
-              ["Card Sales",    fmt(closure.cardSales)],
-              ["Credit Sales",  fmt(closure.creditSales)],
-              ["Wallet Sales",  fmt(closure.walletSales)],
+              ["Opening Cash",   fmt(closure.openingCash)],
+              // "Received", not "Sales": these include money taken today against an
+              // older bill and deposits taken against no bill at all. Only the cash
+              // line feeds Expected Cash below.
+              ["Cash Received",  fmt(closure.cashSales)],
+              ["UPI Received",   fmt(closure.upiSales)],
+              ["Card Received",  fmt(closure.cardSales)],
+              ["Credit Sales",   fmt(closure.creditSales)],
+              ["Wallet Received", fmt(closure.walletSales)],
+              // Billed against deposits taken on an earlier day — shown so the day's
+              // billing and its takings can be told apart, never added to the drawer.
+              ["From Advances",  fmt(closure.advanceSales)],
             ].map(([label, value]) => (
               <div key={label} className="flex justify-between">
                 <span className="text-slate-500">{label}</span>
@@ -260,7 +266,7 @@ export default function CashClosurePage() {
           <table className="w-full text-[13px]">
             <thead>
               <tr className="bg-slate-50 text-slate-500 text-[11px] font-semibold">
-                {["Date", "Status", "Opening", "Cash Sales", "Expected", "Actual", "Variance", "Closed By", "Actions"].map(h => (
+                {["Date", "Status", "Opening", "Cash Received", "From Advances", "Expected", "Actual", "Variance", "Closed By", "Actions"].map(h => (
                   <th key={h} className="px-4 py-3 text-right first:text-left last:text-right">{h}</th>
                 ))}
               </tr>
@@ -272,6 +278,9 @@ export default function CashClosurePage() {
                   <td className="px-4 py-3"><StatusBadge status={c.status} /></td>
                   <td className="px-4 py-3 text-right text-slate-600">{fmt(c.openingCash)}</td>
                   <td className="px-4 py-3 text-right text-slate-600">{fmt(c.cashSales)}</td>
+                  <td className="px-4 py-3 text-right text-slate-400">
+                    {c.advanceSales > 0 ? fmt(c.advanceSales) : "—"}
+                  </td>
                   <td className="px-4 py-3 text-right font-medium">{fmt(c.expectedCash)}</td>
                   <td className="px-4 py-3 text-right font-medium">{fmt(c.actualCash)}</td>
                   <td className={cn("px-4 py-3 text-right font-bold",

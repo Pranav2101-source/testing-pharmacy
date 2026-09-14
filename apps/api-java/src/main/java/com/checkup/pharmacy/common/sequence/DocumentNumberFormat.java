@@ -32,6 +32,21 @@ public final class DocumentNumberFormat {
         return "SCN-" + Year.now().getValue() + "-" + pad(seq, 5);
     }
 
+    /** Deposit voucher handed to a customer paying money in advance. */
+    public static String customerAdvance(int seq) {
+        return "ADV-" + Year.now().getValue() + "-" + pad(seq, 5);
+    }
+
+    /** Receipt for money collected against a customer's outstanding dues. */
+    public static String customerReceipt(int seq) {
+        return "RCP-" + Year.now().getValue() + "-" + pad(seq, 5);
+    }
+
+    /** Voucher for advance handed back to a customer. */
+    public static String customerRefund(int seq) {
+        return "REF-" + Year.now().getValue() + "-" + pad(seq, 5);
+    }
+
     public static String invoice(int seq) {
         return "INV/" + DocumentSequenceService.fyShort() + "/" + pad(seq, 6);
     }

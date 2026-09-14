@@ -6,5 +6,7 @@ public enum PaymentMode {
     UPI,
     CARD,
     CREDIT,
-    WALLET
+    WALLET,
+    /** Settled from a deposit the customer paid earlier — no money moves at the till now. */
+    ADVANCE
 }

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { Keyboard, X, Search, Layers, Shuffle, Save, ScanBarcode } from "lucide-react";
+import { Keyboard, X, Search, Layers, Shuffle, Save, ScanBarcode, PiggyBank } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -137,6 +137,7 @@ export function KeyboardShortcutsPanel() {
                     <Row label="Save & New" keys={<Kbd>F8</Kbd>} />
                     <Row label="Save as Draft" keys={<><Kbd>Ctrl/⌘</Kbd><Kbd>S</Kbd></>} />
                     <Row label="Set payment mode (Cash/UPI/Card/Credit)" keys={<><Kbd>Alt</Kbd><Kbd>1-4</Kbd></>} />
+                    <Row label="Split across several ways of paying" keys={<Kbd>F7</Kbd>} />
                     <Row label="Dismiss the receipt, else clear the bill" keys={<Kbd>Esc</Kbd>} />
                     <div className="flex items-center gap-1.5 pt-1.5 mt-1 border-t border-slate-100">
                       <span className="text-[11px] text-slate-400 leading-snug">
@@ -145,6 +146,14 @@ export function KeyboardShortcutsPanel() {
                         "F1–F12 as function keys" in your keyboard settings.
                       </span>
                     </div>
+                  </Group>
+
+                  <Group icon={PiggyBank} iconBg="bg-violet-100" iconColor="text-violet-600" title="Customer account — without leaving the bill">
+                    <Row label="Open the attached customer's account" keys={<Kbd>F6</Kbd>} />
+                    <Row label="Take a deposit" keys={<Kbd>D</Kbd>} />
+                    <Row label="Collect dues" keys={<Kbd>C</Kbd>} />
+                    <Row label="Refund a deposit" keys={<Kbd>R</Kbd>} />
+                    <Row label="Back to the bill" keys={<Kbd>Esc</Kbd>} />
                   </Group>
 
                   <Group icon={Shuffle} iconBg="bg-amber-100" iconColor="text-amber-600" title="This cheat sheet">

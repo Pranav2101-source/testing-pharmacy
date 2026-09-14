@@ -7,6 +7,10 @@ import com.checkup.pharmacy.modules.billing.dto.AddPaymentRequest;
 import com.checkup.pharmacy.modules.billing.dto.CreateInvoiceRequest;
 import com.checkup.pharmacy.modules.customer.CustomerRepository;
 import com.checkup.pharmacy.modules.billing.dto.InvoiceItemRequest;
+import com.checkup.pharmacy.modules.billing.dto.TenderRequest;
+import com.checkup.pharmacy.modules.customerledger.CustomerAccountService;
+import com.checkup.pharmacy.modules.customerledger.dto.RecordAdvanceRequest;
+import com.checkup.pharmacy.modules.customerledger.dto.RefundAdvanceRequest;
 import com.checkup.pharmacy.modules.cashclosure.dto.CloseCashClosureRequest;
 import com.checkup.pharmacy.modules.cashclosure.dto.CreateCashClosureRequest;
 import com.checkup.pharmacy.modules.inventory.Inventory;
@@ -21,6 +25,7 @@ import com.checkup.pharmacy.testsupport.AbstractPostgresIT;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.transaction.annotation.Transactional;
@@ -52,6 +57,7 @@ class CashClosureIT extends AbstractPostgresIT {
     @Autowired private InventoryRepository inventoryRepository;
     @Autowired private UserRepository userRepository;
     @Autowired private CustomerRepository customerRepository;
+    @Autowired private CustomerAccountService accountService;
     @Autowired private EntityManager entityManager;
 
     private String pharmacyId;
@@ -83,6 +89,23 @@ class CashClosureIT extends AbstractPostgresIT {
         entityManager.clear();
     }
 
+    /** A customer with nothing owed and nothing held, ready to take a deposit. */
+    private String plainCustomer() {
+        var customer = customerRepository.save(
+                com.checkup.pharmacy.modules.customer.Customer.create(pharmacyId, "Depositor"));
+        flushAndClear();
+        return customer.getId();
+    }
+
+    /** A bill settled (wholly) from the named customer's deposit. */
+    private void advanceSale(String customerId, int units, String advanceAmount) {
+        billingService.createInvoice(new CreateInvoiceRequest(customerId, null, null, null, null, null, null, null,
+                List.of(new TenderRequest("ADVANCE", new BigDecimal(advanceAmount), null)),
+                null, null, null, null, null, null, null, null,
+                List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO, null))));
+        flushAndClear();
+    }
+
     /** A customer set up to buy on credit, with headroom. */
     private String creditCustomer() {
         var customer = customerRepository.save(
@@ -97,7 +120,7 @@ class CashClosureIT extends AbstractPostgresIT {
 
     /** One cash sale of `units` x Rs.100. */
     private void cashSale(int units) {
-        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID",
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID", null,
                 null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, units, null, BigDecimal.ZERO, null))));
         flushAndClear();
@@ -164,7 +187,7 @@ class CashClosureIT extends AbstractPostgresIT {
         String creditCustomerId = creditCustomer();
 
         var creditInvoice = billingService.createInvoice(new CreateInvoiceRequest(creditCustomerId, null, null, null, null, null,
-                "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
+                "CREDIT", "PENDING", null, null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 4, null, BigDecimal.ZERO, null))));
         flushAndClear();
 
@@ -191,7 +214,7 @@ class CashClosureIT extends AbstractPostgresIT {
         String creditCustomerId = creditCustomer();
 
         billingService.createInvoice(new CreateInvoiceRequest(creditCustomerId, null, null, null, null, null,
-                "CREDIT", "PENDING", null, null, null, null, null, null, null, null,
+                "CREDIT", "PENDING", null, null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 4, null, BigDecimal.ZERO, null))));
         flushAndClear();
 
@@ -225,7 +248,7 @@ class CashClosureIT extends AbstractPostgresIT {
     @Test
     @DisplayName("a cancelled invoice is excluded from the day's takings")
     void cancelledInvoicesDoNotCount() {
-        var invoice = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PENDING",
+        var invoice = billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PENDING", null,
                 null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 2, null, BigDecimal.ZERO, null))));
         flushAndClear();
@@ -269,5 +292,99 @@ class CashClosureIT extends AbstractPostgresIT {
                         null, new BigDecimal("999"), null)))
                 .isInstanceOf(ConflictException.class)
                 .hasMessageContaining("Cannot edit a closed");
+    }
+
+    /**
+     * Deposits are the other half of a till's real cash that invoices alone cannot
+     * explain — a customer handing over money against no bill at all. The three
+     * things that have to hold: the deposit itself counts as cash the day it is
+     * taken, a bill later drawn from it must NOT count a second time, and a refund
+     * takes cash back out of the same drawer.
+     */
+    @Nested
+    @DisplayName("deposits")
+    class Advances {
+
+        @Test
+        @DisplayName("a cash deposit is counted as today's cash, like any other cash taken at the counter")
+        void depositCountsAsCash() {
+            String customerId = plainCustomer();
+            accountService.recordAdvance(customerId,
+                    new RecordAdvanceRequest(new BigDecimal("2000"), "CASH", null, null));
+            flushAndClear();
+
+            var closure = cashClosureService.initForDate(
+                    new CreateCashClosureRequest(null, BigDecimal.ZERO, new BigDecimal("2000"), null));
+            flushAndClear();
+
+            assertThat(closure.cashSales()).isEqualByComparingTo("2000");
+            assertThat(closure.advanceSales())
+                    .as("nothing was billed against a deposit here")
+                    .isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(closure.variance()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
+
+        @Test
+        @DisplayName("a bill settled from that deposit does not add a second time")
+        void advanceSettledBillDoesNotDoubleCount() {
+            String customerId = plainCustomer();
+            accountService.recordAdvance(customerId,
+                    new RecordAdvanceRequest(new BigDecimal("2000"), "CASH", null, null));
+            flushAndClear();
+
+            // Rs.2000 real cash arrived today. A Rs.500 bill is then drawn from it —
+            // no further cash changes hands, so the drawer must still expect Rs.2000,
+            // not Rs.2500.
+            advanceSale(customerId, 5, "500");
+
+            var closure = cashClosureService.initForDate(
+                    new CreateCashClosureRequest(null, BigDecimal.ZERO, new BigDecimal("2000"), null));
+            flushAndClear();
+
+            assertThat(closure.cashSales())
+                    .as("the deposit is the only cash that actually arrived")
+                    .isEqualByComparingTo("2000");
+            assertThat(closure.advanceSales())
+                    .as("what today's billing drew from deposits, reported separately")
+                    .isEqualByComparingTo("500");
+            assertThat(closure.variance()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
+
+        @Test
+        @DisplayName("a cash refund of a deposit takes that cash back out of the drawer")
+        void cashRefundLowersCash() {
+            String customerId = plainCustomer();
+            accountService.recordAdvance(customerId,
+                    new RecordAdvanceRequest(new BigDecimal("2000"), "CASH", null, null));
+            flushAndClear();
+            accountService.refundAdvance(customerId,
+                    new RefundAdvanceRequest(new BigDecimal("600"), "CASH", "customer asked for it back"));
+            flushAndClear();
+
+            var closure = cashClosureService.initForDate(
+                    new CreateCashClosureRequest(null, BigDecimal.ZERO, new BigDecimal("1400"), null));
+            flushAndClear();
+
+            assertThat(closure.cashSales())
+                    .as("2000 taken, 600 handed back — net 1400 actually stayed in the drawer")
+                    .isEqualByComparingTo("1400");
+            assertThat(closure.variance()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
+
+        @Test
+        @DisplayName("a deposit paid by UPI is never mistaken for cash")
+        void nonCashDepositStaysOutOfCash() {
+            String customerId = plainCustomer();
+            accountService.recordAdvance(customerId,
+                    new RecordAdvanceRequest(new BigDecimal("1500"), "UPI", "txn-77", null));
+            flushAndClear();
+
+            var closure = cashClosureService.initForDate(
+                    new CreateCashClosureRequest(null, BigDecimal.ZERO, BigDecimal.ZERO, null));
+            flushAndClear();
+
+            assertThat(closure.cashSales()).isEqualByComparingTo(BigDecimal.ZERO);
+            assertThat(closure.variance()).isEqualByComparingTo(BigDecimal.ZERO);
+        }
     }
 }

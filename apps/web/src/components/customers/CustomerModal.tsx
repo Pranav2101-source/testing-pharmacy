@@ -23,6 +23,8 @@ export type CustomerRecord = {
   defaultDiscount: number;
   creditLimit:     number;
   creditUsed:      number;
+  /** Deposit held for this customer. Derived from the ledger; never edited on this form. */
+  advanceBalance?: number;
   abhaNumber?:     string | null;
   cardNumber?:     string | null;
   gender?:         string | null;

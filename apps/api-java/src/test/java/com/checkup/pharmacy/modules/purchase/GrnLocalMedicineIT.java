@@ -203,7 +203,7 @@ class GrnLocalMedicineIT extends AbstractPostgresIT {
 
         var item = new InvoiceItemRequest(batch.getId(), 2, null, BigDecimal.ZERO, null);
         InvoiceResponse invoice = billingService.createInvoice(new CreateInvoiceRequest(customerId, null, null, null,
-                null, null, null, null, null, null, null, null, null, null, null, null, List.of(item)));
+                null, null, null, null, null, null, null, null, null, null, null, null, null, List.of(item)));
         flushAndClear();
 
         assertThat(invoice.items()).hasSize(1);
@@ -495,7 +495,7 @@ class GrnLocalMedicineIT extends AbstractPostgresIT {
         String customerId = customerRepository.save(Customer.create(pharmacyId, "Walk-in")).getId();
         flushAndClear();
 
-        billingService.createInvoice(new CreateInvoiceRequest(customerId, null, null, null, null, null, null, null,
+        billingService.createInvoice(new CreateInvoiceRequest(customerId, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batch.getId(), 2, null, BigDecimal.ZERO, null))));
         flushAndClear();

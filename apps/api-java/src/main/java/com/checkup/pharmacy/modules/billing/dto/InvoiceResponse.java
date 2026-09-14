@@ -33,6 +33,16 @@ public record InvoiceResponse(
         BigDecimal adjustmentAmount,
         BigDecimal roundOff,
         BigDecimal returnedAmount,
+        /** Money actually received against this bill — the sum of {@code payments}. */
+        BigDecimal amountPaid,
+        /**
+         * Still owed: total, less goods sent back, less money received. Never negative.
+         *
+         * <p>Sent because {@code paymentStatus} alone cannot answer "how much?", and a
+         * split bill makes that the question worth asking — PARTIAL says only that
+         * something is outstanding.
+         */
+        BigDecimal balanceDue,
         boolean isInterstate,
         String notes,
         boolean isCancelled,

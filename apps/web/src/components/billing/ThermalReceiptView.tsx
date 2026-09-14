@@ -1,6 +1,6 @@
 import { format } from "date-fns";
 import { normalizeInvoiceSettings } from "@pharmacy/types";
-import { formatAmountInWords, baseUnitShort } from "@pharmacy/utils";
+import { formatAmountInWords, baseUnitShort, formatCurrency } from "@pharmacy/utils";
 import type { InvoiceSettingsConfig } from "@pharmacy/types";
 import type { PrintInvoiceData, PharmacyProfile } from "./InvoicePrintView";
 
@@ -156,9 +156,19 @@ export function ThermalReceiptView({ invoice, config: configProp, pharmacy: phar
       {pat.showInvoiceDate && (
         <div style={mono}>{row("Date:", format(new Date(invoice.createdAt), "dd/MM/yy HH:mm"), W)}</div>
       )}
-      {tot.showPaymentMode && (
+      {/* A split bill gets one line per leg. Thermal paper is too narrow to fit them
+          on one row, and stacking is what a till roll does anyway — the customer still
+          needs to see that part of this went on the card and part in cash. */}
+      {tot.showPaymentMode && ((invoice.tenders?.length ?? 0) > 1 ? (
+        <>
+          <div style={mono}>{row("Payment:", `SPLIT/${invoice.paymentStatus}`, W)}</div>
+          {invoice.tenders!.map((t, i) => (
+            <div key={`${t.mode}-${i}`} style={mono}>{row(`  ${t.mode}`, formatCurrency(t.amount), W)}</div>
+          ))}
+        </>
+      ) : (
         <div style={mono}>{row("Payment:", `${invoice.paymentMode}/${invoice.paymentStatus}`, W)}</div>
-      )}
+      ))}
       {pat.showName           && invoice.customerName    && <div style={mono}>{row("Patient:",  invoice.customerName,    W)}</div>}
       {pat.showMobile         && invoice.customerPhone   && <div style={mono}>{row("Mobile:",   invoice.customerPhone,   W)}</div>}
       {pat.showAddress        && invoice.customerAddress && <div style={mono}>{row("Address:",  invoice.customerAddress, W)}</div>}

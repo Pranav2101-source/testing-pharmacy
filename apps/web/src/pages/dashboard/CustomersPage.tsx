@@ -7,13 +7,14 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Search, UserPlus, Users, Phone, Mail, Trash2, Pencil,
   CreditCard, ChevronLeft, ChevronRight, Loader2, RefreshCw,
-  BadgeCheck, X, AlertTriangle,
+  BadgeCheck, X, AlertTriangle, BookUser,
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { CustomerModal } from "@/components/customers/CustomerModal";
 import type { CustomerRecord } from "@/components/customers/CustomerModal";
+import { CustomerAccountPanel } from "@/components/customers/CustomerAccountPanel";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -115,6 +116,7 @@ export default function CustomersPage() {
   const [showCreate,   setShowCreate]   = useState(false);
   const [editTarget,   setEditTarget]   = useState<CustomerRow | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<CustomerRow | null>(null);
+  const [accountTarget, setAccountTarget] = useState<CustomerRow | null>(null);
   const [toast,        setToast]        = useState<{ text: string; type: "success" | "error" } | null>(null);
 
   function showToast(text: string, type: "success" | "error" = "success") {
@@ -367,6 +369,11 @@ export default function CustomersPage() {
                     ) : (
                       <span className="text-slate-300">—</span>
                     )}
+                    {(c.advanceBalance ?? 0) > 0 && (
+                      <p className="text-[11px] text-violet-600 font-semibold mt-0.5">
+                        ₹{(c.advanceBalance ?? 0).toLocaleString()} on deposit
+                      </p>
+                    )}
                   </td>
 
                   {/* Bills count */}
@@ -377,6 +384,13 @@ export default function CustomersPage() {
                   {/* Actions */}
                   <td className="px-4 py-3.5">
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity justify-end">
+                      <button
+                        onClick={() => setAccountTarget(c)}
+                        title="Account — balances, history, deposits and collections"
+                        className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-violet-100 text-slate-400 hover:text-violet-600 flex items-center justify-center transition-colors"
+                      >
+                        <BookUser className="w-3.5 h-3.5" />
+                      </button>
                       <button
                         onClick={() => setEditTarget(c)}
                         title="Edit customer"
@@ -449,6 +463,12 @@ export default function CustomersPage() {
             loading={deleteMutation.isPending}
             onConfirm={() => deleteMutation.mutate(deleteTarget.id)}
             onCancel={() => setDeleteTarget(null)}
+          />
+        )}
+        {accountTarget && (
+          <CustomerAccountPanel
+            customer={{ id: accountTarget.id, name: accountTarget.name }}
+            onClose={() => setAccountTarget(null)}
           />
         )}
       </AnimatePresence>

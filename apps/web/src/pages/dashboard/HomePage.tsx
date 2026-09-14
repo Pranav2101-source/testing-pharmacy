@@ -5,7 +5,7 @@ import {
   FileText, Clock, ArrowRight, CheckCircle2, XCircle,
   RefreshCw, Loader2, RotateCcw, CreditCard, TrendingUp,
   Plus, ClipboardList, Calendar, FilePlus, Banknote,
-  Smartphone, Wallet, Flame, BadgePercent, BarChart2,
+  Smartphone, Wallet, Flame, BadgePercent, BarChart2, PiggyBank,
   CircleAlert, CalendarClock,
 } from "lucide-react";
 import { Link, useNavigate, Navigate } from "react-router-dom";
@@ -121,6 +121,7 @@ const PAYMENT_MODE_CFG: Record<string, { label: string; bar: string; bg: string;
   CARD:   { label: "Card",   bar: "bg-violet-500",  bg: "bg-violet-50",   text: "text-violet-700",  icon: CreditCard  },
   CREDIT: { label: "Credit", bar: "bg-amber-500",   bg: "bg-amber-50",    text: "text-amber-700",   icon: FileText    },
   WALLET: { label: "Wallet", bar: "bg-indigo-500",  bg: "bg-indigo-50",   text: "text-indigo-700",  icon: Wallet      },
+  ADVANCE:{ label: "Advance",bar: "bg-violet-400",  bg: "bg-violet-50",   text: "text-violet-700",  icon: PiggyBank   },
 };
 function getPaymentCfg(mode: string | null) {
   return PAYMENT_MODE_CFG[mode ?? ""] ?? { label: mode ?? "Other", bar: "bg-slate-400", bg: "bg-slate-50", text: "text-slate-600", icon: IndianRupee };

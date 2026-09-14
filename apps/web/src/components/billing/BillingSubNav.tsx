@@ -4,17 +4,22 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   ChevronRight, ChevronDown,
   Loader2, MoreHorizontal, Pin, Receipt,
-  Banknote, Smartphone, CreditCard, Clock3,
+  Banknote, Smartphone, CreditCard, Clock3, Split,
 } from "lucide-react";
 import { useBillingPreferences, ACTION_DEF_MAP } from "@/lib/billingPreferences";
 import type { ActionId } from "@/lib/billingPreferences";
+import type { PaymentModeCode, Tender } from "./useBillingStore";
 import { cn } from "@/lib/utils";
 import { KeyboardShortcutsPanel } from "./KeyboardShortcutsPanel";
 
 // ─── Payment mode metadata ────────────────────────────────────────────────────
 
-const PAY_LABELS: Record<"CASH" | "UPI" | "CARD" | "CREDIT", string> = {
-  CASH: "Cash", UPI: "UPI", CARD: "Card", CREDIT: "Credit",
+// Covers every mode a tender leg can carry, including ADVANCE — which the split pill
+// has to be able to name even though it is deliberately absent from the one-key
+// segmented control below: spending a deposit needs a customer and a balance to spend,
+// neither of which a single button can check.
+const PAY_LABELS: Record<PaymentModeCode, string> = {
+  CASH: "Cash", UPI: "UPI", CARD: "Card", CREDIT: "Credit", ADVANCE: "Advance",
 };
 const PAY_ICONS: Record<"CASH" | "UPI" | "CARD" | "CREDIT", React.ElementType> = {
   CASH: Banknote, UPI: Smartphone, CARD: CreditCard, CREDIT: Clock3,
@@ -201,6 +206,8 @@ export const BillingSubNav = memo(function BillingSubNav({
   hasItems,
   paymentMode,
   onPaymentMode,
+  tenders,
+  onSplitPayment,
   isInterstate,
   onInterstate,
   lifa,
@@ -211,8 +218,13 @@ export const BillingSubNav = memo(function BillingSubNav({
   onAction:      (id: ActionId) => void;
   submitting:    boolean;
   hasItems:      boolean;
-  paymentMode:   "CASH" | "UPI" | "CARD" | "CREDIT";
+  /** Any leg mode can end up here as the dominant one, ADVANCE included. */
+  paymentMode:   PaymentModeCode;
+  /** Narrower than `paymentMode` on purpose: only the four one-key modes are selectable. */
   onPaymentMode: (m: "CASH" | "UPI" | "CARD" | "CREDIT") => void;
+  /** The legs this bill is split across; empty means the single mode above covers it. */
+  tenders:       Tender[];
+  onSplitPayment: () => void;
   isInterstate:  boolean;
   onInterstate:  (v: boolean) => void;
   /** Persisted pharmacy setting (default LILA/FEFO) — the backend engine orders batches, this just reflects it. */
@@ -274,29 +286,53 @@ export const BillingSubNav = memo(function BillingSubNav({
 
         <div className="h-5 w-px bg-slate-200 mx-0.5" />
 
-        {/* Payment mode — segmented control */}
-        <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5">
-          {(["CASH", "UPI", "CARD", "CREDIT"] as const).map((m) => {
-            const Icon   = PAY_ICONS[m];
-            const active = paymentMode === m;
-            return (
-              <button
-                key={m}
-                onClick={() => onPaymentMode(m)}
-                title={`${PAY_LABELS[m]} (Alt+${PAY_SHORTCUTS[m]})`}
-                className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-bold transition-all duration-100",
-                  active
-                    ? "bg-white text-blue-700 shadow-sm ring-1 ring-blue-200/80"
-                    : "text-slate-500 hover:text-slate-700 hover:bg-white/60",
-                )}
-              >
-                <Icon className="w-3.5 h-3.5" strokeWidth={active ? 2.3 : 1.8} />
-                {PAY_LABELS[m]}
-              </button>
-            );
-          })}
-        </div>
+        {/* Payment mode — segmented control. Replaced by a summary while the bill is
+            split, because no single segment is true of a bill paid two ways, and a
+            highlighted "Cash" on a half-UPI bill is a worse answer than none. */}
+        {tenders.length > 0 ? (
+          <button
+            onClick={onSplitPayment}
+            title="Edit the payment split (F7)"
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-[12px] font-bold
+                       bg-violet-50 text-violet-700 ring-1 ring-violet-200 hover:bg-violet-100
+                       transition-colors duration-100"
+          >
+            <Split className="w-3.5 h-3.5" strokeWidth={2.3} />
+            {tenders.map((t) => `${PAY_LABELS[t.mode]} ₹${t.amount}`).join("  +  ")}
+          </button>
+        ) : (
+          <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5">
+            {(["CASH", "UPI", "CARD", "CREDIT"] as const).map((m) => {
+              const Icon   = PAY_ICONS[m];
+              const active = paymentMode === m;
+              return (
+                <button
+                  key={m}
+                  onClick={() => onPaymentMode(m)}
+                  title={`${PAY_LABELS[m]} (Alt+${PAY_SHORTCUTS[m]})`}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-bold transition-all duration-100",
+                    active
+                      ? "bg-white text-blue-700 shadow-sm ring-1 ring-blue-200/80"
+                      : "text-slate-500 hover:text-slate-700 hover:bg-white/60",
+                  )}
+                >
+                  <Icon className="w-3.5 h-3.5" strokeWidth={active ? 2.3 : 1.8} />
+                  {PAY_LABELS[m]}
+                </button>
+              );
+            })}
+            <button
+              onClick={onSplitPayment}
+              title="Split this bill across more than one way of paying (F7)"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-bold
+                         text-slate-500 hover:text-violet-700 hover:bg-white/60 transition-all duration-100"
+            >
+              <Split className="w-3.5 h-3.5" strokeWidth={1.8} />
+              Split
+            </button>
+          </div>
+        )}
 
         {/* Tax regime toggle */}
         <button

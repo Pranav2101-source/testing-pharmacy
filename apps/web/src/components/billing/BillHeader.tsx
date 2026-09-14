@@ -1072,7 +1072,7 @@ function PrescriptionCombobox({
   );
 }
 
-const BILLING_FOR_OPTIONS = ["Self", "Counter", "Credit", "Insurance"] as const;
+const BILLING_FOR_OPTIONS = ["Self", "Counter", "Credit"] as const;
 
 const CONTROLLED = new Set(["H", "H1", "X"]);
 
@@ -1088,6 +1088,7 @@ function Divider() {
 
 export function BillHeader() {
   const paymentStatus      = useBillingStore((s) => s.meta.paymentStatus);
+  const paymentMode        = useBillingStore((s) => s.meta.paymentMode);
   const customerId         = useBillingStore((s) => s.meta.customerId);
   const doctorName         = useBillingStore((s) => s.meta.doctorName);
   const prescriptionNumber = useBillingStore((s) => s.meta.prescriptionNumber);
@@ -1156,16 +1157,29 @@ export function BillHeader() {
           <div className="relative flex items-center">
             <select
               value={
-                paymentStatus === "PENDING" ? "Credit"    :
-                paymentStatus === "PARTIAL" ? "Insurance" :
-                customerId                  ? "Self"      : "Counter"
+                paymentStatus === "PENDING" ? "Credit" :
+                customerId                  ? "Self"   : "Counter"
               }
               onChange={(e) => {
-                const map: Record<string, "PAID" | "PENDING" | "PARTIAL"> = {
-                  Self: "PAID", Counter: "PAID", Credit: "PENDING", Insurance: "PARTIAL",
-                };
-                const patch: Parameters<typeof setMeta>[0] = { paymentStatus: map[e.target.value] ?? "PAID" };
-                if (e.target.value === "Counter") {
+                // Mode and status are set together, never apart.
+                //
+                // This control used to set paymentStatus alone. Picking "Credit" while
+                // the tender bar sat on CASH produced a bill that was PENDING but filed
+                // as a cash sale, and every credit safeguard is keyed off the mode: no
+                // customer was required, no credit limit was checked, and nothing was
+                // ever added to what the customer owed. The stock left the shelf and the
+                // debt belonged to nobody. Picking "Credit" here is now exactly the same
+                // action as the Credit button on the tender bar (Alt+4).
+                //
+                // "Insurance" is gone with it. It only ever meant PARTIAL with no record
+                // of what had been collected, which is the same trap wearing a different
+                // label; a genuinely part-paid bill is now entered through the split
+                // dialog (F7), which records each leg.
+                const choice = e.target.value;
+                const patch: Parameters<typeof setMeta>[0] = choice === "Credit"
+                  ? { paymentMode: "CREDIT", paymentStatus: "PENDING", tenders: [] }
+                  : { paymentStatus: "PAID", tenders: [], ...(paymentMode === "CREDIT" ? { paymentMode: "CASH" as const } : {}) };
+                if (choice === "Counter") {
                   patch.customerId              = "";
                   patch.customerName            = "";
                   patch.customerPhone           = "";

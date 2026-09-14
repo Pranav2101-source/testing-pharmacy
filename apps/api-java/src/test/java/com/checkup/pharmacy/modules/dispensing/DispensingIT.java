@@ -358,7 +358,7 @@ class DispensingIT extends AbstractPostgresIT {
     @DisplayName("createInvoice snapshots the strategy; changing it later does not touch the past bill")
     void strategySnapshotIsImmutable() {
         Inventory b = batch("B1", 200, Instant.now().minus(2, ChronoUnit.DAYS), 10);
-        CreateInvoiceRequest req = new CreateInvoiceRequest(null, null, null, null, null, null, null, null,
+        CreateInvoiceRequest req = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(b.getId(), 2, null, BigDecimal.ZERO, null)));
         InvoiceResponse invoice = billingService.createInvoice(req);
@@ -379,7 +379,7 @@ class DispensingIT extends AbstractPostgresIT {
     @DisplayName("a hand-picked batch is recorded as a pharmacist override")
     void manualBatchOverrideIsRecorded() {
         Inventory b = batch("MANUAL", 200, Instant.now().minus(2, ChronoUnit.DAYS), 10);
-        CreateInvoiceRequest req = new CreateInvoiceRequest(null, null, null, null, null, null, null, null,
+        CreateInvoiceRequest req = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(b.getId(), 1, null, BigDecimal.ZERO, null, "PACK", null, false)));
         InvoiceResponse invoice = billingService.createInvoice(req);

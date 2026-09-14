@@ -102,7 +102,7 @@ class LooseDispensingIT extends AbstractPostgresIT {
     }
 
     private CreateInvoiceRequest looseBill(int pieces) {
-        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
+        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, pieces, null, BigDecimal.ZERO, null, "LOOSE")));
     }
@@ -160,7 +160,7 @@ class LooseDispensingIT extends AbstractPostgresIT {
     void packMovementHasNoBaseUnitAndVelocityIsCoherent() {
         allowLoose();
         // One whole-pack sale (baseUnit stays null) + one 8-tablet loose sale (0.8 of a pack).
-        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null,
+        billingService.createInvoice(new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 1, null, BigDecimal.ZERO, null, "PACK"))));
         entityManager.flush();
@@ -239,7 +239,7 @@ class LooseDispensingIT extends AbstractPostgresIT {
         entityManager.flush();
         entityManager.clear();
 
-        CreateInvoiceRequest mixed = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null,
+        CreateInvoiceRequest mixed = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 8, null, BigDecimal.ZERO, null, "LOOSE"),
                         new InvoiceItemRequest(batch2, 2, null, BigDecimal.ZERO, null, "PACK")));
@@ -422,7 +422,7 @@ class LooseDispensingIT extends AbstractPostgresIT {
         allowLoose();
         // 10 tablets = exactly 1 sealed strip, and there are 10 sealed strips — normally
         // 422'd. With forceLoose the cashier has said "cut it anyway" (torn foil, etc.).
-        var bill = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
+        var bill = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 10, null, BigDecimal.ZERO, null, "LOOSE", true)));
         billingService.createInvoice(bill);
@@ -643,7 +643,7 @@ class LooseDispensingIT extends AbstractPostgresIT {
         entityManager.flush();
         entityManager.clear();
 
-        CreateInvoiceRequest bill = new CreateInvoiceRequest(customerId, null, null, null, null, null, null, null, null,
+        CreateInvoiceRequest bill = new CreateInvoiceRequest(customerId, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, 8, null, BigDecimal.ZERO, null, "LOOSE")));
         billingService.createInvoice(bill);

@@ -88,7 +88,7 @@ class LooseDispensingConcurrencyIT extends AbstractPostgresIT {
     }
 
     private CreateInvoiceRequest looseBill(int pieces) {
-        return new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID", null, null, null,
+        return new CreateInvoiceRequest(null, null, null, null, null, null, "CASH", "PAID", null, null, null, null,
                 null, null, null, null, null,
                 List.of(new InvoiceItemRequest(batchId, pieces, null, BigDecimal.ZERO, null, "LOOSE")));
     }

@@ -41,6 +41,9 @@ public class DocumentSequenceService {
     public static final String SALES_RETURN = "SALES_RETURN";
     public static final String QUOTATION = "QUOTATION";
     public static final String PRESCRIPTION = "PRESCRIPTION";
+    public static final String CUSTOMER_ADVANCE = "CUSTOMER_ADVANCE";
+    public static final String CUSTOMER_RECEIPT = "CUSTOMER_RECEIPT";
+    public static final String CUSTOMER_REFUND = "CUSTOMER_REFUND";
 
     private static final ZoneOffset IST = ZoneOffset.ofHoursMinutes(5, 30);
 

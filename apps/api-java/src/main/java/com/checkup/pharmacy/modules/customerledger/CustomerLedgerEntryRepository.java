@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 
 public interface CustomerLedgerEntryRepository extends JpaRepository<CustomerLedgerEntry, String> {
@@ -87,6 +88,56 @@ public interface CustomerLedgerEntryRepository extends JpaRepository<CustomerLed
 
     /** Entries raised against one bill — used when a bill is cancelled or returned. */
     List<CustomerLedgerEntry> findByPharmacyIdAndInvoiceIdOrderBySeqAsc(String pharmacyId, String invoiceId);
+
+    /**
+     * Deposits taken and refunded in a window, per mode — money that physically
+     * crossed the counter without any bill involved.
+     *
+     * <p>The day's drawer needs this. A customer handing over Rs.2000 as a deposit
+     * puts Rs.2000 of real cash in the till against no invoice, so a closure built
+     * only from invoices and their payments would report it as unexplained surplus —
+     * the same class of error that made credit settlements invisible before
+     * {@code InvoicePaymentRepository.sumByModeInRange} was widened to include them.
+     *
+     * <p>REFUND is subtracted rather than returned separately: handing an advance back
+     * takes that money out of the same drawer, and a caller adding these to a mode
+     * total wants the net movement, not two figures to reconcile itself.
+     *
+     * <p>Entries with no {@code paymentMode} are excluded by the GROUP BY, which is
+     * deliberate and load-bearing: an advance restored because a bill was cancelled is
+     * posted without a mode precisely because no money moved, and counting it would
+     * make the drawer expect cash that was never taken.
+     *
+     * <p>Keyed on {@code entryAt} — when the money changed hands — matching how the
+     * payment-side query keys on {@code paidAt}.
+     */
+    // EVERY enum here is compared as text, the type included — not just paymentMode.
+    // A typed enum literal in JPQL makes Hibernate emit `'REFUND'::CustomerLedgerEntryType`
+    // with the cast UNQUOTED, and Postgres folds an unquoted identifier to lower case:
+    // `customerledgerentrytype`, which does not exist, because the Prisma-owned schema
+    // names the type `"CustomerLedgerEntryType"`. Same rule as
+    // InvoicePaymentRepository.sumByModeInRange and InvoiceRepository.
+    @Query("""
+            SELECT CAST(e.paymentMode AS string) AS mode,
+                   COALESCE(SUM(CASE WHEN CAST(e.type AS string) = 'REFUND'
+                                     THEN -e.amount ELSE e.amount END), 0) AS total,
+                   COUNT(e.id) AS bills
+            FROM CustomerLedgerEntry e
+            WHERE e.pharmacyId = :pharmacyId
+              AND e.entryAt >= :from AND e.entryAt <= :to
+              AND e.paymentMode IS NOT NULL
+              AND CAST(e.type AS string) IN ('ADVANCE', 'REFUND')
+            GROUP BY e.paymentMode
+            """)
+    List<AdvanceMovementRow> sumAdvanceMovementsByModeInRange(@Param("pharmacyId") String pharmacyId,
+                                                               @Param("from") Instant from,
+                                                               @Param("to") Instant to);
+
+    interface AdvanceMovementRow {
+        String getMode();
+        BigDecimal getTotal();
+        long getBills();
+    }
 
     /**
      * Total advance held across the tenant — a real liability, and the figure that

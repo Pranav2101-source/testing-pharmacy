@@ -31,6 +31,7 @@ import com.checkup.pharmacy.modules.billing.dto.RepeatCartResponse;
 import com.checkup.pharmacy.modules.billing.dto.ReturnItemRequest;
 import com.checkup.pharmacy.modules.billing.dto.SalesReturnPageResponse;
 import com.checkup.pharmacy.modules.billing.dto.SalesReturnResponse;
+import com.checkup.pharmacy.modules.billing.dto.TenderRequest;
 import com.checkup.pharmacy.modules.customer.Customer;
 import com.checkup.pharmacy.modules.customer.CustomerRepository;
 import com.checkup.pharmacy.modules.doctor.Doctor;
@@ -69,10 +70,12 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -98,6 +101,8 @@ public class BillingService {
     // resolves it against the pharmacy's saved settings.
     private static final Set<String> CONTROLLED_SCHEDULES = Set.of("H", "H1", "X");
     private static final int MAX_PAGE_LIMIT = 100;
+    /** Rounding slack when comparing two money figures that took different routes. */
+    private static final BigDecimal PAISA = new BigDecimal("0.01");
 
     private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(BillingService.class);
 
@@ -126,6 +131,7 @@ public class BillingService {
     private final com.checkup.pharmacy.modules.medicine.PackSizeSignalRepository packSizeSignalRepository;
     /** The only writer of dues/advance balances — see its own javadoc. */
     private final com.checkup.pharmacy.modules.customerledger.CustomerLedgerService customerLedgerService;
+    private final PaymentMixReader paymentMixReader;
 
     public BillingService(InvoiceRepository invoiceRepository, InvoiceItemRepository invoiceItemRepository,
                           InvoicePaymentRepository invoicePaymentRepository, SalesReturnRepository salesReturnRepository,
@@ -142,7 +148,9 @@ public class BillingService {
                           com.checkup.pharmacy.modules.dispensing.DispensingService dispensingService,
                           com.checkup.pharmacy.modules.medicine.PackSizeSignalRepository packSizeSignalRepository,
                           com.checkup.pharmacy.modules.customerledger.CustomerLedgerService customerLedgerService,
+                          PaymentMixReader paymentMixReader,
                           ApplicationEventPublisher eventPublisher) {
+        this.paymentMixReader = paymentMixReader;
         this.invoiceRepository = invoiceRepository;
         this.invoiceItemRepository = invoiceItemRepository;
         this.invoicePaymentRepository = invoicePaymentRepository;
@@ -198,9 +206,15 @@ public class BillingService {
         long todayCancelled = invoiceRepository.countCancelledSince(pharmacyId, todayStart);
         java.math.BigDecimal todayReturns = salesReturnRepository.sumSince(pharmacyId, todayStart);
         java.math.BigDecimal pendingCredit = invoiceRepository.sumPendingCredit(pharmacyId);
-        var breakdown = invoiceRepository.paymentBreakdownSince(pharmacyId, todayStart).stream()
-                .map(r -> new com.checkup.pharmacy.modules.billing.dto.DashboardStatsResponse.PaymentBreakdown(
-                        r.getMode(), r.getTotal(), r.getCnt()))
+        // Tender-aware, and the same source the day's cash closure reads — a bill settled
+        // part in cash and part by UPI belongs to both figures, not to whichever leg
+        // happened to be larger.
+        var breakdown = paymentMixReader.mix(pharmacyId, todayStart,
+                        todayStart.plus(1, java.time.temporal.ChronoUnit.DAYS).minusMillis(1))
+                .entrySet().stream()
+                .sorted((a, b) -> b.getValue().amount().compareTo(a.getValue().amount()))
+                .map(e -> new com.checkup.pharmacy.modules.billing.dto.DashboardStatsResponse.PaymentBreakdown(
+                        e.getKey().name(), round2(e.getValue().amount()), e.getValue().bills()))
                 .toList();
         long lowStock = inventoryRepository.countLowStockInStock(pharmacyId);
         long nearExpiry = inventoryRepository.countExpiryAlerts(pharmacyId, nearExpiryThreshold);
@@ -470,11 +484,24 @@ public class BillingService {
         // write lock on the row, an ordinary cash sale must not queue behind one.
         PaymentMode paymentMode = parsePaymentMode(req.paymentModeOrDefault());
         PaymentStatus paymentStatus = parsePaymentStatus(req.paymentStatusOrDefault());
-        boolean onCredit = paymentMode == PaymentMode.CREDIT && paymentStatus != PaymentStatus.PAID;
+        // A split bill answers this from its tenders: any CREDIT leg means part of this
+        // sale goes on the account, whatever the other legs settle. The amounts are not
+        // known yet — finalTotal is computed much further down — but the lock decision
+        // only needs to know THAT credit is involved, not how much.
+        boolean onCredit = req.hasTenders()
+                ? req.tendersOrEmpty().stream().anyMatch(t -> PaymentMode.CREDIT.name().equalsIgnoreCase(blankToNull(t.paymentMode())))
+                : paymentMode == PaymentMode.CREDIT && paymentStatus != PaymentStatus.PAID;
+        // An ADVANCE leg draws down the deposit we hold, which is the same read-modify-write
+        // on the same row. Taking the lock here rather than letting applyAdvance upgrade it
+        // mid-transaction keeps every customer-balance write in this method ordered the same
+        // way, which is what stops two tills billing one customer from deadlocking.
+        boolean usesAdvance = req.hasTenders()
+                && req.tendersOrEmpty().stream()
+                        .anyMatch(t -> PaymentMode.ADVANCE.name().equalsIgnoreCase(blankToNull(t.paymentMode())));
 
         Customer customer = null;
         if (req.customerId() != null && !req.customerId().isBlank()) {
-            customer = (onCredit
+            customer = ((onCredit || usesAdvance)
                     ? customerRepository.lockByIdAndPharmacyId(req.customerId(), pharmacyId)
                     : customerRepository.findByIdAndPharmacyIdAndDeletedAtIsNull(req.customerId(), pharmacyId))
                     .orElseThrow(() -> new NotFoundException("Customer not found"));
@@ -760,7 +787,14 @@ public class BillingService {
         // Already covers line AND bill discounts — see calcInvoiceTotals.
         BigDecimal discountAmount = GstCalculator.round2(itemTotals.discountAmount());
 
-        boolean isCreditSale = onCredit && finalTotal.compareTo(BigDecimal.ZERO) > 0;
+        // Resolved here and not earlier because it is checked against finalTotal, which
+        // only exists now. On a bill that states no tenders this yields the legacy plan:
+        // the declared mode and status, unchanged, and nothing written to invoice_payments.
+        TenderPlan tenderPlan = resolveTenders(req, finalTotal, paymentMode, paymentStatus, onCredit);
+        paymentMode = tenderPlan.dominantMode();
+        paymentStatus = tenderPlan.status();
+
+        boolean isCreditSale = tenderPlan.creditAmount().compareTo(BigDecimal.ZERO) > 0;
 
         // A debt has to be owed by somebody.
         //
@@ -781,8 +815,13 @@ public class BillingService {
                         customer.getName() + " is not set up for credit. Change their customer type to \"Credit\" "
                         + "(and set a credit limit) to sell on credit.");
             }
+            // Measured against the CREDIT leg, not the bill: on a Rs.1000 bill settled
+            // Rs.600 in cash and Rs.400 on account, only Rs.400 is ever owed, and
+            // charging the limit for the full Rs.1000 would refuse sales the customer
+            // has the headroom for. On a wholly-unpaid bill the two are the same number.
+            BigDecimal creditAmount = tenderPlan.creditAmount();
             BigDecimal limit = customer.getCreditLimit();
-            BigDecimal projected = customer.getCreditUsed().add(finalTotal);
+            BigDecimal projected = customer.getCreditUsed().add(creditAmount);
 
             // A zero (or negative) limit means no credit has been authorised for this
             // customer — NOT unlimited credit.
@@ -804,13 +843,33 @@ public class BillingService {
                 BigDecimal available = limit.subtract(customer.getCreditUsed()).max(BigDecimal.ZERO);
                 throw new UnprocessableEntityException(
                         "Credit limit exceeded for " + customer.getName() + ". Available: Rs." + available
-                        + ", required: Rs." + finalTotal);
+                        + ", required: Rs." + creditAmount);
             }
             // The actual debit happens below, once the invoice has an id to link to
             // — see the postSale() call after invoiceRepository.save(invoice). Not
             // here: customer.adjustCreditUsed(finalTotal) directly would move the
             // cached balance with no ledger entry behind it, the exact drift this
             // ledger exists to make impossible.
+        }
+
+        // Spending a deposit needs someone to have made one.
+        BigDecimal advanceAmount = tenderPlan.advanceAmount();
+        if (advanceAmount.compareTo(BigDecimal.ZERO) > 0) {
+            if (customer == null) {
+                throw new UnprocessableEntityException(
+                        "Paying from an advance needs a customer — the deposit belongs to somebody. "
+                        + "Select the customer, or pay another way.");
+            }
+            // The binding check is in CustomerLedgerService, which holds the row lock and
+            // is the only place that can be raced. This one exists so the cashier is told
+            // what is actually wrong, with the figure they need, instead of reading a
+            // message written for the ledger's own invariants.
+            if (advanceAmount.compareTo(customer.getAdvanceBalance()) > 0) {
+                throw new UnprocessableEntityException(
+                        "Only Rs." + customer.getAdvanceBalance().setScale(2, RoundingMode.HALF_UP)
+                        + " is held in advance for " + customer.getName() + " — Rs."
+                        + advanceAmount.setScale(2, RoundingMode.HALF_UP) + " cannot be drawn from it.");
+            }
         }
 
         // Number format comes from the pharmacy's saved invoice settings so the
@@ -846,8 +905,46 @@ public class BillingService {
         // the save would be unsafe (the FK is not deferrable). customer is already
         // locked above by the limit check, so this re-lock is a same-transaction
         // no-op; see CustomerLedgerService's javadoc on why it locks unconditionally.
-        if (isCreditSale) {
-            customerLedgerService.postSale(pharmacyId, customer.getId(), invoice.getId(), finalTotal, userId);
+        //
+        // The SALE posted here covers BOTH the credit leg and the advance leg, not
+        // just the credit leg. applyAdvance's own contract is "the customer's credit
+        // with us pays down what they owe us" — it moves dues down alongside advance,
+        // on the assumption that a debt already exists to pay down. For an ADVANCE
+        // leg with no CREDIT leg on the same bill (the ordinary case: a walk-in
+        // customer paying entirely from a standing deposit), nothing else ever put
+        // that debt on the khata — so without a SALE for the advance amount too,
+        // applyAdvance tries to subtract from zero dues and CustomerLedgerService
+        // refuses it outright. Posting the SALE for the combined amount and letting
+        // applyAdvance immediately settle the advance-covered portion nets to exactly
+        // creditAmount owed, the correct final figure, while leaving a real SALE +
+        // ADVANCE_APPLIED pair on the statement instead of an invisible shortcut.
+        BigDecimal duesCreatedByThisSale = tenderPlan.creditAmount().add(advanceAmount);
+        if (duesCreatedByThisSale.compareTo(BigDecimal.ZERO) > 0) {
+            customerLedgerService.postSale(pharmacyId, customer.getId(), invoice.getId(),
+                    duesCreatedByThisSale, userId);
+        }
+        // Draws the deposit down. Posted after the SALE above so the khata reads in the
+        // order the money moved; both entries share this transaction's entryAt to the
+        // millisecond, which is precisely why CustomerLedgerEntry carries a seq.
+        if (advanceAmount.compareTo(BigDecimal.ZERO) > 0) {
+            customerLedgerService.applyAdvance(pharmacyId, customer.getId(), invoice.getId(),
+                    advanceAmount, userId);
+        }
+
+        // Each settled leg is money that actually arrived, so each becomes a payment row.
+        // A CREDIT leg is deliberately absent from this list: nothing moved, and writing
+        // it here would report the pharmacy as having collected its own receivables.
+        //
+        // This is also the point the day's cash stops being derivable from the invoice
+        // alone — see InvoiceRepository.sumUntenderedReceivedByModeInRange, which reads
+        // only bills carrying no tender rows of their own, so the two sources can never
+        // both claim the same rupee.
+        for (ResolvedTender tender : tenderPlan.settled()) {
+            invoicePaymentRepository.save(InvoicePayment.create(pharmacyId, invoice.getId(), tender.amount(),
+                    tender.mode(), tender.reference(), null, invoice.getCreatedAt(), userId));
+        }
+        if (tenderPlan.paidAmount().compareTo(BigDecimal.ZERO) > 0) {
+            invoice.adjustAmountPaid(tenderPlan.paidAmount());
         }
 
         List<InvoiceItem> savedItems = new ArrayList<>();
@@ -1180,7 +1277,8 @@ public class BillingService {
                     new InvoicePageResponse.UserRef(userName != null ? userName : "Unknown");
             return new InvoicePageResponse.Summary(inv.getId(), inv.getInvoiceNumber(), customer, user,
                     inv.getDoctorName(), inv.getPaymentMode().name(), inv.getPaymentStatus().name(),
-                    inv.getStatus().name(), inv.getTotalAmount(), inv.isCancelled(),
+                    inv.getStatus().name(), inv.getTotalAmount(), inv.getAmountPaid(), inv.balanceDue(),
+                    inv.isCancelled(),
                     new InvoicePageResponse.CountRef(itemCounts.getOrDefault(inv.getId(), 0L).intValue()),
                     inv.getCreatedAt());
         }).toList();
@@ -1218,10 +1316,26 @@ public class BillingService {
         if (invoice.getStatus() == InvoiceStatus.RETURNED || invoice.getStatus() == InvoiceStatus.PARTIALLY_RETURNED) {
             throw new ConflictException("Cannot cancel a returned invoice — raise a sales return instead");
         }
-        BigDecimal totalPaid = payments.stream().map(InvoicePayment::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (totalPaid.compareTo(new BigDecimal("0.01")) > 0) {
-            throw new ConflictException("Cannot cancel an invoice with Rs." + totalPaid
-                    + " collected. Raise a sales return to reverse the payment first.");
+        // Money collected AFTER the bill was raised — a customer settling their account —
+        // still blocks a cancellation: that payment has its own life and reversing it by
+        // voiding the bill would lose it.
+        //
+        // The tenders taken at the counter when the bill was raised do not block it, and
+        // this distinction is new. Before split tender a bill recorded nothing at
+        // checkout, so "has payments" and "was settled later" were the same question; now
+        // every bill carries its own tenders and the old test would have refused to cancel
+        // ANY bill — including the mis-punched one the cashier voids thirty seconds later,
+        // which is the single most common correction on a till.
+        //
+        // Checkout tenders are the ones stamped with the invoice's own createdAt; see
+        // createInvoice, and InvoiceRepository.sumCreditPutOnAccountInRange which leans on
+        // the same invariant.
+        BigDecimal totalCollected = payments.stream()
+                .map(InvoicePayment::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal settledLater = totalCollected.subtract(collectedAtCheckout(invoice, payments));
+        if (settledLater.compareTo(PAISA) > 0) {
+            throw new ConflictException("Cannot cancel an invoice with Rs." + settledLater
+                    + " collected against it. Raise a sales return to reverse the payment first.");
         }
 
         invoice.cancel(reason);
@@ -1298,11 +1412,11 @@ public class BillingService {
             }
         }
 
-        // wasCreditSale mirrors createInvoice's own onCredit/isCreditSale predicate:
-        // a PAID-at-creation CREDIT invoice never posted a SALE entry in the first
-        // place (see onCredit's definition), so there is nothing here to reverse.
-        boolean wasCreditSale = invoice.getCustomerId() != null && invoice.getPaymentMode() == PaymentMode.CREDIT
-                && invoice.getPaymentStatus() != PaymentStatus.PAID && invoice.getTotalAmount().compareTo(BigDecimal.ZERO) > 0;
+        // Mirrors createInvoice's own predicate — see Invoice.wasSoldOnAccount. A
+        // PAID-at-creation CREDIT invoice never posted a SALE entry in the first place,
+        // so there is nothing here to reverse.
+        boolean wasCreditSale = invoice.wasSoldOnAccount(collectedAtCheckout(invoice, payments))
+                && invoice.getTotalAmount().compareTo(BigDecimal.ZERO) > 0;
         if (wasCreditSale) {
             // balanceDue(), not getTotalAmount() directly — though the two guards
             // above (no cancel with payments collected, no cancel of a
@@ -1323,6 +1437,42 @@ public class BillingService {
             if (reverseBy.signum() > 0) {
                 customerLedgerService.postReturnCredit(pharmacyId, invoice.getCustomerId(), invoice.getId(),
                         null, reverseBy, userId);
+            }
+        }
+
+        // Give back whatever this bill drew from the customer's deposit.
+        //
+        // Checkout tenders deliberately do not block a cancellation (see the guard
+        // above), and an ADVANCE leg is a checkout tender — so without this, voiding a
+        // mis-punched bill would keep the customer's money and leave them with neither
+        // the goods nor the deposit. Every other leg needs no counterpart here: cash
+        // handed back at the counter is not something the system can or should record
+        // on their behalf.
+        //
+        // Posted with no payment mode on purpose. The money is moving between two of
+        // our own records, not through the till, so it must not appear in the day's
+        // drawer — see PaymentMixReader.advanceMovements, which counts only entries
+        // that name the mode the money physically arrived in.
+        BigDecimal advanceToRestore = payments.stream()
+                .filter(p -> p.getPaymentMode() == PaymentMode.ADVANCE)
+                .filter(p -> p.getPaidAt() != null && invoice.getCreatedAt() != null
+                        && !p.getPaidAt().isAfter(invoice.getCreatedAt()))
+                .map(InvoicePayment::getAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (advanceToRestore.signum() > 0 && invoice.getCustomerId() != null) {
+            try {
+                customerLedgerService.postAdvance(pharmacyId, invoice.getCustomerId(), advanceToRestore,
+                        null, null, null,
+                        "Advance returned — bill " + invoice.getInvoiceNumber() + " cancelled", null, userId);
+            } catch (NotFoundException e) {
+                // Reachable: spend a deposit down to zero on this bill, remove the
+                // customer (permitted at a zero balance), then cancel the bill. Letting
+                // the raw "Customer not found" through would blame the cancellation for
+                // a missing record nobody was looking for. Refusing is right — the
+                // money has to land somewhere — but the message has to say where.
+                throw new ConflictException("This bill was settled with Rs." + advanceToRestore
+                        + " from " + invoice.getCustomerName() + "'s deposit, and that customer has since been "
+                        + "removed. Restore the customer first so the deposit can go back to them.");
             }
         }
 
@@ -1480,11 +1630,16 @@ public class BillingService {
         // balanceDue() BEFORE applying the return — the dues this specific bill
         // still carried at the moment the goods came back.
         BigDecimal duesBefore = invoice.balanceDue();
+        BigDecimal overpaymentBefore = overpayment(invoice.getTotalAmount(), invoice.getReturnedAmount(),
+                invoice.getAmountPaid());
         invoice.applyReturn(totalAmount);
         BigDecimal duesAfter = invoice.balanceDue();
+        BigDecimal overpaymentAfter = overpayment(invoice.getTotalAmount(), invoice.getReturnedAmount(),
+                invoice.getAmountPaid());
 
-        boolean wasCreditSale = invoice.getCustomerId() != null && invoice.getPaymentMode() == PaymentMode.CREDIT
-                && invoice.getPaymentStatus() != PaymentStatus.PAID && totalAmount.compareTo(BigDecimal.ZERO) > 0;
+        boolean wasCreditSale = invoice.wasSoldOnAccount(
+                collectedAtCheckout(invoice, invoicePaymentRepository.findByInvoiceIdOrderByPaidAtAsc(invoiceId)))
+                && totalAmount.compareTo(BigDecimal.ZERO) > 0;
         if (wasCreditSale) {
             // duesBefore - duesAfter, NOT totalAmount — this is the actual bug fix.
             //
@@ -1503,11 +1658,6 @@ public class BillingService {
             // dues reduction at all; the customer paid Rs.400 for goods worth
             // Rs.300 they kept, and is owed Rs.100 back in cash or as an advance.
             //
-            // KNOWN LIMITATION: that Rs.100 is not automatically refunded or
-            // converted to an advance here — this fix closes the dues UNDER/OVER-
-            // count, it does not decide where an overpayment created by a return
-            // should go. That is a deliberate later feature (see the ADVANCE/REFUND
-            // workflow), not a silent default buried in the return flow.
             BigDecimal reduceBy = duesBefore.subtract(duesAfter);
             if (reduceBy.signum() > 0) {
                 customerLedgerService.postReturnCredit(pharmacyId, invoice.getCustomerId(), invoice.getId(),
@@ -1515,7 +1665,45 @@ public class BillingService {
             }
         }
 
+        // What the customer has now overpaid, credited to them as an advance.
+        //
+        // This is the case the dues fix above deliberately left open: pay Rs.400 of a
+        // Rs.1000 bill, return Rs.700 of goods, and Rs.600 of that return clears the
+        // dues — but the remaining Rs.100 is money the customer handed over for goods
+        // they no longer have. Until now nothing recorded it, so it existed only as a
+        // conversation at the counter.
+        //
+        // Credited rather than refunded in cash: the till cannot know whether they
+        // want it back or want it kept, and an advance is the reversible choice — it
+        // can be spent on the next bill or refunded later, and either way it is on the
+        // khata. Paying it out automatically would move real money out of the drawer
+        // on a decision nobody made.
+        //
+        // Computed as the CHANGE in overpayment, not the total, so a second partial
+        // return credits only what it newly creates.
+        if (invoice.getCustomerId() != null) {
+            BigDecimal creditBack = overpaymentAfter.subtract(overpaymentBefore);
+            if (creditBack.signum() > 0) {
+                customerLedgerService.postAdvance(pharmacyId, invoice.getCustomerId(), creditBack,
+                        null, null, null,
+                        "Overpayment credited from return against bill " + invoice.getInvoiceNumber(),
+                        null, userId);
+            }
+        }
+
         return toResponse(salesReturn, savedItems);
+    }
+
+    /**
+     * What the customer has paid over and above what this bill still charges them.
+     *
+     * <p>Zero on every ordinary bill. It becomes positive only when goods come back on
+     * a bill that was already settled, which is precisely when money the pharmacy is
+     * holding stops belonging to it.
+     */
+    private static BigDecimal overpayment(BigDecimal totalAmount, BigDecimal returnedAmount,
+                                          BigDecimal amountPaid) {
+        return amountPaid.subtract(totalAmount.subtract(returnedAmount)).max(BigDecimal.ZERO);
     }
 
     @Transactional(readOnly = true)
@@ -1599,7 +1787,32 @@ public class BillingService {
             throw new UnprocessableEntityException("Payment of Rs." + req.amount() + " exceeds outstanding balance of Rs." + remaining);
         }
 
+        // Read BEFORE the status is recomputed below. The payment that finally clears a
+        // bill turns it PAID, and asking afterwards would answer "not on account" for the
+        // one payment that matters most — leaving the dues it just settled standing.
+        boolean onAccount = invoice.wasSoldOnAccount(collectedAtCheckout(invoice, payments));
+
+        // A settlement cannot predate the bill it settles. paidAt is client-supplied, and
+        // a value at or before the invoice's own timestamp would disguise this payment as
+        // one of the bill's checkout tenders — which is exactly the test that decides
+        // whether the bill may still be cancelled. Backdate it and a bill holding real
+        // cash becomes cancellable, taking that cash out of the day's closure with it.
+        if (req.paidAt() != null && invoice.getCreatedAt() != null
+                && !req.paidAt().isAfter(invoice.getCreatedAt())) {
+            throw new UnprocessableEntityException(
+                    "A payment cannot be dated before the bill it settles.");
+        }
+
         PaymentMode mode = parsePaymentMode(req.paymentMode());
+        // Settling a bill from a deposit is a transfer between two balances we already
+        // hold, not money arriving — it belongs to the checkout tender path, which posts
+        // the matching ADVANCE_APPLIED entry. Allowed here it would take the payment and
+        // never draw the deposit down, so the customer would pay twice.
+        if (mode == PaymentMode.ADVANCE) {
+            throw new UnprocessableEntityException(
+                    "An advance cannot be collected as a payment — it is money we already hold. "
+                    + "Apply it when billing instead.");
+        }
         InvoicePayment payment = InvoicePayment.create(pharmacyId, invoiceId, req.amount(), mode, blankToNull(req.reference()),
                 req.notes(), req.paidAt(), userId);
         invoicePaymentRepository.save(payment);
@@ -1635,9 +1848,21 @@ public class BillingService {
         // type label. Silently skipping the decrement for a customer reclassified
         // after the sale would be a worse bug than the one being fixed — it would
         // leave a real payment permanently unrecorded against real dues.
-        if (invoice.getCustomerId() != null && invoice.getPaymentMode() == PaymentMode.CREDIT) {
+        //
+        // Asked of the invoice rather than of its paymentMode, which stopped being a
+        // sufficient answer when a bill gained the ability to be settled several ways at
+        // once: a Rs.1000 bill split Rs.600 cash and Rs.400 on account is filed under CASH
+        // — its largest leg — yet it owes Rs.400, and the old test would have taken the
+        // customer's Rs.400 without ever clearing it from what they owe.
+        if (onAccount) {
+            // Numbered, because this is a receipt the customer can be handed and later
+            // quote back. Allocated inside this transaction, so a failed collection
+            // returns its number instead of burning it.
+            String receiptNumber = DocumentNumberFormat.customerReceipt(
+                    sequenceService.next(pharmacyId, DocumentSequenceService.CUSTOMER_RECEIPT,
+                            DocumentSequenceService.PERIOD_ALL));
             customerLedgerService.postPayment(pharmacyId, invoice.getCustomerId(), invoiceId, req.amount(),
-                    mode, null, req.reference(), req.notes(), req.paidAt(), userId);
+                    mode, receiptNumber, req.reference(), req.notes(), req.paidAt(), userId);
         }
 
         return toResponse(payment);
@@ -1894,6 +2119,170 @@ public class BillingService {
                 .orElseThrow(() -> new NotFoundException("Return not found"));
     }
 
+    /**
+     * What this bill collected at the counter when it was raised, as opposed to what has
+     * been paid against it since.
+     *
+     * <p>Checkout tenders are written carrying the invoice's own {@code createdAt}; any
+     * later settlement is strictly after it. Several decisions turn on telling the two
+     * apart — whether the bill created dues, and whether it can still be cancelled — so
+     * the test lives in one place rather than being re-derived at each of them.
+     */
+    private static BigDecimal collectedAtCheckout(Invoice invoice, List<InvoicePayment> payments) {
+        Instant raisedAt = invoice.getCreatedAt();
+        if (raisedAt == null) return BigDecimal.ZERO;
+        return payments.stream()
+                .filter(p -> p.getPaidAt() != null && !p.getPaidAt().isAfter(raisedAt))
+                .map(InvoicePayment::getAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /** What a cashier calls this payment method, for messages they have to act on. */
+    private static String label(PaymentMode mode) {
+        return switch (mode) {
+            case CASH -> "cash";
+            case UPI -> "UPI";
+            case CARD -> "card";
+            case CREDIT -> "on-account";
+            case WALLET -> "wallet";
+            case ADVANCE -> "advance";
+        };
+    }
+
+    /** One validated leg of a bill's settlement. */
+    private record ResolvedTender(PaymentMode mode, BigDecimal amount, String reference) {
+    }
+
+    /**
+     * How a bill is settled, after validation — the single place that decides what the
+     * invoice's own paymentMode/paymentStatus columns say.
+     *
+     * @param settled      legs that moved money, each becoming an {@code invoice_payments} row.
+     *                     Empty for a bill that stated no tenders, which is what keeps every
+     *                     pre-split-tender bill accounted for exactly as before.
+     * @param dominantMode the largest leg, or the declared mode when none were stated. A label
+     *                     for filters and badges, no longer an accounting input: the money is
+     *                     described by {@code settled}, which a single enum cannot do.
+     * @param creditAmount what goes on the customer's account — the dues this sale creates.
+     * @param paidAmount   what was collected at the counter, the sum of {@code settled}.
+     * @param advanceAmount what was drawn from the customer's deposit. Part of
+     *                      {@code settled} and of {@code paidAmount} — the bill really is
+     *                      paid by it — but singled out here because it is the one settled
+     *                      leg where no money arrives today, so it must move the ledger and
+     *                      must stay out of the day's drawer.
+     */
+    private record TenderPlan(List<ResolvedTender> settled, PaymentMode dominantMode,
+                              PaymentStatus status, BigDecimal creditAmount, BigDecimal paidAmount,
+                              BigDecimal advanceAmount) {
+    }
+
+    /**
+     * Validates a bill's tender breakdown and derives what the invoice should record.
+     *
+     * <p>A bill that states no tenders keeps its declared mode and status verbatim and
+     * writes no payment rows — the behaviour every bill had before split tender, and the
+     * behaviour any client that predates it still gets.
+     *
+     * <p>When tenders ARE stated the status is DERIVED, never taken from the request.
+     * Letting a caller name both independently is what allowed a bill to be marked PENDING
+     * while its payment mode said CASH: the customer requirement, the credit-limit check
+     * and the ledger posting were all keyed off the mode, so the debt was recorded against
+     * nobody. Here a bill is unpaid exactly to the extent it carries a CREDIT leg.
+     */
+    private static TenderPlan resolveTenders(CreateInvoiceRequest req, BigDecimal finalTotal,
+                                             PaymentMode declaredMode, PaymentStatus declaredStatus,
+                                             boolean onCredit) {
+        if (!req.hasTenders()) {
+            BigDecimal credit = onCredit && finalTotal.compareTo(BigDecimal.ZERO) > 0 ? finalTotal : BigDecimal.ZERO;
+            return new TenderPlan(List.of(), declaredMode, declaredStatus, credit, BigDecimal.ZERO, BigDecimal.ZERO);
+        }
+        if (finalTotal.compareTo(BigDecimal.ZERO) == 0) {
+            throw new UnprocessableEntityException(
+                    "This bill comes to Rs.0 — there is nothing to tender. Remove the payment split.");
+        }
+
+        List<ResolvedTender> settled = new ArrayList<>();
+        Set<PaymentMode> seen = EnumSet.noneOf(PaymentMode.class);
+        BigDecimal total = BigDecimal.ZERO;
+        BigDecimal credit = BigDecimal.ZERO;
+        BigDecimal advance = BigDecimal.ZERO;
+        PaymentMode dominant = null;
+        BigDecimal dominantAmount = BigDecimal.ZERO;
+
+        for (TenderRequest t : req.tendersOrEmpty()) {
+            String rawMode = blankToNull(t.paymentMode());
+            if (rawMode == null) {
+                throw new UnprocessableEntityException(
+                        "One of the payment splits does not say how it was paid. "
+                        + "Give each split a payment method, or remove it.");
+            }
+            PaymentMode mode;
+            try {
+                mode = PaymentMode.valueOf(rawMode.toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                throw new UnprocessableEntityException(
+                        "\"" + rawMode + "\" is not a way this bill can be paid. "
+                        + "Use Cash, UPI, Card, Credit, Wallet or Advance.");
+            }
+            if (t.amount() == null || t.amount().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new UnprocessableEntityException(
+                        "The " + label(mode) + " split needs an amount greater than zero. "
+                        + "Remove it if none of the bill was paid that way.");
+            }
+            // One leg per mode. Two separate CASH legs on one bill are the same rupees
+            // counted twice as far as any report can tell, and they would make "the
+            // largest leg" ambiguous for no gain the cashier asked for.
+            if (!seen.add(mode)) {
+                throw new UnprocessableEntityException(
+                        "This bill has two " + label(mode) + " splits. Combine them into one.");
+            }
+            total = total.add(t.amount());
+            if (mode == PaymentMode.CREDIT) {
+                credit = t.amount();
+            } else {
+                // An ADVANCE leg settles the bill like any other — it becomes a payment
+                // row and the bill is PAID to that extent — but it is tracked separately
+                // too, because it is the one settled leg that moves a ledger balance
+                // instead of a drawer.
+                if (mode == PaymentMode.ADVANCE) {
+                    advance = t.amount();
+                }
+                settled.add(new ResolvedTender(mode, t.amount(), blankToNull(t.reference())));
+            }
+            // First one wins a tie, so the order the cashier entered decides — stable,
+            // and never a coin flip between two equal legs.
+            if (t.amount().compareTo(dominantAmount) > 0) {
+                dominantAmount = t.amount();
+                dominant = mode;
+            }
+        }
+
+        BigDecimal outstanding = finalTotal.subtract(total);
+        if (outstanding.abs().compareTo(PAISA) > 0) {
+            // Says which way it is out and by how much — "they add up to 900, the bill is
+            // 1000" leaves the cashier to do the subtraction while a customer waits.
+            throw new UnprocessableEntityException(outstanding.signum() > 0
+                    ? "The payment splits are Rs." + outstanding.setScale(2, RoundingMode.HALF_UP)
+                      + " short of the Rs." + finalTotal.setScale(2, RoundingMode.HALF_UP) + " bill."
+                    : "The payment splits are Rs." + outstanding.negate().setScale(2, RoundingMode.HALF_UP)
+                      + " more than the Rs." + finalTotal.setScale(2, RoundingMode.HALF_UP) + " bill.");
+        }
+
+        // The legs themselves, not finalTotal minus the credit leg. The two can differ by
+        // the paisa of slack the sum check allows, and amountPaid is a cache of exactly
+        // these payment rows — it has to equal what they add up to, not what it ought to.
+        BigDecimal paid = settled.stream().map(ResolvedTender::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        PaymentStatus status;
+        if (credit.compareTo(BigDecimal.ZERO) == 0) {
+            status = PaymentStatus.PAID;
+        } else if (paid.compareTo(BigDecimal.ZERO) > 0) {
+            status = PaymentStatus.PARTIAL;
+        } else {
+            status = PaymentStatus.PENDING;
+        }
+        return new TenderPlan(List.copyOf(settled), dominant, status, credit, paid, advance);
+    }
+
     private static PaymentMode parsePaymentMode(String value) {
         try {
             return PaymentMode.valueOf(value);
@@ -1995,7 +2384,8 @@ public class BillingService {
                 invoice.getStatus().name(), invoice.getSubtotal(), invoice.getDiscountAmount(), invoice.getTaxableAmount(),
                 invoice.getCgst(), invoice.getSgst(), invoice.getIgst(), invoice.getTotalGst(), invoice.getTotalAmount(),
                 invoice.getExtraCharges(), invoice.getAdjustmentAmount(), invoice.getRoundOff(),
-                invoice.getReturnedAmount(), invoice.isInterstate(), invoice.getNotes(), invoice.isCancelled(),
+                invoice.getReturnedAmount(), invoice.getAmountPaid(), invoice.balanceDue(),
+                invoice.isInterstate(), invoice.getNotes(), invoice.isCancelled(),
                 invoice.getCancelledAt(), invoice.getCancelReason(),
                 invoice.getDispensingStrategy() == null ? null : invoice.getDispensingStrategy().name(),
                 itemResponses, paymentResponses, returnRefs,

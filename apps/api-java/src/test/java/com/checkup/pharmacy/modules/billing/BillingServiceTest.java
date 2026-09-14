@@ -95,7 +95,7 @@ class BillingServiceTest {
     }
 
     private static CreateInvoiceRequest requestWith(InvoiceItemRequest... items) {
-        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
+        return new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, null, null, List.of(items));
     }
 
@@ -182,10 +182,19 @@ class BillingServiceTest {
     @Test
     @DisplayName("idempotency: replaying a key returns the original invoice instead of billing twice")
     void idempotentReplayDoesNotCreateSecondInvoice() {
-        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null,
+        var request = new CreateInvoiceRequest(null, null, null, null, null, null, null, null, null, null, null, null,
                 null, null, null, "idem-key-1", null, List.of(item("inv-1", 1)));
+        // A real saved invoice, not a bare one: the replay path renders the original
+        // through the same response mapper as a fresh sale, and that reports money
+        // figures — a stub with null totals only ever passed because nothing read them.
+        Invoice original = Invoice.create(PHARMACY_ID, "INV/26-27/000001", USER_ID, null, null, null, null, null,
+                null, null, com.checkup.pharmacy.common.enums.PaymentMode.CASH,
+                com.checkup.pharmacy.common.enums.PaymentStatus.PAID, false, null, "idem-key-1",
+                new BigDecimal("100"), BigDecimal.ZERO, new BigDecimal("100"), BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ZERO, BigDecimal.ZERO, new BigDecimal("100"),
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
         when(invoiceRepository.findByPharmacyIdAndIdempotencyKey(PHARMACY_ID, "idem-key-1"))
-                .thenReturn(java.util.Optional.of(new Invoice()));
+                .thenReturn(java.util.Optional.of(original));
 
         billingService.createInvoice(request);
 

@@ -14,11 +14,19 @@ import type { ActionId } from "@/lib/billingPreferences";
  *             in-progress bill (after a confirm — no-op on an empty cart)
  *   /         jump focus back into medicine search
  *   Alt+1..4  payment mode (Cash / UPI / Card / Credit)
+ *   F6        the attached customer's account — balances, khata, deposits, collections
+ *   F7        split this bill across more than one way of paying
  *
  * Notes:
  *  - **F8 / F9 fire from anywhere**, including with focus inside a cart cell (Qty,
  *    Disc%, Patient Remarks). A function key never types a character, so there is no
  *    "don't fire while typing" exception for it.
+ *  - The exception is a dialog that owns the bill's money — the split-payment dialog
+ *    and the customer-account panel. While either is open EVERY shortcut here is
+ *    suppressed, because both are mid-way through deciding something about how this
+ *    bill gets paid: F9 would save a half-entered split, Alt+1..4 would silently
+ *    rewrite the payment mode behind the dialog, and F8 would finalise the bill out
+ *    from under a deposit being taken. Each dialog binds its own Escape and Enter.
  *  - **Enter and Esc are scoped** to when nothing editable/interactive has focus (or
  *    the search box is empty), and no full-screen overlay is open — so they never
  *    hijack a keystroke a field, menu, or modal is entitled to.
@@ -44,6 +52,15 @@ export function useBillingKeyboardShortcuts(handlers: {
   isPrintOpen: boolean;
   /** Clear the in-progress bill (Esc, when the receipt is not up). Confirms internally. */
   onClearBill: () => void;
+  /** Open the split-payment dialog (F7). */
+  onSplitPayment: () => void;
+  /** Open the attached customer's account panel (F6). */
+  onCustomerAccount: () => void;
+  /**
+   * True while a dialog that decides this bill's money is open — the split-payment
+   * dialog or the customer-account panel. Suppresses every shortcut here.
+   */
+  isSplitOpen: boolean;
 }) {
   const ref = useRef(handlers);
   useEffect(() => {
@@ -56,6 +73,24 @@ export function useBillingKeyboardShortcuts(handlers: {
       const target = e.target as HTMLElement | null;
       const tag = target?.tagName;
       const typing = tag === "INPUT" || tag === "TEXTAREA" || !!target?.isContentEditable;
+
+      // The split-payment dialog owns the keyboard while it is open — see the note in
+      // this hook's doc comment. Its own keys are bound inside the dialog.
+      if (h.isSplitOpen) return;
+
+      // ── F6 — the attached customer's account, over the bill rather than away from it. ──
+      if (e.key === "F6" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.repeat && !h.isPrintOpen) {
+        e.preventDefault();
+        h.onCustomerAccount();
+        return;
+      }
+
+      // ── F7 — split this bill across more than one way of paying. ──
+      if (e.key === "F7" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.repeat && !h.isPrintOpen) {
+        e.preventDefault();
+        h.onSplitPayment();
+        return;
+      }
 
       // ── F9 / F8 — save. Fire regardless of where focus is (including a cart input). ──
       if (e.key === "F9" && !e.altKey && !e.ctrlKey && !e.metaKey && !e.repeat) {
